@@ -90,6 +90,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::A, ctrl, Action::SelectAll),
     cmd(Key::M, ctrl, Action::MuteRegions),
     cmd(Key::B, ctrl, Action::Menu("Project or Section…")),
+    cmd(Key::Comma, ctrl, Action::Menu("Settings…")),
     // Views.
     cmd(Key::X, none, Action::Menu("Show Mixer")),
     cmd(Key::Y, none, Action::Menu("Show Library")),

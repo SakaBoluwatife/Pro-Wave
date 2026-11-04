@@ -53,6 +53,7 @@ mod sample_browser;
 mod sample_place;
 mod score;
 mod scripter;
+mod settings;
 mod side_panes;
 mod signature_track;
 mod smart_tempo;
@@ -150,6 +151,7 @@ pub struct UiState {
     /// Bounce and export: the window, and what is being rendered.
     pub bounce: bounce::BounceState,
     pub rack: channel_rack::RackView,
+    pub settings: settings::SettingsView,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
     /// The computer keyboard as a piano, and what it played this frame.
@@ -226,6 +228,7 @@ impl UiState {
             sample_drop: None,
             bounce: bounce::BounceState::default(),
             rack: channel_rack::RackView::default(),
+            settings: settings::SettingsView::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
@@ -551,6 +554,43 @@ impl App {
     }
 }
 
+impl App {
+    /// Changes the audio driver, device or buffer size: a new engine, which plays the project from
+    /// where the old one was. If the choice will not start, the usual device plays and it says so.
+    fn restart_audio(&mut self, setup: &settings::AudioSetup) {
+        if let Some(sync) = self.sync.as_mut() {
+            sync.collect_plugin_states(&mut self.project);
+        }
+        self.project.playing = false;
+        self.midi_out = None;
+        // The old one lets go of the device before the new one asks for it.
+        self.sync = None;
+        let chosen =
+            prowave_engine::Engine::start_chosen(&setup.system, &setup.device, setup.buffer);
+        let (started, failed) = match chosen {
+            Ok(engine) => (Ok(engine), None),
+            Err(e) => (prowave_engine::Engine::start(), Some(e)),
+        };
+        match started {
+            Ok(engine) => {
+                let mut sync = engine_sync::EngineSync::new(engine, &self.project);
+                self.midi_out = sync
+                    .take_midi_out()
+                    .zip(sync.take_mtc_out())
+                    .map(|(notes, mtc)| midi_out::MidiOut::start(notes, mtc));
+                self.ui.status = Some(match failed {
+                    Some(e) => format!("That audio choice did not start ({e}): using the default"),
+                    None => format!("Audio: {}", sync.engine.device_name()),
+                });
+                self.sync = Some(sync);
+            }
+            Err(e) => {
+                self.ui.status = Some(i18n::trf("No sound: {}. Check your audio device.", &[&e]));
+            }
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -729,12 +769,25 @@ impl eframe::App for App {
         sample_place::menu(ui, p, s);
         bounce::show(&ctx, p, s);
         channel_rack::show(&ctx, p, s);
+        settings::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
         side_panes::quick_help(&ctx, &mut self.ui);
         for path in std::mem::take(&mut self.ui.open_paths) {
             self.import(&path, &ctx);
+        }
+        if let Some(setup) = self.ui.settings.apply.take() {
+            self.restart_audio(&setup);
+        }
+        if self.ui.settings.open {
+            self.ui.settings.current = self.sync.as_ref().map_or("nothing".to_string(), |s| {
+                format!(
+                    "{} at {} Hz",
+                    s.engine.device_name(),
+                    s.engine.sample_rate()
+                )
+            });
         }
         // A render starts from the settings the plugins have now.
         if !self.ui.bounce.queue.is_empty() && self.ui.bounce.job.is_none() {
@@ -1138,12 +1191,14 @@ fn main() -> eframe::Result {
             };
             let mut audio_error = None;
             let mut midi_out = None;
-            // An ASIO build uses the ASIO driver when there is one, and otherwise what others use.
-            #[cfg(all(windows, feature = "asio"))]
-            let started = prowave_engine::Engine::start_asio_with(None)
-                .or_else(|_| prowave_engine::Engine::start());
-            #[cfg(not(all(windows, feature = "asio")))]
-            let started = prowave_engine::Engine::start();
+            // What was chosen in Settings, or the usual device if that will not start.
+            let setup = settings::AudioSetup::load();
+            let started =
+                prowave_engine::Engine::start_chosen(&setup.system, &setup.device, setup.buffer)
+                    .or_else(|e| {
+                        tracing::warn!("the audio setup did not start: {e}");
+                        prowave_engine::Engine::start()
+                    });
             let sync = match started {
                 Ok(e) => {
                     let mut sync = engine_sync::EngineSync::new(e, &project);
@@ -1180,6 +1235,7 @@ fn main() -> eframe::Result {
                 updater: updater::Updater::new(),
             };
             if !measuring {
+                app.ui.typing.on = settings::typing_at_start();
                 app.ui.update_auto = updater::auto_enabled();
                 app.updater.check_at_startup();
             }

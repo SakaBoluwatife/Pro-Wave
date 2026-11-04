@@ -768,6 +768,8 @@ pub struct EngineCore {
     instruments: Vec<Option<Box<PluginSlot>>>,
     /// The plugins on the output, after everything is mixed.
     master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
+    /// Whether any is there: the mix should not look through the slots every sample for nothing.
+    master_any: bool,
     /// Whether any strip has one, and what they are told of the song.
     any_plugin: bool,
     transport: PluginTransport,
@@ -914,6 +916,7 @@ impl EngineCore {
                 .collect(),
             instruments: (0..MAX_TRACKS).map(|_| None).collect(),
             master_plugins: std::array::from_fn(|_| None),
+            master_any: false,
             any_plugin: false,
             transport: PluginTransport::default(),
             transport_left: 0,
@@ -1259,6 +1262,7 @@ impl EngineCore {
         self.complex.clear();
         self.aux.clear();
         self.any_plugin = false;
+        self.master_any = self.master_plugins.iter().any(Option::is_some);
         for i in 0..MAX_TRACKS {
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
             let has_plugin =
@@ -2117,11 +2121,13 @@ impl EngineCore {
                     self.preview_pos += 1;
                 }
             }
-            let transport = self.transport;
-            for plugin in self.master_plugins.iter_mut().flatten() {
-                let (a, b) = plugin.process(l as f32, r as f32, &transport);
-                l = f64::from(a);
-                r = f64::from(b);
+            if self.master_any {
+                let transport = self.transport;
+                for plugin in self.master_plugins.iter_mut().flatten() {
+                    let (a, b) = plugin.process(l as f32, r as f32, &transport);
+                    l = f64::from(a);
+                    r = f64::from(b);
+                }
             }
             let master = self.master.next() as f64;
             // `clamp` lets NaN through, so a non-finite sum becomes silence first.

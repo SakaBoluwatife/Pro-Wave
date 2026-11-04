@@ -709,3 +709,4 @@ The I button lets you hear an audio track's input. Use headphones to avoid feedb
 With Count-in on, recording starts after one bar of clicks. = Kun sisäänlaskenta on päällä, äänitys alkaa yhden tahdin klikkien jälkeen.
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Kaappaa äänitys tekee alueen siitä, mitä juuri soitit MIDI-koskettimilla.
 Show Channel Rack = Näytä kanavateline
+Settings… = Asetukset…

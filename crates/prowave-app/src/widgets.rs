@@ -208,7 +208,45 @@ pub fn slider_h(
 
 /// Logic's rotary knob: dark bezel, light grey domed body, a white pointer, and two small tick
 /// marks flanking the bottom. `value` runs from -1 (full left) to 1 (full right), 0 = up.
+/// The colour of a knob's arc.
+const KNOB_GLOW: Color32 = Color32::from_rgb(0x4f, 0xc3, 0xf7);
+
+/// The lit arc around a knob, from `from` to `to` (each -1..=1 of its sweep), with a soft glow, on
+/// a dim ring showing the whole sweep. It tells at a glance how far a knob is turned, and which way.
+pub fn value_arc(g: &Painter, c: Pos2, r: f32, from: f32, to: f32) {
+    const SWEEP: f32 = 135.0;
+    let arc = |a: f32, b: f32| -> Vec<Pos2> {
+        let steps = (((b - a).abs() * 16.0).ceil() as usize).max(1);
+        (0..=steps)
+            .map(|k| {
+                let v = a + (b - a) * k as f32 / steps as f32;
+                let angle = (-90.0 + v.clamp(-1.0, 1.0) * SWEEP).to_radians();
+                c + vec2(angle.cos(), angle.sin()) * r
+            })
+            .collect()
+    };
+    g.add(egui::Shape::line(
+        arc(-1.0, 1.0),
+        Stroke::new(1.6, Color32::from_gray(0x24)),
+    ));
+    if (to - from).abs() < 0.01 {
+        // Centred: a small lit point says so.
+        let angle = (-90.0 + to.clamp(-1.0, 1.0) * SWEEP).to_radians();
+        let at = c + vec2(angle.cos(), angle.sin()) * r;
+        g.circle_filled(at, 2.6, KNOB_GLOW.gamma_multiply(0.35));
+        g.circle_filled(at, 1.2, KNOB_GLOW);
+        return;
+    }
+    let lit = arc(from, to);
+    g.add(egui::Shape::line(
+        lit.clone(),
+        Stroke::new(4.0, KNOB_GLOW.gamma_multiply(0.3)),
+    ));
+    g.add(egui::Shape::line(lit, Stroke::new(1.6, KNOB_GLOW)));
+}
+
 pub fn draw_knob(g: &Painter, c: Pos2, r: f32, value: f32) {
+    value_arc(g, c, r + 3.6, 0.0, value);
     // Soft shadow and dark bezel.
     g.circle_filled(c + vec2(0.0, 1.0), r + 2.2, Color32::from_black_alpha(80));
     g.circle_filled(c, r + 1.6, Color32::from_gray(0x2a));
@@ -225,15 +263,6 @@ pub fn draw_knob(g: &Painter, c: Pos2, r: f32, value: f32) {
         Color32::from_gray(0xa2),
     );
     g.circle_stroke(c, r, Stroke::new(1.0, Color32::from_gray(0x56)));
-    // Ticks beside the lower half of the bezel (about 5 and 7 o'clock).
-    for deg in [-140.0f32, 140.0] {
-        let a = (deg - 90.0).to_radians();
-        let d = vec2(a.cos(), a.sin());
-        g.line_segment(
-            [c + d * (r + 3.4), c + d * (r + 5.6)],
-            Stroke::new(1.0, Color32::from_gray(0xb4)),
-        );
-    }
     // Pointer.
     let a = (-90.0 + value.clamp(-1.0, 1.0) * 135.0).to_radians();
     let d = vec2(a.cos(), a.sin());

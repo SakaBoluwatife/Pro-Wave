@@ -709,3 +709,4 @@ The I button lets you hear an audio track's input. Use headphones to avoid feedb
 With Count-in on, recording starts after one bar of clicks. = Przy włączonym odliczaniu nagrywanie zaczyna się po jednym takcie kliknięć.
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Przechwyć nagranie zamienia to, co właśnie zagrano na klawiaturze MIDI, w region.
 Show Channel Rack = Pokaż rack kanałów
+Settings… = Ustawienia…

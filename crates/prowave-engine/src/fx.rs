@@ -11,7 +11,7 @@ use std::f32::consts::{PI, TAU};
 /// Most parameters one effect has.
 pub const MAX_FX_PARAMS: usize = 16;
 /// Most effects in one channel strip.
-pub const MAX_INSERTS: usize = 8;
+pub const MAX_INSERTS: usize = 32;
 
 /// The kinds of effect, in the order the mixer's menu lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1410,7 +1410,8 @@ mod tests {
             }
         }
         assert!(peak < 0.5 && chain.reduction_db() > 5.0, "{peak}");
-        let many = Chain::new((0..20).map(|_| with(FxKind::Chorus, &[])).collect());
+        let too_many = MAX_INSERTS + 4;
+        let many = Chain::new((0..too_many).map(|_| with(FxKind::Chorus, &[])).collect());
         assert_eq!(many.fx.len(), MAX_INSERTS);
     }
 

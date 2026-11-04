@@ -270,6 +270,87 @@ impl Engine {
         Err(last)
     }
 
+    /// The audio systems this build can use (WASAPI, and ASIO in a build with that feature).
+    pub fn audio_systems() -> Vec<String> {
+        cpal::available_hosts()
+            .into_iter()
+            .map(|id| id.name().to_string())
+            .collect()
+    }
+
+    fn host_named(system: &str) -> Option<cpal::Host> {
+        let id = cpal::available_hosts()
+            .into_iter()
+            .find(|id| id.name() == system)?;
+        cpal::host_from_id(id).ok()
+    }
+
+    fn device_label(device: &cpal::Device) -> String {
+        device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| device.id().map(|i| i.to_string()).unwrap_or_default())
+    }
+
+    /// The output devices of an audio system, by the names [`Engine::start_chosen`] takes. Empty
+    /// `system`: those of the usual one.
+    pub fn audio_devices(system: &str) -> Vec<String> {
+        #[cfg(all(windows, feature = "asio"))]
+        if system.eq_ignore_ascii_case("asio") {
+            return Self::asio_drivers();
+        }
+        let host = if system.is_empty() {
+            Some(cpal::default_host())
+        } else {
+            Self::host_named(system)
+        };
+        let Some(devices) = host.and_then(|h| h.output_devices().ok()) else {
+            return Vec::new();
+        };
+        devices.map(|d| Self::device_label(&d)).collect()
+    }
+
+    /// The ASIO drivers installed, from where they register. Asking cpal would load each in turn,
+    /// and only one can be loaded at a time: that would disturb the one playing.
+    #[cfg(all(windows, feature = "asio"))]
+    fn asio_drivers() -> Vec<String> {
+        const KEY: &str = "HKEY_LOCAL_MACHINE\\SOFTWARE\\ASIO\\";
+        let Ok(out) = std::process::Command::new("reg")
+            .args(["query", "HKLM\\SOFTWARE\\ASIO"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(KEY).map(str::to_string))
+            .collect()
+    }
+
+    /// Starts on the system and device chosen. Empty `system` is the usual start, empty `device`
+    /// that system's default.
+    pub fn start_chosen(
+        system: &str,
+        device: &str,
+        buffer_frames: Option<u32>,
+    ) -> Result<Self, EngineError> {
+        if system.is_empty() {
+            return Self::start_with(buffer_frames);
+        }
+        let host = Self::host_named(system)
+            .ok_or_else(|| EngineError::Backend(format!("{system} is not available")))?;
+        if device.is_empty() {
+            return Self::start_on_host(&host, buffer_frames);
+        }
+        let mut devices = host
+            .output_devices()
+            .map_err(|e| EngineError::Backend(e.to_string()))?;
+        let found = devices
+            .find(|d| Self::device_label(d) == device)
+            .ok_or_else(|| EngineError::Backend(format!("{device} was not found")))?;
+        Self::start_on(&found, buffer_frames)
+    }
+
     /// Starts on the ASIO host (Windows builds with the `asio` feature only).
     /// Use this to avoid shared-mode WASAPI buffering when a native ASIO driver is available.
     #[cfg(all(windows, feature = "asio"))]
@@ -367,10 +448,7 @@ impl Engine {
         device: &cpal::Device,
         buffer_frames: Option<u32>,
     ) -> Result<Self, EngineError> {
-        let device_name = device
-            .id()
-            .map(|i| i.to_string())
-            .unwrap_or_else(|_| "default".into());
+        let device_name = Self::device_label(device);
         let supported = device
             .default_output_config()
             .map_err(|e| EngineError::Backend(e.to_string()))?;
@@ -537,4 +615,29 @@ where
             None,
         )
         .map_err(|e| EngineError::Backend(e.to_string()))
+}
+
+#[cfg(test)]
+mod chosen_device_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "starts the audio devices of this computer"]
+    fn every_audio_system_lists_devices_and_a_chosen_one_starts() {
+        for system in Engine::audio_systems() {
+            let devices = Engine::audio_devices(&system);
+            println!("{system}: {devices:?}");
+            for device in devices {
+                match Engine::start_chosen(&system, &device, None) {
+                    Ok(engine) => println!(
+                        "  started {device}: {} at {} Hz",
+                        engine.device_name(),
+                        engine.sample_rate()
+                    ),
+                    Err(e) => println!("  {device} did not start: {e}"),
+                }
+            }
+        }
+        assert!(Engine::start_chosen("no such system", "", None).is_err());
+    }
 }

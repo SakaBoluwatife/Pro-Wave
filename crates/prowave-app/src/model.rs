@@ -668,6 +668,13 @@ pub fn plugin_rows(first: usize, plugins: &[PluginInsert]) -> Vec<usize> {
         .collect()
 }
 
+/// The first row after `plugins`, where the next one goes.
+pub fn next_plugin_row(first: usize, plugins: &[PluginInsert]) -> usize {
+    plugin_rows(first, plugins)
+        .last()
+        .map_or(first, |row| row + 1)
+}
+
 /// Fixes each plugin in the row it shows in, so that taking one away moves no other.
 pub fn settle_plugin_rows(first: usize, plugins: &mut [PluginInsert]) {
     let rows = plugin_rows(first, plugins);

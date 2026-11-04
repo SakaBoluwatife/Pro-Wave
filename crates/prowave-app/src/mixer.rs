@@ -73,6 +73,8 @@ pub enum StripRequest {
 }
 
 pub struct MixerView {
+    /// The insert slot at the top, when they do not all fit above the fader.
+    pub fx_scroll: f32,
     /// The plugins on this computer, for the slots' menus.
     pub installed: std::sync::Arc<Vec<PluginInfo>>,
     /// What went wrong putting one on, for the status line.
@@ -115,6 +117,7 @@ pub struct CopiedStrip {
 impl Default for MixerView {
     fn default() -> Self {
         Self {
+            fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             message: None,
             mode: MixerMode::Tracks,
@@ -588,6 +591,9 @@ fn fader_and_meter(
 
 /// Vertical positions of the strip rows (shared by every strip so rows line up).
 pub struct Rows {
+    /// Insert slots there are, and the first shown, when not all of them fit.
+    fx_total: usize,
+    fx_first: usize,
     setting: f32,
     gain_red: f32,
     eq: f32,
@@ -602,6 +608,27 @@ pub struct Rows {
     pan: f32,
     db: f32,
     fader_top: f32,
+}
+
+/// The height a fader is never squeezed below: the insert slots scroll first.
+const MIN_FADER_H: f32 = 110.0;
+/// What goes under the fader: the Mute and Solo buttons and the name.
+const BELOW_FADER: f32 = 48.0;
+
+/// The rows for a strip between `top` and `bottom`. The insert slots that do not leave room for the
+/// fader are scrolled to, starting from slot `scroll`.
+pub fn rows_fit(top: f32, bottom: f32, fx_rows: usize, send_rows: usize, scroll: f32) -> Rows {
+    let total = fx_rows.max(2);
+    let full = rows(top, total, send_rows);
+    let spare = bottom - BELOW_FADER - MIN_FADER_H - full.fader_top;
+    if spare >= 0.0 {
+        return full;
+    }
+    let shown = total.saturating_sub((-spare / 17.0).ceil() as usize).max(2);
+    let mut fit = rows(top, shown, send_rows);
+    fit.fx_total = total;
+    fit.fx_first = (scroll.max(0.0).round() as usize).min(total - shown);
+    fit
 }
 
 pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
@@ -619,6 +646,8 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
     let pan = automation + 22.0;
     let db = pan + 30.0;
     Rows {
+        fx_total: fx_rows,
+        fx_first: 0,
         setting,
         gain_red,
         eq,
@@ -640,16 +669,16 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
 pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
     keys.iter()
         .map(|k| match k {
-            StripKey::Track(i) => p
-                .tracks
-                .get(*i)
-                .map_or(0, |t| t.inserts.len() + t.plugins.len()),
-            StripKey::StereoOut | StripKey::Master => p.master_plugins.len(),
+            StripKey::Track(i) => p.tracks.get(*i).map_or(0, |t| {
+                crate::model::next_plugin_row(t.inserts.len(), &t.plugins)
+            }),
+            StripKey::StereoOut | StripKey::Master => {
+                crate::model::next_plugin_row(0, &p.master_plugins)
+            }
         })
         .max()
         .unwrap_or(0)
-        // Every slot can be picked, so all of them show.
-        .max(prowave_engine::MAX_INSERTS - 1)
+        // The row with the plus.
         + 1
 }
 
@@ -780,6 +809,7 @@ fn send_slot(
     if kresp.double_clicked() {
         send.level = 0.0;
     }
+    crate::widgets::value_arc(g, knob_c, 8.2, -1.0, send.level * 2.0 - 1.0);
     g.circle_filled(knob_c, 6.5, Color32::from_gray(0x5e));
     g.circle_stroke(knob_c, 6.5, Stroke::new(1.0, Color32::from_gray(0x26)));
     let a = -std::f32::consts::FRAC_PI_2 - 2.3 + send.level * 4.6;
@@ -963,6 +993,12 @@ fn insert_slot(
         plugin_slot(ui, g, r, p, v, Home::Track(i), j, uid, inactive);
         return;
     }
+    // The slots end at a plus. Gaps left above it can be filled too.
+    let next = rows.last().map_or(count, |row| row + 1);
+    if have.is_none() && k > next {
+        return;
+    }
+    let full = count + plugins >= prowave_engine::MAX_INSERTS;
     match have {
         Some(fx) => {
             let off = inactive || fx.bypass;
@@ -975,12 +1011,23 @@ fn insert_slot(
                 if off { TEXT_DIM } else { Color32::WHITE },
             );
         }
-        None => slot(g, r, "", SLOT_EMPTY, TEXT),
+        None => slot(
+            g,
+            r,
+            if k == next && !full { "+" } else { "" },
+            SLOT_EMPTY,
+            TEXT,
+        ),
     }
-    if have.is_none() && count + plugins >= prowave_engine::MAX_INSERTS {
+    if have.is_none() && full {
         return;
     }
     let resp = ui.interact(r, uid, Sense::click());
+    let resp = if have.is_none() {
+        resp.on_hover_text_at_pointer("Add an effect")
+    } else {
+        resp
+    };
     // A click opens the effect. An empty slot's click offers what can go in it.
     if have.is_some() && resp.clicked() {
         v.fx_window = Some((i, k));
@@ -1101,13 +1148,24 @@ fn master_slot(
         plugin_slot(ui, g, r, p, v, Home::Master, j, uid, false);
         return;
     }
-    slot(g, r, "", SLOT_EMPTY, TEXT);
-    if p.master_plugins.len() >= prowave_engine::MAX_INSERTS {
+    let next = rows.last().map_or(0, |row| row + 1);
+    let full = p.master_plugins.len() >= prowave_engine::MAX_INSERTS;
+    if k > next {
+        return;
+    }
+    slot(
+        g,
+        r,
+        if k == next && !full { "+" } else { "" },
+        SLOT_EMPTY,
+        TEXT,
+    );
+    if full {
         return;
     }
     let resp = ui
         .interact(r, uid, Sense::click())
-        .on_hover_text_at_pointer("Click to put an effect plugin on the whole mix");
+        .on_hover_text_at_pointer("Add an effect plugin on the whole mix");
     let installed = v.installed.clone();
     let mut pick = None;
     slot_menu(&resp, true).show(|ui: &mut Ui| {
@@ -1685,8 +1743,9 @@ pub fn channel_strip(
             }
             _ => slot(g, input_r, "", SLOT_EMPTY, TEXT),
         }
-        for k in 0..r.fx_rows {
-            let rr = row(r.fx + k as f32 * 17.0, 15.0);
+        for shown in 0..r.fx_rows {
+            let k = shown + r.fx_first;
+            let rr = row(r.fx + shown as f32 * 17.0, 15.0);
             match key {
                 StripKey::Track(i) => {
                     insert_slot(ui, g, rr, p, v, i, k, id(ns, (key, "fx", k)), inactive)
@@ -2551,17 +2610,30 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
 
     let strip_w = if v.wide { 96.0 } else { 80.0 };
     let total_w = keys.len() as f32 * (strip_w + GAP);
-    if ui
+    let r = rows_fit(
+        body.top(),
+        body.bottom(),
+        fx_rows_for(p, &keys),
+        send_rows_for(p, &keys),
+        v.fx_scroll,
+    );
+    let hover = ui
         .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pt| strips_area.contains(pt))
-    {
+        .filter(|pt| strips_area.contains(*pt));
+    if let Some(pt) = hover {
         let d = ui.input(|i| i.smooth_scroll_delta);
-        v.scroll_x -= d.x + d.y;
+        // The wheel over the insert slots goes through them, when some are out of sight.
+        let over_slots = pt.y >= r.fx && pt.y < r.fx + r.fx_rows as f32 * 17.0;
+        if over_slots && r.fx_total > r.fx_rows {
+            let last = (r.fx_total - r.fx_rows) as f32;
+            v.fx_scroll = (v.fx_scroll - d.y / 17.0).clamp(0.0, last);
+        } else {
+            v.scroll_x -= d.x + d.y;
+        }
     }
     v.scroll_x = v
         .scroll_x
         .clamp(0.0, (total_w - strips_area.width() + 8.0).max(0.0));
-    let r = rows(body.top(), fx_rows_for(p, &keys), send_rows_for(p, &keys));
 
     // Row labels.
     let gl = ui.painter_at(labels);
@@ -2580,6 +2652,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     label_at(r.eq, 24.0, "EQ");
     label_at(r.input, 16.0, tr("Input"));
     label_at(r.fx, 15.0, tr("Audio FX"));
+    if r.fx_total > r.fx_rows {
+        let last = r.fx_first + r.fx_rows;
+        let range = format!("{}-{last} of {}", r.fx_first + 1, r.fx_total);
+        label_at(r.fx + 17.0, 15.0, &range);
+    }
     label_at(r.sends, 16.0, tr("Sends"));
     label_at(r.output, 16.0, tr("Output"));
     label_at(r.group, 16.0, tr("Group"));
@@ -2726,6 +2803,32 @@ mod tests {
     }
 
     #[test]
+    fn the_fader_keeps_its_room_and_the_slots_end_at_a_plus() {
+        let mut p = mixer_project();
+        let keys = [StripKey::Track(0)];
+        p.tracks[0].inserts.clear();
+        p.tracks[0].plugins.clear();
+        assert_eq!(fx_rows_for(&p, &keys), 1, "only the plus");
+        // A short mixer: however many slots, the fader keeps its room.
+        let (top, bottom) = (0.0, 450.0);
+        for total in [1, 3, 8, 32] {
+            let r = rows_fit(top, bottom, total, 1, 0.0);
+            assert!(
+                bottom - BELOW_FADER - r.fader_top >= MIN_FADER_H - 17.0,
+                "{total}: {}",
+                r.fader_top
+            );
+            assert!(r.fx_first + r.fx_rows <= r.fx_total);
+        }
+        // Scrolled, the last slots come into sight and it goes no further.
+        let r = rows_fit(top, bottom, 32, 1, 1000.0);
+        assert_eq!(r.fx_first + r.fx_rows, 32);
+        // A tall one shows them all.
+        let r = rows_fit(top, 2000.0, 32, 1, 5.0);
+        assert_eq!((r.fx_first, r.fx_rows), (0, 32));
+    }
+
+    #[test]
     fn a_fader_moves_its_whole_group_by_the_same_amount() {
         let mut h = crate::ui_test::Harness::new(1400.0, 700.0);
         let mut s = UiState::new();
@@ -2811,7 +2914,7 @@ mod tests {
         assert_eq!(v.fx_window, None, "its effect is gone");
         apply_insert(&mut p, &mut v, 0, 5, InsertAct::Remove);
         apply_insert(&mut p, &mut v, 9, 0, InsertAct::Open);
-        for _ in 0..20 {
+        for _ in 0..prowave_engine::MAX_INSERTS + 4 {
             apply_insert(&mut p, &mut v, 0, 0, InsertAct::Add(FxKind::Chorus));
         }
         assert_eq!(p.tracks[0].inserts.len(), prowave_engine::MAX_INSERTS);

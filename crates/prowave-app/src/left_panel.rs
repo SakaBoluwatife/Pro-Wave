@@ -49,6 +49,11 @@ pub struct PluginList {
 }
 
 impl PluginList {
+    /// Looks for plugins again; with `retry`, also tries the ones that failed.
+    pub fn rescan(&mut self, retry: bool, ctx: &egui::Context) {
+        self.clap.start(retry, ctx);
+    }
+
     /// What has been found so far, with the scan started and its news taken in.
     pub fn installed(&mut self, ctx: &egui::Context) -> &[PluginInfo] {
         if !cfg!(test) {
