@@ -2,7 +2,7 @@
 //!
 //! - **Library:** Logic's patch browser (`library.rs`), as before.
 //! - **Browser:** your sample folders (`sample_browser.rs`).
-//! - **Plugins:** the plugins found on this computer. CLAP effects go on a track from here; VST3
+//! - **Plugins:** the plugins found on this computer. CLAP plugins go on a track from here; VST3
 //!   plugins cannot load yet, so they are only listed, and the tab says so.
 use crate::i18n::tr;
 use crate::model::Project;
@@ -200,8 +200,8 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         };
         note(
             ui,
-            "Double-click an effect to add it to the selected track, or drag it onto a track. \
-             Instruments and VST3 cannot load yet."
+            "Double-click a plugin to add it to the selected track, or drag it onto a track. \
+             VST3 cannot load yet."
                 .to_string(),
         );
         if let Some((done, of)) = list.clap.progress {
@@ -248,7 +248,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             });
     });
     if let Some(info) = add {
-        if let Err(e) = crate::plugin_rack::add_effect(p, p.selected_track, &info) {
+        if let Err(e) = crate::plugin_rack::add_plugin(p, p.selected_track, &info) {
             s.status = Some(e);
         }
     }
@@ -270,25 +270,27 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
     let (rect, resp) =
         ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-    if !info.is_instrument {
-        resp.dnd_set_drag_payload(PluginDrag(info.clone()));
-    }
+    resp.dnd_set_drag_payload(PluginDrag(info.clone()));
     let g = ui.painter_at(rect);
     if resp.hovered() {
         g.rect_filled(rect, 0.0, Color32::from_rgb(0x46, 0x46, 0x46));
     }
-    let color = if info.is_instrument { TEXT_DIM } else { TEXT };
     let name = g.text(
         pos2(rect.left() + 4.0, rect.center().y),
         Align2::LEFT_CENTER,
         &info.name,
         FontId::proportional(12.5),
-        color,
+        TEXT,
     );
+    let vendor = if info.is_instrument {
+        format!("{}, instrument", info.vendor)
+    } else {
+        info.vendor.clone()
+    };
     g.text(
         pos2(name.right() + 8.0, rect.center().y),
         Align2::LEFT_CENTER,
-        &info.vendor,
+        vendor,
         FontId::proportional(11.0),
         TEXT_DIM,
     );

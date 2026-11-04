@@ -106,6 +106,7 @@ pub fn import_audio_at(
         pan: 0.0,
         inserts: vec![],
         plugins: Vec::new(),
+        instrument_plugin: None,
         instrument: None,
         regions: vec![region],
         params: TrackParams::default(),

@@ -327,17 +327,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             volume_db: t.volume_db,
             pan: t.pan,
             inserts: t.inserts.iter().map(|s| s.name().to_string()).collect(),
-            plugins: t
-                .plugins
-                .iter()
-                .map(|i| prowave_project::PluginDoc {
-                    id: i.id.clone(),
-                    name: i.name.clone(),
-                    vendor: i.vendor.clone(),
-                    format: "CLAP".into(),
-                    path: i.path.display().to_string(),
-                })
-                .collect(),
+            plugins: t.plugins.iter().map(plugin_to_doc).collect(),
+            instrument_plugin: t.instrument_plugin.as_ref().map(plugin_to_doc),
             fx: t
                 .inserts
                 .iter()
@@ -738,15 +729,13 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .iter()
                 .filter(|d| !d.id.is_empty())
                 .take(prowave_engine::MAX_INSERTS)
-                .map(|d| crate::model::PluginInsert {
-                    uid: crate::plugin_rack::new_uid(),
-                    id: d.id.clone(),
-                    name: d.name.clone(),
-                    vendor: d.vendor.clone(),
-                    path: d.path.clone().into(),
-                    failed: None,
-                })
+                .map(plugin_from_doc)
                 .collect(),
+            instrument_plugin: t
+                .instrument_plugin
+                .as_ref()
+                .filter(|d| !d.id.is_empty())
+                .map(plugin_from_doc),
             instrument: t.instrument.as_deref().map(intern),
             regions,
             params: TrackParams {
@@ -1090,9 +1079,64 @@ pub fn save_project(p: &Project, path: &Path) -> Result<PathBuf, prowave_project
     if path.extension().and_then(|e| e.to_str()) != Some(prowave_project::EXTENSION) {
         path.set_extension(prowave_project::EXTENSION);
     }
-    let (doc, media) = to_doc(p);
+    let (mut doc, media) = to_doc(p);
+    add_plugin_states(p, &mut doc);
     prowave_project::save(&path, &doc, &media)?;
     Ok(path)
+}
+
+fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
+    prowave_project::PluginDoc {
+        id: i.id.clone(),
+        name: i.name.clone(),
+        vendor: i.vendor.clone(),
+        format: "CLAP".into(),
+        path: i.path.display().to_string(),
+        bypass: i.bypass,
+        // Only when saving, as this runs after every gesture: see `save_project`.
+        state: String::new(),
+    }
+}
+
+fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert {
+    crate::model::PluginInsert {
+        uid: crate::plugin_rack::new_uid(),
+        id: d.id.clone(),
+        name: d.name.clone(),
+        vendor: d.vendor.clone(),
+        path: d.path.clone().into(),
+        bypass: d.bypass,
+        failed: None,
+        state: plugin_state_from_doc(&d.state),
+    }
+}
+
+/// Writes the plugins' settings into the document that goes in the file.
+fn add_plugin_states(p: &Project, doc: &mut ProjectDoc) {
+    use base64::Engine as _;
+    let inserts = p.tracks.iter().flat_map(|t| t.hosted());
+    let docs = doc
+        .tracks
+        .iter_mut()
+        .flat_map(|t| t.instrument_plugin.iter_mut().chain(&mut t.plugins));
+    for (insert, plugin_doc) in inserts.zip(docs) {
+        if let Some(state) = &insert.state {
+            plugin_doc.state = base64::engine::general_purpose::STANDARD.encode(state.as_slice());
+        }
+    }
+}
+
+/// A plugin's settings from the file. Text that is not base64 counts as none: the plugin starts
+/// from its defaults rather than the project failing to open.
+fn plugin_state_from_doc(text: &str) -> Option<std::sync::Arc<Vec<u8>>> {
+    use base64::Engine as _;
+    if text.is_empty() {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .ok()
+        .map(std::sync::Arc::new)
 }
 
 /// Opens a project file; returns the project and warnings about media that could not be read.
@@ -1455,6 +1499,61 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn plugins_and_their_settings_are_saved_but_only_when_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let mut p = Project::empty();
+        p.tracks.push(Track::new("Vox", TrackKind::Audio));
+        let info = prowave_host::PluginInfo {
+            id: "com.maker.eq".into(),
+            name: "EQ".into(),
+            vendor: "Maker".into(),
+            version: "1".into(),
+            format: prowave_host::PluginFormat::Clap,
+            path: "C:/Plugins/eq.clap".into(),
+            is_instrument: false,
+        };
+        let t = p.tracks.len() - 1;
+        crate::plugin_rack::add_plugin(&mut p, t, &info).unwrap();
+        crate::plugin_rack::add_plugin(&mut p, t, &info).unwrap();
+        p.tracks.push(Track::new("Keys", TrackKind::Instrument));
+        let synth = prowave_host::PluginInfo {
+            id: "com.maker.synth".into(),
+            is_instrument: true,
+            ..info.clone()
+        };
+        crate::plugin_rack::add_plugin(&mut p, t + 1, &synth).unwrap();
+        p.tracks[t + 1].instrument_plugin.as_mut().unwrap().state =
+            Some(std::sync::Arc::new(vec![7, 8, 9]));
+        let bytes: Vec<u8> = (0..=255).collect();
+        p.tracks[t].plugins[0].state = Some(std::sync::Arc::new(bytes.clone()));
+        p.tracks[t].plugins[1].failed = Some("it was gone".into());
+        p.tracks[t].plugins[1].bypass = true;
+        assert!(
+            to_doc(&p).0.tracks[t].plugins[0].state.is_empty(),
+            "not on every gesture, where it would cost time and look like an edit"
+        );
+        let path = save_project(&p, &dir.path().join("with plugins")).unwrap();
+        let (back, _) = open_project(&path, &ctx).unwrap();
+        let plugins = &back.tracks[t].plugins;
+        assert_eq!(plugins.len(), 2);
+        assert_eq!(plugins[0].id, "com.maker.eq");
+        assert_eq!(
+            plugins[0].path,
+            std::path::PathBuf::from("C:/Plugins/eq.clap")
+        );
+        assert_eq!(plugins[0].state.as_deref(), Some(&bytes));
+        assert_eq!(plugins[1].state, None);
+        assert_eq!(plugins[1].failed, None, "tried again after opening");
+        assert!(plugins[1].bypass && !plugins[0].bypass);
+        assert_ne!(plugins[0].uid, plugins[1].uid);
+        assert_eq!(plugin_state_from_doc("not base64!"), None);
+        let synth = back.tracks[t + 1].instrument_plugin.as_ref().unwrap();
+        assert_eq!(synth.id, "com.maker.synth");
+        assert_eq!(synth.state.as_deref(), Some(&vec![7, 8, 9]));
+        assert!(back.tracks[t].instrument_plugin.is_none());
+    }
     #[test]
     fn flex_edits_and_the_groove_track_are_saved_and_made_again() {
         let dir = tempfile::tempdir().unwrap();

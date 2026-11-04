@@ -3436,6 +3436,7 @@ name = "prowave-app"
 version = "0.2.1"
 dependencies = [
  "assert_no_alloc",
+ "base64",
  "eframe",
  "egui",
  "flate2",
@@ -3446,6 +3447,7 @@ dependencies = [
  "prowave-engine",
  "prowave-host",
  "prowave-project",
+ "raw-window-handle",
  "rfd",
  "rhai",
  "rtrb",
@@ -3484,6 +3486,7 @@ dependencies = [
  "prowave-engine",
  "tempfile",
  "tracing",
+ "windows",
 ]
 
 [[package]]

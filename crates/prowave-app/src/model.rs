@@ -562,8 +562,12 @@ pub struct PluginInsert {
     pub name: String,
     pub vendor: String,
     pub path: std::path::PathBuf,
+    pub bypass: bool,
     /// Why it did not load. Not saved: it is tried again next time the project opens.
     pub failed: Option<String>,
+    /// The plugin's settings as last collected. The plugin has the current ones while it runs:
+    /// this is what it starts from, and what goes in the file.
+    pub state: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 impl PluginInsert {
@@ -574,7 +578,9 @@ impl PluginInsert {
             name: info.name.clone(),
             vendor: info.vendor.clone(),
             path: info.path.clone(),
+            bypass: false,
             failed: None,
+            state: None,
         }
     }
 }
@@ -598,6 +604,8 @@ pub struct Track {
     pub inserts: Vec<Insert>,
     /// Hosted plugins of the strip, after `inserts`.
     pub plugins: Vec<PluginInsert>,
+    /// The hosted plugin that plays the track's notes, in place of the built-in sound.
+    pub instrument_plugin: Option<PluginInsert>,
     pub instrument: Option<&'static str>,
     pub regions: Vec<Region>,
     pub params: TrackParams,
@@ -626,6 +634,15 @@ pub struct Track {
 }
 
 impl Track {
+    /// Every hosted plugin of the track.
+    pub fn hosted(&self) -> impl Iterator<Item = &PluginInsert> {
+        self.instrument_plugin.iter().chain(&self.plugins)
+    }
+
+    pub fn hosted_mut(&mut self) -> impl Iterator<Item = &mut PluginInsert> {
+        self.instrument_plugin.iter_mut().chain(&mut self.plugins)
+    }
+
     /// Smallest and largest individual height factor.
     pub const MIN_HEIGHT: f32 = 0.5;
     pub const MAX_HEIGHT: f32 = 6.0;
@@ -657,6 +674,7 @@ impl Track {
             pan: 0.0,
             inserts: vec![],
             plugins: Vec::new(),
+            instrument_plugin: None,
             instrument,
             regions: vec![],
             params: TrackParams::default(),
@@ -806,6 +824,7 @@ impl Project {
             pan: 0.0,
             inserts: vec![],
             plugins: Vec::new(),
+            instrument_plugin: None,
             instrument: Some("Sampler"),
             regions: vec![],
             params: TrackParams::default(),
@@ -852,6 +871,7 @@ impl Project {
             pan: 0.0,
             inserts: inserts_from_names(&ins),
             plugins: Vec::new(),
+            instrument_plugin: None,
             instrument: inst,
             regions: vec![Region {
                 name: name.into(),

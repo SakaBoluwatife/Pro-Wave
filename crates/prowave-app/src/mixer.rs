@@ -74,6 +74,9 @@ pub struct MixerView {
     pub peak_hold: HashMap<StripKey, f32>,
     /// The effect whose window is open: (track, slot).
     pub fx_window: Option<(usize, usize)>,
+    /// A hosted plugin whose editor was asked for: its uid and its name. Run by `App`, which has
+    /// the running plugins.
+    pub open_plugin: Option<(u64, String)>,
     /// The Automation editor window.
     pub auto_editor: crate::automation::AutoEditor,
     /// Sends on Faders: the bus whose send levels the faders set.
@@ -102,6 +105,7 @@ impl Default for MixerView {
             scroll_x: 0.0,
             peak_hold: HashMap::new(),
             fx_window: None,
+            open_plugin: None,
             auto_editor: Default::default(),
             sends_on_faders: None,
             copied: None,
@@ -789,7 +793,7 @@ fn insert_slot(
     let count = p.tracks[i].inserts.len();
     let plugins = p.tracks[i].plugins.len();
     if let Some(j) = k.checked_sub(count).filter(|j| *j < plugins) {
-        plugin_slot(ui, g, r, p, i, j, uid, inactive);
+        plugin_slot(ui, g, r, p, v, i, j, uid, inactive);
         return;
     }
     match have {
@@ -863,20 +867,23 @@ fn insert_slot(
     }
 }
 
-/// One slot holding hosted plugin `j` of track `i`. It has no window yet; click for the menu.
+/// One slot holding hosted plugin `j` of track `i`. Click for the menu, double-click for its editor.
 #[allow(clippy::too_many_arguments)]
 fn plugin_slot(
     ui: &Ui,
     g: &Painter,
     r: Rect,
     p: &mut Project,
+    v: &mut MixerView,
     i: usize,
     j: usize,
     uid: egui::Id,
     inactive: bool,
 ) {
     let plugin = &p.tracks[i].plugins[j];
-    let off = inactive || plugin.failed.is_some();
+    let (plugin_uid, name, loaded) = (plugin.uid, plugin.name.clone(), plugin.failed.is_none());
+    let off = inactive || plugin.bypass || plugin.failed.is_some();
+    let bypass = plugin.bypass;
     slot(
         g,
         r,
@@ -894,8 +901,20 @@ fn plugin_slot(
         .on_hover_text_at_pointer(hover);
     let mut moved = None;
     let mut remove = false;
+    let mut flip_bypass = false;
+    let mut open = loaded && resp.double_clicked();
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(150.0);
+        ui.add_enabled_ui(loaded, |ui| {
+            if ui.button(tr("Open")).clicked() {
+                open = true;
+                ui.close();
+            }
+        });
+        if ui.selectable_label(bypass, tr("Bypass")).clicked() {
+            flip_bypass = true;
+            ui.close();
+        }
         ui.add_enabled_ui(j > 0, |ui| {
             if ui.button(tr("Move Up")).clicked() {
                 moved = Some(j - 1);
@@ -914,11 +933,69 @@ fn plugin_slot(
             ui.close();
         }
     });
+    if open {
+        v.open_plugin = Some((plugin_uid, name));
+    }
     let plugins = &mut p.tracks[i].plugins;
+    if flip_bypass {
+        plugins[j].bypass = !bypass;
+    }
     if remove {
         plugins.remove(j);
     } else if let Some(to) = moved {
         plugins.swap(j, to);
+    }
+}
+
+/// The input slot of track `i` when a hosted plugin plays its notes. Double-click for its editor.
+fn instrument_plugin_slot(
+    ui: &Ui,
+    g: &Painter,
+    r: Rect,
+    p: &mut Project,
+    v: &mut MixerView,
+    i: usize,
+    uid: egui::Id,
+) {
+    let Some(plugin) = p.tracks[i].instrument_plugin.clone() else {
+        return;
+    };
+    let loaded = plugin.failed.is_none();
+    slot(
+        g,
+        r,
+        &plugin.name,
+        if loaded { PLUGIN_BLUE } else { PLUGIN_OFF },
+        if loaded { Color32::WHITE } else { TEXT_DIM },
+    );
+    let hover = match &plugin.failed {
+        Some(why) => format!("{}: {why}", plugin.name),
+        None => format!("{} ({})", plugin.name, plugin.vendor),
+    };
+    let resp = ui
+        .interact(r, uid, Sense::click())
+        .on_hover_text_at_pointer(hover);
+    let mut open = loaded && resp.double_clicked();
+    let mut remove = false;
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(150.0);
+        ui.add_enabled_ui(loaded, |ui| {
+            if ui.button(tr("Open")).clicked() {
+                open = true;
+                ui.close();
+            }
+        });
+        ui.separator();
+        if ui.button(tr("Remove")).clicked() {
+            remove = true;
+            ui.close();
+        }
+    });
+    if open {
+        v.open_plugin = Some((plugin.uid, plugin.name));
+    }
+    if remove {
+        p.tracks[i].instrument_plugin = None;
     }
 }
 
@@ -1155,7 +1232,16 @@ pub fn channel_strip(
         }
         eq_thumb(g, row(r.eq, 24.0), eq_params);
         let input_r = row(r.input, 16.0);
+        let hosted = match key {
+            StripKey::Track(i) => p.tracks[i].instrument_plugin.is_some().then_some(i),
+            _ => None,
+        };
         match (kind, instrument) {
+            _ if hosted.is_some() => {
+                if let Some(i) = hosted {
+                    instrument_plugin_slot(ui, g, input_r, p, v, i, id(ns, (key, "instrument")));
+                }
+            }
             (Some(TrackKind::Instrument | TrackKind::Drummer), Some(inst)) => {
                 slot(g, input_r, inst, plug, plug_text)
             }

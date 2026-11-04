@@ -5,7 +5,7 @@ use crate::fx::{Chain, Pdc, MAX_FX_PARAMS, MAX_INSERTS};
 use crate::gain_smoothing::GainRamp;
 use crate::monitor::{InputFeed, MonitorTrack, MAX_MONITORS};
 use crate::mtc::{MtcGenerator, MtcMessage};
-use crate::plugin::PluginSlot;
+use crate::plugin::{PluginEventKind, PluginSlot, PluginTransport, INSTRUMENT_SLOT};
 #[cfg(test)]
 use crate::routing::AutoPoint;
 #[cfg(test)]
@@ -420,12 +420,19 @@ pub enum Command {
         track: u16,
         chain: Box<Chain>,
     },
-    /// Puts a hosted plugin in insert `slot` of a strip, after its built-in effects; `None` empties
-    /// the slot. The plugin that was there comes back through the garbage queue.
+    /// Puts a hosted plugin in insert `slot` of a strip, after its built-in effects, or in
+    /// [`INSTRUMENT_SLOT`], where the strip's notes go to it; `None` empties the slot. The plugin
+    /// that was there comes back through the garbage queue.
     SetPlugin {
         track: u16,
         slot: u8,
         plugin: Option<Box<PluginSlot>>,
+    },
+    /// Bypasses or brings back the hosted plugin of a slot, without allocating.
+    SetPluginBypass {
+        track: u16,
+        slot: u8,
+        bypass: bool,
     },
     /// Trades the hosted plugins of two slots, so a plugin keeps running when its track or slot
     /// moves. Slots that do not exist: nothing happens.
@@ -714,6 +721,12 @@ pub struct EngineCore {
     /// Hosted plugins of each strip, by insert slot. Sized here, so nothing allocates on the
     /// audio thread when one is swapped.
     plugins: Vec<[Option<Box<PluginSlot>>; MAX_INSERTS]>,
+    /// Hosted instruments of each strip: its notes go there and its sound starts there.
+    instruments: Vec<Option<Box<PluginSlot>>>,
+    /// Whether any strip has one, and what they are told of the song.
+    any_plugin: bool,
+    transport: PluginTransport,
+    transport_left: u32,
     pdc: Vec<Option<Box<Pdc>>>,
     routes: Vec<Route>,
     /// Strips with effects or sends (processed in order), and Aux strips (processed after
@@ -854,6 +867,10 @@ impl EngineCore {
             plugins: (0..MAX_TRACKS)
                 .map(|_| std::array::from_fn(|_| None))
                 .collect(),
+            instruments: (0..MAX_TRACKS).map(|_| None).collect(),
+            any_plugin: false,
+            transport: PluginTransport::default(),
+            transport_left: 0,
             pdc: (0..MAX_TRACKS).map(|_| None).collect(),
             routes: vec![Route::default(); MAX_TRACKS],
             complex: Vec::with_capacity(MAX_TRACKS),
@@ -941,9 +958,38 @@ impl EngineCore {
         });
     }
 
-    /// Sends a Note On or Off to the external instrument of `track`. Lost when the queue is
-    /// full (nobody is listening), never blocks.
+    /// Whether the notes of `track` are played by something else than the built-in voices.
+    fn plays_outside(&self, track: u16) -> bool {
+        let t = track as usize;
+        self.track_external.get(t).copied().unwrap_or(false)
+            || self.instruments.get(t).is_some_and(Option::is_some)
+    }
+
+    /// The place of a plugin by its track and slot, if there is such a place.
+    fn plugin_place(&mut self, (track, slot): (u16, u8)) -> Option<&mut Option<Box<PluginSlot>>> {
+        if slot == INSTRUMENT_SLOT {
+            self.instruments.get_mut(track as usize)
+        } else {
+            self.plugins
+                .get_mut(track as usize)
+                .and_then(|strip| strip.get_mut(slot as usize))
+        }
+    }
+
+    /// Sends a Note On or Off to the instrument of `track`: its plugin, or the external one. Lost
+    /// when the queue is full (nobody is listening), never blocks.
     fn send_midi(&mut self, track: u16, on: bool, pitch: u8, vel: u8) {
+        if let Some(Some(instrument)) = self.instruments.get_mut(track as usize) {
+            instrument.push_event(if on {
+                PluginEventKind::NoteOn {
+                    key: pitch,
+                    velocity: f32::from(vel) / 127.0,
+                }
+            } else {
+                PluginEventKind::NoteOff { key: pitch }
+            });
+            return;
+        }
         let _ = self.midi_out.push(MidiOutEvent {
             track,
             on,
@@ -1000,18 +1046,20 @@ impl EngineCore {
     /// Sends a controller change to the external instrument of its track (once; the sustain
     /// pedal is remembered so a stop can let it up).
     fn send_control(&mut self, c: ControlEvent) {
-        if !self
-            .track_external
-            .get(c.track as usize)
-            .copied()
-            .unwrap_or(false)
-        {
+        if !self.plays_outside(c.track) {
             return;
         }
         if c.number == 64 {
             if let Some(down) = self.ext_sustain.get_mut(c.track as usize) {
                 *down = c.value >= 64;
             }
+        }
+        if let Some(Some(instrument)) = self.instruments.get_mut(c.track as usize) {
+            instrument.push_event(PluginEventKind::Control {
+                number: c.number,
+                value: c.value,
+            });
+            return;
         }
         let _ = self.midi_out.push(MidiOutEvent {
             track: c.track,
@@ -1145,9 +1193,12 @@ impl EngineCore {
     fn sort_strips(&mut self) {
         self.complex.clear();
         self.aux.clear();
+        self.any_plugin = false;
         for i in 0..MAX_TRACKS {
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
-            let has_plugin = self.plugins[i].iter().any(Option::is_some);
+            let has_plugin =
+                self.instruments[i].is_some() || self.plugins[i].iter().any(Option::is_some);
+            self.any_plugin |= has_plugin;
             let has_pdc = self.pdc[i].as_ref().is_some_and(|p| !p.is_empty());
             let to_bus = self.routes[i].output > 0;
             self.strip_kind[i] = if self.routes[i].bus_in > 0 {
@@ -1160,6 +1211,26 @@ impl EngineCore {
                 0
             };
         }
+    }
+
+    /// Keeps what plugins are told of the song current: the position every frame, the rest, which
+    /// takes some looking up in the tempo map, every so often.
+    fn update_plugin_transport(&mut self) {
+        self.transport.beat = self.beat;
+        if self.transport_left > 0 {
+            self.transport_left -= 1;
+            return;
+        }
+        self.transport_left = AUTO_BLOCK;
+        let map = &self.tempo_map;
+        let position = map.position(self.beat);
+        self.transport.playing = self.playing;
+        self.transport.seconds = map.seconds_at(self.beat);
+        self.transport.tempo = f64::from(map.tempo_at(self.beat));
+        self.transport.signature = (position.num, position.den);
+        self.transport.bar_start = map.beat_of_bar(position.bar);
+        self.transport.bar_number = position.bar as i32;
+        self.transport.cycle = self.cycle;
     }
 
     /// Reads the automation lanes at the playhead and aims the strips they move.
@@ -1222,11 +1293,19 @@ impl EngineCore {
         }
         // The effects work in 32 bits.
         let (mut xl, mut xr) = (xl as f32, xr as f32);
+        if let Some(instrument) = self.instruments[t].as_mut() {
+            let (il, ir) = instrument.process(0.0, 0.0, &self.transport);
+            // It goes on sounding while muted, so that it can be heard again at once.
+            if audible {
+                xl += il;
+                xr += ir;
+            }
+        }
         if let Some(chain) = self.chains[t].as_mut() {
             (xl, xr) = chain.process(xl, xr);
         }
         for plugin in self.plugins[t].iter_mut().flatten() {
-            (xl, xr) = plugin.process(xl, xr);
+            (xl, xr) = plugin.process(xl, xr, &self.transport);
         }
         if let Some(pdc) = self.pdc[t].as_mut() {
             (xl, xr) = pdc.delay_before(xl, xr);
@@ -1321,6 +1400,9 @@ impl EngineCore {
 
     /// The strips' signals of this sample, through their effects, faders and sends, summed.
     fn mix_strips(&mut self) -> (f64, f64) {
+        if self.any_plugin {
+            self.update_plugin_transport();
+        }
         let mut out = (0f64, 0f64);
         for k in 0..self.dirty.len() {
             let t = self.dirty[k] as usize;
@@ -1504,11 +1586,7 @@ impl EngineCore {
                     slot,
                     plugin,
                 } => {
-                    let place = self
-                        .plugins
-                        .get_mut(track as usize)
-                        .and_then(|strip| strip.get_mut(slot as usize));
-                    let old = match place {
+                    let old = match self.plugin_place((track, slot)) {
                         Some(place) => std::mem::replace(place, plugin),
                         None => plugin,
                     };
@@ -1517,14 +1595,25 @@ impl EngineCore {
                     }
                     self.sort_strips();
                 }
+                Command::SetPluginBypass {
+                    track,
+                    slot,
+                    bypass,
+                } => {
+                    if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
+                        plugin.set_bypass(bypass);
+                    }
+                }
                 Command::SwapPlugins { a, b } => {
-                    let exists =
-                        |(t, s): (u16, u8)| (t as usize) < MAX_TRACKS && (s as usize) < MAX_INSERTS;
-                    if exists(a) && exists(b) && a != b {
-                        let first = self.plugins[a.0 as usize][a.1 as usize].take();
-                        let second =
-                            std::mem::replace(&mut self.plugins[b.0 as usize][b.1 as usize], first);
-                        self.plugins[a.0 as usize][a.1 as usize] = second;
+                    let exists = self.plugin_place(a).is_some() && self.plugin_place(b).is_some();
+                    if exists && a != b {
+                        let first = self.plugin_place(a).and_then(Option::take);
+                        let second = self
+                            .plugin_place(b)
+                            .and_then(|place| std::mem::replace(place, first));
+                        if let Some(place) = self.plugin_place(a) {
+                            *place = second;
+                        }
                         self.sort_strips();
                     }
                 }
@@ -1632,13 +1721,8 @@ impl EngineCore {
     }
 
     fn trigger(&mut self, n: NoteEvent) -> usize {
-        if self
-            .track_external
-            .get(n.track as usize)
-            .copied()
-            .unwrap_or(false)
-        {
-            // An external instrument makes its own sound.
+        if self.plays_outside(n.track) {
+            // A plugin or an external instrument makes its own sound.
             self.ext_note_on(n, false);
             return 0;
         }
@@ -1689,12 +1773,7 @@ impl EngineCore {
     }
 
     fn live_note_on(&mut self, pitch: u8, vel: u8, track: u16) {
-        if self
-            .track_external
-            .get(track as usize)
-            .copied()
-            .unwrap_or(false)
-        {
+        if self.plays_outside(track) {
             self.ext_note_on(
                 NoteEvent {
                     start_beat: 0.0,
@@ -2852,6 +2931,139 @@ mod tests {
         e.process(&mut buf);
         assert!(matches!(grx.pop(), Ok(Garbage::Plugin(_))));
         assert!(buf.iter().all(|x| x.abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_hosted_instrument_gets_the_notes_of_its_track_and_its_sound_goes_down_the_strip() {
+        use crate::plugin::{tests::FakePlugin, PLUGIN_BLOCK};
+        use std::sync::atomic::Ordering::Relaxed;
+        let (mut e, mut tx, _s) = rig();
+        // Note 0 lasts half a beat on track 0, which has the instrument; note 1 on track 1 has none.
+        let notes = vec![strip_note(0, 0.5), strip_note(1, 0.5)];
+        assert!(tx.push(Command::SetSong(two_tracks_song(notes))).is_ok());
+        let plugin = FakePlugin {
+            add: 0.25,
+            ..FakePlugin::default()
+        };
+        let (on, off) = (plugin.notes_on.clone(), plugin.notes_off.clone());
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 0,
+                slot: INSTRUMENT_SLOT,
+                plugin: Some(Box::new(PluginSlot::new(Box::new(plugin)))),
+            })
+            .is_ok());
+        assert!(tx.push(Command::Play).is_ok());
+        let mut buf = vec![0.0f32; 512 * 2];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert_eq!(on.load(Relaxed), 1, "only the note of its own track");
+        assert_eq!(off.load(Relaxed), 0);
+        assert!(buf[(PLUGIN_BLOCK + 8) * 2] > 0.0, "its sound is heard");
+        assert_eq!(
+            e.voices.iter().filter(|v| v.active && v.track == 0).count(),
+            0,
+            "no built-in voice plays with it"
+        );
+        assert_eq!(
+            e.voices.iter().filter(|v| v.active && v.track == 1).count(),
+            1,
+            "the track without one still does"
+        );
+        // Half a beat at 120 BPM is a quarter of a second.
+        let mut rest = vec![0.0f32; 24_000 * 2];
+        e.process(&mut rest);
+        assert_eq!(off.load(Relaxed), 1, "the note ends");
+
+        // Live notes go there too; stopping ends those of the timeline, and the slot can be emptied.
+        let live = Command::NoteOn {
+            pitch: 60,
+            vel: 100,
+            track: 0,
+        };
+        assert!(tx.push(live).is_ok());
+        e.process(&mut rest);
+        assert_eq!(on.load(Relaxed), 2);
+        assert!(tx
+            .push(Command::NoteOffTrack {
+                pitch: 60,
+                track: 0
+            })
+            .is_ok());
+        e.process(&mut rest);
+        assert_eq!(off.load(Relaxed), 2);
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 0,
+                slot: INSTRUMENT_SLOT,
+                plugin: None,
+            })
+            .is_ok());
+        assert!(tx.push(Command::Stop).is_ok());
+        e.process(&mut rest);
+        assert!(!e.plays_outside(0), "the built-in voices are back");
+        assert!(e
+            .plugin_place((MAX_TRACKS as u16, INSTRUMENT_SLOT))
+            .is_none());
+    }
+
+    #[test]
+    fn plugins_are_told_where_the_song_is_and_can_be_bypassed() {
+        use crate::plugin::tests::FakePlugin;
+        use std::sync::atomic::Ordering::Relaxed;
+        let (mut e, mut tx, _s) = rig();
+        assert!(tx
+            .push(Command::SetSong(two_tracks_song(Vec::new())))
+            .is_ok());
+        let plugin = FakePlugin {
+            add: 0.25,
+            ..FakePlugin::default()
+        };
+        let (beat, runs) = (plugin.last_beat.clone(), plugin.runs.clone());
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 0,
+                slot: 0,
+                plugin: Some(Box::new(PluginSlot::new(Box::new(plugin)))),
+            })
+            .is_ok());
+        assert!(tx.push(Command::Play).is_ok());
+        // One second at the 120 BPM of a new engine is two beats.
+        let mut buf = vec![0.0f32; 48_000 * 2];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        let told = beat.load(Relaxed) as f64 / 1000.0;
+        assert!((told - 2.0).abs() < 0.01, "{told}");
+        assert_eq!(e.transport.signature, (4, 4));
+        assert!(e.transport.playing);
+        assert_eq!(e.transport.tempo, 120.0);
+        assert_eq!(e.transport.bar_number, 0, "bars count from 0");
+        // Two more seconds: beat 6, the third beat of the second bar.
+        for _ in 0..2 {
+            e.process(&mut buf);
+        }
+        assert_eq!(e.transport.bar_number, 1);
+        assert_eq!(e.transport.bar_start, 4.0);
+
+        let bypass = |bypass| Command::SetPluginBypass {
+            track: 0,
+            slot: 0,
+            bypass,
+        };
+        assert!(tx.push(bypass(true)).is_ok());
+        let before = runs.load(Relaxed);
+        let mut short = vec![0.0f32; 512 * 2];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut short));
+        assert!(
+            runs.load(Relaxed) <= before + 1,
+            "at most the block under way"
+        );
+        e.process(&mut short);
+        assert!(
+            short.iter().all(|x| x.abs() < 1e-6),
+            "the plugin added 0.25"
+        );
+        assert!(tx.push(bypass(false)).is_ok());
+        e.process(&mut short);
+        assert!(short[511 * 2] > 0.0, "back");
     }
 
     #[test]

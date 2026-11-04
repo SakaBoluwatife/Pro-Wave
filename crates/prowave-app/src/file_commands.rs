@@ -106,7 +106,7 @@ impl App {
         );
         if cmd == FileCmd::Revert {
             self.request_revert();
-        } else if discards && content(&self.project) != self.saved {
+        } else if discards && self.has_unsaved_changes() {
             self.ui.ask_save = Some(cmd);
         } else {
             self.do_file_cmd(cmd, ctx);
@@ -235,7 +235,7 @@ impl App {
         if self.path.is_none() {
             self.ui.status =
                 Some(tr("nothing to revert to: the project has not been saved yet").into());
-        } else if content(&self.project) == self.saved {
+        } else if !self.has_unsaved_changes() {
             self.ui.status = Some(tr("no unsaved changes to revert").into());
         } else {
             self.ui.ask_revert = true;
@@ -302,6 +302,7 @@ impl App {
     /// Writes the project to `path` without making it the current file: the title, the unsaved
     /// state and Open Recent stay as they were.
     pub fn save_copy_to(&mut self, path: &Path) -> bool {
+        self.collect_plugin_states();
         match project_io::save_project(&self.project, path) {
             Ok(path) => {
                 self.ui.status = Some(trf("saved a copy: {}", &[&path.display()]));
@@ -315,8 +316,12 @@ impl App {
     }
 
     pub fn save_to(&mut self, path: &Path) -> bool {
+        self.collect_plugin_states();
         match project_io::save_project(&self.project, path) {
             Ok(path) => {
+                if let Some(sync) = self.sync.as_mut() {
+                    sync.clear_plugins_touched();
+                }
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     self.project.name = stem.to_string();
                 }
@@ -333,8 +338,25 @@ impl App {
         }
     }
 
+    /// Whether the project differs from the file. Plugins keep their settings to themselves, so
+    /// for those it goes by whether they may have changed.
+    fn has_unsaved_changes(&self) -> bool {
+        content(&self.project) != self.saved
+            || self.sync.as_ref().is_some_and(|s| s.plugins_touched())
+    }
+
+    /// Gets the running plugins' settings into the project, ready to save.
+    fn collect_plugin_states(&mut self) {
+        if let Some(sync) = self.sync.as_mut() {
+            sync.collect_plugin_states(&mut self.project);
+        }
+    }
+
     /// Swaps in a whole new project and resets editor state that indexes into the old one.
     fn replace(&mut self, mut p: Project, path: Option<PathBuf>) {
+        if let Some(sync) = self.sync.as_mut() {
+            sync.clear_plugins_touched();
+        }
         // A new song revision makes `EngineSync` rebuild and swap the engine's song.
         p.song_rev = self.project.song_rev.wrapping_add(1);
         self.project = p;

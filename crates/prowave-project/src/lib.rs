@@ -18,7 +18,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// Bumped when the document changes in a way older readers cannot handle.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const PROJECT_JSON: &str = "project.json";
 pub const MEDIA_DIR: &str = "media/";
 pub const EXTENSION: &str = "prowave";
@@ -242,6 +242,8 @@ pub struct TrackDoc {
     pub fx: Vec<InsertDoc>,
     /// Hosted plugins of the channel strip, after `fx`.
     pub plugins: Vec<PluginDoc>,
+    /// The hosted plugin that plays the track's notes.
+    pub instrument_plugin: Option<PluginDoc>,
     /// All sends of the strip (the first is also in `send_bus`, `send_level` and `send_pre`).
     pub sends: Vec<SendDoc>,
     /// Automation: "Off", "Read", "Touch", "Latch" or "Write", and the points (beat, value)
@@ -294,6 +296,9 @@ pub struct PluginDoc {
     /// `CLAP`.
     pub format: String,
     pub path: String,
+    pub bypass: bool,
+    /// What the plugin gave to keep, in base64; empty if nothing. Filled in only when saving.
+    pub state: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -390,6 +395,7 @@ impl Default for TrackDoc {
             send_pre: false,
             fx: Vec::new(),
             plugins: Vec::new(),
+            instrument_plugin: None,
             sends: Vec::new(),
             auto_mode: "Read".into(),
             auto_volume: Vec::new(),

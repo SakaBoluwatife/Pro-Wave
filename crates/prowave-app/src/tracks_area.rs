@@ -2513,7 +2513,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             if ui.input(|i| i.pointer.any_released()) {
                 egui::DragAndDrop::clear_payload(ui.ctx());
                 let added = match row {
-                    Some(t) => crate::plugin_rack::add_effect(p, t, &drag.0),
+                    Some(t) => crate::plugin_rack::add_plugin(p, t, &drag.0),
                     None => Err("Drop a plugin on a track".to_string()),
                 };
                 if let Err(e) = added {

@@ -197,7 +197,7 @@ fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
         .filter(|i| !i.bypass)
         .map(|i| i.kind.latency_samples(sample_rate))
         .sum();
-    let plugins: usize = t.plugins.iter().map(|i| rack.latency_of(i.uid)).sum();
+    let plugins: usize = t.hosted().map(|i| rack.latency_of(i.uid)).sum();
     built_in + plugins
 }
 
@@ -495,7 +495,8 @@ impl EngineSync {
     /// Call once per frame: push UI-side changes to the engine, then pull the playhead back.
     pub fn sync(&mut self, p: &mut Project) {
         let counted = !self.playing && p.playing && p.recording && p.count_in;
-        crate::plugin_rack::give_copies_their_own_uids(p);
+        let copies = crate::plugin_rack::give_copies_their_own_uids(p);
+        self.rack.copy_states(&copies);
         self.plugins_retry = !self
             .rack
             .sync(p, &mut self.engine, &mut self.plugin_message);
@@ -756,6 +757,39 @@ impl EngineSync {
         }
     }
 
+    /// Collects the plugins' current settings into the project, right before it is saved.
+    pub fn collect_plugin_states(&mut self, p: &mut Project) {
+        self.rack.collect_states(p, &mut self.plugin_message);
+    }
+
+    /// Whether plugins may hold changes the last save does not have.
+    pub fn plugins_touched(&self) -> bool {
+        self.rack.touched()
+    }
+
+    /// The project was just saved, or another one opened.
+    pub fn clear_plugins_touched(&mut self) {
+        self.rack.clear_touched();
+    }
+
+    /// Opens the editor of the plugin `uid`, above the main window `owner`.
+    pub fn open_plugin_editor(&mut self, uid: u64, title: &str, owner: Option<isize>) {
+        if let Err(e) = self.rack.open_editor(uid, title, owner) {
+            self.plugin_message = Some(e);
+        }
+    }
+
+    /// How soon the program must run again for its plugins, however quiet it is otherwise.
+    pub fn plugins_want_repaint_after(&self) -> Option<std::time::Duration> {
+        if self.rack.has_open_editor() {
+            Some(std::time::Duration::from_millis(33))
+        } else if self.rack.has_plugins() {
+            Some(std::time::Duration::from_millis(100))
+        } else {
+            None
+        }
+    }
+
     /// What went wrong with a plugin since last asked, for the status line.
     pub fn take_plugin_message(&mut self) -> Option<String> {
         self.plugin_message.take()
@@ -833,6 +867,7 @@ mod tests {
             pan: 0.0,
             inserts: vec![],
             plugins: Vec::new(),
+            instrument_plugin: None,
             instrument: None,
             regions: vec![Region {
                 name: "r".into(),

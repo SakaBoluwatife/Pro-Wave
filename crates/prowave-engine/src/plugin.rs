@@ -9,6 +9,8 @@
 
 /// Frames a plugin gets at a time: 1.3 ms at 48 kHz.
 pub const PLUGIN_BLOCK: usize = 64;
+/// The slot number that means a strip's instrument, in the commands that take a plugin's place.
+pub const INSTRUMENT_SLOT: u8 = u8::MAX;
 /// Events one block can carry; past this they are dropped rather than allocating.
 pub const MAX_PLUGIN_EVENTS: usize = 256;
 
@@ -39,11 +41,49 @@ pub enum PluginEventKind {
     },
 }
 
+/// Where the song is, for plugins that follow it (a synced delay, an arpeggiator).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PluginTransport {
+    pub playing: bool,
+    /// Quarter notes from the start of the song.
+    pub beat: f64,
+    pub seconds: f64,
+    /// Quarter notes per minute.
+    pub tempo: f64,
+    pub signature: (u8, u8),
+    /// Where the current bar starts, and its number from 0.
+    pub bar_start: f64,
+    pub bar_number: i32,
+    /// The Cycle, in beats, when it is on.
+    pub cycle: Option<(f64, f64)>,
+}
+
+impl Default for PluginTransport {
+    fn default() -> Self {
+        Self {
+            playing: false,
+            beat: 0.0,
+            seconds: 0.0,
+            tempo: 120.0,
+            signature: (4, 4),
+            bar_start: 0.0,
+            bar_number: 0,
+            cycle: None,
+        }
+    }
+}
+
 /// The audio-thread half of a loaded plugin. `process` runs on the audio thread and must not
 /// allocate, lock or do I/O. It is dropped on the UI thread, after coming back as garbage.
 pub trait PluginProcessor: Send {
     /// Processes one block: every slice is `PLUGIN_BLOCK` frames long.
-    fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], events: &[PluginEvent]);
+    fn process(
+        &mut self,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        events: &[PluginEvent],
+        transport: &PluginTransport,
+    );
 
     /// The delay the plugin itself puts on the sound, in samples.
     fn latency_samples(&self) -> usize;
@@ -59,12 +99,20 @@ pub struct PluginSlot {
     events: Vec<PluginEvent>,
     /// The next frame of the block.
     pos: usize,
+    /// While on, the plugin is not run and the sound passes by it, delayed as much as the plugin
+    /// would so that nothing shifts in time.
+    bypass: bool,
+    /// The sound of the last `latency` frames, for that. Empty for a plugin without latency.
+    dry_l: Box<[f32]>,
+    dry_r: Box<[f32]>,
+    dry_pos: usize,
 }
 
 impl PluginSlot {
     /// Call off the audio thread: this allocates.
     pub fn new(plugin: Box<dyn PluginProcessor>) -> Self {
         let buffer = || vec![0.0; PLUGIN_BLOCK].into_boxed_slice();
+        let dry = vec![0.0; plugin.latency_samples()].into_boxed_slice();
         Self {
             plugin,
             in_l: buffer(),
@@ -73,12 +121,20 @@ impl PluginSlot {
             out_r: buffer(),
             events: Vec::with_capacity(MAX_PLUGIN_EVENTS),
             pos: 0,
+            bypass: false,
+            dry_l: dry.clone(),
+            dry_r: dry,
+            dry_pos: 0,
         }
     }
 
     /// The whole delay of this slot: the plugin's own and the block it is collected in.
     pub fn latency_samples(&self) -> usize {
         self.plugin.latency_samples() + PLUGIN_BLOCK
+    }
+
+    pub fn set_bypass(&mut self, bypass: bool) {
+        self.bypass = bypass;
     }
 
     /// An event for the frame being collected. Dropped when the block already holds
@@ -94,7 +150,7 @@ impl PluginSlot {
 
     /// One frame in, one frame out.
     #[inline]
-    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+    pub fn process(&mut self, l: f32, r: f32, transport: &PluginTransport) -> (f32, f32) {
         let i = self.pos;
         let out = (self.out_l[i], self.out_r[i]);
         self.in_l[i] = l;
@@ -102,22 +158,48 @@ impl PluginSlot {
         self.pos += 1;
         if self.pos == PLUGIN_BLOCK {
             self.pos = 0;
-            self.run_block();
+            self.run_block(transport);
         }
         out
     }
 
-    fn run_block(&mut self) {
-        self.plugin.process(
-            [&self.in_l, &self.in_r],
-            [&mut self.out_l, &mut self.out_r],
-            &self.events,
-        );
+    fn run_block(&mut self, transport: &PluginTransport) {
+        self.pass_by();
+        if !self.bypass {
+            self.plugin.process(
+                [&self.in_l, &self.in_r],
+                [&mut self.out_l, &mut self.out_r],
+                &self.events,
+                transport,
+            );
+        }
         self.events.clear();
         // A plugin that misbehaves must not reach the mix: NaN stays in filters and meters.
         for s in self.out_l.iter_mut().chain(self.out_r.iter_mut()) {
             if !s.is_finite() {
                 *s = 0.0;
+            }
+        }
+    }
+
+    /// Keeps the delayed dry sound going, always, so a bypass starts without a gap, and writes it
+    /// to the output while bypassed.
+    fn pass_by(&mut self) {
+        let length = self.dry_l.len();
+        for i in 0..PLUGIN_BLOCK {
+            let (l, r) = (self.in_l[i], self.in_r[i]);
+            let (dry_l, dry_r) = if length == 0 {
+                (l, r)
+            } else {
+                let delayed = (self.dry_l[self.dry_pos], self.dry_r[self.dry_pos]);
+                self.dry_l[self.dry_pos] = l;
+                self.dry_r[self.dry_pos] = r;
+                self.dry_pos = (self.dry_pos + 1) % length;
+                delayed
+            };
+            if self.bypass {
+                self.out_l[i] = dry_l;
+                self.out_r[i] = dry_r;
             }
         }
     }
@@ -137,7 +219,12 @@ pub(crate) mod tests {
         pub latency: usize,
         pub poison: bool,
         pub notes_on: Arc<AtomicUsize>,
+        pub notes_off: Arc<AtomicUsize>,
         pub last_frame: Arc<AtomicUsize>,
+        /// Times it was run.
+        pub runs: Arc<AtomicUsize>,
+        /// The beat it was last told, in thousandths.
+        pub last_beat: Arc<AtomicUsize>,
     }
 
     impl Default for FakePlugin {
@@ -148,14 +235,29 @@ pub(crate) mod tests {
                 latency: 0,
                 poison: false,
                 notes_on: Arc::default(),
+                notes_off: Arc::default(),
                 last_frame: Arc::default(),
+                runs: Arc::default(),
+                last_beat: Arc::default(),
             }
         }
     }
 
     impl PluginProcessor for FakePlugin {
-        fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], events: &[PluginEvent]) {
+        fn process(
+            &mut self,
+            input: [&[f32]; 2],
+            output: [&mut [f32]; 2],
+            events: &[PluginEvent],
+            transport: &PluginTransport,
+        ) {
+            self.runs.fetch_add(1, Relaxed);
+            self.last_beat
+                .store((transport.beat * 1000.0) as usize, Relaxed);
             for e in events {
+                if matches!(e.kind, PluginEventKind::NoteOff { .. }) {
+                    self.notes_off.fetch_add(1, Relaxed);
+                }
                 if matches!(e.kind, PluginEventKind::NoteOn { .. }) {
                     self.notes_on.fetch_add(1, Relaxed);
                     self.last_frame.store(e.frame as usize, Relaxed);
@@ -188,12 +290,47 @@ pub(crate) mod tests {
         }));
         assert_eq!(slot.latency_samples(), 10 + PLUGIN_BLOCK);
         let out: Vec<(f32, f32)> = (0..PLUGIN_BLOCK * 2 + 5)
-            .map(|i| slot.process(i as f32, -(i as f32)))
+            .map(|i| slot.process(i as f32, -(i as f32), &PluginTransport::default()))
             .collect();
         assert!(out[..PLUGIN_BLOCK].iter().all(|f| *f == (0.0, 0.0)));
         for i in 0..PLUGIN_BLOCK + 5 {
             let v = 2.0 * i as f32;
             assert_eq!(out[PLUGIN_BLOCK + i], (v, -v), "frame {i}");
+        }
+    }
+
+    #[test]
+    fn a_bypassed_plugin_is_not_run_and_the_sound_stays_in_time() {
+        for latency in [0, 10, PLUGIN_BLOCK * 3 + 7] {
+            let plugin = FakePlugin {
+                gain: 0.5,
+                latency,
+                ..FakePlugin::default()
+            };
+            let runs = plugin.runs.clone();
+            let mut slot = PluginSlot::new(Box::new(plugin));
+            let delay = slot.latency_samples();
+            let now = PluginTransport::default();
+            slot.set_bypass(true);
+            let frames = delay + PLUGIN_BLOCK * 2;
+            let out: Vec<f32> = (0..frames)
+                .map(|i| slot.process(i as f32 + 1.0, 0.0, &now).0)
+                .collect();
+            assert_eq!(runs.load(Relaxed), 0, "not run while bypassed");
+            // The block's own delay is there; the plugin's is made up by the dry line.
+            for (i, value) in out.iter().enumerate().skip(delay) {
+                assert_eq!(
+                    *value,
+                    (i - delay) as f32 + 1.0,
+                    "frame {i}, latency {latency}"
+                );
+            }
+            // On again, it runs.
+            slot.set_bypass(false);
+            for i in 0..PLUGIN_BLOCK {
+                slot.process(i as f32, 0.0, &now);
+            }
+            assert!(runs.load(Relaxed) > 0);
         }
     }
 
@@ -204,7 +341,7 @@ pub(crate) mod tests {
             ..FakePlugin::default()
         }));
         for _ in 0..PLUGIN_BLOCK * 4 {
-            let (l, r) = slot.process(0.0, 0.0);
+            let (l, r) = slot.process(0.0, 0.0, &PluginTransport::default());
             assert!(l.is_finite() && r.is_finite());
         }
     }
@@ -214,8 +351,9 @@ pub(crate) mod tests {
         let plugin = FakePlugin::default();
         let (on, frame) = (plugin.notes_on.clone(), plugin.last_frame.clone());
         let mut slot = PluginSlot::new(Box::new(plugin));
+        let now = PluginTransport::default();
         for _ in 0..7 {
-            slot.process(0.0, 0.0);
+            slot.process(0.0, 0.0, &now);
         }
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..MAX_PLUGIN_EVENTS + 50 {
@@ -225,7 +363,7 @@ pub(crate) mod tests {
                 });
             }
             for _ in 7..PLUGIN_BLOCK {
-                slot.process(0.0, 0.0);
+                slot.process(0.0, 0.0, &now);
             }
         });
         assert_eq!(on.load(Relaxed), MAX_PLUGIN_EVENTS);

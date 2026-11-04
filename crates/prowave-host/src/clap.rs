@@ -1,15 +1,21 @@
 //! CLAP plugins, through the `clack-host` bindings.
-use crate::{HostError, PluginFormat, PluginInfo};
+use crate::{HostError as Error, PluginFormat, PluginInfo};
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::gui::{
+    GuiApiType, GuiConfiguration, GuiSize, HostGui, HostGuiImpl, PluginGui, Window,
+};
 use clack_extensions::latency::PluginLatency;
+use clack_extensions::state::{HostState, HostStateImpl, PluginState};
 use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent};
-use clack_host::events::Match;
+use clack_host::events::event_types::{TransportEvent, TransportFlags};
+use clack_host::events::{EventFlags, Match};
 use clack_host::prelude::*;
+use clack_host::utils::{BeatTime, SecondsTime};
 use prowave_engine::{
-    PluginEvent, PluginEventKind, PluginProcessor, MAX_PLUGIN_EVENTS, PLUGIN_BLOCK,
+    PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, MAX_PLUGIN_EVENTS, PLUGIN_BLOCK,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Folders inside a CLAP folder that are searched too (vendors keep plugins in subfolders).
@@ -18,19 +24,52 @@ const SCAN_DEPTH: usize = 3;
 const MAX_PORTS: usize = 16;
 const MAX_CHANNELS: usize = 64;
 
-fn host_info() -> Result<HostInfo, HostError> {
+fn host_info() -> Result<HostInfo, Error> {
     HostInfo::new(
         "Pro Wave",
         "Saka Audio",
         "https://github.com/SakaBoluwatife/Pro-Wave",
         env!("CARGO_PKG_VERSION"),
     )
-    .map_err(|e| HostError(e.to_string()))
+    .map_err(|e| Error(e.to_string()))
 }
 
 /// What the plugin can ask of the host from any thread. It is answered on the UI thread.
 struct Shared {
     callback: Arc<AtomicBool>,
+    gui: Arc<GuiRequests>,
+}
+
+/// What the plugin asked of its editor window, for the next tick.
+#[derive(Default)]
+struct GuiRequests {
+    /// The size it wants, packed; 0 is none.
+    resize: AtomicU64,
+    /// It ended its interface by itself.
+    closed: AtomicBool,
+}
+
+impl HostGuiImpl for Shared {
+    fn resize_hints_changed(&self) {}
+
+    fn request_resize(&self, new_size: GuiSize) -> Result<(), HostError> {
+        self.gui
+            .resize
+            .store(new_size.pack_to_u64(), Ordering::Release);
+        Ok(())
+    }
+
+    fn request_show(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn request_hide(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn closed(&self, _was_destroyed: bool) {
+        self.gui.closed.store(true, Ordering::Release);
+    }
 }
 
 impl SharedHandler<'_> for Shared {
@@ -43,10 +82,28 @@ impl SharedHandler<'_> for Shared {
 
 struct Handlers;
 
+/// What the plugin tells the host on the main thread.
+struct MainThread {
+    /// Its state changed: the project has something new to save.
+    dirty: Arc<AtomicBool>,
+}
+
+impl MainThreadHandler<'_> for MainThread {}
+
+impl HostStateImpl for MainThread {
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+}
+
 impl HostHandlers for Handlers {
     type Shared<'a> = Shared;
-    type MainThread<'a> = ();
+    type MainThread<'a> = MainThread;
     type AudioProcessor<'a> = ();
+
+    fn declare_extensions(builder: &mut HostExtensions<Self>, _shared: &Self::Shared<'_>) {
+        builder.register::<HostGui>().register::<HostState>();
+    }
 }
 
 /// Where CLAP plugins are installed.
@@ -92,21 +149,21 @@ pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
+fn load_entry(path: &Path) -> Result<PluginEntry, Error> {
     // SAFETY: loading a plugin runs its code, which nothing here can check. That is what a host
     // is for: the file is one the user installed as a plugin, and it stays loaded for as long as
     // the entry and the instances made from it live.
     unsafe { PluginEntry::load(path.as_os_str()) }
-        .map_err(|e| HostError(format!("cannot load {}: {e}", path.display())))
+        .map_err(|e| Error(format!("cannot load {}: {e}", path.display())))
 }
 
 /// Loads a `.clap` file and reads what plugins it offers. This runs the file's code, so a plugin
 /// that crashes here crashes the caller: scan in a process of its own.
-pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
+pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, Error> {
     let entry = load_entry(path)?;
     let factory = entry
         .get_plugin_factory()
-        .ok_or_else(|| HostError(format!("{} has no plugin factory", path.display())))?;
+        .ok_or_else(|| Error(format!("{} has no plugin factory", path.display())))?;
     let text = |t: Option<&std::ffi::CStr>| {
         t.map_or_else(String::new, |t| t.to_string_lossy().into_owned())
     };
@@ -132,6 +189,22 @@ pub struct LoadedClap {
     callback: Arc<AtomicBool>,
     released: Arc<AtomicBool>,
     latency: usize,
+    gui: Arc<GuiRequests>,
+    dirty: Arc<AtomicBool>,
+    #[cfg(windows)]
+    editor: Option<OpenEditor>,
+    /// Where the editor was when it last closed, until asked.
+    closed_at: Option<(i32, i32)>,
+}
+
+/// A plugin's interface embedded in its window. Destroyed in that order: see `close_editor`.
+#[cfg(windows)]
+struct OpenEditor {
+    gui: PluginGui,
+    window: crate::editor_window::EditorWindow,
+    /// The size the plugin was last told or asked for, so that the window's answer to a change
+    /// is not taken for a new one.
+    size: (u32, u32),
 }
 
 impl LoadedClap {
@@ -146,11 +219,192 @@ impl LoadedClap {
         self.latency
     }
 
-    /// Runs what the plugin asked to have run on the main thread.
+    /// Runs what the plugin asked to have run on the main thread, and looks after its editor.
     pub fn tick(&mut self) {
         if self.callback.swap(false, Ordering::Acquire) {
             self.instance.call_on_main_thread_callback();
         }
+        self.tick_editor();
+    }
+
+    /// The plugin's whole state, to give back with [`Self::load_state`]; `None` from a plugin that
+    /// keeps none.
+    pub fn save_state(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let Some(state) = self
+            .instance
+            .plugin_shared_handle()
+            .get_extension::<PluginState>()
+        else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        state
+            .save(&self.instance.plugin_handle(), &mut bytes)
+            .map_err(|e| Error(e.to_string()))?;
+        Ok(Some(bytes))
+    }
+
+    /// Puts back a state from [`Self::save_state`], perhaps of an earlier run of the program.
+    pub fn load_state(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        let state = self
+            .instance
+            .plugin_shared_handle()
+            .get_extension::<PluginState>()
+            .ok_or_else(|| Error("the plugin cannot take back a saved state".to_string()))?;
+        state
+            .load(&self.instance.plugin_handle(), &mut bytes)
+            .map_err(|e| Error(e.to_string()))?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether the plugin said its state changed, since last asked.
+    pub fn take_dirty(&mut self) -> bool {
+        self.dirty.swap(false, Ordering::AcqRel)
+    }
+
+    /// Whether the plugin's editor window is open.
+    pub fn editor_is_open(&self) -> bool {
+        #[cfg(windows)]
+        return self.editor.is_some();
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// Where the editor window was when it closed, once, to open there next time.
+    pub fn take_closed_position(&mut self) -> Option<(i32, i32)> {
+        self.closed_at.take()
+    }
+
+    /// Opens the plugin's own interface in a window above `owner`, or brings it to the front.
+    #[cfg(windows)]
+    pub fn open_editor(
+        &mut self,
+        title: &str,
+        owner: Option<isize>,
+        position: Option<(i32, i32)>,
+    ) -> Result<(), Error> {
+        use crate::editor_window::EditorWindow;
+        if let Some(open) = &self.editor {
+            open.window.raise();
+            return Ok(());
+        }
+        let no_editor = || Error(format!("{title} has no editor window"));
+        let gui = self
+            .instance
+            .plugin_shared_handle()
+            .get_extension::<PluginGui>()
+            .ok_or_else(no_editor)?;
+        let config = GuiConfiguration {
+            api_type: GuiApiType::WIN32,
+            is_floating: false,
+        };
+        let plugin = self.instance.plugin_handle();
+        if !gui.is_api_supported(&plugin, config) {
+            return Err(no_editor());
+        }
+        gui.create(&plugin, config)
+            .map_err(|e| Error(format!("cannot open {title}: {e}")))?;
+        let made = (|| {
+            let window = EditorWindow::new(title, gui.can_resize(&plugin), owner, position)?;
+            // A plugin that sizes itself by the operating system says no to this, which is fine.
+            let _ = gui.set_scale(&plugin, window.scale());
+            let size = gui
+                .get_size(&plugin)
+                .ok_or_else(|| Error(format!("{title} did not say how big it is")))?;
+            window.set_client_size(size.width, size.height);
+            // SAFETY: the window outlives the plugin's interface: `close_editor` destroys the
+            // interface first, and it is the only place the window is dropped.
+            unsafe { gui.set_parent(&plugin, Window::from_win32_hwnd(window.handle())) }
+                .map_err(|e| Error(format!("cannot open {title}: {e}")))?;
+            window.show();
+            // Some plugins answer no here and show themselves anyway: a failure here is only noted.
+            if let Err(e) = gui.show(&plugin) {
+                tracing::warn!("{title}: {e}");
+            }
+            let _ = window.take_new_size();
+            Ok((window, (size.width, size.height)))
+        })();
+        match made {
+            Ok((window, size)) => {
+                self.editor = Some(OpenEditor { gui, window, size });
+                Ok(())
+            }
+            Err(e) => {
+                gui.destroy(&plugin);
+                Err(e)
+            }
+        }
+    }
+
+    /// Without a window system to embed in, there is no editor.
+    #[cfg(not(windows))]
+    pub fn open_editor(
+        &mut self,
+        title: &str,
+        _owner: Option<isize>,
+        _position: Option<(i32, i32)>,
+    ) -> Result<(), Error> {
+        Err(Error(format!("{title} has no editor window here")))
+    }
+
+    /// Closes the editor, if it is open: the plugin's interface first, while its window lives.
+    pub fn close_editor(&mut self) {
+        #[cfg(windows)]
+        if let Some(open) = self.editor.take() {
+            if let Some(at) = open.window.position() {
+                self.closed_at = Some(at);
+            }
+            open.window.hide();
+            let plugin = self.instance.plugin_handle();
+            let _ = open.gui.hide(&plugin);
+            open.gui.destroy(&plugin);
+        }
+    }
+
+    #[cfg(windows)]
+    fn tick_editor(&mut self) {
+        let Some(open) = self.editor.as_mut() else {
+            return;
+        };
+        let closed = self.gui.closed.swap(false, Ordering::AcqRel);
+        if closed || open.window.take_close_request() {
+            self.close_editor();
+            return;
+        }
+        // What the plugin asked for: the window follows.
+        let asked = self.gui.resize.swap(0, Ordering::AcqRel);
+        if asked != 0 {
+            let size = GuiSize::unpack_from_u64(asked);
+            open.size = (size.width, size.height);
+            open.window.set_client_size(size.width, size.height);
+            let _ = open.window.take_new_size();
+        }
+        // What the user dragged the frame to: the plugin says what it can do, and the window
+        // takes that size if it differs.
+        if let Some((width, height)) = open.window.take_new_size() {
+            if (width, height) != open.size {
+                let plugin = self.instance.plugin_handle();
+                let wanted = GuiSize { width, height };
+                let fits = open.gui.adjust_size(&plugin, wanted).unwrap_or(wanted);
+                if open.gui.set_size(&plugin, fits).is_ok() {
+                    open.size = (fits.width, fits.height);
+                    if fits != wanted {
+                        open.window.set_client_size(fits.width, fits.height);
+                        let _ = open.window.take_new_size();
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn tick_editor(&mut self) {}
+}
+
+impl Drop for LoadedClap {
+    fn drop(&mut self) {
+        self.close_editor();
     }
 }
 
@@ -158,7 +412,7 @@ impl LoadedClap {
 fn port_layout(
     instance: &mut PluginInstance<Handlers>,
     is_input: bool,
-) -> Result<Vec<usize>, HostError> {
+) -> Result<Vec<usize>, Error> {
     let Some(ports) = instance
         .plugin_shared_handle()
         .get_extension::<PluginAudioPorts>()
@@ -169,18 +423,18 @@ fn port_layout(
     let plugin = instance.plugin_handle();
     let count = ports.count(&plugin, is_input) as usize;
     if count > MAX_PORTS {
-        return Err(HostError(format!("the plugin has {count} audio ports")));
+        return Err(Error(format!("the plugin has {count} audio ports")));
     }
     let mut layout = Vec::with_capacity(count);
     let mut buffer = AudioPortInfoBuffer::new();
     for i in 0..count {
         let info = ports
             .get(&plugin, i as u32, is_input, &mut buffer)
-            .ok_or_else(|| HostError(format!("the plugin did not describe audio port {i}")))?;
+            .ok_or_else(|| Error(format!("the plugin did not describe audio port {i}")))?;
         layout.push(info.channel_count as usize);
     }
     if layout.iter().sum::<usize>() > MAX_CHANNELS {
-        return Err(HostError("the plugin has too many audio channels".into()));
+        return Err(Error("the plugin has too many audio channels".into()));
     }
     Ok(layout)
 }
@@ -191,21 +445,28 @@ pub fn load_clap(
     path: &Path,
     id: &str,
     sample_rate: u32,
-) -> Result<(LoadedClap, Box<dyn PluginProcessor>), HostError> {
+) -> Result<(LoadedClap, Box<dyn PluginProcessor>), Error> {
     let entry = load_entry(path)?;
-    let id = std::ffi::CString::new(id).map_err(|e| HostError(e.to_string()))?;
+    let id = std::ffi::CString::new(id).map_err(|e| Error(e.to_string()))?;
     let callback = Arc::new(AtomicBool::new(false));
     let for_plugin = callback.clone();
+    let gui = Arc::new(GuiRequests::default());
+    let gui_for_plugin = gui.clone();
+    let dirty = Arc::new(AtomicBool::new(false));
+    let dirty_for_plugin = dirty.clone();
     let mut instance = PluginInstance::<Handlers>::new(
         move |_| Shared {
             callback: for_plugin,
+            gui: gui_for_plugin,
         },
-        |_| (),
+        move |_| MainThread {
+            dirty: dirty_for_plugin,
+        },
         &entry,
         &id,
         &host_info()?,
     )
-    .map_err(|e| HostError(format!("cannot start {}: {e}", path.display())))?;
+    .map_err(|e| Error(format!("cannot start {}: {e}", path.display())))?;
 
     let inputs = port_layout(&mut instance, true)?;
     let outputs = port_layout(&mut instance, false)?;
@@ -216,7 +477,7 @@ pub fn load_clap(
     };
     let stopped = instance
         .activate(|_, _| (), config)
-        .map_err(|e| HostError(format!("cannot activate {}: {e}", path.display())))?;
+        .map_err(|e| Error(format!("cannot activate {}: {e}", path.display())))?;
     // CLAP only answers this while activated: the delay depends on the sample rate.
     let latency = match instance
         .plugin_shared_handle()
@@ -234,6 +495,11 @@ pub fn load_clap(
             callback,
             released,
             latency,
+            gui,
+            dirty,
+            #[cfg(windows)]
+            editor: None,
+            closed_at: None,
         },
         Box::new(processor),
     ))
@@ -329,6 +595,37 @@ fn push_event(buffer: &mut EventBuffer, event: &PluginEvent) {
     }
 }
 
+/// CLAP's words for where the song is.
+fn transport_event(now: &PluginTransport) -> TransportEvent {
+    let mut flags = TransportFlags::HAS_TEMPO
+        | TransportFlags::HAS_BEATS_TIMELINE
+        | TransportFlags::HAS_SECONDS_TIMELINE
+        | TransportFlags::HAS_TIME_SIGNATURE;
+    if now.playing {
+        flags |= TransportFlags::IS_PLAYING;
+    }
+    if now.cycle.is_some() {
+        flags |= TransportFlags::IS_LOOP_ACTIVE;
+    }
+    let (loop_start, loop_end) = now.cycle.unwrap_or((0.0, 0.0));
+    TransportEvent {
+        header: EventHeader::new_core(0, EventFlags::empty()),
+        flags,
+        song_pos_beats: BeatTime::from_float(now.beat),
+        song_pos_seconds: SecondsTime::from_float(now.seconds),
+        tempo: now.tempo,
+        tempo_inc: 0.0,
+        loop_start_beats: BeatTime::from_float(loop_start),
+        loop_end_beats: BeatTime::from_float(loop_end),
+        loop_start_seconds: SecondsTime::from_float(0.0),
+        loop_end_seconds: SecondsTime::from_float(0.0),
+        bar_start: BeatTime::from_float(now.bar_start),
+        bar_number: now.bar_number,
+        time_signature_numerator: u16::from(now.signature.0),
+        time_signature_denominator: u16::from(now.signature.1),
+    }
+}
+
 /// The audio-thread half of a loaded CLAP plugin.
 struct ClapProcessor {
     processor: PluginAudioProcessor<Handlers>,
@@ -367,7 +664,14 @@ impl ClapProcessor {
 }
 
 impl PluginProcessor for ClapProcessor {
-    fn process(&mut self, input: [&[f32]; 2], output: [&mut [f32]; 2], events: &[PluginEvent]) {
+    fn process(
+        &mut self,
+        input: [&[f32]; 2],
+        output: [&mut [f32]; 2],
+        events: &[PluginEvent],
+        transport: &PluginTransport,
+    ) {
+        let transport = transport_event(transport);
         fill_main_input(&mut self.input.ports, input);
         self.events_in.clear();
         self.events_out.clear();
@@ -407,7 +711,7 @@ impl PluginProcessor for ClapProcessor {
                         &self.events_in.as_input(),
                         &mut self.events_out.as_output(),
                         None,
-                        None,
+                        Some(&transport),
                     )
                     .is_ok()
             }
@@ -487,6 +791,31 @@ mod tests {
     }
 
     #[test]
+    fn where_the_song_is_goes_over_in_clap_terms() {
+        let event = transport_event(&PluginTransport {
+            playing: true,
+            beat: 5.5,
+            seconds: 2.75,
+            tempo: 120.0,
+            signature: (6, 8),
+            bar_start: 3.0,
+            bar_number: 1,
+            cycle: Some((4.0, 8.0)),
+        });
+        assert!(event.flags.contains(TransportFlags::IS_PLAYING));
+        assert!(event.flags.contains(TransportFlags::IS_LOOP_ACTIVE));
+        assert_eq!(event.song_pos_beats.to_float(), 5.5);
+        assert_eq!(event.song_pos_seconds.to_float(), 2.75);
+        assert_eq!(event.time_signature_numerator, 6);
+        assert_eq!(event.time_signature_denominator, 8);
+        assert_eq!(event.bar_number, 1);
+        assert_eq!(event.loop_end_beats.to_float(), 8.0);
+        let stopped = transport_event(&PluginTransport::default());
+        assert!(!stopped.flags.contains(TransportFlags::IS_PLAYING));
+        assert!(!stopped.flags.contains(TransportFlags::IS_LOOP_ACTIVE));
+    }
+
+    #[test]
     fn events_become_clap_events_at_their_frame() {
         let mut buffer = EventBuffer::with_capacity(8);
         for kind in [
@@ -505,6 +834,60 @@ mod tests {
         }
         assert_eq!(buffer.len(), 4);
         assert!(buffer.iter().all(|e| e.header().time() == 9));
+    }
+
+    /// Opens real editors on the screen, which only some machines have, and closes them as a user
+    /// would. `cargo test -p prowave-host installed_editors -- --ignored --nocapture`, with
+    /// `PROWAVE_TEST_CLAP` naming a `.clap` file, or else every plugin installed is tried.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "opens the editors of the plugins installed on this computer"]
+    fn installed_editors_open_embed_and_close() {
+        use crate::editor_window::pump_messages_for;
+        use std::time::Duration;
+        let files = match std::env::var_os("PROWAVE_TEST_CLAP") {
+            Some(one) => vec![PathBuf::from(one)],
+            None => find_clap_files(&clap_folders()),
+        };
+        assert!(!files.is_empty(), "no CLAP plugins here");
+        for file in files {
+            for info in scan_clap_file(&file).unwrap() {
+                let (mut loaded, processor) = load_clap(&info.path, &info.id, 48_000).unwrap();
+                match loaded.open_editor(&info.name, None, Some((60, 60))) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        println!("{}: {e}", info.name);
+                        continue;
+                    }
+                }
+                assert!(loaded.editor_is_open());
+                pump_messages_for(Duration::from_millis(400));
+                loaded.tick();
+                let open = loaded.editor.as_ref().unwrap();
+                let (visible, size, embedded) = open.window.describe();
+                println!("{}: {}x{}, embedded {embedded}", info.name, size.0, size.1);
+                assert!(visible, "{} is on the screen", info.name);
+                assert!(size.0 > 0 && size.1 > 0, "{} has a size", info.name);
+                assert!(embedded, "{} made its window inside ours", info.name);
+
+                // Asking twice does not make a second window.
+                loaded.open_editor(&info.name, None, None).unwrap();
+
+                // The close button, as the user presses it.
+                loaded.editor.as_ref().unwrap().window.request_close();
+                loaded.tick();
+                assert!(!loaded.editor_is_open(), "{} closed", info.name);
+                assert_eq!(loaded.take_closed_position().map(|_| ()), Some(()));
+                pump_messages_for(Duration::from_millis(50));
+
+                // And again, then gone with the plugin while open.
+                loaded.open_editor(&info.name, None, None).unwrap();
+                pump_messages_for(Duration::from_millis(50));
+                drop(processor);
+                drop(loaded);
+                pump_messages_for(Duration::from_millis(50));
+            }
+        }
     }
 
     /// Runs on real plugins, which only some machines have, and a crash in one ends the test run.
@@ -533,12 +916,27 @@ mod tests {
                             (t * 220.0 * std::f32::consts::TAU).sin() * 0.25
                         })
                         .collect();
-                    processor.process([&tone, &tone], [&mut l, &mut r], &[]);
+                    processor.process(
+                        [&tone, &tone],
+                        [&mut l, &mut r],
+                        &[],
+                        &PluginTransport::default(),
+                    );
                     loaded.tick();
                     assert!(l.iter().chain(&r).all(|x| x.is_finite()), "{}", info.name);
                     peak = l.iter().chain(&r).fold(peak, |m, x| m.max(x.abs()));
                 }
                 println!("  latency {}, peak {peak:.3}", loaded.latency_samples());
+
+                // What it saves, a new instance takes back and saves again.
+                if let Some(state) = loaded.save_state().unwrap() {
+                    let (mut other, other_audio) = load_clap(&info.path, &info.id, 48_000).unwrap();
+                    other.load_state(&state).unwrap();
+                    assert!(!other.take_dirty(), "loading is not an edit");
+                    assert!(other.save_state().unwrap().is_some());
+                    println!("  state {} bytes", state.len());
+                    drop(other_audio);
+                }
                 assert!(!loaded.released());
                 drop(processor);
                 assert!(loaded.released(), "the audio half says it has gone");

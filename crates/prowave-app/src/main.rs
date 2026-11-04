@@ -518,7 +518,7 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let _frame_time = bench::frame_timer();
         let dt = ctx.input(|i| i.stable_dt) as f64;
@@ -571,8 +571,14 @@ impl eframe::App for App {
         self.project.refresh_generated();
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
+                sync.open_plugin_editor(uid, &name, main_window_handle(frame));
+            }
             if let Some(message) = sync.take_plugin_message() {
                 self.ui.status = Some(message);
+            }
+            if let Some(after) = sync.plugins_want_repaint_after() {
+                ctx.request_repaint_after(after);
             }
             automation::tick(&mut self.project);
             groups::propagate(&mut self.project, &mut self.ui.group_watch);
@@ -975,6 +981,15 @@ fn window_app_id() -> String {
         .ok()
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| "prowave-studio".to_string())
+}
+
+/// The main window's handle on Windows, which owns plugin editor windows.
+fn main_window_handle(frame: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
 }
 
 fn main() -> eframe::Result {

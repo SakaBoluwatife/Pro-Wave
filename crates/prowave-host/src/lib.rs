@@ -5,6 +5,8 @@
 //! Plugins run in this process for now, so a plugin that crashes takes the program with it; the
 //! trait is where a bridge to another process would go.
 mod clap;
+#[cfg(windows)]
+mod editor_window;
 
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
 #[doc(no_inline)]
