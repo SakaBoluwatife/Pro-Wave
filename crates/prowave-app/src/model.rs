@@ -1746,8 +1746,7 @@ impl Project {
     /// Tracks after it move down one slot, so the engine is told the song changed.
     pub fn create_track_stack(&mut self, i: usize) -> usize {
         if i >= self.tracks.len() {
-            i;
-            return;
+            return i;
         }
         let (end, level) = (self.folder_end(i), self.tracks[i].indent);
         for t in &mut self.tracks[i..end] {
