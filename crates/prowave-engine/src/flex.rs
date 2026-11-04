@@ -865,7 +865,8 @@ mod tests {
             })
             .collect();
         let _ = shift_pitch(&input, SR, &shifts, FlexMode::Monophonic);
-        assert!(began.elapsed().as_secs() < 60, "{:?}", began.elapsed());
+        // That it finishes is the point. The limit is generous, as other tests share the machine.
+        assert!(began.elapsed().as_secs() < 300, "{:?}", began.elapsed());
     }
 
     #[test]

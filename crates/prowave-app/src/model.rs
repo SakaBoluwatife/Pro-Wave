@@ -1745,6 +1745,10 @@ impl Project {
     /// folder) into a new folder at its place, selects the folder and returns its index.
     /// Tracks after it move down one slot, so the engine is told the song changed.
     pub fn create_track_stack(&mut self, i: usize) -> usize {
+        if i >= self.tracks.len() {
+            i;
+            return;
+        }
         let (end, level) = (self.folder_end(i), self.tracks[i].indent);
         for t in &mut self.tracks[i..end] {
             t.indent = t.indent.saturating_add(1);
@@ -1984,10 +1988,10 @@ impl Project {
     }
 
     /// Track > Delete Track: removes track `i` with its regions. Deleting a folder keeps the
-    /// tracks inside it (as Release Track Stack does). The last track cannot be deleted, so
-    /// there is always a selected track; returns false then and when `i` does not exist.
+    /// tracks inside it (as Release Track Stack does). A project can end up with no tracks.
+    /// Returns false when `i` does not exist.
     pub fn delete_track(&mut self, i: usize) -> bool {
-        if i >= self.tracks.len() || self.tracks.len() == 1 {
+        if i >= self.tracks.len() {
             return false;
         }
         if self.tracks[i].kind == TrackKind::Folder {
@@ -1998,7 +2002,7 @@ impl Project {
         if self.selected_track > i {
             self.selected_track -= 1;
         }
-        self.selected_track = self.selected_track.min(self.tracks.len() - 1);
+        self.selected_track = self.selected_track.min(self.tracks.len().saturating_sub(1));
         self.normalize_nesting();
         self.song_rev += 1;
         true
@@ -2718,10 +2722,10 @@ mod tests {
             (stacked.as_str(), 0)
         );
 
-        while p.tracks.len() > 1 {
+        while !p.tracks.is_empty() {
             assert!(p.delete_track(0));
         }
-        assert!(!p.delete_track(0), "the last track stays");
+        assert!(!p.delete_track(0), "nothing left to delete");
         assert_eq!(p.selected_track, 0);
     }
 

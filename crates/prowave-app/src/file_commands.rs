@@ -329,6 +329,7 @@ impl App {
                 self.path = Some(path);
                 self.saved = content(&self.project);
                 self.ui.status = None;
+                self.autosave.forget();
                 true
             }
             Err(e) => {
@@ -350,6 +351,12 @@ impl App {
         if let Some(sync) = self.sync.as_mut() {
             sync.collect_plugin_states(&mut self.project);
         }
+    }
+
+    /// Swaps in a project recovered after a crash: it stays unsaved until the user saves it.
+    pub fn replace_recovered(&mut self, p: Project, path: Option<PathBuf>) {
+        self.replace(p, path);
+        self.saved = content(&Project::empty());
     }
 
     /// Swaps in a whole new project and resets editor state that indexes into the old one.
@@ -378,6 +385,7 @@ mod tests {
     fn app() -> App {
         let project = Project::demo();
         App {
+            autosave: crate::autosave::Autosave::default(),
             saved: content(&project),
             history: crate::undo::History::new(&project),
             project,

@@ -1097,7 +1097,6 @@ struct TrackInfo {
     mute: bool,
     solo: bool,
     custom_height: bool,
-    last: bool,
     /// The Groove Track, and whether this track follows it (`None`: there is none).
     groove: bool,
     follow_groove: Option<bool>,
@@ -1349,7 +1348,6 @@ fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
         rec: t.rec,
         takes_midi: matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi),
         custom_height: t.height != 1.0,
-        last: p.tracks.len() == 1,
         groove: t.params.groove,
         follow_groove: crate::groove::groove_track(p)
             .filter(|g| *g != i)
@@ -1386,7 +1384,7 @@ fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>
         "Arm for Recording"
     };
     pick(ui, record, "", CtxAction::ToggleRecord(t.i), picked);
-    let delete = ui.add_enabled(!t.last, egui::Button::new(tr("Delete Track")));
+    let delete = ui.button(tr("Delete Track"));
     if delete.clicked() {
         *picked = Some(CtxAction::DeleteTrack(t.i));
         ui.close();
@@ -1557,8 +1555,6 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::DeleteTrack(i) => {
             if p.delete_track(i) {
                 forget_track_indexes(s);
-            } else if p.tracks.len() == 1 {
-                s.status = Some("A project keeps at least one track".to_string());
             }
         }
     }
@@ -3488,7 +3484,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             p.vca_inserted(p.selected_track + 1);
             // The copy keeps its VCA (the shift above also moved the copy's own entry).
             let copy = p.selected_track + 1;
-            let vca = p.tracks[p.selected_track].vca;
+            let vca = p.tracks.get(p.selected_track).and_then(|t| t.vca);
             p.tracks[copy].vca = vca;
             p.selected_track += 1;
             p.song_rev += 1;

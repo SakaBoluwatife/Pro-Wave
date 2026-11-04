@@ -8,6 +8,7 @@ static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisab
 mod audio_encode;
 mod audio_rec;
 mod automation;
+mod autosave;
 mod bench;
 mod bounce;
 mod channel_rack;
@@ -49,6 +50,9 @@ mod project_io;
 mod recent_files;
 mod recorder;
 mod region_edit;
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reliability_tests;
 mod sample_browser;
 mod sample_place;
 mod score;
@@ -261,6 +265,8 @@ impl UiState {
 }
 
 struct App {
+    /// Crash recovery: the copy kept while there are unsaved changes.
+    autosave: autosave::Autosave,
     project: Project,
     ui: UiState,
     sync: Option<engine_sync::EngineSync>,
@@ -592,6 +598,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// A clean exit leaves nothing to recover.
+    fn on_exit(&mut self) {
+        self.autosave.forget();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // Before anything else looks at the keys: while it is on, the note keys are its own.
@@ -629,6 +640,8 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        self.autosave_tick();
+        self.show_recovery(&ctx);
         if self.ui.chooser.is_some() {
             self.chooser_ui(ui, &ctx);
             return;
@@ -1218,6 +1231,7 @@ fn main() -> eframe::Result {
                 }
             };
             let mut app = App {
+                autosave: autosave::Autosave::default(),
                 saved: file_commands::content(&project),
                 history: undo::History::new(&project),
                 project,
@@ -1235,6 +1249,7 @@ fn main() -> eframe::Result {
                 updater: updater::Updater::new(),
             };
             if !measuring {
+                app.autosave.look_for_recovery();
                 app.ui.typing.on = settings::typing_at_start();
                 app.ui.update_auto = updater::auto_enabled();
                 app.updater.check_at_startup();

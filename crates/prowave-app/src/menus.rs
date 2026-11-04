@@ -451,7 +451,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             s.tracks.selected.is_some()
         }
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
-        "Delete Track" => p.tracks.len() > 1,
+        "Delete Track" => !p.tracks.is_empty(),
         "Release Track Stack" => p
             .tracks
             .get(p.selected_track)

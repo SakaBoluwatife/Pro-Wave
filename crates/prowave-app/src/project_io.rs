@@ -1204,13 +1204,19 @@ pub fn remove_stale_media(max_age: std::time::Duration) {
 }
 
 /// Saves `p` to `path` (adds the `.prowave` extension if missing). Returns the final path.
+/// The document and media a save writes, with the plugins' settings in it.
+pub fn doc_for_saving(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
+    let (mut doc, media) = to_doc(p);
+    add_plugin_states(p, &mut doc);
+    (doc, media)
+}
+
 pub fn save_project(p: &Project, path: &Path) -> Result<PathBuf, prowave_project::ProjectError> {
     let mut path = path.to_path_buf();
     if path.extension().and_then(|e| e.to_str()) != Some(prowave_project::EXTENSION) {
         path.set_extension(prowave_project::EXTENSION);
     }
-    let (mut doc, media) = to_doc(p);
-    add_plugin_states(p, &mut doc);
+    let (doc, media) = doc_for_saving(p);
     prowave_project::save(&path, &doc, &media)?;
     Ok(path)
 }
