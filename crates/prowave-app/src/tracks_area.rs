@@ -331,8 +331,10 @@ const RECORDING_FILL: Color32 = Color32::from_rgb(86, 14, 14);
 const SELECTED_EDGE: Color32 = Color32::from_rgb(176, 200, 72);
 
 /// The ruler over a selected region is gold.
-const RULER_SELECTION: Color32 = Color32::from_rgb(169, 126, 25);
-const RULER_SELECTION_EDGE: Color32 = Color32::from_rgb(95, 69, 20);
+const RULER_SELECTION: Color32 = Color32::from_rgb(0x58, 0x60, 0x6e);
+const RULER_SELECTION_EDGE: Color32 = Color32::from_rgb(0x3a, 0x40, 0x4a);
+/// The locators while Cycle is off.
+const CYCLE_OFF: Color32 = Color32::from_rgb(0x7a, 0x62, 0x2a);
 
 /// Logic's playhead is yellow: a pale yellow line and a yellow head.
 pub(crate) const PLAYHEAD_LINE: Color32 = Color32::from_rgb(214, 196, 112);
@@ -3467,7 +3469,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         [ruler.left_bottom(), ruler.right_bottom()],
         Stroke::new(1.0, Color32::from_gray(0x24)),
     );
-    // The stretch of the ruler over the selected region turns gold, as in Logic.
+    // The stretch of the ruler over the selected region is marked, in gray: gold is for Cycle.
     let selection = v
         .selected
         .and_then(|(t, r)| p.tracks.get(t)?.regions.get(r))
@@ -3491,6 +3493,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             pos2(x_of(p.cycle_end), ruler.bottom() - 1.0),
         );
         gr.rect_filled(band, 2.0, CYCLE);
+    } else {
+        gr.line_segment(
+            [
+                pos2(x_of(p.cycle_start), ruler.top() + 1.0),
+                pos2(x_of(p.cycle_end), ruler.top() + 1.0),
+            ],
+            Stroke::new(2.0, CYCLE_OFF),
+        );
     }
     let label_every = [1i64, 2, 4, 8, 16, 32]
         .into_iter()
@@ -3560,7 +3570,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         v.cycle_anchor = None;
     }
     if up.clicked() {
-        p.cycle = !p.cycle;
+        crate::key_commands::toggle_cycle(p, v);
     }
     let low = ui.interact(lower, id("ruler_locate"), Sense::click_and_drag());
     if let Some(pt) = low.interact_pointer_pos() {

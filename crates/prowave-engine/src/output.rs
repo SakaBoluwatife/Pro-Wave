@@ -123,6 +123,8 @@ pub fn peak_of(file: &AudioFile) -> Result<f32, EngineError> {
 
 /// The running audio output. Dropping it stops the sound.
 enum Output {
+    /// Driven from outside, with no device.
+    Offline,
     Cpal(#[allow(dead_code)] Stream),
     /// Windows: our own WASAPI stream with the smallest period the audio engine allows.
     #[cfg(windows)]
@@ -198,6 +200,34 @@ impl Renderer {
 }
 
 impl Engine {
+    /// An engine with no sound device, and its core to drive: `core.process` makes the sound, as
+    /// fast as it can be asked to. Commands reach it the same way. For bounces.
+    pub fn offline(sample_rate: u32) -> (Self, EngineCore) {
+        let (tx, rx) = RingBuffer::<Command>::new(1024);
+        let (gtx, grx) = RingBuffer::<Garbage>::new(GARBAGE_CAPACITY);
+        let shared = Arc::new(Shared::new());
+        let mut core = EngineCore::new(sample_rate, rx, gtx, shared.clone());
+        let readers = core.take_readers();
+        let (state, midi, mtc) = (readers.state, readers.midi, readers.mtc);
+        let state = state.unwrap_or_else(|| unreachable!("a new core has its reader"));
+        let engine = Self {
+            commands: CommandQueue {
+                tx,
+                garbage: grx,
+                credits: GARBAGE_CAPACITY,
+            },
+            shared,
+            state,
+            midi_out: midi,
+            mtc_out: mtc,
+            sample_rate,
+            device_name: "Offline".to_string(),
+            _output: Output::Offline,
+            disk: DiskThread::spawn(),
+        };
+        (engine, core)
+    }
+
     /// Starts on the default output device with the device's default buffer size.
     pub fn start() -> Result<Self, EngineError> {
         Self::start_with(None)

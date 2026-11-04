@@ -206,6 +206,13 @@ impl Rack {
             .map_or(0, |l| l.loaded.latency_samples() + PLUGIN_BLOCK)
     }
 
+    /// Runs what the plugins asked for on this thread.
+    pub fn tick(&mut self) {
+        for live in self.live.values_mut() {
+            live.loaded.tick();
+        }
+    }
+
     /// Whether plugins may hold changes the last save does not have. Their settings are their own,
     /// so this is the only sign of an unsaved change in them.
     pub fn touched(&self) -> bool {

@@ -89,6 +89,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::R, ctrl, Action::Repeat),
     cmd(Key::A, ctrl, Action::SelectAll),
     cmd(Key::M, ctrl, Action::MuteRegions),
+    cmd(Key::B, ctrl, Action::Menu("Project or Section…")),
     // Views.
     cmd(Key::X, none, Action::Menu("Show Mixer")),
     cmd(Key::Y, none, Action::Menu("Show Library")),
@@ -126,7 +127,7 @@ pub fn shortcut_of(label: &str) -> Option<egui::KeyboardShortcut> {
 
 /// Runs what this frame's keys ask for.
 pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
-    if ctx.egui_wants_keyboard_input() || s.piano_focus {
+    if ctx.egui_wants_keyboard_input() || s.piano_focus || s.bounce.busy() {
         return;
     }
     for command in COMMANDS {
@@ -137,6 +138,12 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             perform(command.action, p, s);
         }
     }
+}
+
+/// Turns Cycle on or off, over what is selected in the Tracks area.
+pub fn toggle_cycle(p: &mut Project, view: &crate::tracks_area::TracksView) {
+    let selection = crate::bounce::selection_range(p, &view.all_selected());
+    p.toggle_cycle(selection);
 }
 
 /// Moves the playhead to the bar `by` bars from the one it is in.
@@ -161,7 +168,7 @@ pub fn perform(action: Action, p: &mut Project, s: &mut UiState) {
         Action::Edit(cmd) => run_edit(p, &mut s.tracks, &mut s.status, cmd),
         Action::Repeat => crate::tracks_area::repeat_selected(p, &mut s.tracks),
         Action::SelectAll => s.tracks.select_all(p),
-        Action::Cycle => p.cycle = !p.cycle,
+        Action::Cycle => toggle_cycle(p, &s.tracks),
         Action::Metronome => p.metronome = !p.metronome,
         Action::MuteTrack => {
             if let Some(t) = p.tracks.get_mut(selected) {

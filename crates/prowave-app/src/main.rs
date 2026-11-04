@@ -5,9 +5,11 @@
 #[global_allocator]
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod audio_encode;
 mod audio_rec;
 mod automation;
 mod bench;
+mod bounce;
 mod engine_sync;
 mod event_list;
 mod file_browser;
@@ -141,6 +143,8 @@ pub struct UiState {
     pub piano_focus: bool,
     /// Live notes from the Piano Roll, forwarded to the engine every frame.
     pub audition: Vec<piano_roll::Audition>,
+    /// Bounce and export: the window, and what is being rendered.
+    pub bounce: bounce::BounceState,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
     /// The computer keyboard as a piano, and what it played this frame.
@@ -215,6 +219,7 @@ impl UiState {
             piano_focus: false,
             audition: Vec::new(),
             sample_drop: None,
+            bounce: bounce::BounceState::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
@@ -547,6 +552,7 @@ impl eframe::App for App {
         let mut typed = std::mem::take(&mut self.ui.typed);
         self.ui.typing.poll(&ctx, &mut typed);
         self.ui.typed = typed;
+        mixer::refresh_installed(&ctx, &mut self.ui);
         // F7 as in FL Studio.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F7)) {
             self.ui.bottom = if self.ui.bottom == Bottom::PianoRoll {
@@ -712,12 +718,23 @@ impl eframe::App for App {
             .frame(egui::Frame::new())
             .show(ui, |ui| tracks_area::show(ui, p, s, &meters));
         sample_place::menu(ui, p, s);
+        bounce::show(&ctx, p, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
         side_panes::quick_help(&ctx, &mut self.ui);
         for path in std::mem::take(&mut self.ui.open_paths) {
             self.import(&path, &ctx);
+        }
+        // A render starts from the settings the plugins have now.
+        if !self.ui.bounce.queue.is_empty() && self.ui.bounce.job.is_none() {
+            if let Some(sync) = self.sync.as_mut() {
+                sync.collect_plugin_states(&mut self.project);
+            }
+        }
+        let rate = self.sync.as_ref().map_or(0, |s| s.engine.sample_rate());
+        if let Some(message) = self.ui.bounce.poll(&mut self.project, rate, &ctx) {
+            self.ui.status = Some(message);
         }
         // The Browser's preview goes to the engine (it has no engine without an audio device).
         let engine = self.sync.as_mut().map(|sync| &mut sync.engine);

@@ -600,6 +600,8 @@ impl PluginInsert {
 /// What `Track::instrument` holds when the user removed the built-in sound: the track plays
 /// nothing until a plugin or a sample is put on it.
 pub const NO_INSTRUMENT: &str = "";
+/// Locators running this many bars past the end of the song are not a loop anyone asked for.
+const CYCLE_OVERRUN_BARS: u32 = 4;
 
 #[derive(Clone)]
 pub struct Track {
@@ -859,6 +861,8 @@ impl Project {
         }];
         p.position_beats = 0.0;
         p.cycle = false;
+        p.cycle_start = 0.0;
+        p.cycle_end = 16.0;
         p.selected_track = 0;
         p
     }
@@ -1826,6 +1830,28 @@ impl Project {
             || self.vca_of(i).is_some_and(|v| v.solo)
     }
 
+    /// Turns Cycle on or off. Coming on, it takes the range of what is selected. With nothing
+    /// selected it keeps the locators, unless they would not loop what is there: past the end of
+    /// the song, or running on long after it. Then it takes the whole song.
+    pub fn toggle_cycle(&mut self, selection: Option<(f64, f64)>) {
+        self.cycle = !self.cycle;
+        if !self.cycle {
+            return;
+        }
+        if let Some((start, end)) = selection.filter(|(a, b)| b > a) {
+            self.cycle_start = start;
+            self.cycle_end = end;
+            return;
+        }
+        let song_end = crate::bounce::project_end(self);
+        let out_of_reach = self.cycle_start >= song_end
+            || self.cycle_end - song_end >= f64::from(CYCLE_OVERRUN_BARS) * self.bar_len_at(0.0);
+        if song_end > 0.0 && out_of_reach {
+            self.cycle_start = 0.0;
+            self.cycle_end = self.next_bar_start(song_end - 1e-9);
+        }
+    }
+
     /// Whether any track is soloed (the others then fall silent).
     pub fn any_solo(&self) -> bool {
         (0..self.tracks.len()).any(|i| self.is_soloed(i))
@@ -2157,6 +2183,35 @@ pub enum SigPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cycle_comes_on_over_the_selection_or_where_it_can_be_heard() {
+        let mut p = Project::demo();
+        p.cycle = false;
+        p.toggle_cycle(Some((4.0, 12.0)));
+        assert!(p.cycle);
+        assert_eq!((p.cycle_start, p.cycle_end), (4.0, 12.0));
+        p.toggle_cycle(Some((8.0, 16.0)));
+        assert!(!p.cycle, "off again");
+        assert_eq!(p.cycle_end, 12.0, "going off moves nothing");
+        // Locators far past the song loop nothing that is there.
+        let end = crate::bounce::project_end(&p);
+        p.cycle_start = end + 40.0;
+        p.cycle_end = end + 80.0;
+        p.toggle_cycle(None);
+        assert_eq!(p.cycle_start, 0.0);
+        assert!(
+            p.cycle_end >= end && p.cycle_end < end + 4.0,
+            "{} {end}",
+            p.cycle_end
+        );
+        // Locators inside the song stay.
+        p.cycle = false;
+        p.cycle_start = 4.0;
+        p.cycle_end = 8.0;
+        p.toggle_cycle(None);
+        assert_eq!((p.cycle_start, p.cycle_end), (4.0, 8.0));
+    }
 
     #[test]
     fn signature_parts_step_and_stop_at_their_ends() {

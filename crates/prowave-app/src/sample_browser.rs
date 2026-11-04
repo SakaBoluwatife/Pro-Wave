@@ -34,6 +34,10 @@ const MAX_DEPTH: usize = 10;
 /// A preview plays at most this much of a file.
 const PREVIEW_SECONDS: f64 = 60.0;
 const PREVIEW_GAIN: f32 = 0.8;
+/// The panel under the list with the picked sample's waveform.
+const WAVE_H: f32 = 84.0;
+/// Columns of waveform read for it.
+const WAVE_BINS: usize = 600;
 const ROOTS_FILE: &str = "browser-roots";
 /// The single folder earlier versions saved; read once to fill `ROOTS_FILE`.
 const OLD_ROOT_FILE: &str = "browser-root";
@@ -279,6 +283,10 @@ pub struct SampleBrowser {
     /// Single click plays the sample (as in FL Studio's browser).
     auto_preview: bool,
     preview: PreviewState,
+    /// The sample shown in the waveform panel, and what has been read of it.
+    wave_for: Option<PathBuf>,
+    wave: Option<WaveInfo>,
+    wave_rx: Option<Receiver<WaveInfo>>,
     loaded: bool,
     /// The last problem, shown under the list.
     message: Option<String>,
@@ -298,6 +306,9 @@ impl Default for SampleBrowser {
             show_favorites: false,
             selected: None,
             auto_preview: true,
+            wave_for: None,
+            wave: None,
+            wave_rx: None,
             preview: PreviewState::default(),
             loaded: false,
             message: None,
@@ -518,6 +529,169 @@ fn walk(
 // ------------------------------------------------------------------------- preview
 
 type Decoded = (u64, Result<Vec<f32>, String>);
+
+/// What the waveform panel shows of a sample.
+struct WaveInfo {
+    peaks: Vec<(f32, f32)>,
+    seconds: f64,
+    rate: u32,
+    bpm: Option<f64>,
+}
+
+/// Reads a sample for the waveform panel. Decodes all of it: run off the UI thread.
+fn read_wave(path: &Path) -> Option<WaveInfo> {
+    let file = AudioFile::open(path).ok()?;
+    let peaks = file.peaks(WAVE_BINS).ok()?;
+    Some(WaveInfo {
+        peaks,
+        seconds: file.duration_secs(),
+        rate: file.sample_rate,
+        bpm: crate::flex_edit::sample_bpm(&file),
+    })
+}
+
+/// How the panel's text reads.
+fn wave_text(info: &WaveInfo) -> String {
+    let khz = f64::from(info.rate) / 1000.0;
+    let bpm = info
+        .bpm
+        .map_or_else(String::new, |b| format!("   {b:.0} BPM"));
+    format!("{khz:.1} kHz{bpm}   {:.1} s", info.seconds)
+}
+
+impl SampleBrowser {
+    /// Shows `path` in the waveform panel.
+    fn show_wave(&mut self, path: &Path, ctx: &egui::Context) {
+        if self.wave_for.as_deref() == Some(path) {
+            return;
+        }
+        self.wave_for = Some(path.to_path_buf());
+        self.wave = None;
+        let (tx, rx) = channel();
+        // An earlier read still running finds nobody to tell.
+        self.wave_rx = Some(rx);
+        let (path, ctx) = (path.to_path_buf(), ctx.clone());
+        let _ = std::thread::Builder::new()
+            .name("prowave-sample-wave".into())
+            .spawn(move || {
+                if let Some(info) = read_wave(&path) {
+                    let _ = tx.send(info);
+                }
+                ctx.request_repaint();
+            });
+    }
+
+    /// Plays the sample or stops it, from a row or from the panel.
+    fn toggle_preview(&mut self, path: PathBuf) {
+        if self.preview.playing.as_ref() == Some(&path) {
+            self.preview.stop = true;
+        } else {
+            self.preview.want = Some(path);
+        }
+    }
+
+    /// How far through the sample playback is, 0 to 1, while it plays.
+    fn wave_position(&self) -> Option<f32> {
+        let info = self.wave.as_ref()?;
+        if self.preview.playing != self.wave_for || info.seconds <= 0.0 {
+            return None;
+        }
+        let ends = self.preview.ends_at?;
+        let left = ends.saturating_duration_since(Instant::now()).as_secs_f64();
+        let played = info.seconds.min(PREVIEW_SECONDS) - left;
+        Some(((played / info.seconds) as f32).clamp(0.0, 1.0))
+    }
+}
+
+/// The panel: the waveform with its details, a click plays or stops it.
+fn wave_panel(ui: &mut Ui, b: &mut SampleBrowser) {
+    let Some(path) = b.wave_for.clone() else {
+        return;
+    };
+    if let Some(info) = b.wave_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+        b.wave = Some(info);
+    }
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
+    let playing = b.preview.playing.as_ref() == Some(&path);
+    let g = ui.painter_at(rect);
+    g.rect_filled(rect, 2.0, Color32::from_gray(0x24));
+    let mid = rect.center().y;
+    let half = rect.height() * 0.5 - 4.0;
+    let position = b.wave_position();
+    match &b.wave {
+        Some(info) if !info.peaks.is_empty() => {
+            let peak = info
+                .peaks
+                .iter()
+                .fold(0f32, |m, (lo, hi)| m.max(lo.abs()).max(hi.abs()))
+                .max(1e-4);
+            let columns = rect.width().max(1.0) as usize;
+            let bins = info.peaks.len();
+            for c in 0..columns {
+                let (from, to) = (c * bins / columns, ((c + 1) * bins / columns).min(bins));
+                let part = &info.peaks[from.min(bins - 1)..to.max(from + 1).min(bins)];
+                let (lo, hi) = part
+                    .iter()
+                    .fold((0f32, 0f32), |(l, h), (a, b)| (l.min(*a), h.max(*b)));
+                let x = rect.left() + c as f32 + 0.5;
+                g.line_segment(
+                    [
+                        pos2(x, mid - hi / peak * half),
+                        pos2(x, mid - lo / peak * half + 1.0),
+                    ],
+                    Stroke::new(1.0, GREEN),
+                );
+            }
+            g.text(
+                rect.right_bottom() - vec2(5.0, 3.0),
+                egui::Align2::RIGHT_BOTTOM,
+                wave_text(info),
+                FontId::proportional(10.5),
+                Color32::WHITE,
+            );
+        }
+        _ => {
+            g.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Reading…",
+                FontId::proportional(11.0),
+                TEXT_DIM,
+            );
+        }
+    }
+    if let Some(at) = position {
+        let x = rect.left() + rect.width() * at;
+        g.line_segment(
+            [pos2(x, rect.top()), pos2(x, rect.bottom())],
+            Stroke::new(1.0, Color32::WHITE),
+        );
+        ui.ctx().request_repaint_after(Duration::from_millis(33));
+    }
+    // Play or stop, in the corner.
+    let icon = Rect::from_min_size(rect.left_bottom() + vec2(5.0, -17.0), vec2(12.0, 12.0));
+    if playing {
+        g.rect_filled(icon.shrink(1.0), 1.0, Color32::WHITE);
+    } else {
+        g.add(egui::Shape::convex_polygon(
+            vec![
+                icon.left_top(),
+                pos2(icon.right(), icon.center().y),
+                icon.left_bottom(),
+            ],
+            Color32::WHITE,
+            Stroke::NONE,
+        ));
+    }
+    let hint = if playing {
+        "Click to stop (Esc)"
+    } else {
+        "Click to play"
+    };
+    if resp.on_hover_text(hint).clicked() {
+        b.toggle_preview(path);
+    }
+}
 
 #[derive(Default)]
 struct PreviewState {
@@ -1063,7 +1237,12 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         );
         add |= ui.button("Add folder…").clicked();
     }
-    let footer = 18.0;
+    let footer = 18.0
+        + if b.wave_for.is_some() {
+            WAVE_H + 4.0
+        } else {
+            0.0
+        };
     let list_h = (ui.available_height() - footer).max(40.0);
     let mut area = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -1125,6 +1304,13 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         ui.add(egui::Label::new(egui::RichText::new(text).small().color(TEXT_DIM)).truncate());
     }
 
+    wave_panel(ui, b);
+    if b.preview.playing.is_some()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        b.preview.stop = true;
+    }
+
     if add {
         pick_root(b);
     }
@@ -1148,8 +1334,12 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         Some(RowAct::Select(path)) => {
             b.selected = Some(path.clone());
             b.message = None;
-            if b.auto_preview && crate::import::is_audio_path(&path) {
-                b.preview.want = Some(path);
+            if crate::import::is_audio_path(&path) {
+                b.show_wave(&path, ctx);
+                // A click on what is playing stops it.
+                if b.auto_preview || b.preview.playing.as_ref() == Some(&path) {
+                    b.toggle_preview(path);
+                }
             }
         }
         Some(RowAct::Add(path)) => {
@@ -1167,6 +1357,35 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_on_what_is_playing_stops_it() {
+        let mut b = SampleBrowser::default();
+        let path = PathBuf::from("a.wav");
+        b.toggle_preview(path.clone());
+        assert_eq!(b.preview.want.as_ref(), Some(&path));
+        b.preview.want = None;
+        b.preview.playing = Some(path.clone());
+        b.toggle_preview(path.clone());
+        assert!(b.preview.stop);
+        assert!(b.preview.want.is_none());
+        // Another sample takes over instead.
+        b.preview.stop = false;
+        b.toggle_preview("b.wav".into());
+        assert!(!b.preview.stop);
+        assert!(b.preview.want.is_some());
+    }
+
+    #[test]
+    fn the_waveform_panel_reads_a_sample_and_says_what_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("Loop 98 BPM.wav");
+        prowave_engine::write_wav(&wav, &vec![0.5; 48_000 * 2], 48_000).unwrap();
+        let info = read_wave(&wav).unwrap();
+        assert!(info.peaks.iter().any(|(_, hi)| *hi > 0.4));
+        assert_eq!(wave_text(&info), "48.0 kHz   98 BPM   1.0 s");
+        assert!(read_wave(&dir.path().join("none.wav")).is_none());
+    }
 
     fn names(entries: &[Entry]) -> Vec<&str> {
         entries.iter().map(|e| e.name.as_str()).collect()
@@ -1572,7 +1791,7 @@ mod tests {
 
     #[test]
     fn rows_stay_where_they_are_drawn_when_scrolled() {
-        let mut h = crate::ui_test::Harness::new(290.0, 400.0);
+        let mut h = crate::ui_test::Harness::new(290.0, 600.0);
         let mut b = browser_with_library();
         let mut open = Vec::new();
         h.settle(draw(&mut b, &mut open));

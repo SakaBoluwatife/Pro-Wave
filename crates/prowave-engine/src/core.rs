@@ -272,6 +272,27 @@ impl AudioClip {
         self.shared.request(self.gen, want);
     }
 
+    /// Whether the disk has read what the next `frames` frames need. Only for a render, which
+    /// waits for the disk where live playback cannot.
+    fn has_buffered(&mut self, frames: usize) -> bool {
+        self.service();
+        let len = self.len_frames as i64;
+        let end = (self.pos + frames as i64).min(len);
+        let from = self.pos.max(0);
+        if end <= from {
+            return true;
+        }
+        let need = (end - from) as u64;
+        let current = self
+            .cur
+            .as_ref()
+            .filter(|b| b.gen == self.gen)
+            .map_or(0, |b| {
+                (b.start + u64::from(b.frames)).saturating_sub(from as u64)
+            });
+        current + self.rx.slots() as u64 * crate::disk::BLOCK_FRAMES as u64 >= need
+    }
+
     /// Once per callback: drop stale blocks so the disk thread gets ring space back.
     fn service(&mut self) {
         while self.cur.as_ref().is_none_or(|b| b.gen != self.gen) {
@@ -926,6 +947,23 @@ impl EngineCore {
             preview: None,
             preview_pos: 0,
         }
+    }
+
+    /// Stops playing where it is, with the voices let go and the effects still ringing: the end
+    /// of the range of a render, exact to the frame.
+    pub fn end_of_range(&mut self) {
+        self.counting = false;
+        self.playing = false;
+    }
+
+    /// Whether every clip has what the next `frames` frames need from the disk. A render asks
+    /// this before each block; live playback never waits.
+    pub fn clips_ready(&mut self, frames: usize) -> bool {
+        let mut ready = true;
+        for clip in self.song.clips.iter_mut() {
+            ready &= clip.has_buffered(frames);
+        }
+        ready
     }
 
     /// Whether a Browser preview still has frames to play.

@@ -32,6 +32,8 @@ allow = [
     "Unlicense",
     "Unicode-3.0",
     "MPL-2.0",
+    # LAME, the MP3 encoder of bounces (mp3lame-encoder, mp3lame-sys).
+    "LGPL-3.0",
     # A public-domain dedication (tiny-keccak, via rhai's const-random).
     "CC0-1.0",
     "OFL-1.1",

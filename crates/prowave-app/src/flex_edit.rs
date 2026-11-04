@@ -140,6 +140,10 @@ struct Render {
 
 /// A sample shorter than this is a hit, not a loop, and keeps its speed.
 const MIN_LOOP_SECONDS: f64 = 1.5;
+/// A sample longer than this is not listened to just to show its tempo.
+const MAX_LISTEN_SECONDS: f64 = 120.0;
+/// Well into any song, for telling that the tempo changed.
+const TEMPO_KEY_BEAT: f64 = 100_000.0;
 /// Below this the tempo heard in a sample is not to be trusted.
 const MIN_TEMPO_CONFIDENCE: f64 = 0.3;
 
@@ -290,6 +294,69 @@ fn update_follower(p: &mut Project, t: usize, r: usize) -> bool {
     true
 }
 
+/// Sets the length of audio region `r` of track `t` to what its audio takes at the tempo now.
+pub fn fit_region(p: &mut Project, t: usize, r: usize) {
+    let Some(region) = p.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+        return;
+    };
+    let Some(a) = region.audio.as_ref() else {
+        return;
+    };
+    let source_len = f64::from(region.params.source_len);
+    let seconds = if source_len > 0.0 {
+        source_len
+    } else {
+        a.file.duration_secs() - f64::from(region.params.source_start)
+    };
+    let first_bar = f64::from(region.start_bar) - 1.0;
+    let start = p.bar_to_beats(first_bar);
+    let end = p.tempo_map().advance(start, seconds.max(0.0));
+    let bars = p.beats_to_bar(end) - first_bar;
+    p.tracks[t].regions[r].len_bars = (bars as f32).max(1.0 / 64.0);
+}
+
+/// When the tempo changes, an audio region that does not follow it plays for as long as it did, so
+/// it covers more or fewer bars: it is drawn that way at once, even while the tempo is dragged. The
+/// engine works its end out from the tempo itself, so the song need not be sent again.
+fn fit_regions_to_tempo(p: &mut Project, s: &mut UiState) {
+    // How long far into the song is in seconds: any change of tempo before it changes this.
+    let key = p.tempo_map().seconds_at(TEMPO_KEY_BEAT);
+    if s.flex.tempo_key.replace(key).is_none_or(|old| old == key) {
+        return;
+    }
+    for t in 0..p.tracks.len() {
+        for r in 0..p.tracks[t].regions.len() {
+            let follows = p.tracks[t].regions[r]
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.follow_bpm.is_some());
+            if !follows {
+                fit_region(p, t, r);
+            }
+        }
+    }
+}
+
+/// The tempo of a sample, for showing: from its name, or else by listening if it is loop-sized.
+pub fn sample_bpm(file: &AudioFile) -> Option<f64> {
+    let named = file
+        .path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .and_then(bpm_from_name);
+    let duration = file.duration_secs();
+    named.or_else(|| {
+        if !(MIN_LOOP_SECONDS..=MAX_LISTEN_SECONDS).contains(&duration) {
+            return None;
+        }
+        file.analyze()
+            .ok()
+            .and_then(|a| a.tempo)
+            .filter(|t| t.confidence >= MIN_TEMPO_CONFIDENCE)
+            .map(|t| loop_bpm(duration, t.bpm))
+    })
+}
+
 /// Looks after the regions that follow the tempo: every one is set for the tempo now. Not while
 /// a button is held, so dragging the tempo does not stretch every loop at every value on the way.
 fn update_followers(p: &mut Project) {
@@ -315,6 +382,8 @@ fn poll_detections(p: &mut Project, s: &mut UiState) {
         if let (true, Some(bpm)) = (same, bpm) {
             follow_source_tempo(p, t, r, bpm);
             s.status = Some(format!("Follows the project tempo: made at {bpm:.1} BPM"));
+        } else if same && std::mem::take(&mut s.flex.tempo_asked) {
+            s.status = Some("No clear tempo found: type the sample's BPM in".to_string());
         }
     }
 }
@@ -328,6 +397,10 @@ pub struct FlexState {
     removals: Vec<(usize, usize)>,
     /// Clips being listened to for their tempo.
     detecting: Vec<Detection>,
+    /// The user pressed Find, so finding nothing is worth saying.
+    pub tempo_asked: bool,
+    /// For telling that the tempo changed: see [`fit_regions_to_tempo`].
+    tempo_key: Option<f64>,
 }
 
 impl FlexState {
@@ -676,7 +749,9 @@ fn work(
 pub fn poll(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     for (t, r) in std::mem::take(&mut s.flex.removals) {
         remove(p, t, r, ctx);
+        fit_region(p, t, r);
     }
+    fit_regions_to_tempo(p, s);
     poll_tasks(p, s);
     poll_detections(p, s);
     if !ctx.input(|i| i.pointer.any_down()) {
@@ -960,6 +1035,33 @@ fn poll_renders(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_region_that_does_not_follow_changes_length_with_the_tempo_at_once() {
+        let ctx = egui::Context::default();
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("hit.wav");
+        // Two seconds: one bar at 120 BPM.
+        prowave_engine::write_wav(&wav, &vec![0.5; 48_000 * 2 * 2], 48_000).unwrap();
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        p.tracks.clear();
+        crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).unwrap();
+        let mut s = UiState::new();
+        fit_regions_to_tempo(&mut p, &mut s);
+        let rev = p.song_rev;
+        assert!((p.tracks[0].regions[0].len_bars - 1.0).abs() < 0.01);
+        // Twice as fast, the same two seconds are two bars, and the engine need not start over.
+        p.tempo = 240.0;
+        fit_regions_to_tempo(&mut p, &mut s);
+        assert!((p.tracks[0].regions[0].len_bars - 2.0).abs() < 0.01);
+        assert_eq!(p.song_rev, rev);
+        // One that follows keeps its bars.
+        p.tracks[0].regions[0].audio.as_mut().unwrap().follow_bpm = Some(240.0);
+        p.tempo = 120.0;
+        fit_regions_to_tempo(&mut p, &mut s);
+        assert!((p.tracks[0].regions[0].len_bars - 2.0).abs() < 0.01);
+    }
 
     /// A stereo 16-bit WAV with a click at each of `times` (seconds).
     pub(crate) fn write_clicks(path: &std::path::Path, times: &[f64], seconds: f64) {

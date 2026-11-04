@@ -439,6 +439,14 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
         "Paste" => !s.tracks.clipboard.is_empty(),
+        "Project or Section…"
+        | "Bounce"
+        | "Export"
+        | "Track as Audio File…"
+        | "All Tracks as Audio Files…" => crate::bounce::project_end(p) > 0.0,
+        "Regions in Place…" | "Bounce In Place" | "Bounce and Join" => {
+            s.tracks.selected.is_some()
+        }
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => p.tracks.len() > 1,
         "Release Track Stack" => p
@@ -626,6 +634,13 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Redo" => s.undo_cmd = Some(UndoCmd::Redo),
         "Delete Undo History" => s.undo_cmd = Some(UndoCmd::Clear),
         "Delete" => crate::tracks_area::delete_selected(p, &mut s.tracks),
+        "Project or Section…" | "Bounce" => s.bounce.dialog = Some(crate::bounce::Purpose::Mix),
+        "Export" | "Track as Audio File…" => {
+            s.bounce.dialog = Some(crate::bounce::Purpose::Track)
+        }
+        "All Tracks as Audio Files…" => s.bounce.dialog = Some(crate::bounce::Purpose::Stems),
+        "Regions in Place…" | "Bounce In Place" => crate::bounce::bounce_selection(p, s, false),
+        "Bounce and Join" => crate::bounce::bounce_selection(p, s, true),
         "Cut" | "Copy" | "Paste" | "Split at Playhead" | "Join" => {
             use crate::tracks_area::{run_edit, EditCmd};
             let cmd = match label {
@@ -1043,7 +1058,9 @@ mod tests {
                     s.ui_scale,
                     s.tracks.bar_w,
                     s.tracks.selected,
-                    s.tracks.also.len()
+                    s.tracks.also.len(),
+                    s.bounce.dialog,
+                    s.bounce.queue.len(),
                 ),
                 (
                     s.tracks.show_tempo,
@@ -1115,7 +1132,7 @@ mod tests {
             );
         }
         // And unimplemented ones are greyed, like the ones from the GitHub report.
-        for label in ["Close", "Export", "Stem Splitter…"] {
+        for label in ["Close", "Stem Splitter…"] {
             assert!(!enabled(label, &p, &s), "{label}");
         }
     }

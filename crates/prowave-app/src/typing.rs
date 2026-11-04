@@ -53,7 +53,6 @@ fn semitone_of(key: Key) -> Option<i32> {
     })
 }
 
-#[derive(Default)]
 pub struct Typing {
     pub on: bool,
     /// Octaves up or down from the middle.
@@ -61,6 +60,17 @@ pub struct Typing {
     /// Keys held and the note each started, so the note that ends is the one that began, even if
     /// the octave changed meanwhile.
     held: Vec<(Key, u8)>,
+}
+
+impl Default for Typing {
+    /// On from the start: a keyboard should play notes without being asked to.
+    fn default() -> Self {
+        Self {
+            on: true,
+            octave: 0,
+            held: Vec::new(),
+        }
+    }
 }
 
 impl Typing {
@@ -199,6 +209,8 @@ mod tests {
     fn off_it_takes_nothing_and_on_it_takes_its_keys() {
         let ctx = egui::Context::default();
         let mut t = Typing::default();
+        assert!(t.on, "it plays from the start");
+        t.on = false;
         let z = key(Key::Z, true, Modifiers::NONE);
         let (played, left) = frame(&mut t, &ctx, vec![z.clone()]);
         assert!(played.is_empty());

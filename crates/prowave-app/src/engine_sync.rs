@@ -791,6 +791,24 @@ impl EngineSync {
         }
     }
 
+    /// How late the whole mix comes out because of delay compensation, in samples.
+    pub fn total_latency(&self, p: &Project) -> usize {
+        let sr = self.engine.sample_rate() as f32;
+        let sounds = |t: &Track| !matches!(t.kind, TrackKind::Vca | TrackKind::Folder);
+        pdc_plan(p, sr, &self.rack)
+            .iter()
+            .zip(&p.tracks)
+            .filter(|(_, t)| sounds(t))
+            .map(|(plan, t)| plan.0 + plan.1 + latency_of(t, sr, &self.rack))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Runs what the plugins asked for on this thread, with no other change.
+    pub fn tick_plugins(&mut self) {
+        self.rack.tick();
+    }
+
     /// What went wrong with a plugin since last asked, for the status line.
     pub fn take_plugin_message(&mut self) -> Option<String> {
         self.plugin_message.take()
@@ -852,6 +870,33 @@ mod tests {
     use super::*;
     use crate::model::{Note, RegionParams, TrackKind, TrackParams};
     use prowave_engine::TempoMap;
+
+    #[test]
+    fn the_cycle_loops_the_playhead_through_the_real_engine() {
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        p.cycle = true;
+        p.cycle_start = 0.0;
+        p.cycle_end = 4.0;
+        let (engine, mut core) = Engine::offline(48_000);
+        let mut sync = EngineSync::new(engine, &p);
+        sync.sync(&mut p);
+        p.playing = true;
+        sync.sync(&mut p);
+        let mut buf = vec![0.0f32; 1024];
+        let mut highest = 0f64;
+        let mut wrapped = false;
+        // Five seconds is ten beats: past the end of the cycle twice.
+        for _ in 0..(48_000 * 5 / 512) {
+            core.process(&mut buf);
+            let before = p.position_beats;
+            sync.sync(&mut p);
+            highest = highest.max(p.position_beats);
+            wrapped |= p.position_beats < before;
+        }
+        assert!(wrapped, "it went back to the start");
+        assert!(highest < 4.1, "it never went past the end: {highest}");
+    }
 
     fn track(notes: Vec<Note>) -> Track {
         Track {

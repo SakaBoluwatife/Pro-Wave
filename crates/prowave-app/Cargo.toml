@@ -34,6 +34,8 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2
 tar = { version = "0.4", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 rhai = { version = "1", features = ["no_module"] }
+flacenc = { version = "0.5.1", default-features = false, features = ["par"] }
+mp3lame-encoder = "0.3.0"
 
 # The menus in the macOS system menu bar (see src/native_menu.rs).
 [target.'cfg(target_os = "macos")'.dependencies]

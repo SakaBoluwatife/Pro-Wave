@@ -19,7 +19,8 @@ use crate::UiState;
 use egui::{
     pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
 };
-use std::collections::HashMap;
+use prowave_host::PluginInfo;
+use std::collections::{BTreeMap, HashMap};
 
 const TOOLBAR_H: f32 = 30.0;
 const LABEL_W: f32 = 88.0;
@@ -72,6 +73,10 @@ pub enum StripRequest {
 }
 
 pub struct MixerView {
+    /// The plugins on this computer, for the slots' menus.
+    pub installed: std::sync::Arc<Vec<PluginInfo>>,
+    /// What went wrong putting one on, for the status line.
+    pub message: Option<String>,
     pub mode: MixerMode,
     /// Visibility per strip type, in `FILTERS` order.
     pub filters: [bool; 8],
@@ -110,6 +115,8 @@ pub struct CopiedStrip {
 impl Default for MixerView {
     fn default() -> Self {
         Self {
+            installed: std::sync::Arc::default(),
+            message: None,
             mode: MixerMode::Tracks,
             filters: [true; 8],
             wide: false,
@@ -980,6 +987,8 @@ fn insert_slot(
             act = Some(InsertAct::Remove);
         }
     }
+    let installed = v.installed.clone();
+    let mut pick = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         if let Some(fx) = have {
@@ -1017,6 +1026,10 @@ fn insert_slot(
                 ui.close();
             }
         } else {
+            if installed.iter().any(|info| !info.is_instrument) {
+                plugin_menu(ui, &installed, false, &mut pick);
+                ui.separator();
+            }
             for kind in FX_MENU {
                 if ui.button(kind.name()).clicked() {
                     act = Some(InsertAct::Add(kind));
@@ -1026,9 +1039,88 @@ fn insert_slot(
         }
     };
     slot_menu(&resp, have.is_none()).show(&mut items);
+    put_plugin(p, v, i, pick);
     if let Some(act) = act {
         apply_insert(p, v, i, k, act);
     }
+}
+
+/// Keeps the slots' menus up to date with the plugins found. Called every frame.
+pub fn refresh_installed(ctx: &egui::Context, s: &mut UiState) {
+    let found = s.plugins.installed(ctx);
+    if found.len() != s.mixer.installed.len() {
+        s.mixer.installed = std::sync::Arc::new(found.to_vec());
+    }
+    if let Some(message) = s.mixer.message.take() {
+        s.status = Some(message);
+    }
+}
+
+/// The instruments or the effects on this computer, a submenu for each maker. What was clicked
+/// goes in `pick`.
+fn plugin_menu(
+    ui: &mut Ui,
+    installed: &[PluginInfo],
+    instruments: bool,
+    pick: &mut Option<PluginInfo>,
+) {
+    let mut makers: BTreeMap<String, Vec<&PluginInfo>> = BTreeMap::new();
+    for info in installed.iter().filter(|i| i.is_instrument == instruments) {
+        let maker = if info.vendor.trim().is_empty() {
+            "Other".to_string()
+        } else {
+            info.vendor.clone()
+        };
+        makers.entry(maker).or_default().push(info);
+    }
+    egui::ScrollArea::vertical()
+        .max_height(ui.ctx().content_rect().height() * 0.7)
+        .show(ui, |ui| {
+            for (maker, plugins) in &makers {
+                ui.menu_button(maker.as_str(), |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.ctx().content_rect().height() * 0.7)
+                        .show(ui, |ui| {
+                            for info in plugins {
+                                if ui.button(info.name.as_str()).clicked() {
+                                    *pick = Some((*info).clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+            }
+        });
+}
+
+/// Puts what was picked in a slot's menu on track `i`.
+fn put_plugin(p: &mut Project, v: &mut MixerView, i: usize, pick: Option<PluginInfo>) {
+    if let Some(info) = pick {
+        if let Err(e) = crate::plugin_rack::add_plugin(p, i, &info) {
+            v.message = Some(e);
+        }
+    }
+}
+
+/// The right-click menu (and left-click, if `also_left`) that sets the instrument of track `i`.
+fn instrument_menu(
+    resp: &egui::Response,
+    also_left: bool,
+    p: &mut Project,
+    v: &mut MixerView,
+    i: usize,
+) {
+    let installed = v.installed.clone();
+    let mut pick = None;
+    slot_menu(resp, also_left).show(|ui: &mut Ui| {
+        ui.set_min_width(170.0);
+        if installed.iter().any(|info| info.is_instrument) {
+            plugin_menu(ui, &installed, true, &mut pick);
+        } else {
+            ui.label("No instrument plugins found");
+        }
+    });
+    put_plugin(p, v, i, pick);
 }
 
 /// One slot holding hosted plugin `j` of track `i`: a click opens its editor, the buttons at its
@@ -1118,11 +1210,13 @@ fn plugin_slot(
 
 /// The built-in sound in the input slot of track `i`, which can be taken away: the track is then
 /// silent until a plugin or a sample is put on it.
+#[allow(clippy::too_many_arguments)]
 fn built_in_instrument_slot(
     ui: &Ui,
     g: &Painter,
     r: Rect,
     p: &mut Project,
+    v: &mut MixerView,
     i: usize,
     name: &str,
     uid: egui::Id,
@@ -1131,8 +1225,9 @@ fn built_in_instrument_slot(
     let resp = ui
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(
-            "Built-in sound. Drop a plugin or sample on this track to replace it.",
+            "Built-in sound. Right-click to choose an instrument, or drop a plugin or sample on this track.",
         );
+    instrument_menu(&resp, false, p, v, i);
     let mut remove = delete_pressed(ui, &resp);
     remove |= slot_remove_button(ui, g, r, uid, Color32::WHITE);
     if remove {
@@ -1174,6 +1269,8 @@ fn instrument_plugin_slot(
     let mut open = loaded && resp.clicked();
     let mut remove = delete_pressed(ui, &resp);
     remove |= slot_remove_button(ui, g, r, uid, text_color);
+    let installed = v.installed.clone();
+    let mut pick = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1183,6 +1280,11 @@ fn instrument_plugin_slot(
             }
         });
         ui.separator();
+        if installed.iter().any(|info| info.is_instrument) {
+            ui.menu_button("Replace With", |ui| {
+                plugin_menu(ui, &installed, true, &mut pick);
+            });
+        }
         if ui.button(tr("Remove")).clicked() {
             remove = true;
             ui.close();
@@ -1195,6 +1297,7 @@ fn instrument_plugin_slot(
     if remove {
         p.tracks[i].instrument_plugin = None;
     }
+    put_plugin(p, v, i, pick);
 }
 
 /// Carries out what the user chose in the menu of Audio FX slot `k` of track `i`. Choices that
@@ -1442,9 +1545,16 @@ pub fn channel_strip(
                 match on_track {
                     Some(i) => {
                         let uid = id(ns, (key, "built_in"));
-                        built_in_instrument_slot(ui, g, input_r, p, i, inst, uid);
+                        built_in_instrument_slot(ui, g, input_r, p, v, i, inst, uid);
                     }
-                    None => slot(g, input_r, inst, SLOT_EMPTY, TEXT),
+                    None => {
+                        slot(g, input_r, inst, SLOT_EMPTY, TEXT);
+                        if let StripKey::Track(i) = key {
+                            let resp =
+                                ui.interact(input_r, id(ns, (key, "choose")), Sense::click());
+                            instrument_menu(&resp, true, p, v, i);
+                        }
+                    }
                 }
             }
             // An aux strip's input is the bus it listens to: Aux 1 takes Bus 1, and so on.
@@ -2824,10 +2934,11 @@ mod tests {
         p.tracks[0].instrument = Some("Sampler");
         let before = p.song_rev;
         let mut h = crate::ui_test::Harness::new(500.0, 500.0);
-        let draw = |ui: &mut Ui, p: &mut Project| {
+        let mut view = MixerView::default();
+        let mut draw = |ui: &mut Ui, p: &mut Project| {
             let g = ui.painter().clone();
             let uid = egui::Id::unique("input");
-            built_in_instrument_slot(ui, &g, SLOT, p, 0, "Sampler", uid);
+            built_in_instrument_slot(ui, &g, SLOT, p, &mut view, 0, "Sampler", uid);
         };
         h.settle(|ui| draw(ui, &mut p));
         h.click(slot_button_rect(SLOT, 0).center(), |ui| draw(ui, &mut p));

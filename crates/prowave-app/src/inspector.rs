@@ -301,6 +301,95 @@ fn signed(v: i32) -> String {
     }
 }
 
+/// What the Sample BPM row asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SampleBpm {
+    Set(f64),
+    Off,
+    Find,
+}
+
+/// The sample's tempo as typed: a number sets it, nothing turns following off.
+fn typed_bpm(text: &str, following: Option<f64>) -> Option<SampleBpm> {
+    let text = text.trim();
+    if text.is_empty() {
+        return following.map(|_| SampleBpm::Off);
+    }
+    let bpm = text.parse::<f64>().ok()?;
+    let same = following.is_some_and(|f| (f - bpm).abs() < 0.05);
+    ((20.0..=400.0).contains(&bpm) && !same).then_some(SampleBpm::Set(bpm))
+}
+
+fn sample_bpm_field(
+    ui: &mut Ui,
+    rect: Rect,
+    following: Option<f64>,
+    region: (usize, usize),
+) -> Option<SampleBpm> {
+    let key = id(("sample_bpm", region));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let mut text: String = ui
+        .data(|d| d.get_temp(key))
+        .unwrap_or_else(|| following.map_or_else(String::new, |b| format!("{b:.1}")));
+    let edit = child
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(key.with("field"))
+                .hint_text("Off")
+                .desired_width((rect.width() - 44.0).max(20.0)),
+        )
+        .on_hover_text("The tempo the sample was made at. Set, it follows the project tempo.");
+    let mut act = None;
+    if edit.lost_focus() {
+        if !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            act = typed_bpm(&text, following);
+        }
+        ui.data_mut(|d| d.remove::<String>(key));
+    } else if edit.has_focus() {
+        ui.data_mut(|d| d.insert_temp(key, text));
+    }
+    let find = child
+        .small_button("Find")
+        .on_hover_text("Find the tempo from the sample's name or by listening to it");
+    if find.clicked() {
+        act = Some(SampleBpm::Find);
+    }
+    act
+}
+
+fn apply_sample_bpm(
+    ctx: &egui::Context,
+    p: &mut Project,
+    s: &mut UiState,
+    t: usize,
+    r: usize,
+    act: SampleBpm,
+) {
+    match act {
+        SampleBpm::Set(bpm) => {
+            crate::flex_edit::follow_source_tempo(p, t, r, bpm);
+            s.status = Some(format!("Follows the project tempo: made at {bpm:.1} BPM"));
+        }
+        SampleBpm::Off => s.flex.remove_later(t, r),
+        SampleBpm::Find => {
+            s.flex.tempo_asked = true;
+            s.flex.detect_tempo(p, t, r, ctx);
+            let following = p.tracks[t].regions[r]
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.follow_bpm.is_some());
+            if !following && !s.flex.busy() {
+                s.flex.tempo_asked = false;
+                s.status = Some("Too short to be a loop: type its BPM in".to_string());
+            }
+        }
+    }
+}
+
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
@@ -511,6 +600,18 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         }
         y += ROW_H;
 
+        // What tempo the sample was made at: set, the region follows the project's.
+        label(&g, left, y, "Sample BPM:", audio);
+        let field = Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0));
+        let bpm_act = sel.filter(|_| audio).and_then(|(t, r)| {
+            let following = p.tracks[t].regions[r]
+                .audio
+                .as_ref()
+                .and_then(|a| a.follow_bpm);
+            sample_bpm_field(ui, field, following, (t, r))
+        });
+        y += ROW_H;
+
         // "More" disclosure with the rest of Logic's region parameters (not implemented yet).
         let more = Rect::from_min_size(pos2(left, y), vec2(w, ROW_H));
         if ui.interact(more, id("more"), Sense::click()).clicked() {
@@ -559,6 +660,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             if p.tracks[t].regions[r].params != params {
                 p.tracks[t].regions[r].params = params;
                 changed_song = true;
+            }
+            // After the parameters, as a stretch changes them.
+            if let Some(act) = bpm_act {
+                apply_sample_bpm(ui.ctx(), p, s, t, r, act);
             }
         }
         y += 4.0;

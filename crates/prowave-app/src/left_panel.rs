@@ -43,6 +43,54 @@ pub struct PluginDrag(pub PluginInfo);
 #[derive(Default)]
 pub struct PluginList {
     clap: PluginScan,
+    kind: PluginKind,
+    search: String,
+}
+
+impl PluginList {
+    /// What has been found so far, with the scan started and its news taken in.
+    pub fn installed(&mut self, ctx: &egui::Context) -> &[PluginInfo] {
+        if !cfg!(test) {
+            self.clap.ensure_started(ctx);
+        }
+        self.clap.drain();
+        &self.clap.plugins
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PluginKind {
+    #[default]
+    All,
+    Instruments,
+    Effects,
+}
+
+impl PluginKind {
+    const ALL: [PluginKind; 3] = [
+        PluginKind::All,
+        PluginKind::Instruments,
+        PluginKind::Effects,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            PluginKind::All => "All",
+            PluginKind::Instruments => "Instruments",
+            PluginKind::Effects => "Effects",
+        }
+    }
+
+    /// Whether `info` is shown for this kind and this search, already in lower case.
+    fn shows(self, info: &PluginInfo, search: &str) -> bool {
+        let kind = match self {
+            PluginKind::All => true,
+            PluginKind::Instruments => info.is_instrument,
+            PluginKind::Effects => !info.is_instrument,
+        };
+        kind && (info.name.to_lowercase().contains(search)
+            || info.vendor.to_lowercase().contains(search))
+    }
 }
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
@@ -125,7 +173,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         };
         note(
             ui,
-            "Double-click a plugin to add it to the selected track, or drag it onto a track."
+            "Double-click a plugin to add it to the selected track, drag it onto a track, or click an empty mixer slot."
                 .to_string(),
         );
         if let Some((done, of)) = list.clap.progress {
@@ -144,8 +192,25 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             )
             .on_hover_text(why.join("\n"));
         }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            for kind in PluginKind::ALL {
+                ui.selectable_value(&mut list.kind, kind, kind.name());
+            }
+        });
+        ui.add(
+            egui::TextEdit::singleline(&mut list.search)
+                .hint_text("Search")
+                .desired_width(f32::INFINITY),
+        );
         ui.add_space(4.0);
-        let clap = &list.clap.plugins;
+        let search = list.search.trim().to_lowercase();
+        let clap: Vec<&PluginInfo> = list
+            .clap
+            .plugins
+            .iter()
+            .filter(|info| list.kind.shows(info, &search))
+            .collect();
         // `show_rows` places rows by this spacing, so it is set before the call.
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical()
@@ -153,7 +218,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             .show_rows(ui, ROW_H, clap.len(), |ui, range| {
                 for info in &clap[range] {
                     if clap_row(ui, info) {
-                        add = Some(info.clone());
+                        add = Some((*info).clone());
                     }
                 }
             });
@@ -215,6 +280,26 @@ fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugins_can_be_picked_by_kind_and_by_name() {
+        let plugin = |name: &str, is_instrument| PluginInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            vendor: "Saka Audio".to_string(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: name.into(),
+            is_instrument,
+        };
+        let (synth, comp) = (plugin("Keys", true), plugin("Squeeze", false));
+        assert!(PluginKind::Instruments.shows(&synth, ""));
+        assert!(!PluginKind::Instruments.shows(&comp, ""));
+        assert!(PluginKind::Effects.shows(&comp, ""));
+        assert!(!PluginKind::Effects.shows(&synth, ""));
+        assert!(PluginKind::All.shows(&synth, "saka"));
+        assert!(!PluginKind::All.shows(&synth, "squeeze"));
+    }
 
     #[test]
     fn the_tabs_have_their_names() {

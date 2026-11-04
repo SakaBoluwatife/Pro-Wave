@@ -517,7 +517,52 @@ fn take_steps(leftover: &mut f32, delta_px: f32, px_per_step: f32) -> i32 {
     steps as i32
 }
 
-fn lcd(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
+/// The box the tempo is typed in, while it is open: Enter or a click elsewhere sets it, Esc leaves
+/// it as it was. True while it is showing.
+fn tempo_field(ui: &mut Ui, p: &mut Project, open: bool, field: Rect) -> bool {
+    let key = egui::Id::unique(("control_bar", "tempo_edit"));
+    let field_id = key.with("field");
+    let beat = p.position_beats;
+    let held: Option<String> = ui.data(|d| d.get_temp(key));
+    let opening = open && held.is_none();
+    let Some(mut text) = held.or_else(|| opening.then(|| format!("{:.2}", p.tempo_at(beat))))
+    else {
+        return false;
+    };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    let edit = child.add_sized(
+        field.size(),
+        egui::TextEdit::singleline(&mut text)
+            .id(field_id)
+            .font(FontId::proportional(16.0))
+            .align(Align2::CENTER_CENTER),
+    );
+    if opening {
+        edit.request_focus();
+        let ctx = ui.ctx();
+        if let Some(mut state) = egui::TextEdit::load_state(ctx, field_id) {
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(text.chars().count()),
+            );
+            state.cursor.set_char_range(Some(all));
+            state.store(ctx, field_id);
+        }
+    }
+    if edit.lost_focus() || (!opening && !edit.has_focus()) {
+        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let typed = text.trim().parse::<f32>().ok().filter(|b| b.is_finite());
+        if let (false, Some(bpm)) = (cancelled, typed) {
+            p.set_tempo_at(beat, bpm);
+        }
+        ui.data_mut(|d| d.remove::<String>(key));
+    } else {
+        ui.data_mut(|d| d.insert_temp(key, text));
+    }
+    true
+}
+
+fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
     let pal = LcdColors::new(p.recording);
     g.rect_filled(rect, 6.0, pal.bg);
     g.rect_stroke(
@@ -566,23 +611,31 @@ fn lcd(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
 
     // Column 3: tempo (drag vertically to change it, like Logic).
     let tempo_rect = Rect::from_min_size(pos2(x0 + 252.0, rect.top()), vec2(84.0, rect.height()));
-    let resp = ui.interact(
-        tempo_rect,
-        egui::Id::unique(("control_bar", "tempo")),
-        Sense::drag(),
-    );
+    let resp = ui
+        .interact(
+            tempo_rect,
+            egui::Id::unique(("control_bar", "tempo")),
+            Sense::click_and_drag(),
+        )
+        .on_hover_text("Click to type the tempo, or drag up and down");
     // With a Tempo track, this is the tempo at the playhead, and dragging changes that one.
     let tempo_now = p.tempo_at(p.position_beats);
     if resp.dragged() {
         p.set_tempo_at(p.position_beats, tempo_now - resp.drag_delta().y * 0.5);
     }
-    g.text(
-        pos2(tempo_rect.center().x, top),
-        Align2::CENTER_TOP,
-        format!("{:.4}", p.tempo_at(p.position_beats)),
-        FontId::proportional(18.0),
-        pal.text,
+    let field = Rect::from_min_max(
+        pos2(tempo_rect.left() + 2.0, top - 1.0),
+        pos2(tempo_rect.right() - 2.0, top + 21.0),
     );
+    if !tempo_field(ui, p, resp.clicked(), field) {
+        g.text(
+            pos2(tempo_rect.center().x, top),
+            Align2::CENTER_TOP,
+            format!("{:.4}", p.tempo_at(p.position_beats)),
+            FontId::proportional(18.0),
+            pal.text,
+        );
+    }
     g.text(
         pos2(tempo_rect.center().x, bot + 2.0),
         Align2::CENTER_TOP,
@@ -936,7 +989,7 @@ pub fn control_bar(
         cyc_bg,
         if p.cycle { Color32::WHITE } else { ICON },
     ) {
-        p.cycle = !p.cycle;
+        crate::key_commands::toggle_cycle(p, &s.tracks);
     }
 
     let rx = |dx: f32| pos2(lcd_rect.right() + dx, cy);
@@ -1034,6 +1087,32 @@ fn fitting_font(g: &Painter, text: &str, size: f32, max_w: f32) -> FontId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tempo_can_be_typed_and_esc_leaves_it() {
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 44.0));
+        let at = pos2(rect.left() + 252.0 + 42.0, rect.center().y - 8.0);
+        let mut h = crate::ui_test::Harness::new(700.0, 200.0);
+        let draw = |ui: &mut Ui, p: &mut Project| {
+            let g = ui.painter().clone();
+            lcd(ui, &g, p, rect, 0.0);
+        };
+        h.settle(|ui| draw(ui, &mut p));
+        h.click(at, |ui| draw(ui, &mut p));
+        h.frame(vec![egui::Event::Text("98.5".into())], |ui| {
+            draw(ui, &mut p)
+        });
+        assert_eq!(p.tempo, 120.0, "not until it is entered");
+        h.key(egui::Key::Enter, |ui| draw(ui, &mut p));
+        assert_eq!(p.tempo, 98.5);
+        h.settle(|ui| draw(ui, &mut p));
+        h.click(at, |ui| draw(ui, &mut p));
+        h.frame(vec![egui::Event::Text("200".into())], |ui| draw(ui, &mut p));
+        h.key(egui::Key::Escape, |ui| draw(ui, &mut p));
+        assert_eq!(p.tempo, 98.5);
+    }
 
     #[test]
     fn the_volume_never_covers_the_metronome_or_the_icons() {
