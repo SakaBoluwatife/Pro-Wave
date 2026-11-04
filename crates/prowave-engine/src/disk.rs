@@ -186,9 +186,14 @@ impl AudioFile {
     /// The whole file as interleaved stereo at its own sample rate, for Flex edits. Stops at
     /// [`crate::analysis::MAX_SECONDS`] (ten minutes), so a long file cannot fill the memory.
     pub fn read_stereo(&self) -> Result<Vec<f32>, AudioError> {
+        self.read_stereo_for(crate::analysis::MAX_SECONDS)
+    }
+
+    /// The start of the file as interleaved stereo at its own sample rate, at most `seconds`
+    /// long and decoding no further than that (a Browser preview of a long file).
+    pub fn read_stereo_for(&self, seconds: f64) -> Result<Vec<f32>, AudioError> {
         let mut src = Source::open(&self.path)?;
-        let limit =
-            (crate::analysis::MAX_SECONDS * f64::from(self.sample_rate.max(1))) as usize * 2;
+        let limit = (seconds * f64::from(self.sample_rate.max(1))) as usize * 2;
         let mut out = Vec::new();
         let mut buf = Vec::new();
         while out.len() < limit && src.next_stereo(&mut buf)? {

@@ -2462,6 +2462,39 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
     }
+    // A sample dragged from the Browser: a line where it will start (the bar under the pointer),
+    // and when it is let go over the lanes it goes there, on the audio track under the pointer
+    // or on a new one (a MIDI file is imported as tracks).
+    if let Some(drag) = egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx()) {
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pt| lanes.contains(*pt));
+        if let Some(pt) = over {
+            let bar0 = p.beats_to_bar(beat_of(pt.x)).floor();
+            let x = x_of(p.bar_to_beats(bar0));
+            g.line_segment(
+                [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
+                Stroke::new(2.0, crate::widgets::BLUE),
+            );
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                let path = &drag.0;
+                if crate::midi_file::is_midi_path(path) {
+                    s.open_paths.push(path.clone());
+                } else {
+                    let row = row_at(&rows, pt.y - lanes.top() + scroll_y);
+                    if let Err(e) =
+                        crate::import::import_audio_at(p, path, ui.ctx(), bar0 + 1.0, row)
+                    {
+                        s.status = Some(crate::i18n::trf(
+                            "cannot import {}: {}",
+                            &[&path.display(), &e],
+                        ));
+                    }
+                }
+            }
+        }
+    }
     context_menu(&lane_resp, |ui| {
         new_track_items(ui, &mut picked);
         ui.separator();

@@ -383,6 +383,8 @@ pub enum Command {
         hz: f32,
         gain: f32,
     },
+    /// Plays a Browser preview from its start, replacing the one playing; `None` stops it.
+    SetPreview(Option<Box<Preview>>),
     /// Live note (clicking the Piano Roll keys, auditioning while editing). Works while the
     /// transport is stopped and is released by `NoteOff` (or automatically after 4 s).
     NoteOn {
@@ -462,6 +464,7 @@ impl Command {
                 | Self::SetPdc { .. }
                 | Self::SetAutomation(_)
                 | Self::SetInput(_)
+                | Self::SetPreview(_)
         )
     }
 
@@ -487,6 +490,7 @@ pub enum Garbage {
     Pdc(Box<Pdc>),
     Automation(Vec<AutoLane>),
     Input(Box<InputFeed>),
+    Preview(Box<Preview>),
 }
 
 /// What the engine shows the UI after each audio block: the playhead, the transport and the
@@ -730,6 +734,19 @@ pub struct EngineCore {
     test_hz: f32,
     test_gain: f32,
     test_phase: f32,
+    /// The sample the Browser is previewing, and the next frame of it to play.
+    preview: Option<Box<Preview>>,
+    preview_pos: usize,
+}
+
+/// A sample played from the Browser when it is clicked (Logic: the Loop Browser's preview; FL
+/// Studio: clicking a sample in the browser). Interleaved stereo at the engine's sample rate,
+/// decoded and resampled off the audio thread; the engine only reads it, independent of the
+/// transport, and an old one goes back through the garbage queue.
+pub struct Preview {
+    pub samples: Vec<f32>,
+    /// Linear gain, 0..=1.
+    pub gain: f32,
 }
 
 /// Keeps an oscillator phase in 0..1. `fract` costs a `floorf` call per sample on baseline
@@ -845,7 +862,16 @@ impl EngineCore {
             test_hz: 0.0,
             test_gain: 0.0,
             test_phase: 0.0,
+            preview: None,
+            preview_pos: 0,
         }
+    }
+
+    /// Whether a Browser preview still has frames to play.
+    fn previewing(&self) -> bool {
+        self.preview
+            .as_deref()
+            .is_some_and(|p| self.preview_pos * 2 + 1 < p.samples.len())
     }
 
     /// The UI's half of the state this core publishes after every block. There is one;
@@ -1038,7 +1064,8 @@ impl EngineCore {
             || self.voices.iter().any(|v| v.active)
             || self.click_remaining > 0
             || self.counting
-            || (self.test_hz > 0.0 && self.test_gain > 0.0);
+            || (self.test_hz > 0.0 && self.test_gain > 0.0)
+            || self.previewing();
         if sounding {
             (self.sr * 0.005).round().max(1.0) as u32
         } else {
@@ -1519,6 +1546,12 @@ impl EngineCore {
                         0.0
                     };
                 }
+                Command::SetPreview(new) => {
+                    if let Some(old) = std::mem::replace(&mut self.preview, new) {
+                        let _ = self.trash.push(Garbage::Preview(old));
+                    }
+                    self.preview_pos = 0;
+                }
                 Command::SetSong(new) => {
                     let old = std::mem::replace(&mut self.song, new);
                     let _ = self.trash.push(Garbage::Song(old));
@@ -1848,6 +1881,19 @@ impl EngineCore {
                 let c = (self.click_phase * std::f32::consts::TAU).sin() * env * 0.3;
                 l += c as f64;
                 r += c as f64;
+            }
+            if let Some(pv) = self.preview.as_deref() {
+                let i = self.preview_pos * 2;
+                if let (Some(a), Some(b)) = (pv.samples.get(i), pv.samples.get(i + 1)) {
+                    let g = if pv.gain.is_finite() {
+                        pv.gain.clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    l += f64::from(finite_or_zero(*a) * g);
+                    r += f64::from(finite_or_zero(*b) * g);
+                    self.preview_pos += 1;
+                }
             }
             let master = self.master.next() as f64;
             // `clamp` lets NaN through, so a non-finite sum becomes silence first.
@@ -2700,6 +2746,42 @@ mod tests {
         assert!(tx.push(Command::Stop).is_ok());
         assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
         assert!(buf.iter().all(|x| x.is_finite()));
+    }
+
+    /// A Browser preview plays once from its start while the transport is stopped, without
+    /// allocating, then falls silent; `None` stops it at once.
+    #[test]
+    fn preview_plays_once_and_stops() {
+        let (mut e, mut tx, _s) = rig();
+        let frames = 300;
+        let samples = vec![0.5f32; frames * 2];
+        assert!(tx
+            .push(Command::SetPreview(Some(Box::new(Preview {
+                samples,
+                gain: 1.0,
+            }))))
+            .is_ok());
+        let mut buf = vec![0.0f32; 256 * 2];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(buf.iter().all(|x| x.is_finite()));
+        assert!(buf[0] > 0.0, "the preview sounds while stopped");
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(
+            buf[2 * 10] > 0.0,
+            "frames 256..300 are the block's first 44"
+        );
+        assert!(buf[2 * 100].abs() < 1e-6, "silent once it has played out");
+        assert!(tx
+            .push(Command::SetPreview(Some(Box::new(Preview {
+                samples: vec![0.5f32; frames * 2],
+                gain: 1.0,
+            }))))
+            .is_ok());
+        e.process(&mut buf);
+        assert!(buf[0] > 0.0, "a new preview starts from its beginning");
+        assert!(tx.push(Command::SetPreview(None)).is_ok());
+        e.process(&mut buf);
+        assert!(buf.iter().all(|x| x.abs() < 1e-6), "None stops it");
     }
 
     #[test]

@@ -49,8 +49,21 @@ pub fn audio_region(file: AudioFile, ctx: &egui::Context) -> AudioRegion {
 
 /// Adds a new audio track with one region starting at the bar under the playhead.
 pub fn import_audio(p: &mut Project, path: &Path, ctx: &egui::Context) -> Result<(), AudioError> {
-    let file = AudioFile::open(path)?;
     let start_bar = p.beats_to_bar(p.position_beats).floor() + 1.0;
+    import_audio_at(p, path, ctx, start_bar, None)
+}
+
+/// Puts an audio file at `start_bar` (counted from 1): on track `onto` when that is an audio
+/// track, else on a new audio track. Used by drag-and-drop from the Browser.
+pub fn import_audio_at(
+    p: &mut Project,
+    path: &Path,
+    ctx: &egui::Context,
+    start_bar: f64,
+    onto: Option<usize>,
+) -> Result<(), AudioError> {
+    let file = AudioFile::open(path)?;
+    let start_bar = start_bar.max(1.0);
     // The region's length follows the Tempo track from where it starts.
     let map = p.tempo_map();
     let start = p.bar_to_beats(start_bar - 1.0);
@@ -61,9 +74,26 @@ pub fn import_audio(p: &mut Project, path: &Path, ctx: &egui::Context) -> Result
         .and_then(|s| s.to_str())
         .unwrap_or("Audio")
         .to_string();
+    let region = Region {
+        name: name.clone(),
+        start_bar: start_bar as f32,
+        len_bars: len_bars as f32,
+        notes: vec![],
+        controls: Vec::new(),
+        folder: None,
+        generated: None,
+        audio: Some(audio_region(file, ctx)),
+        params: RegionParams::default(),
+    };
+    if let Some(t) = onto.filter(|&t| p.tracks.get(t).is_some_and(|t| t.kind == TrackKind::Audio)) {
+        p.tracks[t].regions.push(region);
+        p.selected_track = t;
+        p.song_rev += 1;
+        return Ok(());
+    }
 
     p.tracks.push(Track {
-        name: name.clone(),
+        name,
         kind: TrackKind::Audio,
         color: egui::Color32::from_rgb(0x3f, 0x5f, 0xc0),
         mute: false,
@@ -76,17 +106,7 @@ pub fn import_audio(p: &mut Project, path: &Path, ctx: &egui::Context) -> Result
         pan: 0.0,
         inserts: vec![],
         instrument: None,
-        regions: vec![Region {
-            name,
-            start_bar: start_bar as f32,
-            len_bars: len_bars as f32,
-            notes: vec![],
-            controls: Vec::new(),
-            folder: None,
-            generated: None,
-            audio: Some(audio_region(file, ctx)),
-            params: RegionParams::default(),
-        }],
+        regions: vec![region],
         params: TrackParams::default(),
         category: None,
         sends: Vec::new(),
@@ -103,4 +123,49 @@ pub fn import_audio(p: &mut Project, path: &Path, ctx: &egui::Context) -> Result
     p.selected_track = p.tracks.len() - 1;
     p.song_rev += 1;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_sample_lands_on_the_audio_track_under_it_or_on_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("kick.wav");
+        prowave_engine::write_wav(&wav, &vec![0.1; 48_000 * 2], 48_000).unwrap();
+        let ctx = egui::Context::default();
+        let mut p = Project::demo();
+        let other = p
+            .tracks
+            .iter()
+            .position(|t| t.kind != TrackKind::Audio)
+            .unwrap();
+
+        // Nothing under the pointer: a new track, at the bar it was dropped on.
+        let n = p.tracks.len();
+        import_audio_at(&mut p, &wav, &ctx, 5.0, None).unwrap();
+        assert_eq!(p.tracks.len(), n + 1);
+        assert_eq!(p.tracks[n].regions[0].start_bar, 5.0);
+
+        // An audio track: on that track, which gets selected.
+        import_audio_at(&mut p, &wav, &ctx, 9.0, Some(n)).unwrap();
+        assert_eq!(p.tracks.len(), n + 1);
+        assert_eq!(p.tracks[n].regions.len(), 2);
+        assert_eq!(p.tracks[n].regions[1].start_bar, 9.0);
+        assert_eq!(p.selected_track, n);
+
+        // Any other kind of track, or a row that is gone: a new track.
+        let before = p.tracks[other].regions.len();
+        import_audio_at(&mut p, &wav, &ctx, 1.0, Some(other)).unwrap();
+        assert_eq!(p.tracks.len(), n + 2);
+        assert_eq!(p.tracks[other].regions.len(), before);
+        import_audio_at(&mut p, &wav, &ctx, 1.0, Some(999)).unwrap();
+        assert_eq!(p.tracks.len(), n + 3);
+
+        // Bars count from 1, so a drop before the start is held at the start.
+        import_audio_at(&mut p, &wav, &ctx, -3.0, None).unwrap();
+        assert_eq!(p.tracks.last().unwrap().regions[0].start_bar, 1.0);
+    }
 }

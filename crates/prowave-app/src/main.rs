@@ -20,6 +20,7 @@ mod groups;
 mod i18n;
 mod import;
 mod inspector;
+mod left_panel;
 mod library;
 mod marker_track;
 mod menus;
@@ -39,6 +40,7 @@ mod piano_roll;
 mod project_io;
 mod recent_files;
 mod recorder;
+mod sample_browser;
 mod score;
 mod scripter;
 mod side_panes;
@@ -90,6 +92,12 @@ pub struct UiState {
     pub show_notes: bool,
     /// The Loop Browser and All Files.
     pub browser: file_browser::BrowserView,
+    /// Which tab of the left panel is showing: Library, Browser or Plugins.
+    pub left_tab: left_panel::LeftTab,
+    /// The Browser tab: sample folders, search, favorites and the preview.
+    pub samples: sample_browser::SampleBrowser,
+    /// The Plugins tab: the VST3 plugins found on this computer.
+    pub plugins: left_panel::PluginList,
     /// Files to add to the project, from the browsers.
     pub open_paths: Vec<std::path::PathBuf>,
     /// Help > Check for Updates… was chosen.
@@ -167,6 +175,9 @@ impl UiState {
             show_toolbar: false,
             show_notes: false,
             browser: file_browser::BrowserView::default(),
+            left_tab: left_panel::LeftTab::default(),
+            samples: sample_browser::SampleBrowser::default(),
+            plugins: left_panel::PluginList::default(),
             open_paths: Vec::new(),
             update_check: false,
             update_auto: true,
@@ -603,7 +614,7 @@ impl eframe::App for App {
             egui::Panel::left("library")
                 .exact_size(290.0)
                 .frame(egui::Frame::new())
-                .show(ui, |ui| library::show(ui, p, s));
+                .show(ui, |ui| left_panel::show(ui, p, s));
         }
         if s.show_inspector {
             egui::Panel::left("inspector")
@@ -661,6 +672,9 @@ impl eframe::App for App {
         for path in std::mem::take(&mut self.ui.open_paths) {
             self.import(&path, &ctx);
         }
+        // The Browser's preview goes to the engine (it has no engine without an audio device).
+        let engine = self.sync.as_mut().map(|sync| &mut sync.engine);
+        self.ui.samples.pump(engine, &ctx);
         self.record_audio(&ctx);
         self.play_and_record_midi(&ctx);
         if std::mem::take(&mut self.ui.update_check) {

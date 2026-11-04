@@ -37,7 +37,7 @@ pub use crate::capture::{
 };
 pub use crate::core::{
     dsp_load, AudioClip, ClipEdit, Command, ControlEvent, EngineCore, EngineState, FadeCurve,
-    Garbage, MidiOutEvent, NoteEvent, Shared, Song, StateReader, TrackMix, MAX_TRACKS,
+    Garbage, MidiOutEvent, NoteEvent, Preview, Shared, Song, StateReader, TrackMix, MAX_TRACKS,
 };
 pub use crate::disk::{
     ring_blocks_for, AudioError, AudioFile, DiskThread, RING_BLOCKS, RING_BLOCKS_MAX,
