@@ -327,6 +327,17 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             volume_db: t.volume_db,
             pan: t.pan,
             inserts: t.inserts.iter().map(|s| s.name().to_string()).collect(),
+            plugins: t
+                .plugins
+                .iter()
+                .map(|i| prowave_project::PluginDoc {
+                    id: i.id.clone(),
+                    name: i.name.clone(),
+                    vendor: i.vendor.clone(),
+                    format: "CLAP".into(),
+                    path: i.path.display().to_string(),
+                })
+                .collect(),
             fx: t
                 .inserts
                 .iter()
@@ -722,6 +733,20 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             volume_db: t.volume_db.clamp(-60.0, 6.0),
             pan: t.pan.clamp(-1.0, 1.0),
             inserts: inserts_from_doc(t),
+            plugins: t
+                .plugins
+                .iter()
+                .filter(|d| !d.id.is_empty())
+                .take(prowave_engine::MAX_INSERTS)
+                .map(|d| crate::model::PluginInsert {
+                    uid: crate::plugin_rack::new_uid(),
+                    id: d.id.clone(),
+                    name: d.name.clone(),
+                    vendor: d.vendor.clone(),
+                    path: d.path.clone().into(),
+                    failed: None,
+                })
+                .collect(),
             instrument: t.instrument.as_deref().map(intern),
             regions,
             params: TrackParams {

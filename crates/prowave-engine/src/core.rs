@@ -1,10 +1,11 @@
 //! Device-independent engine core. `EngineCore::process` is the audio-thread entry point:
 //! no allocation, no locks, no syscalls. Unit-testable without an audio device.
 use crate::disk::{Block, ClipShared};
-use crate::fx::{Chain, Pdc, MAX_FX_PARAMS};
+use crate::fx::{Chain, Pdc, MAX_FX_PARAMS, MAX_INSERTS};
 use crate::gain_smoothing::GainRamp;
 use crate::monitor::{InputFeed, MonitorTrack, MAX_MONITORS};
 use crate::mtc::{MtcGenerator, MtcMessage};
+use crate::plugin::PluginSlot;
 #[cfg(test)]
 use crate::routing::AutoPoint;
 #[cfg(test)]
@@ -419,6 +420,19 @@ pub enum Command {
         track: u16,
         chain: Box<Chain>,
     },
+    /// Puts a hosted plugin in insert `slot` of a strip, after its built-in effects; `None` empties
+    /// the slot. The plugin that was there comes back through the garbage queue.
+    SetPlugin {
+        track: u16,
+        slot: u8,
+        plugin: Option<Box<PluginSlot>>,
+    },
+    /// Trades the hosted plugins of two slots, so a plugin keeps running when its track or slot
+    /// moves. Slots that do not exist: nothing happens.
+    SwapPlugins {
+        a: (u16, u8),
+        b: (u16, u8),
+    },
     /// New parameters and bypass for effect `slot` of a strip's chain (no allocation, so
     /// knobs can move while it plays). Ignored when the slot does not exist.
     SetFx {
@@ -461,6 +475,7 @@ impl Command {
                 | Self::SetControls(_)
                 | Self::SetTempoMap(_)
                 | Self::SetInserts { .. }
+                | Self::SetPlugin { .. }
                 | Self::SetPdc { .. }
                 | Self::SetAutomation(_)
                 | Self::SetInput(_)
@@ -490,6 +505,7 @@ pub enum Garbage {
     Pdc(Box<Pdc>),
     Automation(Vec<AutoLane>),
     Input(Box<InputFeed>),
+    Plugin(Box<PluginSlot>),
     Preview(Box<Preview>),
 }
 
@@ -695,6 +711,9 @@ pub struct EngineCore {
     /// Effects per strip (an empty box for none), sends and bus inputs.
     chains: Vec<Option<Box<Chain>>>,
     /// Delay compensation per strip.
+    /// Hosted plugins of each strip, by insert slot. Sized here, so nothing allocates on the
+    /// audio thread when one is swapped.
+    plugins: Vec<[Option<Box<PluginSlot>>; MAX_INSERTS]>,
     pdc: Vec<Option<Box<Pdc>>>,
     routes: Vec<Route>,
     /// Strips with effects or sends (processed in order), and Aux strips (processed after
@@ -832,6 +851,9 @@ impl EngineCore {
             track_patch: vec![SynthPatch::default(); MAX_TRACKS],
             track_external: vec![false; MAX_TRACKS],
             chains: (0..MAX_TRACKS).map(|_| None).collect(),
+            plugins: (0..MAX_TRACKS)
+                .map(|_| std::array::from_fn(|_| None))
+                .collect(),
             pdc: (0..MAX_TRACKS).map(|_| None).collect(),
             routes: vec![Route::default(); MAX_TRACKS],
             complex: Vec::with_capacity(MAX_TRACKS),
@@ -1125,12 +1147,13 @@ impl EngineCore {
         self.aux.clear();
         for i in 0..MAX_TRACKS {
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
+            let has_plugin = self.plugins[i].iter().any(Option::is_some);
             let has_pdc = self.pdc[i].as_ref().is_some_and(|p| !p.is_empty());
             let to_bus = self.routes[i].output > 0;
             self.strip_kind[i] = if self.routes[i].bus_in > 0 {
                 self.aux.push(i as u16);
                 2
-            } else if has_chain || has_pdc || to_bus || self.routes[i].has_sends() {
+            } else if has_chain || has_plugin || has_pdc || to_bus || self.routes[i].has_sends() {
                 self.complex.push(i as u16);
                 1
             } else {
@@ -1201,6 +1224,9 @@ impl EngineCore {
         let (mut xl, mut xr) = (xl as f32, xr as f32);
         if let Some(chain) = self.chains[t].as_mut() {
             (xl, xr) = chain.process(xl, xr);
+        }
+        for plugin in self.plugins[t].iter_mut().flatten() {
+            (xl, xr) = plugin.process(xl, xr);
         }
         if let Some(pdc) = self.pdc[t].as_mut() {
             (xl, xr) = pdc.delay_before(xl, xr);
@@ -1471,6 +1497,35 @@ impl EngineCore {
                         self.sort_strips();
                     } else {
                         let _ = self.trash.push(Garbage::Chain(chain));
+                    }
+                }
+                Command::SetPlugin {
+                    track,
+                    slot,
+                    plugin,
+                } => {
+                    let place = self
+                        .plugins
+                        .get_mut(track as usize)
+                        .and_then(|strip| strip.get_mut(slot as usize));
+                    let old = match place {
+                        Some(place) => std::mem::replace(place, plugin),
+                        None => plugin,
+                    };
+                    if let Some(old) = old {
+                        let _ = self.trash.push(Garbage::Plugin(old));
+                    }
+                    self.sort_strips();
+                }
+                Command::SwapPlugins { a, b } => {
+                    let exists =
+                        |(t, s): (u16, u8)| (t as usize) < MAX_TRACKS && (s as usize) < MAX_INSERTS;
+                    if exists(a) && exists(b) && a != b {
+                        let first = self.plugins[a.0 as usize][a.1 as usize].take();
+                        let second =
+                            std::mem::replace(&mut self.plugins[b.0 as usize][b.1 as usize], first);
+                        self.plugins[a.0 as usize][a.1 as usize] = second;
+                        self.sort_strips();
                     }
                 }
                 Command::SetPdc { track, pdc } => {
@@ -2746,6 +2801,103 @@ mod tests {
         assert!(tx.push(Command::Stop).is_ok());
         assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
         assert!(buf.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn a_hosted_plugin_plays_on_its_strip_without_allocating_and_comes_back_as_garbage() {
+        use crate::plugin::{tests::FakePlugin, PLUGIN_BLOCK};
+        let (tx_keep, rx) = rtrb::RingBuffer::new(64);
+        let mut tx = tx_keep;
+        let (gtx, mut grx) = rtrb::RingBuffer::new(8);
+        let mut e = EngineCore::new(48_000, rx, gtx, Arc::new(Shared::new()));
+        assert!(tx
+            .push(Command::SetSong(two_tracks_song(Vec::new())))
+            .is_ok());
+        let slot = |add| {
+            Some(Box::new(PluginSlot::new(Box::new(FakePlugin {
+                add,
+                ..FakePlugin::default()
+            }))))
+        };
+        let set = |plugin| Command::SetPlugin {
+            track: 0,
+            slot: 2,
+            plugin,
+        };
+        assert!(tx.push(set(slot(0.25))).is_ok());
+        let mut buf = vec![0.0f32; 512 * 2];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(buf.iter().all(|x| x.is_finite()));
+        assert!(
+            buf[..PLUGIN_BLOCK * 2].iter().all(|x| *x == 0.0),
+            "one block late"
+        );
+        assert!(buf[(PLUGIN_BLOCK + 8) * 2] > 0.0, "the plugin is heard");
+        // Only the song that was replaced has come back so far.
+        assert!(matches!(grx.pop(), Ok(Garbage::Song(_))));
+        assert!(grx.pop().is_err());
+
+        assert!(tx.push(set(None)).is_ok());
+        e.process(&mut buf);
+        assert!(buf.iter().all(|x| x.abs() < 1e-6), "the slot is empty");
+        assert!(matches!(grx.pop(), Ok(Garbage::Plugin(_))));
+
+        // A slot or track that does not exist gives the plugin straight back.
+        let far = Command::SetPlugin {
+            track: 0,
+            slot: MAX_INSERTS as u8,
+            plugin: slot(0.25),
+        };
+        assert!(tx.push(far).is_ok());
+        e.process(&mut buf);
+        assert!(matches!(grx.pop(), Ok(Garbage::Plugin(_))));
+        assert!(buf.iter().all(|x| x.abs() < 1e-6));
+    }
+
+    #[test]
+    fn a_plugin_keeps_playing_when_its_slot_moves() {
+        use crate::plugin::{tests::FakePlugin, PLUGIN_BLOCK};
+        let (mut e, mut tx, _s) = rig();
+        let song = Box::new(Song::new(
+            Vec::new(),
+            vec![
+                TrackMix::default(),
+                TrackMix {
+                    mute: true,
+                    ..TrackMix::default()
+                },
+            ],
+        ));
+        assert!(tx.push(Command::SetSong(song)).is_ok());
+        let plugin = PluginSlot::new(Box::new(FakePlugin {
+            add: 0.25,
+            ..FakePlugin::default()
+        }));
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 0,
+                slot: 0,
+                plugin: Some(Box::new(plugin)),
+            })
+            .is_ok());
+        let mut buf = vec![0.0f32; 512 * 2];
+        e.process(&mut buf);
+        assert!(buf[(PLUGIN_BLOCK + 8) * 2] > 0.0);
+        // Onto the muted track: silent, and no allocation for the move.
+        assert!(tx
+            .push(Command::SwapPlugins {
+                a: (0, 0),
+                b: (1, 3)
+            })
+            .is_ok());
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(buf.iter().all(|x| x.abs() < 1e-6), "it moved");
+        // And back. A slot that is not there changes nothing.
+        for (a, b) in [((1, 3), (0, 0)), ((0, 0), (0, MAX_INSERTS as u8))] {
+            assert!(tx.push(Command::SwapPlugins { a, b }).is_ok());
+        }
+        e.process(&mut buf);
+        assert!(buf[511 * 2] > 0.0, "it plays on with its state");
     }
 
     /// A Browser preview plays once from its start while the transport is stopped, without

@@ -552,6 +552,33 @@ pub struct AudioRegion {
     pub flex: Option<crate::flex_edit::FlexEdit>,
 }
 
+/// A hosted plugin on a channel strip: what the project knows of it. The running instance is kept
+/// by [`crate::plugin_rack::Rack`], which finds it by `uid`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInsert {
+    /// Which instance this is, in this run of the program. Never saved.
+    pub uid: u64,
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub path: std::path::PathBuf,
+    /// Why it did not load. Not saved: it is tried again next time the project opens.
+    pub failed: Option<String>,
+}
+
+impl PluginInsert {
+    pub fn new(info: &prowave_host::PluginInfo) -> Self {
+        Self {
+            uid: crate::plugin_rack::new_uid(),
+            id: info.id.clone(),
+            name: info.name.clone(),
+            vendor: info.vendor.clone(),
+            path: info.path.clone(),
+            failed: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Track {
     pub name: String,
@@ -569,6 +596,8 @@ pub struct Track {
     pub volume_db: f32,
     pub pan: f32,
     pub inserts: Vec<Insert>,
+    /// Hosted plugins of the strip, after `inserts`.
+    pub plugins: Vec<PluginInsert>,
     pub instrument: Option<&'static str>,
     pub regions: Vec<Region>,
     pub params: TrackParams,
@@ -627,6 +656,7 @@ impl Track {
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
+            plugins: Vec::new(),
             instrument,
             regions: vec![],
             params: TrackParams::default(),
@@ -775,6 +805,7 @@ impl Project {
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
+            plugins: Vec::new(),
             instrument: Some("Sampler"),
             regions: vec![],
             params: TrackParams::default(),
@@ -820,6 +851,7 @@ impl Project {
             volume_db: vol,
             pan: 0.0,
             inserts: inserts_from_names(&ins),
+            plugins: Vec::new(),
             instrument: inst,
             regions: vec![Region {
                 name: name.into(),

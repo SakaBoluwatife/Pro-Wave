@@ -1,0 +1,15 @@
+[package]
+name = "prowave-host"
+version = "0.1.0"
+edition = "2021"
+description = "ProWave Studio plugin host: scans and loads CLAP plugins for the engine"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+prowave-engine = { path = "../prowave-engine" }
+clack-host = "0.2.0"
+clack-extensions = { version = "0.2.0", features = ["clack-host", "audio-ports", "latency", "state", "params", "note-ports"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"

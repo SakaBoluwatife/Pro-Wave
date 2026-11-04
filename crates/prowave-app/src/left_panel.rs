@@ -2,13 +2,15 @@
 //!
 //! - **Library:** Logic's patch browser (`library.rs`), as before.
 //! - **Browser:** your sample folders (`sample_browser.rs`).
-//! - **Plugins:** the VST3 plugins found on this computer. Pro Wave cannot host plugins yet, so
-//!   they are only listed, and the tab says so.
+//! - **Plugins:** the plugins found on this computer. CLAP effects go on a track from here; VST3
+//!   plugins cannot load yet, so they are only listed, and the tab says so.
 use crate::i18n::tr;
 use crate::model::Project;
+use crate::plugin_scan::PluginScan;
 use crate::widgets::{BLUE, TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, UiBuilder};
+use prowave_host::PluginInfo;
 use std::path::{Path, PathBuf};
 
 const TAB_H: f32 = 26.0;
@@ -37,9 +39,14 @@ impl LeftTab {
     }
 }
 
-/// The VST3 plugins found on this computer.
+/// What a drag from the Plugins tab carries: the plugin to drop on a track.
+#[derive(Clone, Debug)]
+pub struct PluginDrag(pub PluginInfo);
+
+/// The plugins found on this computer: CLAP, which can load, and VST3, which is only listed.
 #[derive(Default)]
 pub struct PluginList {
+    clap: PluginScan,
     scanned: bool,
     found: Vec<(String, PathBuf)>,
 }
@@ -153,56 +160,141 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| match s.left_tab {
         LeftTab::Library => crate::library::show(ui, p, s),
         LeftTab::Browser => crate::sample_browser::show(ui, s),
-        LeftTab::Plugins => plugins(ui, &mut s.plugins),
+        LeftTab::Plugins => plugins(ui, p, s),
     });
 }
 
-fn plugins(ui: &mut Ui, list: &mut PluginList) {
+fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
     ui.painter_at(panel).rect_filled(panel, 0.0, PANEL_BG);
+    let ctx = ui.ctx().clone();
+    let list = &mut s.plugins;
     if !list.scanned {
         list.found = scan(&vst3_folders());
         list.scanned = true;
     }
+    list.clap.ensure_started(&ctx);
+    list.clap.drain();
+    let mut add = None;
     let inner = panel.shrink2(vec2(8.0, 6.0));
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} VST3", list.found.len())).color(TEXT));
-            if ui.small_button("Rescan").clicked() {
+            let counts = format!(
+                "{} CLAP, {} VST3",
+                list.clap.plugins.len(),
+                list.found.len()
+            );
+            ui.label(egui::RichText::new(counts).color(TEXT));
+            if ui
+                .small_button("Rescan")
+                .on_hover_text("Look for new plugins and try the ones that failed again")
+                .clicked()
+            {
                 list.scanned = false;
+                list.clap.start(true, &ctx);
             }
         });
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new("Pro Wave cannot load plugins yet. These are the VST3 plugins found on this computer.")
-                .small()
-                .color(TEXT_DIM),
-            )
-            .wrap(),
+        let note = |ui: &mut Ui, text: String| {
+            ui.add(egui::Label::new(egui::RichText::new(text).small().color(TEXT_DIM)).wrap())
+        };
+        note(
+            ui,
+            "Double-click an effect to add it to the selected track, or drag it onto a track. \
+             Instruments and VST3 cannot load yet."
+                .to_string(),
         );
+        if let Some((done, of)) = list.clap.progress {
+            note(ui, format!("Scanning {done} of {of}…"));
+        }
+        if !list.clap.failed.is_empty() {
+            let why: Vec<String> = list
+                .clap
+                .failed
+                .iter()
+                .map(|(path, e)| format!("{}: {e}", path.display()))
+                .collect();
+            note(
+                ui,
+                format!("{} files would not load", list.clap.failed.len()),
+            )
+            .on_hover_text(why.join("\n"));
+        }
         ui.add_space(4.0);
+        let clap = &list.clap.plugins;
         // `show_rows` places rows by this spacing, so it is set before the call.
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show_rows(ui, ROW_H, list.found.len(), |ui, range| {
-                for (name, path) in &list.found[range] {
-                    let (rect, resp) = ui.allocate_exact_size(
-                        vec2(ui.available_width(), ROW_H),
-                        Sense::hover(),
-                    );
-                    ui.painter_at(rect).text(
-                        pos2(rect.left() + 4.0, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        name,
-                        FontId::proportional(12.5),
-                        TEXT_DIM,
-                    );
-                    resp.on_hover_text(path.display().to_string());
+            .show_rows(ui, ROW_H, clap.len() + list.found.len(), |ui, range| {
+                for i in range {
+                    if let Some(info) = clap.get(i) {
+                        if clap_row(ui, info) {
+                            add = Some(info.clone());
+                        }
+                    } else if let Some((name, path)) = list.found.get(i - clap.len()) {
+                        let (rect, resp) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+                        ui.painter_at(rect).text(
+                            pos2(rect.left() + 4.0, rect.center().y),
+                            Align2::LEFT_CENTER,
+                            format!("{name}  (VST3)"),
+                            FontId::proportional(12.5),
+                            TEXT_DIM,
+                        );
+                        resp.on_hover_text(path.display().to_string());
+                    }
                 }
             });
     });
+    if let Some(info) = add {
+        if let Err(e) = crate::plugin_rack::add_effect(p, p.selected_track, &info) {
+            s.status = Some(e);
+        }
+    }
+    // The plugin being dragged follows the pointer until it is dropped.
+    if let Some(drag) = egui::DragAndDrop::payload::<PluginDrag>(&ctx) {
+        if let Some(pos) = ctx.pointer_interact_pos() {
+            egui::Area::new(egui::Id::unique("plugin_drag_ghost"))
+                .order(egui::Order::Tooltip)
+                .fixed_pos(pos + vec2(14.0, 10.0))
+                .interactable(false)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(drag.0.name.as_str()));
+                });
+        }
+    }
+}
+
+/// One CLAP plugin: its name and vendor, ready to drag. True when double-clicked.
+fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
+    let (rect, resp) =
+        ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
+    if !info.is_instrument {
+        resp.dnd_set_drag_payload(PluginDrag(info.clone()));
+    }
+    let g = ui.painter_at(rect);
+    if resp.hovered() {
+        g.rect_filled(rect, 0.0, Color32::from_rgb(0x46, 0x46, 0x46));
+    }
+    let color = if info.is_instrument { TEXT_DIM } else { TEXT };
+    let name = g.text(
+        pos2(rect.left() + 4.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        &info.name,
+        FontId::proportional(12.5),
+        color,
+    );
+    g.text(
+        pos2(name.right() + 8.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        &info.vendor,
+        FontId::proportional(11.0),
+        TEXT_DIM,
+    );
+    let double = resp.double_clicked();
+    resp.on_hover_text(info.path.display().to_string());
+    double
 }
 
 #[cfg(test)]

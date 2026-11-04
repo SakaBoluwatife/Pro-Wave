@@ -37,6 +37,8 @@ mod note_edit;
 mod patches;
 mod pattern;
 mod piano_roll;
+mod plugin_rack;
+mod plugin_scan;
 mod project_io;
 mod recent_files;
 mod recorder;
@@ -569,6 +571,9 @@ impl eframe::App for App {
         self.project.refresh_generated();
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            if let Some(message) = sync.take_plugin_message() {
+                self.ui.status = Some(message);
+            }
             automation::tick(&mut self.project);
             groups::propagate(&mut self.project, &mut self.ui.group_watch);
             if sync.needs_retry() {
@@ -979,6 +984,10 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let all_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // Started by the Plugins tab to read one plugin file, where a crash costs nothing.
+    if let Some(file) = plugin_scan::scan_request(&all_args) {
+        std::process::exit(plugin_scan::scan_and_print(&file));
+    }
     let bench_out = bench::requested(&all_args);
     let shots_dir = bench::shots_requested(&all_args);
     if bench_out.is_none() && shots_dir.is_none() {

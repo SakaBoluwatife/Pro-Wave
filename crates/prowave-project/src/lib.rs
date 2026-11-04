@@ -240,6 +240,8 @@ pub struct TrackDoc {
     /// The effects of the channel strip, first to last (`inserts` has their names for older
     /// versions of the program).
     pub fx: Vec<InsertDoc>,
+    /// Hosted plugins of the channel strip, after `fx`.
+    pub plugins: Vec<PluginDoc>,
     /// All sends of the strip (the first is also in `send_bus`, `send_level` and `send_pre`).
     pub sends: Vec<SendDoc>,
     /// Automation: "Off", "Read", "Touch", "Latch" or "Write", and the points (beat, value)
@@ -281,6 +283,19 @@ pub struct TrackDoc {
 
 /// One effect of a channel strip: its kind ("Channel EQ", "Compressor", "Space D", "Tape Delay",
 /// "Chorus", "Phaser", "Overdrive" or "Filter"), whether it is bypassed and its settings.
+/// A hosted plugin on a channel strip. Enough to find it again; a project that moves to a computer
+/// without it keeps the entry.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct PluginDoc {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    /// `CLAP`.
+    pub format: String,
+    pub path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct InsertDoc {
@@ -374,6 +389,7 @@ impl Default for TrackDoc {
             send_level: 0.0,
             send_pre: false,
             fx: Vec::new(),
+            plugins: Vec::new(),
             sends: Vec::new(),
             auto_mode: "Read".into(),
             auto_volume: Vec::new(),

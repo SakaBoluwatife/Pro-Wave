@@ -2495,6 +2495,33 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
     }
+    // A plugin dragged from the Plugins tab: the track it will go on, and it goes there when let go.
+    if let Some(drag) = egui::DragAndDrop::payload::<crate::left_panel::PluginDrag>(ui.ctx()) {
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pt| area.contains(*pt) && pt.y >= lanes.top());
+        if let Some(pt) = over {
+            let row = row_at(&rows, pt.y - lanes.top() + scroll_y);
+            if let Some(&(top, h)) = row.and_then(|t| rows.get(t)) {
+                let y = lanes.top() + top - scroll_y;
+                g.rect_filled(
+                    Rect::from_min_size(pos2(lanes.left(), y), vec2(lanes.width(), h)),
+                    0.0,
+                    crate::widgets::BLUE.gamma_multiply(0.25),
+                );
+            }
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                let added = match row {
+                    Some(t) => crate::plugin_rack::add_effect(p, t, &drag.0),
+                    None => Err("Drop a plugin on a track".to_string()),
+                };
+                if let Err(e) = added {
+                    s.status = Some(e);
+                }
+            }
+        }
+    }
     context_menu(&lane_resp, |ui| {
         new_track_items(ui, &mut picked);
         ui.separator();

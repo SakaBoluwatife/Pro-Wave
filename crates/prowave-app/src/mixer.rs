@@ -606,7 +606,10 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
 pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
     keys.iter()
         .map(|k| match k {
-            StripKey::Track(i) => p.tracks.get(*i).map_or(0, |t| t.inserts.len()),
+            StripKey::Track(i) => p
+                .tracks
+                .get(*i)
+                .map_or(0, |t| t.inserts.len() + t.plugins.len()),
             StripKey::StereoOut => 2,
             StripKey::Master => 0,
         })
@@ -784,6 +787,11 @@ fn insert_slot(
 ) {
     let have = p.tracks[i].inserts.get(k).copied();
     let count = p.tracks[i].inserts.len();
+    let plugins = p.tracks[i].plugins.len();
+    if let Some(j) = k.checked_sub(count).filter(|j| *j < plugins) {
+        plugin_slot(ui, g, r, p, i, j, uid, inactive);
+        return;
+    }
     match have {
         Some(fx) => {
             let off = inactive || fx.bypass;
@@ -797,7 +805,7 @@ fn insert_slot(
         }
         None => slot(g, r, "", SLOT_EMPTY, TEXT),
     }
-    if k > count || (have.is_none() && count >= prowave_engine::MAX_INSERTS) {
+    if k > count + plugins || (have.is_none() && count + plugins >= prowave_engine::MAX_INSERTS) {
         return;
     }
     let resp = ui.interact(r, uid, Sense::click());
@@ -852,6 +860,65 @@ fn insert_slot(
     });
     if let Some(act) = act {
         apply_insert(p, v, i, k, act);
+    }
+}
+
+/// One slot holding hosted plugin `j` of track `i`. It has no window yet; click for the menu.
+#[allow(clippy::too_many_arguments)]
+fn plugin_slot(
+    ui: &Ui,
+    g: &Painter,
+    r: Rect,
+    p: &mut Project,
+    i: usize,
+    j: usize,
+    uid: egui::Id,
+    inactive: bool,
+) {
+    let plugin = &p.tracks[i].plugins[j];
+    let off = inactive || plugin.failed.is_some();
+    slot(
+        g,
+        r,
+        &plugin.name,
+        if off { PLUGIN_OFF } else { PLUGIN_BLUE },
+        if off { TEXT_DIM } else { Color32::WHITE },
+    );
+    let hover = match &plugin.failed {
+        Some(why) => format!("{}: {why}", plugin.name),
+        None => format!("{} ({})", plugin.name, plugin.vendor),
+    };
+    let count = p.tracks[i].plugins.len();
+    let resp = ui
+        .interact(r, uid, Sense::click())
+        .on_hover_text_at_pointer(hover);
+    let mut moved = None;
+    let mut remove = false;
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(150.0);
+        ui.add_enabled_ui(j > 0, |ui| {
+            if ui.button(tr("Move Up")).clicked() {
+                moved = Some(j - 1);
+                ui.close();
+            }
+        });
+        ui.add_enabled_ui(j + 1 < count, |ui| {
+            if ui.button(tr("Move Down")).clicked() {
+                moved = Some(j + 1);
+                ui.close();
+            }
+        });
+        ui.separator();
+        if ui.button(tr("Remove")).clicked() {
+            remove = true;
+            ui.close();
+        }
+    });
+    let plugins = &mut p.tracks[i].plugins;
+    if remove {
+        plugins.remove(j);
+    } else if let Some(to) = moved {
+        plugins.swap(j, to);
     }
 }
 

@@ -2,6 +2,7 @@
 use crate::model::TrackKind;
 use crate::model::{Insert, Project, Region, TempoPoint, Track};
 use crate::patches::synth_patch;
+use crate::plugin_rack::Rack;
 use prowave_engine::{
     AutoLane, AutoTarget, Chain, Command, ControlEvent, Engine, Fx, InputSource, MonitorTrack,
     NoteEvent, Pdc, Route, SendSpec, Song, SynthPatch, TrackMix, MAX_MONITORS, MAX_TRACKS,
@@ -46,6 +47,11 @@ pub struct EngineSync {
     routes: Vec<Route>,
     /// The compensation delays the engine has, by track.
     pdc: Vec<(usize, usize)>,
+    /// The plugins running in the engine. Stays below `engine`, which is dropped first, so
+    /// instances outlast what the audio thread holds of them.
+    rack: Rack,
+    plugin_message: Option<String>,
+    plugins_retry: bool,
     automation: Vec<AutoLane>,
     /// A command was rejected during the last `sync`.
     retry: bool,
@@ -184,24 +190,27 @@ fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
 }
 
 /// The delay every effect of the strip puts on the sound, in samples.
-fn latency_of(t: &Track, sample_rate: f32) -> usize {
-    t.inserts
+fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
+    let built_in: usize = t
+        .inserts
         .iter()
         .filter(|i| !i.bypass)
         .map(|i| i.kind.latency_samples(sample_rate))
-        .sum()
+        .sum();
+    let plugins: usize = t.plugins.iter().map(|i| rack.latency_of(i.uid)).sum();
+    built_in + plugins
 }
 
 /// Delay compensation for every track: (before the fader and sends, after them), in samples.
 /// Strips whose effects look ahead delay the sound; the others wait for them so everything
 /// stays in time. The signal sent to a bus is aligned too, and an Aux strip's own effects
 /// are made up for after the fader.
-fn pdc_plan(p: &Project, sample_rate: f32) -> Vec<(usize, usize)> {
+fn pdc_plan(p: &Project, sample_rate: f32, rack: &Rack) -> Vec<(usize, usize)> {
     let sounds = |t: &Track| !matches!(t.kind, TrackKind::Vca | TrackKind::Folder);
     let lat: Vec<usize> = p
         .tracks
         .iter()
-        .map(|t| latency_of(t, sample_rate))
+        .map(|t| latency_of(t, sample_rate, rack))
         .collect();
     let (mut plain, mut aux) = (0, 0);
     for (i, _) in p.tracks.iter().enumerate().filter(|(_, t)| sounds(t)) {
@@ -473,6 +482,9 @@ impl EngineSync {
             fx: Vec::new(),
             routes: Vec::new(),
             pdc: Vec::new(),
+            rack: Rack::default(),
+            plugin_message: None,
+            plugins_retry: false,
             automation: Vec::new(),
             retry: false,
         };
@@ -483,6 +495,10 @@ impl EngineSync {
     /// Call once per frame: push UI-side changes to the engine, then pull the playhead back.
     pub fn sync(&mut self, p: &mut Project) {
         let counted = !self.playing && p.playing && p.recording && p.count_in;
+        crate::plugin_rack::give_copies_their_own_uids(p);
+        self.plugins_retry = !self
+            .rack
+            .sync(p, &mut self.engine, &mut self.plugin_message);
         let seek_done = self.push(p);
         if counted && self.playing {
             p.counting_in = true;
@@ -705,7 +721,7 @@ impl EngineSync {
             }
         }
         // Delay compensation follows the effects (a limiter looks ahead).
-        let plan = pdc_plan(p, sr);
+        let plan = pdc_plan(p, sr, &self.rack);
         self.pdc.resize(n, (0, 0));
         for (i, want) in plan.iter().copied().enumerate().take(n) {
             if self.pdc[i] != want {
@@ -740,6 +756,11 @@ impl EngineSync {
         }
     }
 
+    /// What went wrong with a plugin since last asked, for the status line.
+    pub fn take_plugin_message(&mut self) -> Option<String> {
+        self.plugin_message.take()
+    }
+
     /// `Engine::send`, remembering a rejection so the caller keeps redrawing to retry.
     fn send(&mut self, cmd: Command) -> bool {
         let sent = self.engine.send(cmd);
@@ -759,7 +780,7 @@ impl EngineSync {
 
     /// Whether a command was rejected (queue full) and is waiting to be retried.
     pub fn needs_retry(&self) -> bool {
-        self.retry
+        self.retry || self.plugins_retry
     }
 
     pub fn underruns(&self) -> u32 {
@@ -811,6 +832,7 @@ mod tests {
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
+            plugins: Vec::new(),
             instrument: None,
             regions: vec![Region {
                 name: "r".into(),
@@ -920,12 +942,14 @@ mod tests {
         let aux = p.add_track(TrackKind::Aux);
         let vca = p.add_track(TrackKind::Vca);
         // Nothing looks ahead: nothing is delayed.
-        assert!(pdc_plan(&p, sr).iter().all(|d| *d == (0, 0)));
+        assert!(pdc_plan(&p, sr, &Rack::default())
+            .iter()
+            .all(|d| *d == (0, 0)));
         let look = FxKind::Limiter.latency_samples(sr);
         assert!(look > 0);
         p.tracks[a].inserts = vec![Insert::new(FxKind::Limiter)];
-        let plan = pdc_plan(&p, sr);
-        assert_eq!(latency_of(&p.tracks[a], sr), look);
+        let plan = pdc_plan(&p, sr, &Rack::default());
+        assert_eq!(latency_of(&p.tracks[a], sr, &Rack::default()), look);
         // The limiter's own strip is the latest: the others wait for it before their sends
         // and faders; none of them needs more after.
         assert_eq!(plan[a], (0, 0));
@@ -934,19 +958,21 @@ mod tests {
         assert_eq!(plan[vca], (0, 0), "a VCA has no sound");
         // A bypassed limiter delays nothing.
         p.tracks[a].inserts[0].bypass = true;
-        assert!(pdc_plan(&p, sr).iter().all(|d| *d == (0, 0)));
+        assert!(pdc_plan(&p, sr, &Rack::default())
+            .iter()
+            .all(|d| *d == (0, 0)));
         p.tracks[a].inserts[0].bypass = false;
         // A limiter on an Aux strip: every other strip is delayed after its fader, by as much
         // as the Aux strip is late; the Aux strip itself needs nothing.
         p.tracks[aux].inserts = vec![Insert::new(FxKind::Limiter)];
-        let plan = pdc_plan(&p, sr);
+        let plan = pdc_plan(&p, sr, &Rack::default());
         assert_eq!(plan[aux], (0, 0));
         assert_eq!(plan[b], (look, look));
         assert_eq!(plan[a], (0, look));
         // Two limiters in a row add up.
         p.tracks[b].inserts = vec![Insert::new(FxKind::Limiter), Insert::new(FxKind::Limiter)];
-        assert_eq!(latency_of(&p.tracks[b], sr), 2 * look);
-        assert_eq!(pdc_plan(&p, sr)[a].0, look);
+        assert_eq!(latency_of(&p.tracks[b], sr, &Rack::default()), 2 * look);
+        assert_eq!(pdc_plan(&p, sr, &Rack::default())[a].0, look);
     }
 
     #[test]
