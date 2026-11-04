@@ -409,7 +409,11 @@ pub fn synth_patch(t: &Track) -> SynthPatch {
         Some(cat) => by_category(cat, &t.name),
         None => by_icon(icon_kind(t), &t.name),
     };
-    vary(p, hash(&t.name))
+    let mut patch = vary(p, hash(&t.name));
+    if t.instrument == Some(crate::model::NO_INSTRUMENT) {
+        patch.gain = 0.0;
+    }
+    patch
 }
 
 #[cfg(test)]

@@ -132,6 +132,8 @@ pub enum TrackTool {
 }
 
 pub struct TracksView {
+    /// A track was clicked last, in its header or its mixer strip: Delete means that track.
+    pub track_focus: bool,
     /// Width of one bar in points (horizontal zoom).
     pub bar_w: f32,
     /// Track height in points (vertical zoom).
@@ -174,6 +176,7 @@ pub struct TracksView {
 impl Default for TracksView {
     fn default() -> Self {
         Self {
+            track_focus: false,
             bar_w: 62.0,
             row_h: 56.0,
             scroll_x: 0.0,
@@ -1252,6 +1255,8 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::DeleteTrack(i) => {
             if p.delete_track(i) {
                 forget_track_indexes(s);
+            } else if p.tracks.len() == 1 {
+                s.status = Some("A project keeps at least one track".to_string());
             }
         }
     }
@@ -2446,6 +2451,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 p.selected_track = row;
             }
         }
+        v.track_focus = false;
         v.selected = None;
     }
     // Double-click on an empty stretch of a Drummer track: a Drummer region there, as in Logic.
@@ -2789,6 +2795,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
 
+    if std::mem::take(&mut s.mixer.track_clicked) {
+        v.track_focus = true;
+        v.selected = None;
+    }
     // ---- keyboard: Delete, Cmd/Ctrl+R
     if !ui.ctx().egui_wants_keyboard_input() && !s.piano_focus {
         let (del, rep) = ui.input(|i| {
@@ -2798,7 +2808,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             )
         });
         if del {
-            delete_selected(p, v);
+            if v.track_focus && v.selected.is_none() {
+                picked = Some(CtxAction::DeleteTrack(p.selected_track));
+            } else {
+                delete_selected(p, v);
+            }
         }
         if rep {
             repeat_selected(p, v);
@@ -2820,6 +2834,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
         let resp = header(ui, &gh, p, i, hdr, peaks, silenced);
+        if resp.clicked() {
+            s.tracks.track_focus = true;
+            s.tracks.selected = None;
+        }
         let t = &p.tracks[i];
         let info = TrackInfo {
             i,
@@ -3377,5 +3395,42 @@ mod row_tests {
             "not longer than the region"
         );
         assert_eq!(fade_for_drag(-5.0, 8.0, 4.0, false), 4.0);
+    }
+
+    #[test]
+    fn delete_removes_the_track_last_clicked_and_a_region_comes_first() {
+        let meters = crate::mixer::Meters::default();
+        let mut p = Project::empty();
+        let keep = p.add_track(TrackKind::Instrument);
+        let goes = p.add_track(TrackKind::Audio);
+        let mut s = UiState::new();
+        let mut h = crate::ui_test::Harness::new(1200.0, 700.0);
+        let count = p.tracks.len();
+        p.selected_track = goes;
+
+        // Nothing clicked: Delete leaves the tracks alone.
+        h.settle(|ui| show(ui, &mut p, &mut s, &meters));
+        h.key(Key::Delete, |ui| show(ui, &mut p, &mut s, &meters));
+        assert_eq!(p.tracks.len(), count);
+
+        // A click on its mixer strip, then Delete.
+        s.mixer.track_clicked = true;
+        h.settle(|ui| show(ui, &mut p, &mut s, &meters));
+        assert!(s.tracks.track_focus);
+        h.key(Key::Delete, |ui| show(ui, &mut p, &mut s, &meters));
+        h.frame(vec![], |ui| show(ui, &mut p, &mut s, &meters));
+        assert_eq!(p.tracks.len(), count - 1);
+        assert_eq!(p.tracks[keep].kind, TrackKind::Instrument);
+
+        // A selected region goes first; the track stays.
+        p.selected_track = keep;
+        let region = p.add_midi_region(keep, 1.0).unwrap();
+        s.tracks.track_focus = true;
+        s.tracks.selected = Some((keep, region));
+        let tracks = p.tracks.len();
+        h.settle(|ui| show(ui, &mut p, &mut s, &meters));
+        h.key(Key::Delete, |ui| show(ui, &mut p, &mut s, &meters));
+        assert_eq!(p.tracks.len(), tracks);
+        assert!(p.tracks[keep].regions.is_empty());
     }
 }

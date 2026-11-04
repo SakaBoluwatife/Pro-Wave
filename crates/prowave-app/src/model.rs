@@ -590,6 +590,10 @@ impl PluginInsert {
     }
 }
 
+/// What `Track::instrument` holds when the user removed the built-in sound: the track plays
+/// nothing until a plugin or a sample is put on it.
+pub const NO_INSTRUMENT: &str = "";
+
 #[derive(Clone)]
 pub struct Track {
     pub name: String,
