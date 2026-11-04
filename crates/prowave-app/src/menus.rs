@@ -229,6 +229,7 @@ const VIEW: &[&str] = &[
     "Show Piano Roll",
     "Show Score Editor",
     "Show Step Sequencer",
+    "Show Channel Rack",
     "Show Session Player",
     "Show Flex Editor",
     "-",
@@ -525,6 +526,7 @@ pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
         "Show Piano Roll" => s.bottom == Bottom::PianoRoll,
         "Show Mixer" => s.show_mixer && s.bottom == Bottom::Mixer,
         "Show Library" => s.show_library,
+        "Show Channel Rack" => s.rack.open,
         "Show Inspector" => s.show_inspector,
         "Show List Editors" => s.show_lists,
         "Show Quick Help" => s.show_quick_help,
@@ -562,6 +564,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.bottom = Bottom::Mixer;
         }
         "Show Library" => s.show_library = !s.show_library,
+        "Show Channel Rack" => s.rack.open = !s.rack.open,
         "Show Inspector" => s.show_inspector = !s.show_inspector,
         "Show List Editors" => s.show_lists = !s.show_lists,
         "Show Quick Help" | "Quick Help" => s.show_quick_help = !s.show_quick_help,

@@ -85,9 +85,31 @@ pub struct ControlDoc {
     pub val: u8,
 }
 
+/// A Channel Rack pattern's notes for one channel.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct LaneDoc {
+    pub channel: u64,
+    pub step_pitch: u8,
+    pub notes: Vec<NoteDoc>,
+}
+
+/// A Channel Rack pattern.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct SongPatternDoc {
+    pub id: u64,
+    pub name: String,
+    pub color: [u8; 3],
+    pub steps: usize,
+    pub lanes: Vec<LaneDoc>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct RegionDoc {
+    /// The Channel Rack pattern it is placed from; 0 for none.
+    pub song_pattern: u64,
     pub name: String,
     pub start_bar: f32,
     pub len_bars: f32,
@@ -227,6 +249,8 @@ impl Default for DrummerDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct TrackDoc {
+    /// Its number as a channel of the Channel Rack; 0 for none.
+    pub channel: u64,
     pub name: String,
     pub kind: TrackKindDoc,
     pub color: [u8; 3],
@@ -263,6 +287,7 @@ pub struct TrackDoc {
     /// The lanes of the effect parameters; a point's value is a position 0..=1 along the
     /// parameter's range.
     pub auto_fx: Vec<AutoFxDoc>,
+    pub auto_plugins: Vec<AutoPluginDoc>,
     /// The mix group of the track (index into `ProjectDoc::groups`).
     pub group: Option<usize>,
     /// Individual track height (factor of the global track zoom).
@@ -298,6 +323,8 @@ pub struct TrackDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct PluginDoc {
+    /// The insert row it was put in; 0 for the next free one.
+    pub row: u8,
     pub id: String,
     pub name: String,
     pub vendor: String,
@@ -323,6 +350,16 @@ pub struct InsertDoc {
 pub struct AutoFxDoc {
     pub slot: u8,
     pub param: u8,
+    pub points: Vec<[f64; 3]>,
+}
+
+/// The automation lane of a parameter of a hosted plugin.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct AutoPluginDoc {
+    /// Which plugin of the track's effects, or below 0 its instrument.
+    pub slot: i32,
+    pub param: u32,
     pub points: Vec<[f64; 3]>,
 }
 
@@ -384,6 +421,7 @@ impl Default for MidiFxDoc {
 impl Default for TrackDoc {
     fn default() -> Self {
         Self {
+            channel: 0,
             name: String::new(),
             kind: TrackKindDoc::Instrument,
             color: [0x4e, 0xb0, 0x4a],
@@ -409,6 +447,7 @@ impl Default for TrackDoc {
             auto_volume: Vec::new(),
             auto_pan: Vec::new(),
             auto_fx: Vec::new(),
+            auto_plugins: Vec::new(),
             group: None,
             height: 1.0,
             indent: 0,
@@ -430,6 +469,10 @@ impl Default for TrackDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ProjectDoc {
+    /// The plugins on the output.
+    pub master_plugins: Vec<PluginDoc>,
+    /// The Channel Rack's patterns.
+    pub song_patterns: Vec<SongPatternDoc>,
     pub format_version: u32,
     pub name: String,
     pub tempo: f32,
@@ -497,6 +540,8 @@ pub struct TempoChangeDoc {
 impl Default for ProjectDoc {
     fn default() -> Self {
         Self {
+            song_patterns: Vec::new(),
+            master_plugins: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),
             tempo: 120.0,

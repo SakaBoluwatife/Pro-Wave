@@ -56,7 +56,7 @@ struct Entry {
 }
 
 /// The name a path shows with; a drive like `D:\` has no file name, so it shows whole.
-fn display_name(path: &Path) -> String {
+pub(crate) fn display_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),

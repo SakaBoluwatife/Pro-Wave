@@ -138,6 +138,12 @@ const MAX_GENERATED_BARS: usize = 1024;
 /// Logic Pro Region Inspector values.
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct RegionParams {
+    /// The Channel Rack pattern this region is placed from (see `song_pattern.rs`); 0 for none.
+    pub pattern: u64,
+    /// How long the region was when last made from its pattern, in beats. Not saved.
+    pub pattern_len: f32,
+    /// Its pattern's color, which it is drawn in. Not saved.
+    pub pattern_color: Option<Color32>,
     pub mute: bool,
     /// Playback quantize grid in beats (`None` = Off).
     pub quantize: Option<f32>,
@@ -285,6 +291,14 @@ pub struct FxLane {
     pub points: Vec<AutoPoint>,
 }
 
+/// The automation lane of a parameter of a hosted plugin: values are positions 0..=1.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct PluginLane {
+    pub uid: u64,
+    pub param: u32,
+    pub points: Vec<AutoPoint>,
+}
+
 /// Automation of one channel strip: a lane for the fader (dB), one for the pan knob and one
 /// for each effect parameter, as points in order of beat, and what the strip is doing with them.
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -293,6 +307,7 @@ pub struct Automation {
     pub volume: Vec<AutoPoint>,
     pub pan: Vec<AutoPoint>,
     pub fx: Vec<FxLane>,
+    pub plugin_lanes: Vec<PluginLane>,
     /// The control held (Touch), or held and let go but still writing (Latch): the strip
     /// plays that control's own value, not its lane. Not saved.
     pub held: Option<AutoTarget>,
@@ -316,6 +331,11 @@ impl Automation {
                 .fx
                 .iter()
                 .find(|l| l.slot == slot && l.param == param)
+                .map_or(&[], |l| &l.points),
+            AutoTarget::Plugin { uid, param } => self
+                .plugin_lanes
+                .iter()
+                .find(|l| l.uid == uid && l.param == param)
                 .map_or(&[], |l| &l.points),
         }
     }
@@ -343,6 +363,24 @@ impl Automation {
                 };
                 &mut self.fx[i].points
             }
+            AutoTarget::Plugin { uid, param } => {
+                let i = match self
+                    .plugin_lanes
+                    .iter()
+                    .position(|l| l.uid == uid && l.param == param)
+                {
+                    Some(i) => i,
+                    None => {
+                        self.plugin_lanes.push(PluginLane {
+                            uid,
+                            param,
+                            points: Vec::new(),
+                        });
+                        self.plugin_lanes.len() - 1
+                    }
+                };
+                &mut self.plugin_lanes[i].points
+            }
         }
     }
 
@@ -363,6 +401,15 @@ impl Automation {
                 &l.points[..],
             )
         }))
+        .chain(self.plugin_lanes.iter().map(|l| {
+            (
+                AutoTarget::Plugin {
+                    uid: l.uid,
+                    param: l.param,
+                },
+                &l.points[..],
+            )
+        }))
     }
 
     /// Whether any lane has points.
@@ -373,6 +420,7 @@ impl Automation {
     /// Takes away the effect lanes that have no points.
     pub fn prune(&mut self) {
         self.fx.retain(|l| !l.points.is_empty());
+        self.plugin_lanes.retain(|l| !l.points.is_empty());
     }
 
     /// Whether the engine plays the lane of `target` (rather than the fader or knob).
@@ -418,7 +466,7 @@ impl Automation {
         match target {
             AutoTarget::Volume => (-60.0, 6.0),
             AutoTarget::Pan => (-1.0, 1.0),
-            AutoTarget::Fx { .. } => (0.0, 1.0),
+            AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => (0.0, 1.0),
         }
     }
 
@@ -432,7 +480,7 @@ impl Automation {
         let moved = match target {
             AutoTarget::Volume => 0.1,
             AutoTarget::Pan => 0.01,
-            AutoTarget::Fx { .. } => 0.004,
+            AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => 0.004,
         };
         let last = self.last.filter(|(b, _)| beat >= *b);
         if let Some((lb, lv)) = last {
@@ -527,6 +575,8 @@ impl MixGroup {
 /// Logic Pro Track Inspector values for instrument tracks.
 #[derive(Clone, Copy, PartialEq)]
 pub struct TrackParams {
+    /// Its number as a channel of the Channel Rack, given when it is first used as one; else 0.
+    pub channel: u64,
     pub transpose: i8,
     pub velocity: i8,
     /// Lowest/highest MIDI note that plays (Key Limit).
@@ -542,6 +592,7 @@ pub struct TrackParams {
 impl Default for TrackParams {
     fn default() -> Self {
         Self {
+            channel: 0,
             transpose: 0,
             velocity: 0,
             key_limit: (0, 127),
@@ -568,6 +619,8 @@ pub struct AudioRegion {
 /// by [`crate::plugin_rack::Rack`], which finds it by `uid`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginInsert {
+    /// The insert row it was put in. 0 means the next one free after what comes before it.
+    pub row: u8,
     /// Which instance this is, in this run of the program. Never saved.
     pub uid: u64,
     pub id: String,
@@ -580,11 +633,14 @@ pub struct PluginInsert {
     /// The plugin's settings as last collected. The plugin has the current ones while it runs:
     /// this is what it starts from, and what goes in the file.
     pub state: Option<std::sync::Arc<Vec<u8>>>,
+    /// What can be automated, once it has loaded. Not saved.
+    pub params: std::sync::Arc<Vec<prowave_host::PluginParam>>,
 }
 
 impl PluginInsert {
     pub fn new(info: &prowave_host::PluginInfo) -> Self {
         Self {
+            row: 0,
             uid: crate::plugin_rack::new_uid(),
             id: info.id.clone(),
             name: info.name.clone(),
@@ -593,8 +649,44 @@ impl PluginInsert {
             bypass: false,
             failed: None,
             state: None,
+            params: std::sync::Arc::default(),
         }
     }
+}
+
+/// The insert row each of `plugins` shows in, with `first` rows taken above them. They stay in
+/// order: a row already passed gives way to the next free one.
+pub fn plugin_rows(first: usize, plugins: &[PluginInsert]) -> Vec<usize> {
+    let mut next = first;
+    plugins
+        .iter()
+        .map(|plugin| {
+            let row = next.max(usize::from(plugin.row));
+            next = row + 1;
+            row
+        })
+        .collect()
+}
+
+/// Fixes each plugin in the row it shows in, so that taking one away moves no other.
+pub fn settle_plugin_rows(first: usize, plugins: &mut [PluginInsert]) {
+    let rows = plugin_rows(first, plugins);
+    for (plugin, row) in plugins.iter_mut().zip(rows) {
+        plugin.row = row.min(usize::from(u8::MAX)) as u8;
+    }
+}
+
+/// Puts `new` in insert row `row`, which is free. The order of the list is the order of the sound.
+pub fn place_plugin_in_row(
+    first: usize,
+    plugins: &mut Vec<PluginInsert>,
+    mut new: PluginInsert,
+    row: usize,
+) {
+    settle_plugin_rows(first, plugins);
+    new.row = row.min(usize::from(u8::MAX)) as u8;
+    let at = plugins.partition_point(|p| p.row < new.row);
+    plugins.insert(at, new);
 }
 
 /// What `Track::instrument` holds when the user removed the built-in sound: the track plays
@@ -797,6 +889,10 @@ pub struct Project {
     pub groups: Vec<MixGroup>,
     /// Bumped whenever tracks/regions change so the engine song is rebuilt.
     pub song_rev: u64,
+    /// The Channel Rack's patterns.
+    pub patterns: Vec<crate::song_pattern::SongPattern>,
+    /// The plugins on the output (Stereo Out), after everything is mixed.
+    pub master_plugins: Vec<PluginInsert>,
 }
 
 /// Deterministic pseudo-random so demo content is stable across runs.
@@ -992,6 +1088,8 @@ impl Project {
         Self {
             name: "Untitled".into(),
             tempo: 120.0,
+            patterns: Vec::new(),
+            master_plugins: Vec::new(),
             sig: (4, 4),
             key: "Cmaj",
             tracks,
@@ -1850,6 +1948,14 @@ impl Project {
             self.cycle_start = 0.0;
             self.cycle_end = self.next_bar_start(song_end - 1e-9);
         }
+    }
+
+    /// Every hosted plugin in the project.
+    pub fn all_hosted_mut(&mut self) -> impl Iterator<Item = &mut PluginInsert> {
+        self.tracks
+            .iter_mut()
+            .flat_map(Track::hosted_mut)
+            .chain(&mut self.master_plugins)
     }
 
     /// Whether any track is soloed (the others then fall silent).

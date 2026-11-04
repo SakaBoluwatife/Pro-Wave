@@ -299,7 +299,7 @@ impl PluginScan {
         self.progress = Some((0, 0));
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let files = find_plugin_files();
+            let files = find_plugin_files(&crate::plugin_guard::plugin_folders());
             let total = files.len();
             let Ok(exe) = std::env::current_exe() else {
                 let _ = tx.send(ScanMsg::Done(Vec::new()));

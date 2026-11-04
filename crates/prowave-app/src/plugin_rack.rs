@@ -3,7 +3,7 @@
 //! The project holds plain data ([`PluginInsert`]), so Undo and duplicating a track work as for
 //! anything else. Live instances cannot be cloned or rebuilt without losing their state, so each
 //! has a `uid` and follows its insert when tracks and slots move.
-use crate::model::{PluginInsert, Project, Track, TrackKind};
+use crate::model::{PluginInsert, Project, TrackKind};
 use prowave_engine::{
     Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS, PLUGIN_BLOCK,
 };
@@ -46,6 +46,32 @@ pub fn add_plugin(p: &mut Project, track: usize, info: &PluginInfo) -> Result<()
     }
     t.plugins.push(PluginInsert::new(info));
     p.selected_track = track;
+    Ok(())
+}
+
+/// An effect on track `track`, in insert row `row`.
+pub fn add_effect_in_row(
+    p: &mut Project,
+    track: usize,
+    info: &PluginInfo,
+    row: usize,
+) -> Result<(), String> {
+    add_plugin(p, track, info)?;
+    let t = &mut p.tracks[track];
+    if let Some(new) = t.plugins.pop() {
+        let first = t.inserts.len();
+        crate::model::place_plugin_in_row(first, &mut t.plugins, new, row);
+    }
+    Ok(())
+}
+
+/// An effect on the output, in insert row `row`.
+pub fn add_master_effect(p: &mut Project, info: &PluginInfo, row: usize) -> Result<(), String> {
+    if p.master_plugins.len() >= MAX_INSERTS {
+        return Err("Stereo Out has no free insert slot".to_string());
+    }
+    let new = PluginInsert::new(info);
+    crate::model::place_plugin_in_row(0, &mut p.master_plugins, new, row);
     Ok(())
 }
 
@@ -112,6 +138,11 @@ fn wanted_places(p: &Project) -> Vec<(u64, Place)> {
             }
         }
     }
+    for (k, plugin) in p.master_plugins.iter().enumerate().take(MAX_INSERTS) {
+        if plugin.failed.is_none() {
+            want.push((plugin.uid, (prowave_engine::MASTER_STRIP, k as u8)));
+        }
+    }
     want
 }
 
@@ -126,6 +157,12 @@ fn wanted_bypass(p: &Project) -> Vec<((u64, bool), Place)> {
             all.push(((plugin.uid, plugin.bypass), (t as u16, k as u8)));
         }
     }
+    for (k, plugin) in p.master_plugins.iter().enumerate().take(MAX_INSERTS) {
+        all.push((
+            (plugin.uid, plugin.bypass),
+            (prowave_engine::MASTER_STRIP, k as u8),
+        ));
+    }
     all
 }
 
@@ -134,7 +171,7 @@ fn wanted_bypass(p: &Project) -> Vec<((u64, bool), Place)> {
 pub fn give_copies_their_own_uids(p: &mut Project) -> Vec<(u64, u64)> {
     let mut seen = HashSet::new();
     let mut copies = Vec::new();
-    for plugin in p.tracks.iter_mut().flat_map(Track::hosted_mut) {
+    for plugin in p.all_hosted_mut() {
         if !seen.insert(plugin.uid) {
             let original = plugin.uid;
             plugin.uid = new_uid();
@@ -226,7 +263,7 @@ impl Rack {
 
     /// Collects the current settings of every running plugin into the project, for saving.
     pub fn collect_states(&mut self, p: &mut Project, message: &mut Option<String>) {
-        for plugin in p.tracks.iter_mut().flat_map(Track::hosted_mut) {
+        for plugin in p.all_hosted_mut() {
             let Some(live) = self.live.get_mut(&plugin.uid) else {
                 continue;
             };
@@ -421,23 +458,28 @@ impl Rack {
         engine: &mut Engine,
         message: &mut Option<String>,
     ) -> bool {
-        let Some(plugin) = p
-            .tracks
-            .iter_mut()
-            .flat_map(Track::hosted_mut)
-            .find(|i| i.uid == uid)
-        else {
+        let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
             return true;
         };
+        if crate::plugin_guard::is_blocked(&plugin.path) {
+            let why = "Pro Wave closed while loading this last time. \
+                       Press Rescan on the Plugins tab to allow it again.";
+            *message = Some(format!("{}: {why}", plugin.name));
+            plugin.failed = Some(why.to_string());
+            return true;
+        }
+        crate::plugin_guard::before_load(&plugin.path);
         let (mut loaded, processor) =
             match load_plugin(&plugin.path, &plugin.id, engine.sample_rate()) {
                 Ok(both) => both,
                 Err(e) => {
+                    crate::plugin_guard::after_load();
                     *message = Some(e.to_string());
                     plugin.failed = Some(e.to_string());
                     return true;
                 }
             };
+        plugin.params = Arc::new(loaded.params());
         let kept = self.kept_states.iter().find(|(u, _)| *u == uid);
         let state = kept
             .map(|(_, s)| s.clone())
@@ -448,10 +490,11 @@ impl Rack {
                 *message = Some(format!("{}: settings not restored: {e}", plugin.name));
             }
         }
+        crate::plugin_guard::after_load();
         let sent = engine.send(Command::SetPlugin {
             track: place.0,
             slot: place.1,
-            plugin: Some(Box::new(PluginSlot::new(processor))),
+            plugin: Some(Box::new(PluginSlot::new(processor).with_uid(uid))),
         });
         if sent {
             let id = plugin.id.clone();
@@ -474,7 +517,60 @@ impl Rack {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::model::Track;
     use std::path::PathBuf;
+
+    fn effect(name: &str) -> PluginInfo {
+        PluginInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            vendor: String::new(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: format!("{name}.clap").into(),
+            is_instrument: false,
+        }
+    }
+
+    #[test]
+    fn an_effect_goes_in_the_slot_it_was_put_in_and_the_order_follows_the_rows() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Audio);
+        add_effect_in_row(&mut p, t, &effect("Third"), 5).unwrap();
+        add_effect_in_row(&mut p, t, &effect("First"), 1).unwrap();
+        add_effect_in_row(&mut p, t, &effect("Second"), 3).unwrap();
+        let names: Vec<_> = p.tracks[t]
+            .plugins
+            .iter()
+            .map(|x| x.name.as_str())
+            .collect();
+        assert_eq!(names, ["First", "Second", "Third"]);
+        assert_eq!(
+            crate::model::plugin_rows(0, &p.tracks[t].plugins),
+            [1, 3, 5]
+        );
+        // One added the old way goes after the rest.
+        add_plugin(&mut p, t, &effect("Last")).unwrap();
+        assert_eq!(
+            crate::model::plugin_rows(0, &p.tracks[t].plugins),
+            [1, 3, 5, 6]
+        );
+    }
+
+    #[test]
+    fn plugins_on_the_output_load_at_their_own_place() {
+        let mut p = Project::empty();
+        add_master_effect(&mut p, &effect("Glue"), 2).unwrap();
+        assert_eq!(crate::model::plugin_rows(0, &p.master_plugins), [2]);
+        let want = wanted_places(&p);
+        assert!(want
+            .iter()
+            .any(|(_, place)| *place == (prowave_engine::MASTER_STRIP, 0)));
+        for _ in 1..prowave_engine::MAX_INSERTS {
+            add_master_effect(&mut p, &effect("More"), 7).unwrap();
+        }
+        assert!(add_master_effect(&mut p, &effect("Too many"), 7).is_err());
+    }
 
     fn map(items: &[(u64, Place)]) -> HashMap<u64, Place> {
         items.iter().copied().collect()

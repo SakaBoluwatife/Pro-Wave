@@ -10,6 +10,7 @@ mod audio_rec;
 mod automation;
 mod bench;
 mod bounce;
+mod channel_rack;
 mod engine_sync;
 mod event_list;
 mod file_browser;
@@ -37,9 +38,11 @@ mod model;
 mod mtc_in;
 mod native_menu;
 mod note_edit;
+mod note_tools;
 mod patches;
 mod pattern;
 mod piano_roll;
+mod plugin_guard;
 mod plugin_rack;
 mod plugin_scan;
 mod project_io;
@@ -53,6 +56,7 @@ mod scripter;
 mod side_panes;
 mod signature_track;
 mod smart_tempo;
+mod song_pattern;
 mod start_screen;
 mod step_editor;
 mod sync_menu;
@@ -145,6 +149,7 @@ pub struct UiState {
     pub audition: Vec<piano_roll::Audition>,
     /// Bounce and export: the window, and what is being rendered.
     pub bounce: bounce::BounceState,
+    pub rack: channel_rack::RackView,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
     /// The computer keyboard as a piano, and what it played this frame.
@@ -220,6 +225,7 @@ impl UiState {
             audition: Vec::new(),
             sample_drop: None,
             bounce: bounce::BounceState::default(),
+            rack: channel_rack::RackView::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
@@ -553,6 +559,9 @@ impl eframe::App for App {
         self.ui.typing.poll(&ctx, &mut typed);
         self.ui.typed = typed;
         mixer::refresh_installed(&ctx, &mut self.ui);
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F6)) {
+            self.ui.rack.open = !self.ui.rack.open;
+        }
         // F7 as in FL Studio.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F7)) {
             self.ui.bottom = if self.ui.bottom == Bottom::PianoRoll {
@@ -719,6 +728,7 @@ impl eframe::App for App {
             .show(ui, |ui| tracks_area::show(ui, p, s, &meters));
         sample_place::menu(ui, p, s);
         bounce::show(&ctx, p, s);
+        channel_rack::show(&ctx, p, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
@@ -1128,7 +1138,13 @@ fn main() -> eframe::Result {
             };
             let mut audio_error = None;
             let mut midi_out = None;
-            let sync = match prowave_engine::Engine::start() {
+            // An ASIO build uses the ASIO driver when there is one, and otherwise what others use.
+            #[cfg(all(windows, feature = "asio"))]
+            let started = prowave_engine::Engine::start_asio_with(None)
+                .or_else(|_| prowave_engine::Engine::start());
+            #[cfg(not(all(windows, feature = "asio")))]
+            let started = prowave_engine::Engine::start();
+            let sync = match started {
                 Ok(e) => {
                     let mut sync = engine_sync::EngineSync::new(e, &project);
                     if !measuring {

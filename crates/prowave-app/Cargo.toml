@@ -9,6 +9,10 @@ license = "GPL-3.0-or-later"
 name = "prowave"
 path = "src/main.rs"
 
+[features]
+# ASIO drivers on Windows. Needs the ASIO SDK at build time: see cpal's documentation.
+asio = ["prowave-engine/asio"]
+
 [dependencies]
 assert_no_alloc = "1.1.2"
 base64 = "0.23"

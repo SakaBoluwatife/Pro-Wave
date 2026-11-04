@@ -46,6 +46,8 @@ fn current(t: &Track, target: AutoTarget) -> f32 {
                 Some(info.to_norm(i.params[param as usize]))
             })
             .unwrap_or(0.0),
+        // The plugin keeps it: the lane's first value stands in.
+        AutoTarget::Plugin { .. } => t.auto.lane(target).first().map_or(0.5, |p| p.value),
     }
 }
 
@@ -124,6 +126,7 @@ fn set_control(t: &mut Track, target: AutoTarget, value: f32) {
                 }
             }
         }
+        AutoTarget::Plugin { .. } => {}
     }
 }
 
@@ -174,6 +177,14 @@ pub fn lane_label(t: &Track, target: AutoTarget) -> String {
                 None => "?".to_string(),
             }
         }
+        AutoTarget::Plugin { uid, param } => {
+            let plugin = t.hosted().find(|i| i.uid == uid);
+            match plugin.and_then(|i| Some((i, i.params.iter().find(|x| x.id == param)?))) {
+                Some((i, info)) => format!("{} · {}", i.name, info.name),
+                // Not loaded (yet): its lane still plays when it does.
+                None => plugin.map_or("?".to_string(), |i| format!("{} · {param}", i.name)),
+            }
+        }
     }
 }
 
@@ -211,6 +222,7 @@ pub fn value_text(t: &Track, target: AutoTarget, v: f32) -> String {
                 format!("{x:.1} {}", info.unit)
             }
         }
+        AutoTarget::Plugin { .. } => format!("{:.0} %", v * 100.0),
     }
 }
 
@@ -219,7 +231,7 @@ fn frac_of(target: AutoTarget, v: f32) -> f32 {
     match target {
         AutoTarget::Volume => db_to_frac(v),
         AutoTarget::Pan => (v.clamp(-1.0, 1.0) + 1.0) / 2.0,
-        AutoTarget::Fx { .. } => v.clamp(0.0, 1.0),
+        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => v.clamp(0.0, 1.0),
     }
 }
 
@@ -228,7 +240,7 @@ fn value_of(target: AutoTarget, f: f32) -> f32 {
     match target {
         AutoTarget::Volume => frac_to_db(f).clamp(lo, hi),
         AutoTarget::Pan => (f.clamp(0.0, 1.0) * 2.0 - 1.0).clamp(lo, hi),
-        AutoTarget::Fx { .. } => f.clamp(lo, hi),
+        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => f.clamp(lo, hi),
     }
 }
 
@@ -337,6 +349,14 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                                 });
                             }
                         }
+                        for plugin in t.hosted() {
+                            for param in plugin.params.iter() {
+                                choices.push(AutoTarget::Plugin {
+                                    uid: plugin.uid,
+                                    param: param.id,
+                                });
+                            }
+                        }
                         for c in choices {
                             let dot = if t.auto.lane(c).is_empty() {
                                 "  "
@@ -415,7 +435,7 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
     let marks: &[f32] = match target {
         AutoTarget::Volume => &[6.0, 0.0, -6.0, -20.0, -40.0],
         AutoTarget::Pan => &[-1.0, 0.0, 1.0],
-        AutoTarget::Fx { .. } => &[0.0, 0.25, 0.5, 0.75, 1.0],
+        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => &[0.0, 0.25, 0.5, 0.75, 1.0],
     };
     for m in marks {
         let y = rect.bottom() - frac_of(target, *m) * rect.height();
@@ -434,7 +454,7 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
     let colour = match target {
         AutoTarget::Volume => Color32::from_rgb(0x6c, 0xd0, 0x5a),
         AutoTarget::Pan => Color32::from_rgb(0x5a, 0xa8, 0xf0),
-        AutoTarget::Fx { .. } => Color32::from_rgb(0xe6, 0x9a, 0x2e),
+        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => Color32::from_rgb(0xe6, 0x9a, 0x2e),
     };
     let points: Vec<AutoPoint> = p.tracks[ti].auto.lane(target).to_vec();
     let to_pos = |beat: f64, value: f32| point_pos(rect, from, span, target, beat, value);

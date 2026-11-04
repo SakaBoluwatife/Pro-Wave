@@ -513,7 +513,17 @@ fn header_button(
     on_col: Color32,
     selected_row: bool,
 ) -> bool {
-    let resp = ui.interact(rect, id(("hdrbtn", key)), Sense::click());
+    let hint = match label {
+        "M" => "Mute (M)",
+        "S" => "Solo (S)",
+        "R" => "Record Enable",
+        "I" => "Input Monitoring",
+        _ => "",
+    };
+    let mut resp = ui.interact(rect, id(("hdrbtn", key)), Sense::click());
+    if !hint.is_empty() {
+        resp = resp.on_hover_text(hint);
+    }
     g.rect_filled(
         rect,
         3.0,
@@ -1048,6 +1058,9 @@ enum CtxAction {
     OpenPianoRoll,
     /// A Pattern or Drummer region becomes an ordinary MIDI region.
     ConvertToMidi(usize, usize),
+    /// A clip of a Channel Rack pattern goes its own way, or gets a copy of the pattern.
+    MakeUnique(usize, usize),
+    ClonePattern(usize, usize),
     ToggleRegionMute(usize, usize),
     ToggleReverse(usize, usize),
     ToggleTakeFolder(usize, usize),
@@ -1118,6 +1131,7 @@ fn region_items(
     muted: bool,
     folder: Option<bool>,
     generated: bool,
+    linked: bool,
     ti: usize,
     ri: usize,
     picked: &mut Option<CtxAction>,
@@ -1135,6 +1149,16 @@ fn region_items(
                 tr("Convert to MIDI Region"),
                 "",
                 CtxAction::ConvertToMidi(ti, ri),
+                picked,
+            );
+        }
+        if linked {
+            pick(ui, "Make Unique", "", CtxAction::MakeUnique(ti, ri), picked);
+            pick(
+                ui,
+                "Clone Pattern",
+                "",
+                CtxAction::ClonePattern(ti, ri),
                 picked,
             );
         }
@@ -1422,6 +1446,10 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
     let v = &mut s.tracks;
     match action {
         CtxAction::Edit(cmd) => run_edit(p, v, &mut s.status, cmd),
+        CtxAction::MakeUnique(t, r) => crate::song_pattern::make_unique(p, t, r),
+        CtxAction::ClonePattern(t, r) => {
+            crate::song_pattern::clone_for_region(p, t, r);
+        }
         CtxAction::NewRegion(t) => {
             let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
             if let Some(r) = p.add_midi_region(t, bar) {
@@ -1815,7 +1843,7 @@ fn draw_take_folder(
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
     } else {
-        track.color
+        region.params.pattern_color.unwrap_or(track.color)
     };
     let fill = if silenced {
         Color32::from_rgb(0x2e, 0x2e, 0x30)
@@ -2017,7 +2045,7 @@ fn draw_region(
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
     } else {
-        track.color
+        region.params.pattern_color.unwrap_or(track.color)
     };
     let body = if recording {
         // The region being recorded is red until the recording stops.
@@ -2829,6 +2857,26 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
     }
+    // A pattern dragged from the Channel Rack: placed at the bar it is let go on.
+    if let Some(drag) = egui::DragAndDrop::payload::<crate::channel_rack::PatternDrag>(ui.ctx()) {
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pt| lanes.contains(*pt));
+        if let Some(pt) = over {
+            let bar0 = p.beats_to_bar(beat_of(pt.x)).floor();
+            let x = x_of(p.bar_to_beats(bar0));
+            g.line_segment(
+                [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
+                Stroke::new(2.0, crate::widgets::BLUE),
+            );
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                if crate::song_pattern::place(p, drag.0, bar0 as f32 + 1.0) == 0 {
+                    s.status = Some("This pattern has no notes yet".to_string());
+                }
+            }
+        }
+    }
     // A plugin dragged from the Plugins tab: the track it will go on, and it goes there when let go.
     if let Some(drag) = egui::DragAndDrop::payload::<crate::left_panel::PluginDrag>(ui.ctx()) {
         let over = ui
@@ -3074,6 +3122,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             );
             let folder_open = p.tracks[ti].regions[ri].folder.as_ref().map(|f| f.open);
             let generated = p.tracks[ti].regions[ri].generated.is_some();
+            let linked = p.tracks[ti].regions[ri].params.pattern != 0;
             let shown = v.shot_menu == Some((ti, Some(ri)));
             crate::widgets::context_menu_shown(&resp, shown, |ui| {
                 region_items(
@@ -3082,6 +3131,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     muted,
                     folder_open,
                     generated,
+                    linked,
                     ti,
                     ri,
                     &mut picked,

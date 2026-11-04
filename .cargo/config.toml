@@ -1,2 +1,5 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+[env]
+# Where cpal's ASIO backend finds the SDK (builds with the asio feature only).
+CPAL_ASIO_DIR = { value = "third_party/asio-sdk", relative = true }

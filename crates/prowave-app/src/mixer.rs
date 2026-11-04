@@ -224,7 +224,17 @@ fn small_button(
     on: bool,
     on_col: Color32,
 ) -> bool {
-    let resp = ui.interact(r, id, Sense::click());
+    let hint = match label {
+        "M" => "Mute",
+        "S" => "Solo",
+        "R" => "Record Enable",
+        "I" => "Input Monitoring",
+        _ => "",
+    };
+    let mut resp = ui.interact(r, id, Sense::click());
+    if !hint.is_empty() {
+        resp = resp.on_hover_text(hint);
+    }
     g.rect_filled(r, 3.0, if on { on_col } else { SLOT_GRAY });
     let txt = if on && on_col == SOLO_ON {
         Color32::BLACK
@@ -634,11 +644,12 @@ pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
                 .tracks
                 .get(*i)
                 .map_or(0, |t| t.inserts.len() + t.plugins.len()),
-            StripKey::StereoOut => 2,
-            StripKey::Master => 0,
+            StripKey::StereoOut | StripKey::Master => p.master_plugins.len(),
         })
         .max()
         .unwrap_or(0)
+        // Every slot can be picked, so all of them show.
+        .max(prowave_engine::MAX_INSERTS - 1)
         + 1
 }
 
@@ -882,7 +893,7 @@ fn slot_remove_button(ui: &Ui, g: &Painter, r: Rect, uid: egui::Id, color: Color
     let b = slot_button_rect(r, 0);
     let resp = ui
         .interact(b, uid.with("remove"), Sense::click())
-        .on_hover_text("Remove");
+        .on_hover_text("Remove from this slot");
     if resp.hovered() {
         g.rect_filled(b, 2.0, Color32::from_black_alpha(70));
     }
@@ -908,7 +919,7 @@ fn slot_bypass_button(
     let b = slot_button_rect(r, 1);
     let resp = ui
         .interact(b, uid.with("bypass"), Sense::click())
-        .on_hover_text("Bypass");
+        .on_hover_text("Bypass: let the sound pass by this effect");
     if resp.hovered() {
         g.rect_filled(b, 2.0, Color32::from_black_alpha(70));
     }
@@ -947,8 +958,9 @@ fn insert_slot(
     let have = p.tracks[i].inserts.get(k).copied();
     let count = p.tracks[i].inserts.len();
     let plugins = p.tracks[i].plugins.len();
-    if let Some(j) = k.checked_sub(count).filter(|j| *j < plugins) {
-        plugin_slot(ui, g, r, p, v, i, j, uid, inactive);
+    let rows = crate::model::plugin_rows(count, &p.tracks[i].plugins);
+    if let Some(j) = rows.iter().position(|row| *row == k) {
+        plugin_slot(ui, g, r, p, v, Home::Track(i), j, uid, inactive);
         return;
     }
     match have {
@@ -965,7 +977,7 @@ fn insert_slot(
         }
         None => slot(g, r, "", SLOT_EMPTY, TEXT),
     }
-    if k > count + plugins || (have.is_none() && count + plugins >= prowave_engine::MAX_INSERTS) {
+    if have.is_none() && count + plugins >= prowave_engine::MAX_INSERTS {
         return;
     }
     let resp = ui.interact(r, uid, Sense::click());
@@ -1039,9 +1051,77 @@ fn insert_slot(
         }
     };
     slot_menu(&resp, have.is_none()).show(&mut items);
-    put_plugin(p, v, i, pick);
+    if let Some(info) = pick {
+        if let Err(e) = crate::plugin_rack::add_effect_in_row(p, i, &info, k) {
+            v.message = Some(e);
+        }
+    }
     if let Some(act) = act {
         apply_insert(p, v, i, k, act);
+    }
+}
+
+/// Whose effects a plugin slot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Home {
+    Track(usize),
+    /// The output.
+    Master,
+}
+
+impl Home {
+    fn first_row(self, p: &Project) -> usize {
+        match self {
+            Home::Track(i) => p.tracks[i].inserts.len(),
+            Home::Master => 0,
+        }
+    }
+
+    fn plugins(self, p: &mut Project) -> &mut Vec<crate::model::PluginInsert> {
+        match self {
+            Home::Track(i) => &mut p.tracks[i].plugins,
+            Home::Master => &mut p.master_plugins,
+        }
+    }
+}
+
+/// One Audio FX slot of the output, which Stereo Out and Master share.
+#[allow(clippy::too_many_arguments)]
+fn master_slot(
+    ui: &Ui,
+    g: &Painter,
+    r: Rect,
+    p: &mut Project,
+    v: &mut MixerView,
+    k: usize,
+    uid: egui::Id,
+) {
+    let rows = crate::model::plugin_rows(0, &p.master_plugins);
+    if let Some(j) = rows.iter().position(|row| *row == k) {
+        plugin_slot(ui, g, r, p, v, Home::Master, j, uid, false);
+        return;
+    }
+    slot(g, r, "", SLOT_EMPTY, TEXT);
+    if p.master_plugins.len() >= prowave_engine::MAX_INSERTS {
+        return;
+    }
+    let resp = ui
+        .interact(r, uid, Sense::click())
+        .on_hover_text_at_pointer("Click to put an effect plugin on the whole mix");
+    let installed = v.installed.clone();
+    let mut pick = None;
+    slot_menu(&resp, true).show(|ui: &mut Ui| {
+        ui.set_min_width(170.0);
+        if installed.iter().any(|info| !info.is_instrument) {
+            plugin_menu(ui, &installed, false, &mut pick);
+        } else {
+            ui.label("No effect plugins found");
+        }
+    });
+    if let Some(info) = pick {
+        if let Err(e) = crate::plugin_rack::add_master_effect(p, &info, k) {
+            v.message = Some(e);
+        }
     }
 }
 
@@ -1132,12 +1212,12 @@ fn plugin_slot(
     r: Rect,
     p: &mut Project,
     v: &mut MixerView,
-    i: usize,
+    home: Home,
     j: usize,
     uid: egui::Id,
     inactive: bool,
 ) {
-    let plugin = &p.tracks[i].plugins[j];
+    let plugin = &home.plugins(p)[j];
     let (plugin_uid, name, loaded) = (plugin.uid, plugin.name.clone(), plugin.failed.is_none());
     let off = inactive || plugin.bypass || plugin.failed.is_some();
     let bypass = plugin.bypass;
@@ -1154,7 +1234,8 @@ fn plugin_slot(
         Some(why) => format!("{}: {why}", plugin.name),
         None => format!("{} ({})", plugin.name, plugin.vendor),
     };
-    let count = p.tracks[i].plugins.len();
+    let hover = format!("{hover}\nClick to open. Right-click for more.");
+    let count = home.plugins(p).len();
     let resp = ui
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(hover);
@@ -1197,14 +1278,22 @@ fn plugin_slot(
     if open {
         v.open_plugin = Some((plugin_uid, name));
     }
-    let plugins = &mut p.tracks[i].plugins;
+    let first = home.first_row(p);
+    let plugins = home.plugins(p);
     if flip_bypass {
         plugins[j].bypass = !bypass;
+    }
+    if remove || moved.is_some() {
+        // The others stay in the rows they are in.
+        crate::model::settle_plugin_rows(first, plugins);
     }
     if remove {
         plugins.remove(j);
     } else if let Some(to) = moved {
         plugins.swap(j, to);
+        let (a, b) = (plugins[j].row, plugins[to].row);
+        plugins[j].row = b;
+        plugins[to].row = a;
     }
 }
 
@@ -1225,9 +1314,9 @@ fn built_in_instrument_slot(
     let resp = ui
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(
-            "Built-in sound. Right-click to choose an instrument, or drop a plugin or sample on this track.",
+            "Built-in sound. Click to choose an instrument plugin, or drop a plugin or sample on this track.",
         );
-    instrument_menu(&resp, false, p, v, i);
+    instrument_menu(&resp, true, p, v, i);
     let mut remove = delete_pressed(ui, &resp);
     remove |= slot_remove_button(ui, g, r, uid, Color32::WHITE);
     if remove {
@@ -1263,6 +1352,7 @@ fn instrument_plugin_slot(
         Some(why) => format!("{}: {why}", plugin.name),
         None => format!("{} ({})", plugin.name, plugin.vendor),
     };
+    let hover = format!("{hover}\nClick to open. Right-click to replace it.");
     let resp = ui
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(hover);
@@ -1458,7 +1548,7 @@ pub fn channel_strip(
     let sx = strip.left() + 4.0;
     let row = |y: f32, h: f32| Rect::from_min_size(pos2(sx, y), vec2(inner_w, h));
 
-    let (name, color, inserts, kind, instrument) = match key {
+    let (name, color, _inserts, kind, instrument) = match key {
         StripKey::Track(i) => {
             let t = &p.tracks[i];
             (
@@ -1550,8 +1640,9 @@ pub fn channel_strip(
                     None => {
                         slot(g, input_r, inst, SLOT_EMPTY, TEXT);
                         if let StripKey::Track(i) = key {
-                            let resp =
-                                ui.interact(input_r, id(ns, (key, "choose")), Sense::click());
+                            let resp = ui
+                                .interact(input_r, id(ns, (key, "choose")), Sense::click())
+                                .on_hover_text_at_pointer("Click to choose an instrument plugin");
                             instrument_menu(&resp, true, p, v, i);
                         }
                     }
@@ -1600,11 +1691,7 @@ pub fn channel_strip(
                 StripKey::Track(i) => {
                     insert_slot(ui, g, rr, p, v, i, k, id(ns, (key, "fx", k)), inactive)
                 }
-                _ => match inserts.get(k) {
-                    Some((fx, _)) => slot(g, rr, fx, plug, plug_text),
-                    None if k == inserts.len() => slot(g, rr, "", SLOT_EMPTY, TEXT),
-                    None => {}
-                },
+                _ => master_slot(ui, g, rr, p, v, k, id(ns, (key, "fx", k))),
             }
         }
         match key {

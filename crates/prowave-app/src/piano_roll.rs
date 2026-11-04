@@ -193,11 +193,14 @@ pub struct PianoView {
     ghosts: bool,
     /// Where the note grid was last drawn.
     last_grid: Rect,
+    /// Arpeggiate, Strum and the rest: their settings and the one open.
+    tools: crate::note_tools::ToolSettings,
 }
 
 impl Default for PianoView {
     fn default() -> Self {
         Self {
+            tools: crate::note_tools::ToolSettings::default(),
             tool: Tool::Draw,
             held: None,
             fit: true,
@@ -370,6 +373,10 @@ struct Actions {
     select_all: bool,
     quantize: bool,
     scale: bool,
+    flip_time: bool,
+    flip_pitch: bool,
+    same_pitch: bool,
+    same_start: bool,
     /// Open the MIDI Transform window, with this preset (or as it was left).
     transform: Option<Option<crate::transform::Preset>>,
     /// Whether there is something to undo / redo, and the one picked in the Edit menu.
@@ -465,7 +472,38 @@ fn toolbar(
                 ui.close();
             }
         }
-        todo_item(ui, tr("Note Repeat…"));
+        ui.separator();
+        use crate::note_tools::NoteTool;
+        for tool in NoteTool::ALL {
+            // This name has its translations.
+            let name = if tool == NoteTool::NoteRepeat {
+                tr("Note Repeat…")
+            } else {
+                tool.name()
+            };
+            if ui.button(name).clicked() {
+                v.tools.open = Some(tool);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui.button("Flip in Time").clicked() {
+            act.flip_time = true;
+            ui.close();
+        }
+        if ui.button("Flip in Pitch").clicked() {
+            act.flip_pitch = true;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Select Same Pitch").clicked() {
+            act.same_pitch = true;
+            ui.close();
+        }
+        if ui.button("Select Same Position").clicked() {
+            act.same_start = true;
+            ui.close();
+        }
     });
     let (view, w) = menu_title(ui, &g, x, cy, tr("View"), uid("View"));
     x += w + 14.0;
@@ -715,6 +753,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         select_all: false,
         quantize: false,
         scale: false,
+        flip_time: false,
+        flip_pitch: false,
+        same_pitch: false,
+        same_start: false,
         transform: None,
         can_undo: s.can_undo,
         can_redo: s.can_redo,
@@ -961,6 +1003,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 ROW_WHITE
             },
         );
+        // The notes of the scale picked for Scale Quantize stand out.
+        let in_scale = v.scale_root.is_some_and(|root| {
+            let degree = (pitch - i32::from(root)).rem_euclid(12) as u8;
+            MODES[v.scale_mode].1.contains(&degree)
+        });
+        if in_scale {
+            gg.rect_filled(row, 0.0, BLUE.gamma_multiply(0.14));
+        }
         if pitch % 12 == 0 {
             gg.line_segment(
                 [row.left_bottom(), row.right_bottom()],
@@ -1370,6 +1420,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 Key::C if tool_key => v.tool = Tool::Slice,
                 Key::E if tool_key => v.tool = Tool::Select,
                 Key::Escape => v.selected.clear(),
+                Key::PageUp => {
+                    v.beat_px = (v.beat_px * 1.25).min(400.0);
+                    edited = false;
+                }
+                Key::PageDown => {
+                    v.beat_px = (v.beat_px / 1.25).max(12.0);
+                    edited = false;
+                }
                 Key::V if alt => {
                     v.ghosts = !v.ghosts;
                     edited = false;
@@ -1707,6 +1765,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             note_edit::scale_quantize(notes, &targets, root, MODES[v.scale_mode].1);
             v.dirty = true;
         }
+    }
+    if act.same_pitch {
+        v.selected = crate::note_tools::same_pitch(notes, &v.selected);
+    }
+    if act.same_start {
+        v.selected = crate::note_tools::same_start(notes, &v.selected);
+    }
+    if act.flip_time {
+        crate::note_tools::flip_time(notes, &targets);
+        v.dirty = true;
+    }
+    if act.flip_pitch {
+        crate::note_tools::flip_pitch(notes, &targets);
+        v.dirty = true;
+    }
+    if v.tools.window(ui.ctx()) {
+        v.tools.apply(notes, &targets);
+        v.selected.clear();
+        v.dirty = true;
     }
     if act.delete && !v.selected.is_empty() {
         let mut sel = std::mem::take(&mut v.selected);

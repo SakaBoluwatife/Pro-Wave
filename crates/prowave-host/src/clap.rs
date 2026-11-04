@@ -5,8 +5,9 @@ use clack_extensions::gui::{
     GuiApiType, GuiConfiguration, GuiSize, HostGui, HostGuiImpl, PluginGui, Window,
 };
 use clack_extensions::latency::PluginLatency;
+use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
-use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent};
+use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent};
 use clack_host::events::event_types::{TransportEvent, TransportFlags};
 use clack_host::events::{EventFlags, Match};
 use clack_host::prelude::*;
@@ -185,6 +186,7 @@ pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, Error> {
 /// The UI-thread half of a loaded plugin. It must outlive the processor [`load_clap`] returned
 /// and stay on the UI thread, where CLAP wants it. Call [`LoadedClap::tick`] once a frame.
 pub struct LoadedClap {
+    params: Vec<crate::PluginParam>,
     instance: PluginInstance<Handlers>,
     callback: Arc<AtomicBool>,
     released: Arc<AtomicBool>,
@@ -409,6 +411,10 @@ impl Drop for LoadedClap {
 }
 
 impl crate::LoadedPlugin for LoadedClap {
+    fn params(&self) -> Vec<crate::PluginParam> {
+        self.params.clone()
+    }
+
     fn latency_samples(&self) -> usize {
         LoadedClap::latency_samples(self)
     }
@@ -534,10 +540,14 @@ pub fn load_clap(
         None => 0,
     };
     let released = Arc::new(AtomicBool::new(false));
-    let processor =
+    let (params, mut ranges) = clap_params(&mut instance);
+    ranges.sort_by_key(|r| r.0);
+    let mut processor =
         ClapProcessor::new(stopped.into(), &inputs, &outputs, latency, released.clone());
+    processor.ranges = ranges;
     Ok((
         LoadedClap {
+            params,
             instance,
             callback,
             released,
@@ -673,6 +683,43 @@ fn transport_event(now: &PluginTransport) -> TransportEvent {
     }
 }
 
+/// Parameter moves one block can carry.
+const PENDING_PARAMS: usize = 256;
+
+/// The parameters that can be automated, and their ranges.
+fn clap_params(
+    instance: &mut PluginInstance<Handlers>,
+) -> (Vec<crate::PluginParam>, Vec<(u32, f64, f64)>) {
+    let Some(ext) = instance
+        .plugin_shared_handle()
+        .get_extension::<PluginParams>()
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let plugin = instance.plugin_handle();
+    let mut buffer = ParamInfoBuffer::new();
+    let (mut params, mut ranges) = (Vec::new(), Vec::new());
+    for index in 0..ext.count(&plugin) {
+        let Some(info) = ext.get_info(&plugin, index, &mut buffer) else {
+            continue;
+        };
+        if !info.flags.contains(ParamInfoFlags::IS_AUTOMATABLE) {
+            continue;
+        }
+        let end = info
+            .name
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(info.name.len());
+        params.push(crate::PluginParam {
+            id: info.id.get(),
+            name: String::from_utf8_lossy(&info.name[..end]).into_owned(),
+        });
+        ranges.push((info.id.get(), info.min_value, info.max_value));
+    }
+    (params, ranges)
+}
+
 /// The audio-thread half of a loaded CLAP plugin.
 struct ClapProcessor {
     processor: PluginAudioProcessor<Handlers>,
@@ -682,6 +729,10 @@ struct ClapProcessor {
     events_out: EventBuffer,
     latency: usize,
     released: Arc<AtomicBool>,
+    /// Each parameter's id and range, by id: CLAP's values are in the parameter's own units.
+    ranges: Vec<(u32, f64, f64)>,
+    /// Moves waiting for the next block. Past its capacity they wait for the next value.
+    pending: Vec<(u32, f64)>,
 }
 
 impl Drop for ClapProcessor {
@@ -699,6 +750,8 @@ impl ClapProcessor {
         released: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            ranges: Vec::new(),
+            pending: Vec::with_capacity(PENDING_PARAMS),
             processor,
             input: PortBuffers::new(inputs),
             output: PortBuffers::new(outputs),
@@ -711,6 +764,17 @@ impl ClapProcessor {
 }
 
 impl PluginProcessor for ClapProcessor {
+    fn set_param(&mut self, id: u32, value: f64) {
+        let Ok(at) = self.ranges.binary_search_by_key(&id, |r| r.0) else {
+            return;
+        };
+        if self.pending.len() < self.pending.capacity() {
+            let (_, min, max) = self.ranges[at];
+            self.pending
+                .push((id, min + value.clamp(0.0, 1.0) * (max - min)));
+        }
+    }
+
     fn process(
         &mut self,
         input: [&[f32]; 2],
@@ -722,6 +786,11 @@ impl PluginProcessor for ClapProcessor {
         fill_main_input(&mut self.input.ports, input);
         self.events_in.clear();
         self.events_out.clear();
+        for (id, value) in self.pending.drain(..) {
+            let id = ClapId::new(id);
+            self.events_in
+                .push(&ParamValueEvent::new(0, id, Pckn::match_all(), value));
+        }
         for e in events {
             push_event(&mut self.events_in, e);
         }

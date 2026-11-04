@@ -319,6 +319,28 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         .tracks
         .iter()
         .map(|t| TrackDoc {
+            channel: t.params.channel,
+            auto_plugins: t
+                .auto
+                .plugin_lanes
+                .iter()
+                .filter_map(|l| {
+                    let slot = if t.instrument_plugin.as_ref().is_some_and(|i| i.uid == l.uid) {
+                        -1
+                    } else {
+                        t.plugins.iter().position(|i| i.uid == l.uid)? as i32
+                    };
+                    Some(prowave_project::AutoPluginDoc {
+                        slot,
+                        param: l.param,
+                        points: l
+                            .points
+                            .iter()
+                            .map(|q| [q.beat, f64::from(q.value), f64::from(q.curve)])
+                            .collect(),
+                    })
+                })
+                .collect(),
             name: t.name.clone(),
             kind: kind_to_doc(t.kind),
             color: [t.color.r(), t.color.g(), t.color.b()],
@@ -402,6 +424,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 .regions
                 .iter()
                 .map(|r| RegionDoc {
+                    song_pattern: r.params.pattern,
                     name: r.name.clone(),
                     start_bar: r.start_bar,
                     len_bars: r.len_bars,
@@ -522,6 +545,36 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         name: p.name.clone(),
         tempo: p.tempo,
         sig: p.sig,
+        master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
+        song_patterns: p
+            .patterns
+            .iter()
+            .map(|x| prowave_project::SongPatternDoc {
+                id: x.id,
+                name: x.name.clone(),
+                color: [x.color.r(), x.color.g(), x.color.b()],
+                steps: x.steps,
+                lanes: x
+                    .lanes
+                    .iter()
+                    .map(|l| prowave_project::LaneDoc {
+                        channel: l.channel,
+                        step_pitch: l.step_pitch,
+                        notes: l
+                            .notes
+                            .iter()
+                            .map(|n| NoteDoc {
+                                start: n.start,
+                                len: n.len,
+                                pitch: n.pitch,
+                                vel: n.vel,
+                                muted: n.muted,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
         key: p.key.to_string(),
         position_beats: p.position_beats,
         cycle: p.cycle,
@@ -702,6 +755,9 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 generated: generated_from_doc(r),
                 audio,
                 params: RegionParams {
+                    pattern: 0,
+                    pattern_len: 0.0,
+                    pattern_color: None,
                     mute: r.mute,
                     quantize: r.quantize.filter(|q| q.is_finite() && *q > 0.0),
                     transpose: r.transpose,
@@ -717,6 +773,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 },
             };
             // A take folder's notes are what its comp plays.
+            region.params.pattern = r.song_pattern;
             if let Some(folder) = folder {
                 folder.apply(&mut region.notes, &mut region.controls);
                 region.folder = Some(folder);
@@ -749,6 +806,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             instrument: t.instrument.as_deref().map(intern),
             regions,
             params: TrackParams {
+                channel: t.channel,
                 transpose: t.transpose,
                 velocity: t.velocity,
                 key_limit: ordered(t.key_limit, 0),
@@ -826,6 +884,36 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.tidy_signatures();
     p.key = intern(&doc.key);
     p.position_beats = doc.position_beats.max(0.0);
+    p.patterns = doc
+        .song_patterns
+        .iter()
+        .filter(|x| x.id != 0)
+        .map(|x| crate::song_pattern::SongPattern {
+            id: x.id,
+            name: x.name.clone(),
+            color: Color32::from_rgb(x.color[0], x.color[1], x.color[2]),
+            steps: x.steps.clamp(1, 256),
+            lanes: x
+                .lanes
+                .iter()
+                .map(|l| crate::song_pattern::Lane {
+                    channel: l.channel,
+                    step_pitch: l.step_pitch.min(127),
+                    notes: l
+                        .notes
+                        .iter()
+                        .map(|n| Note {
+                            start: finite_in(n.start, 0.0, MAX_BEATS, 0.0),
+                            len: finite_in(n.len, 1.0 / 960.0, MAX_BEATS, 0.25),
+                            pitch: n.pitch.min(127),
+                            vel: n.vel.clamp(1, 127),
+                            muted: n.muted,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
     p.cycle = doc.cycle;
     p.cycle_start = doc.cycle_start.max(0.0);
     p.cycle_end = doc.cycle_end.max(p.cycle_start);
@@ -867,6 +955,38 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         });
     }
     p.tracks = tracks;
+    p.master_plugins = doc
+        .master_plugins
+        .iter()
+        .filter(|d| !d.id.is_empty())
+        .take(prowave_engine::MAX_INSERTS)
+        .map(plugin_from_doc)
+        .collect();
+    // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
+    for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
+        for l in &d.auto_plugins {
+            let plugin = if l.slot < 0 {
+                track.instrument_plugin.as_ref()
+            } else {
+                track.plugins.get(l.slot as usize)
+            };
+            let Some(uid) = plugin.map(|i| i.uid) else {
+                continue;
+            };
+            let target = crate::model::AutoTarget::Plugin {
+                uid,
+                param: l.param,
+            };
+            let points = points_from_doc(target, &l.points);
+            if !points.is_empty() {
+                track.auto.plugin_lanes.push(crate::model::PluginLane {
+                    uid,
+                    param: l.param,
+                    points,
+                });
+            }
+        }
+    }
     // A hand-edited file cannot nest tracks deeper than the folders above them allow.
     p.normalize_nesting();
     p.playing = false;
@@ -1097,6 +1217,7 @@ pub fn save_project(p: &Project, path: &Path) -> Result<PathBuf, prowave_project
 
 fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
     prowave_project::PluginDoc {
+        row: i.row,
         id: i.id.clone(),
         name: i.name.clone(),
         vendor: i.vendor.clone(),
@@ -1110,6 +1231,7 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
 
 fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert {
     crate::model::PluginInsert {
+        row: d.row,
         uid: crate::plugin_rack::new_uid(),
         id: d.id.clone(),
         name: d.name.clone(),
@@ -1118,17 +1240,23 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         bypass: d.bypass,
         failed: None,
         state: plugin_state_from_doc(&d.state),
+        params: std::sync::Arc::default(),
     }
 }
 
 /// Writes the plugins' settings into the document that goes in the file.
 fn add_plugin_states(p: &Project, doc: &mut ProjectDoc) {
     use base64::Engine as _;
-    let inserts = p.tracks.iter().flat_map(|t| t.hosted());
+    let inserts = p
+        .tracks
+        .iter()
+        .flat_map(|t| t.hosted())
+        .chain(&p.master_plugins);
     let docs = doc
         .tracks
         .iter_mut()
-        .flat_map(|t| t.instrument_plugin.iter_mut().chain(&mut t.plugins));
+        .flat_map(|t| t.instrument_plugin.iter_mut().chain(&mut t.plugins))
+        .chain(&mut doc.master_plugins);
     for (insert, plugin_doc) in inserts.zip(docs) {
         if let Some(state) = &insert.state {
             plugin_doc.state = base64::engine::general_purpose::STANDARD.encode(state.as_slice());

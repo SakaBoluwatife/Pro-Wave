@@ -960,6 +960,9 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
             .and_then(|c| c.cast::<IMidiMapping>())
             .map(|mapping| midi_table(&mapping))
             .unwrap_or_else(|| Box::new([None; MIDI_CONTROLLERS]));
+        let params = controller
+            .as_ref()
+            .map_or_else(Vec::new, |c| vst3_params(c));
         let audio = Vst3Processor::new(
             processor,
             &inputs,
@@ -972,6 +975,7 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
         );
         Ok((
             Box::new(LoadedVst3 {
+                params,
                 component,
                 controller,
                 separate,
@@ -989,6 +993,29 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
             Box::new(audio),
         ))
     }
+}
+
+/// The parameters that can be automated. VST3's values are positions 0..=1 already.
+///
+/// SAFETY: `controller` must be valid.
+unsafe fn vst3_params(controller: &ComPtr<IEditController>) -> Vec<crate::PluginParam> {
+    let mut params = Vec::new();
+    for index in 0..controller.getParameterCount() {
+        // SAFETY: the struct is plain data, and the plugin fills it in.
+        let mut info: ParameterInfo = std::mem::zeroed();
+        if controller.getParameterInfo(index, &mut info) != kResultOk {
+            continue;
+        }
+        if info.flags & ParameterInfo_::ParameterFlags_::kCanAutomate == 0 {
+            continue;
+        }
+        let title: Vec<u16> = info.title.iter().copied().take_while(|c| *c != 0).collect();
+        params.push(crate::PluginParam {
+            id: info.id,
+            name: String::from_utf16_lossy(&title),
+        });
+    }
+    params
 }
 
 /// VST3 has no MIDI controllers: the plugin says which parameter each one moves.
@@ -1018,6 +1045,7 @@ struct OpenEditor {
 struct LoadedVst3 {
     component: ComPtr<IComponent>,
     controller: Option<ComPtr<IEditController>>,
+    params: Vec<crate::PluginParam>,
     separate: bool,
     points: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     handler: ComWrapper<Handler>,
@@ -1060,6 +1088,10 @@ fn unpack_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 impl LoadedPlugin for LoadedVst3 {
+    fn params(&self) -> Vec<crate::PluginParam> {
+        self.params.clone()
+    }
+
     fn latency_samples(&self) -> usize {
         self.latency
     }
@@ -1319,6 +1351,9 @@ impl Buses {
     }
 }
 
+/// Parameter moves one block can carry.
+const PENDING_PARAMS: usize = 256;
+
 struct Vst3Processor {
     processor: ComPtr<IAudioProcessor>,
     inputs: Buses,
@@ -1328,6 +1363,9 @@ struct Vst3Processor {
     params: ComWrapper<ParamChanges>,
     params_out: ComWrapper<ParamChanges>,
     edits: rtrb::Consumer<(ParamID, ParamValue)>,
+    /// Moves from automation, waiting for the next block. Past its capacity they wait for the
+    /// next value.
+    pending: Vec<(ParamID, ParamValue)>,
     midi: Box<[Option<ParamID>; MIDI_CONTROLLERS]>,
     latency: usize,
     sample_rate: f64,
@@ -1361,6 +1399,7 @@ impl Vst3Processor {
             params: ComWrapper::new(ParamChanges::new()),
             params_out: ComWrapper::new(ParamChanges::new()),
             edits,
+            pending: Vec::with_capacity(PENDING_PARAMS),
             midi,
             latency,
             sample_rate,
@@ -1462,6 +1501,12 @@ fn process_context(now: &PluginTransport, sample_rate: f64, continuous: i64) -> 
 }
 
 impl PluginProcessor for Vst3Processor {
+    fn set_param(&mut self, id: u32, value: f64) {
+        if self.pending.len() < self.pending.capacity() {
+            self.pending.push((id, value.clamp(0.0, 1.0)));
+        }
+    }
+
     fn process(
         &mut self,
         input: [&[f32]; 2],
@@ -1474,6 +1519,9 @@ impl PluginProcessor for Vst3Processor {
         self.params.clear();
         self.params_out.clear();
         while let Ok((id, value)) = self.edits.pop() {
+            self.params.add(id, 0, value);
+        }
+        for (id, value) in self.pending.drain(..) {
             self.params.add(id, 0, value);
         }
         self.take_events(events);

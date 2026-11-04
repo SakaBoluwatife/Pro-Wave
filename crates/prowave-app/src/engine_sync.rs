@@ -802,6 +802,10 @@ impl EngineSync {
             .map(|(plan, t)| plan.0 + plan.1 + latency_of(t, sr, &self.rack))
             .max()
             .unwrap_or(0)
+            + p.master_plugins
+                .iter()
+                .map(|i| self.rack.latency_of(i.uid))
+                .sum::<usize>()
     }
 
     /// Runs what the plugins asked for on this thread, with no other change.

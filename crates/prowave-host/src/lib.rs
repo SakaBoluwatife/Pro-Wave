@@ -80,7 +80,19 @@ impl std::error::Error for HostError {}
 
 /// The UI-thread half of a loaded plugin, of any format. It must outlive the audio half that came
 /// with it and stay on the UI thread. Call [`LoadedPlugin::tick`] about once a frame.
+/// A parameter a plugin lets the host move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginParam {
+    pub id: u32,
+    pub name: String,
+}
+
 pub trait LoadedPlugin {
+    /// The parameters that can be automated.
+    fn params(&self) -> Vec<PluginParam> {
+        Vec::new()
+    }
+
     /// The delay the plugin reported when it was activated, in samples.
     fn latency_samples(&self) -> usize;
     /// Whether the audio half is gone. Keep this half until it is.
@@ -109,11 +121,16 @@ pub trait LoadedPlugin {
 /// Both halves of a plugin that was just loaded.
 pub type Loaded = (Box<dyn LoadedPlugin>, Box<dyn PluginProcessor>);
 
-/// Where plugins of every format are installed, and the files there. Nothing is loaded.
-pub fn find_plugin_files() -> Vec<PathBuf> {
-    let mut files = find_clap_files(&clap_folders());
+/// Where plugins of every format are installed, plus the folders `extra`, and the files there.
+/// Nothing is loaded.
+pub fn find_plugin_files(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let with_extra = |mut dirs: Vec<PathBuf>| {
+        dirs.extend_from_slice(extra);
+        dirs
+    };
+    let mut files = find_clap_files(&with_extra(clap_folders()));
     #[cfg(windows)]
-    files.extend(find_vst3_files(&vst3_folders()));
+    files.extend(find_vst3_files(&with_extra(vst3_folders())));
     files
 }
 
@@ -148,6 +165,57 @@ pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Ho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "loads plugins installed on this computer"]
+    fn installed_plugins_list_their_parameters_and_take_moves() {
+        use prowave_engine::{PluginTransport, PLUGIN_BLOCK};
+        let files = find_plugin_files(&[]);
+        let wanted = ["De-Esser", "Lounge Lizard"];
+        let mut tried = 0;
+        let vst3 = files
+            .iter()
+            .filter(|f| wanted.iter().any(|w| f.display().to_string().contains(w)));
+        let clap = files
+            .iter()
+            .filter(|f| PluginFormat::of(f) == PluginFormat::Clap)
+            .take(2);
+        for file in vst3.chain(clap) {
+            let Ok(found) = scan_plugin_file(file) else {
+                continue;
+            };
+            let Some(info) = found.first() else {
+                continue;
+            };
+            let (loaded, mut audio) = match load_plugin(file, &info.id, 48_000) {
+                Ok(both) => both,
+                Err(e) => {
+                    println!("{}: {e}", info.name);
+                    continue;
+                }
+            };
+            let params = loaded.params();
+            println!("{}: {} parameters", info.name, params.len());
+            let input = vec![0.1f32; PLUGIN_BLOCK];
+            let (mut l, mut r) = (vec![0.0f32; PLUGIN_BLOCK], vec![0.0f32; PLUGIN_BLOCK]);
+            for block in 0..200 {
+                if let Some(param) = params.first() {
+                    audio.set_param(param.id, f64::from(block % 2));
+                }
+                audio.process(
+                    [&input, &input],
+                    [&mut l, &mut r],
+                    &[],
+                    &PluginTransport::default(),
+                );
+                assert!(l.iter().chain(&r).all(|s| s.is_finite()), "{}", info.name);
+            }
+            drop(audio);
+            drop(loaded);
+            tried += 1;
+        }
+        assert!(tried > 0);
+    }
 
     #[test]
     fn the_format_goes_by_the_file_name() {

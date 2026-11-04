@@ -9,6 +9,8 @@
 
 /// Frames a plugin gets at a time: 1.3 ms at 48 kHz.
 pub const PLUGIN_BLOCK: usize = 64;
+/// The strip number that means the output: Stereo Out, after everything is mixed.
+pub const MASTER_STRIP: u16 = u16::MAX;
 /// The slot number that means a strip's instrument, in the commands that take a plugin's place.
 pub const INSTRUMENT_SLOT: u8 = u8::MAX;
 /// Events one block can carry; past this they are dropped rather than allocating.
@@ -87,10 +89,22 @@ pub trait PluginProcessor: Send {
 
     /// The delay the plugin itself puts on the sound, in samples.
     fn latency_samples(&self) -> usize;
+
+    /// Moves a parameter, as a position 0..=1 along its range, from the next block on. Called on
+    /// the audio thread: it must not allocate.
+    fn set_param(&mut self, _id: u32, _value: f64) {}
 }
+
+/// Automated parameters of one plugin whose last value is remembered.
+const SENT_PARAMS: usize = 32;
 
 /// A loaded plugin with its preallocated buffers, ready to be sent to the engine.
 pub struct PluginSlot {
+    /// Which instance this is, for the automation lanes that move it. 0 for none.
+    uid: u64,
+    /// The values last sent, so that a lane holding still does not keep telling the plugin.
+    sent: [(u32, f64); SENT_PARAMS],
+    sent_next: usize,
     plugin: Box<dyn PluginProcessor>,
     in_l: Box<[f32]>,
     in_r: Box<[f32]>,
@@ -114,6 +128,9 @@ impl PluginSlot {
         let buffer = || vec![0.0; PLUGIN_BLOCK].into_boxed_slice();
         let dry = vec![0.0; plugin.latency_samples()].into_boxed_slice();
         Self {
+            uid: 0,
+            sent: [(u32::MAX, f64::NAN); SENT_PARAMS],
+            sent_next: 0,
             plugin,
             in_l: buffer(),
             in_r: buffer(),
@@ -129,6 +146,29 @@ impl PluginSlot {
     }
 
     /// The whole delay of this slot: the plugin's own and the block it is collected in.
+    /// Says which instance this is, for its automation lanes.
+    pub fn with_uid(mut self, uid: u64) -> Self {
+        self.uid = uid;
+        self
+    }
+
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
+    /// Moves a parameter, unless it is there already.
+    pub fn set_param(&mut self, id: u32, value: f64) {
+        match self.sent.iter_mut().find(|(known, _)| *known == id) {
+            Some((_, last)) if *last == value => return,
+            Some((_, last)) => *last = value,
+            None => {
+                self.sent[self.sent_next] = (id, value);
+                self.sent_next = (self.sent_next + 1) % SENT_PARAMS;
+            }
+        }
+        self.plugin.set_param(id, value);
+    }
+
     pub fn latency_samples(&self) -> usize {
         self.plugin.latency_samples() + PLUGIN_BLOCK
     }
@@ -210,6 +250,37 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use std::sync::Arc;
+
+    #[test]
+    fn a_parameter_is_told_only_when_it_moves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        struct Counting(Arc<AtomicUsize>);
+        impl PluginProcessor for Counting {
+            fn process(
+                &mut self,
+                _: [&[f32]; 2],
+                _: [&mut [f32]; 2],
+                _: &[PluginEvent],
+                _: &PluginTransport,
+            ) {
+            }
+            fn latency_samples(&self) -> usize {
+                0
+            }
+            fn set_param(&mut self, _: u32, _: f64) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let told = Arc::new(AtomicUsize::new(0));
+        let mut slot = PluginSlot::new(Box::new(Counting(told.clone()))).with_uid(7);
+        assert_eq!(slot.uid(), 7);
+        slot.set_param(1, 0.5);
+        slot.set_param(1, 0.5);
+        slot.set_param(2, 0.5);
+        slot.set_param(1, 0.6);
+        assert_eq!(told.load(Ordering::Relaxed), 3);
+    }
 
     /// A stand-in for a real plugin: gain, an added constant, a reported latency, and what it
     /// was sent. `poison` makes it put NaN in the output.

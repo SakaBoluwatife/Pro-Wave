@@ -756,6 +756,7 @@ pub fn poll(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     poll_detections(p, s);
     if !ctx.input(|i| i.pointer.any_down()) {
         update_followers(p);
+        crate::song_pattern::sync(p);
     }
     start_renders(p, s);
     poll_renders(ctx, p, s);

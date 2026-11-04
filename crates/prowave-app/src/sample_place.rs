@@ -53,7 +53,7 @@ pub fn sampler_info(path: &Path) -> PluginInfo {
 }
 
 /// A new instrument track holding the sample. Returns its number.
-fn new_sampler_track(p: &mut Project, path: &Path) -> Result<usize, String> {
+pub(crate) fn new_sampler_track(p: &mut Project, path: &Path) -> Result<usize, String> {
     let t = p.add_track(TrackKind::Instrument);
     p.tracks[t].name = stem_of(path);
     add_plugin(p, t, &sampler_info(path))?;

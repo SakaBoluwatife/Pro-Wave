@@ -55,6 +55,8 @@ pub fn split(p: &mut Project, t: usize, r: usize, beat: f64) -> Result<usize, St
         return Err("There is no audio left to cut there".to_string());
     }
 
+    // A part of a pattern's clip is not the pattern any more.
+    crate::song_pattern::make_unique(p, t, r);
     let region = &mut p.tracks[t].regions[r];
     let mut right = region.clone();
     let whole_len = region.len_bars;
@@ -135,6 +137,8 @@ fn next_region(p: &Project, t: usize, r: usize) -> Option<usize> {
 /// needs a new file (Bounce). Returns the number of the joined region.
 pub fn join_with_next(p: &mut Project, t: usize, r: usize) -> Result<usize, String> {
     let next = next_region(p, t, r).ok_or_else(|| "There is no region after it".to_string())?;
+    crate::song_pattern::make_unique(p, t, r);
+    crate::song_pattern::make_unique(p, t, next);
     let (first, second) = (region_at(p, t, r)?, region_at(p, t, next)?);
     if first.folder.is_some() || second.folder.is_some() {
         return Err("Pick a take first: a take folder cannot be joined".to_string());
@@ -237,6 +241,7 @@ impl TrimStart {
 /// Moves the start of a region to `beat`, its end staying where it is. What it plays stays in
 /// place: an audio region starts later in its file, notes before the new start are cut off.
 pub fn trim_start(p: &mut Project, t: usize, r: usize, from: &TrimStart, beat: f64) {
+    crate::song_pattern::make_unique(p, t, r);
     let mut beat = beat.clamp(0.0, from.end - EDGE_BEATS * 4.0);
     let is_audio = region_at(p, t, r).is_ok_and(|x| x.audio.is_some());
     if is_audio {

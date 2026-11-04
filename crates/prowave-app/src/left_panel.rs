@@ -45,6 +45,7 @@ pub struct PluginList {
     clap: PluginScan,
     kind: PluginKind,
     search: String,
+    show_folders: bool,
 }
 
 impl PluginList {
@@ -165,9 +166,38 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 .on_hover_text("Look for new plugins and try the ones that failed again")
                 .clicked()
             {
+                crate::plugin_guard::clear_blocked();
                 list.clap.start(true, &ctx);
             }
+            if ui
+                .small_button("Folders")
+                .on_hover_text("Choose more folders to look for plugins in")
+                .clicked()
+            {
+                list.show_folders = !list.show_folders;
+            }
         });
+        if list.show_folders {
+            let mut rescan = false;
+            for folder in crate::plugin_guard::plugin_folders() {
+                ui.horizontal(|ui| {
+                    if ui.small_button("×").on_hover_text("Stop looking here").clicked() {
+                        crate::plugin_guard::remove_folder(&folder);
+                        rescan = true;
+                    }
+                    ui.label(egui::RichText::new(folder.display().to_string()).small());
+                });
+            }
+            if ui.small_button("Add Folder…").clicked() {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    crate::plugin_guard::add_folder(&folder);
+                    rescan = true;
+                }
+            }
+            if rescan {
+                list.clap.start(false, &ctx);
+            }
+        }
         let note = |ui: &mut Ui, text: String| {
             ui.add(egui::Label::new(egui::RichText::new(text).small().color(TEXT_DIM)).wrap())
         };

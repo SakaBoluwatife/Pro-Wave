@@ -766,6 +766,8 @@ pub struct EngineCore {
     plugins: Vec<[Option<Box<PluginSlot>>; MAX_INSERTS]>,
     /// Hosted instruments of each strip: its notes go there and its sound starts there.
     instruments: Vec<Option<Box<PluginSlot>>>,
+    /// The plugins on the output, after everything is mixed.
+    master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
     /// Whether any strip has one, and what they are told of the song.
     any_plugin: bool,
     transport: PluginTransport,
@@ -911,6 +913,7 @@ impl EngineCore {
                 .map(|_| std::array::from_fn(|_| None))
                 .collect(),
             instruments: (0..MAX_TRACKS).map(|_| None).collect(),
+            master_plugins: std::array::from_fn(|_| None),
             any_plugin: false,
             transport: PluginTransport::default(),
             transport_left: 0,
@@ -1027,7 +1030,9 @@ impl EngineCore {
 
     /// The place of a plugin by its track and slot, if there is such a place.
     fn plugin_place(&mut self, (track, slot): (u16, u8)) -> Option<&mut Option<Box<PluginSlot>>> {
-        if slot == INSTRUMENT_SLOT {
+        if track == crate::plugin::MASTER_STRIP {
+            self.master_plugins.get_mut(slot as usize)
+        } else if slot == INSTRUMENT_SLOT {
             self.instruments.get_mut(track as usize)
         } else {
             self.plugins
@@ -1317,6 +1322,19 @@ impl EngineCore {
                 AutoTarget::Fx { slot, param } => {
                     if let Some(chain) = self.chains[t].as_mut() {
                         chain.set_param_norm(slot as usize, param as usize, v);
+                    }
+                }
+                AutoTarget::Plugin { uid, param } => {
+                    let effects = self
+                        .plugins
+                        .get_mut(t)
+                        .into_iter()
+                        .flat_map(|s| s.iter_mut());
+                    let instrument = self.instruments.get_mut(t).into_iter();
+                    for plugin in effects.chain(instrument).flatten() {
+                        if plugin.uid() == uid {
+                            plugin.set_param(param, f64::from(v));
+                        }
                     }
                 }
             }
@@ -2098,6 +2116,12 @@ impl EngineCore {
                     r += f64::from(finite_or_zero(*b) * g);
                     self.preview_pos += 1;
                 }
+            }
+            let transport = self.transport;
+            for plugin in self.master_plugins.iter_mut().flatten() {
+                let (a, b) = plugin.process(l as f32, r as f32, &transport);
+                l = f64::from(a);
+                r = f64::from(b);
             }
             let master = self.master.next() as f64;
             // `clamp` lets NaN through, so a non-finite sum becomes silence first.
@@ -2950,6 +2974,39 @@ mod tests {
         assert!(tx.push(Command::Stop).is_ok());
         assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
         assert!(buf.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn a_plugin_on_the_output_hears_the_mix_and_comes_back_as_garbage() {
+        use crate::plugin::{tests::FakePlugin, MASTER_STRIP, PLUGIN_BLOCK};
+        let (mut tx, rx) = rtrb::RingBuffer::new(64);
+        let (gtx, mut grx) = rtrb::RingBuffer::new(8);
+        let mut e = EngineCore::new(48_000, rx, gtx, Arc::new(Shared::new()));
+        let plugin = PluginSlot::new(Box::new(FakePlugin {
+            add: 0.25,
+            ..FakePlugin::default()
+        }));
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: MASTER_STRIP,
+                slot: 0,
+                plugin: Some(Box::new(plugin)),
+            })
+            .is_ok());
+        let mut buf = vec![0.0f32; PLUGIN_BLOCK * 8];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        // Nothing plays, so all there is at the output is what the plugin adds, after the fader.
+        let level = buf[buf.len() - 1];
+        assert!(level > 0.1, "{level}");
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: MASTER_STRIP,
+                slot: 0,
+                plugin: None,
+            })
+            .is_ok());
+        e.process(&mut buf);
+        assert!(grx.pop().is_ok(), "the plugin comes back to be dropped");
     }
 
     #[test]

@@ -71,9 +71,41 @@ fn stroke(c: Color32) -> Stroke {
     Stroke::new(1.4, c)
 }
 
+/// What a button of the control bar is, for when the pointer is on it.
+fn button_name(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "rew" => "Rewind",
+        "ffw" => "Fast Forward",
+        "start" => "Go to Beginning (Enter)",
+        "play" => "Play or Stop (Space)",
+        "rec" => "Record (R)",
+        "capture" => "Capture Recording (Shift+R)",
+        "cycle" => "Cycle (C)",
+        "lowlat" => "Low Latency Mode (not built yet)",
+        "tuner" => "Tuner (not built yet)",
+        "countin" => "Count-in",
+        "metronome" => "Metronome (K)",
+        "view0" => "Library (Y)",
+        "view1" => "Inspector (I)",
+        "view2" => "Quick Help",
+        "view3" => "Toolbar",
+        "panes0" => "Light or dark menus",
+        "panes1" => "Mixer (X)",
+        "panes2" => "Editors (P)",
+        "right0" => "List Editors (D)",
+        "right1" => "Project Notes",
+        "right2" => "Loop Browser",
+        "right3" => "Media Browser (F)",
+        _ => return None,
+    })
+}
+
 fn clicked(ui: &Ui, rect: Rect, key: &str) -> bool {
-    ui.interact(rect, egui::Id::unique(("control_bar", key)), Sense::click())
-        .clicked()
+    let resp = ui.interact(rect, egui::Id::unique(("control_bar", key)), Sense::click());
+    match button_name(key) {
+        Some(name) => resp.on_hover_text(name).clicked(),
+        None => resp.clicked(),
+    }
 }
 
 // ---------------------------------------------------------------- icons
@@ -436,7 +468,10 @@ fn tbutton(
     icon: Color32,
 ) -> bool {
     let r = Rect::from_center_size(center, vec2(30.0, 26.0));
-    let resp = ui.interact(r, egui::Id::unique(("control_bar", key)), Sense::click());
+    let mut resp = ui.interact(r, egui::Id::unique(("control_bar", key)), Sense::click());
+    if let Some(name) = button_name(key) {
+        resp = resp.on_hover_text(name);
+    }
     if let Some(bg) = active_bg {
         g.rect_filled(r, 6.0, bg);
     } else if resp.hovered() {
