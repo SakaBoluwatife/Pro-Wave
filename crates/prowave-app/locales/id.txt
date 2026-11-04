@@ -136,7 +136,6 @@ Time Quantize (classic) = Kuantisasi Waktu (klasik)
 Strength = Kekuatan
 Swing = Swing
 Velocity = Velositas
-Click: add · Drag: select · Del/Right-click: delete = Klik: tambah · Seret: pilih · Del/klik kanan: hapus
 New Project = Proyek Baru
 Recent = Terbaru
 Project Templates = Template Proyek

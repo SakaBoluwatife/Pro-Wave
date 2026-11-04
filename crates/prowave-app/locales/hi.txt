@@ -136,7 +136,6 @@ Time Quantize (classic) = समय क्वांटाइज़ (क्ला
 Strength = तीव्रता
 Swing = स्विंग
 Velocity = वेलोसिटी
-Click: add · Drag: select · Del/Right-click: delete = क्लिक: जोड़ें · ड्रैग: चुनें · Del/राइट-क्लिक: हटाएँ
 New Project = नया प्रोजेक्ट
 Recent = हाल के
 Project Templates = प्रोजेक्ट टेम्पलेट

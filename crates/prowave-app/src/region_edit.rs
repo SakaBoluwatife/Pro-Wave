@@ -290,41 +290,59 @@ pub fn trim_start(p: &mut Project, t: usize, r: usize, from: &TrimStart, beat: f
     }
 }
 
-/// Keeps a copy of the selected region for Paste.
+/// Keeps copies of the selected regions for Paste.
 pub fn copy(p: &Project, v: &mut TracksView) -> Result<(), String> {
-    let (t, r) = v
-        .selected
-        .ok_or_else(|| "Select a region first".to_string())?;
-    v.clipboard = Some((t, region_at(p, t, r)?.clone()));
+    let selected = v.all_selected();
+    if selected.is_empty() {
+        return Err("Select a region first".to_string());
+    }
+    let mut clip = Vec::with_capacity(selected.len());
+    for (t, r) in selected {
+        clip.push((t, region_at(p, t, r)?.clone()));
+    }
+    v.clipboard = clip;
     Ok(())
 }
 
-/// Puts a copy of what was copied at the playhead, on the selected track if it can hold it, else
-/// on the track it came from. Returns where it went.
+/// Puts copies of what was copied at the playhead, keeping their distances in time and between
+/// tracks: starting on the selected track if it can hold them, else on the tracks they came from.
+/// They end up selected. Returns where the first one went.
 pub fn paste(p: &mut Project, v: &mut TracksView) -> Result<(usize, usize), String> {
-    let (from, region) = v
-        .clipboard
-        .clone()
-        .ok_or_else(|| "There is nothing to paste".to_string())?;
-    let holds = |p: &Project, t: usize| {
+    if v.clipboard.is_empty() {
+        return Err("There is nothing to paste".to_string());
+    }
+    let clip = v.clipboard.clone();
+    let earliest = clip
+        .iter()
+        .map(|(_, r)| r.start_bar)
+        .fold(f32::INFINITY, f32::min);
+    let first_track = clip.iter().map(|(t, _)| *t).min().unwrap_or(0);
+    let shift = p.beats_to_bar(p.position_beats) as f32 + 1.0 - earliest;
+    let holds = |p: &Project, t: usize, region: &Region| {
         p.tracks.get(t).is_some_and(|track| {
             track.kind.has_regions() && (track.kind == TrackKind::Audio) == region.audio.is_some()
         })
     };
-    let target = [p.selected_track, from]
-        .into_iter()
-        .find(|t| holds(p, *t))
-        .ok_or_else(|| "No track here can hold that region".to_string())?;
-    let start_bar = p.beats_to_bar(p.position_beats) as f32 + 1.0;
-    p.tracks[target].regions.push(Region {
-        start_bar,
-        ..region
-    });
+    let base = p.selected_track;
+    let mut placed = Vec::with_capacity(clip.len());
+    for (from, region) in clip {
+        let there = base + (from - first_track);
+        let target = [there, from]
+            .into_iter()
+            .find(|t| holds(p, *t, &region))
+            .ok_or_else(|| "No track here can hold that region".to_string())?;
+        let start_bar = region.start_bar + shift;
+        p.tracks[target].regions.push(Region {
+            start_bar,
+            ..region
+        });
+        placed.push((target, p.tracks[target].regions.len() - 1));
+    }
     p.song_rev += 1;
-    let at = (target, p.tracks[target].regions.len() - 1);
-    p.selected_track = target;
-    v.selected = Some(at);
-    Ok(at)
+    let first = placed[0];
+    p.selected_track = first.0;
+    v.select_many(placed);
+    Ok(first)
 }
 
 /// Whether Split at Playhead would do something.
@@ -346,15 +364,20 @@ fn regions_to_split<'a>(
                 && beat < p.region_end_beats(region) - EDGE_BEATS
         })
     };
-    let picked = v.selected.filter(|(t, r)| inside(*t, *r));
+    let picked: Vec<(usize, usize)> = v
+        .all_selected()
+        .into_iter()
+        .filter(|(t, r)| inside(*t, *r))
+        .collect();
     let track = p.selected_track;
     let count = p.tracks.get(track).map_or(0, |x| x.regions.len());
-    let under: Vec<(usize, usize)> = match picked {
-        Some(one) => vec![one],
-        None => (0..count)
+    let under: Vec<(usize, usize)> = if picked.is_empty() {
+        (0..count)
             .filter(|r| inside(track, *r))
             .map(|r| (track, r))
-            .collect(),
+            .collect()
+    } else {
+        picked
     };
     under.into_iter()
 }
@@ -366,10 +389,11 @@ pub fn split_at_playhead(p: &mut Project, v: &mut TracksView) -> Result<(), Stri
         return Err("Put the playhead inside a region to split it".to_string());
     }
     let beat = p.position_beats;
+    let mut rights = Vec::with_capacity(targets.len());
     for (t, r) in targets {
-        let right = split(p, t, r, beat)?;
-        v.selected = Some((t, right));
+        rights.push((t, split(p, t, r, beat)?));
     }
+    v.select_many(rights);
     Ok(())
 }
 
@@ -379,13 +403,34 @@ pub fn can_join(p: &Project, v: &TracksView) -> bool {
         .is_some_and(|(t, r)| next_region(p, t, r).is_some())
 }
 
-/// Joins the selected region with the one after it.
+/// Joins the selected regions, track by track; a single region joins with the one after it.
 pub fn join_selected(p: &mut Project, v: &mut TracksView) -> Result<(), String> {
-    let (t, r) = v
-        .selected
-        .ok_or_else(|| "Select a region first".to_string())?;
-    let joined = join_with_next(p, t, r)?;
-    v.selected = Some((t, joined));
+    let selected = v.all_selected();
+    if selected.is_empty() {
+        return Err("Select a region first".to_string());
+    }
+    let mut tracks: Vec<usize> = selected.iter().map(|(t, _)| *t).collect();
+    tracks.sort_unstable();
+    tracks.dedup();
+    let mut joined = Vec::new();
+    for t in tracks {
+        let mine: Vec<usize> = selected
+            .iter()
+            .filter(|(track, _)| *track == t)
+            .map(|(_, r)| *r)
+            .collect();
+        let earliest = mine.iter().copied().min_by(|a, b| {
+            let bar = |r: &usize| p.tracks[t].regions.get(*r).map_or(0.0, |x| x.start_bar);
+            bar(a).total_cmp(&bar(b))
+        });
+        let Some(mut at) = earliest else { continue };
+        // Those selected on the track, or one join when only one is.
+        for _ in 0..mine.len().saturating_sub(1).max(1) {
+            at = join_with_next(p, t, at)?;
+        }
+        joined.push((t, at));
+    }
+    v.select_many(joined);
     Ok(())
 }
 
@@ -606,7 +651,7 @@ mod tests {
         let (t, r) = paste(&mut p, &mut v).unwrap();
         assert_eq!(t, keys);
         assert_eq!(p.tracks[keys].regions[r].start_bar, 3.0);
-        assert_eq!(v.selected, Some((keys, r)));
+        assert_eq!(v.all_selected(), [(keys, r)]);
     }
 
     #[test]
@@ -622,5 +667,53 @@ mod tests {
         split_at_playhead(&mut p, &mut v).unwrap();
         assert_eq!(p.tracks[t].regions.len(), 2);
         assert_eq!(v.selected, Some((t, 1)), "the second part, ready to move");
+    }
+
+    #[test]
+    fn a_group_copies_splits_and_pastes_together() {
+        let (mut p, a) = midi_project();
+        let b = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(b, 2.0).unwrap();
+        let mut v = TracksView::default();
+        v.select_many(vec![(a, 0), (b, 0)]);
+
+        // Split at the playhead, in both.
+        p.position_beats = 8.0;
+        split_at_playhead(&mut p, &mut v).unwrap();
+        assert_eq!(
+            (p.tracks[a].regions.len(), p.tracks[b].regions.len()),
+            (2, 2)
+        );
+        assert_eq!(v.all_selected().len(), 2, "the second parts");
+
+        // Copy the first parts; paste keeps their distances.
+        v.select_many(vec![(a, 0), (b, 0)]);
+        copy(&p, &mut v).unwrap();
+        p.position_beats = 40.0;
+        p.selected_track = a;
+        paste(&mut p, &mut v).unwrap();
+        assert_eq!(p.tracks[a].regions.last().unwrap().start_bar, 11.0);
+        assert_eq!(
+            p.tracks[b].regions.last().unwrap().start_bar,
+            12.0,
+            "a bar later"
+        );
+        assert_eq!(v.all_selected().len(), 2, "the copies");
+    }
+
+    #[test]
+    fn several_selected_regions_join_into_one() {
+        let (mut p, t) = midi_project();
+        p.tracks[t].regions[0].len_bars = 1.0;
+        for bar in [2.0, 3.0] {
+            let r = p.add_midi_region(t, bar).unwrap();
+            p.tracks[t].regions[r].len_bars = 1.0;
+        }
+        let mut v = TracksView::default();
+        v.select_many(vec![(t, 2), (t, 0), (t, 1)]);
+        join_selected(&mut p, &mut v).unwrap();
+        assert_eq!(p.tracks[t].regions.len(), 1);
+        assert_eq!(p.tracks[t].regions[0].len_bars, 3.0);
+        assert_eq!(v.all_selected(), [(t, 0)]);
     }
 }

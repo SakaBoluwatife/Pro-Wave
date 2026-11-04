@@ -1681,7 +1681,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         );
     }
 
-    let hint = tr("Click: add · Drag: select · Del/Right-click: delete");
+    let hint = "Click: place · Right-drag: delete · Ctrl-drag: select";
     let hint_font = FontId::proportional(10.5);
     let hint_text = crate::mixer::elide(&gi, hint, &hint_font, iw);
     gi.text(

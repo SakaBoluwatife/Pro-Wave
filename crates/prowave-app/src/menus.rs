@@ -422,14 +422,7 @@ fn shortcut(label: &str) -> Option<KeyboardShortcut> {
     if let Some(key) = interface_key {
         return Some(KeyboardShortcut::new(Modifiers::COMMAND, key));
     }
-    let key = match label {
-        "Show Library" => Key::Y,
-        "Show Inspector" => Key::I,
-        "Show List Editors" => Key::D,
-        "Show Mixer" => Key::X,
-        _ => return None,
-    };
-    Some(KeyboardShortcut::new(Modifiers::NONE, key))
+    crate::key_commands::shortcut_of(label)
 }
 
 /// Whether `label` can be chosen now. Entries that are not implemented yet are greyed out,
@@ -443,8 +436,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Redo" => s.can_redo,
         "Delete Undo History" => s.can_undo || s.can_redo,
         "Delete" | "Deselect All" | "Cut" | "Copy" => s.tracks.selected.is_some(),
+        "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
-        "Paste" => s.tracks.clipboard.is_some(),
+        "Paste" => !s.tracks.clipboard.is_empty(),
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => p.tracks.len() > 1,
         "Release Track Stack" => p
@@ -643,7 +637,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             };
             run_edit(p, &mut s.tracks, &mut s.status, cmd);
         }
-        "Deselect All" => s.tracks.selected = None,
+        "Deselect All" => s.tracks.select_many(Vec::new()),
+        "Select All" => s.tracks.select_all(p),
         "Go to End" => {
             p.position_beats = p
                 .tracks
@@ -928,18 +923,7 @@ pub fn handle_keys(ctx: &egui::Context, p: &mut Project, s: &mut crate::UiState)
     if ctx.egui_wants_keyboard_input() {
         return;
     }
-    // The piano roll takes Shift+I (invert the selection), which would match Show Inspector too.
-    let piano_shift = s.piano_focus && ctx.input(|i| i.modifiers.shift);
-    for label in ["Show Library", "Show Inspector", "Show Mixer"] {
-        if piano_shift {
-            break;
-        }
-        if let Some(k) = shortcut(label) {
-            if ctx.input_mut(|i| i.consume_shortcut(&k)) {
-                apply(label, p, s);
-            }
-        }
-    }
+    crate::key_commands::run(ctx, p, s);
     // Redo first: matching Cmd+Z ignores an extra Shift. Ctrl+Y is Redo on Windows and Linux.
     let redo = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     let redo_y = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
@@ -1044,7 +1028,7 @@ mod tests {
                     s.update_check,
                     s.update_auto,
                     s.show_midi_fx,
-                    s.tracks.clipboard.is_some()
+                    !s.tracks.clipboard.is_empty()
                 ),
                 (
                     s.capture_cmd,
@@ -1055,7 +1039,12 @@ mod tests {
                 ),
                 s.bottom == Bottom::Mixer,
                 (s.file_cmd, s.chooser.is_some(), s.undo_cmd, s.midi_cmd),
-                (s.ui_scale, s.tracks.bar_w, s.tracks.selected),
+                (
+                    s.ui_scale,
+                    s.tracks.bar_w,
+                    s.tracks.selected,
+                    s.tracks.also.len()
+                ),
                 (
                     s.tracks.show_tempo,
                     s.tracks.show_markers,

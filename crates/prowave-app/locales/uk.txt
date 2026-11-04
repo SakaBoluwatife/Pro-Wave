@@ -136,7 +136,6 @@ Time Quantize (classic) = Квантування часу (класичне)
 Strength = Сила
 Swing = Свінг
 Velocity = Сила натиску
-Click: add · Drag: select · Del/Right-click: delete = Клацання: додати · Перетягування: вибрати · Del/правий клік: видалити
 New Project = Новий проєкт
 Recent = Недавні
 Project Templates = Шаблони проєктів

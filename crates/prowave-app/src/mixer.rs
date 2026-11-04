@@ -64,6 +64,13 @@ pub enum MixerMode {
     All,
 }
 
+/// What a mixer strip's menu leaves to the Tracks area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripRequest {
+    PianoRoll(usize),
+    Delete(usize),
+}
+
 pub struct MixerView {
     pub mode: MixerMode,
     /// Visibility per strip type, in `FILTERS` order.
@@ -79,6 +86,8 @@ pub struct MixerView {
     pub open_plugin: Option<(u64, String)>,
     /// A track's strip was clicked: Delete now means that track.
     pub track_clicked: bool,
+    /// What a strip's right-click menu asked of the Tracks area.
+    pub strip_request: Option<StripRequest>,
     /// The Automation editor window.
     pub auto_editor: crate::automation::AutoEditor,
     /// Sends on Faders: the bus whose send levels the faders set.
@@ -109,6 +118,7 @@ impl Default for MixerView {
             fx_window: None,
             open_plugin: None,
             track_clicked: false,
+            strip_request: None,
             auto_editor: Default::default(),
             sends_on_faders: None,
             copied: None,
@@ -778,6 +788,57 @@ enum InsertAct {
     Move(isize),
 }
 
+/// The right-click menu of a track's strip.
+fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usize) {
+    let Some(t) = p.tracks.get(i) else {
+        return;
+    };
+    let (mute, solo, rec) = (t.mute, t.solo, t.rec);
+    let takes_midi = matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi);
+    let last = p.tracks.len() == 1;
+    crate::widgets::context_menu(resp, |ui| {
+        if takes_midi && ui.button(tr("Open in Piano Roll")).clicked() {
+            v.strip_request = Some(StripRequest::PianoRoll(i));
+            ui.close();
+        }
+        let label = if mute {
+            tr("Unmute Track")
+        } else {
+            tr("Mute Track")
+        };
+        if ui.button(label).clicked() {
+            p.tracks[i].mute = !mute;
+            ui.close();
+        }
+        let label = if solo {
+            tr("Unsolo Track")
+        } else {
+            tr("Solo Track")
+        };
+        if ui.button(label).clicked() {
+            p.tracks[i].solo = !solo;
+            ui.close();
+        }
+        let label = if rec {
+            "Disarm Recording"
+        } else {
+            "Arm for Recording"
+        };
+        if ui.button(label).clicked() {
+            p.tracks[i].rec = !rec;
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add_enabled(!last, egui::Button::new(tr("Delete Track")))
+            .clicked()
+        {
+            v.strip_request = Some(StripRequest::Delete(i));
+            ui.close();
+        }
+    });
+}
+
 /// The right button's menu of a slot; `also_left` opens it with the left one too.
 fn slot_menu(resp: &egui::Response, also_left: bool) -> egui::Popup<'_> {
     let open = resp.secondary_clicked() || (also_left && resp.clicked());
@@ -1277,13 +1338,12 @@ pub fn channel_strip(
     };
     // Whole-strip click selects (registered first so the controls on top win).
     if let StripKey::Track(i) = key {
-        if ui
-            .interact(strip, id(ns, (key, "strip")), Sense::click())
-            .clicked()
-        {
+        let resp = ui.interact(strip, id(ns, (key, "strip")), Sense::click());
+        if resp.clicked() || resp.secondary_clicked() {
             p.selected_track = i;
             v.track_clicked = true;
         }
+        strip_menu(&resp, p, v, i);
     }
     let bg = if selected && name_style == NameStyle::Coloured {
         STRIP_SEL

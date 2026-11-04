@@ -173,7 +173,15 @@ const TRIM_EDGE: f32 = 7.0;
 
 pub struct TracksView {
     /// What Copy or Cut took, and the track it came from.
-    pub clipboard: Option<(usize, Region)>,
+    pub clipboard: Vec<(usize, Region)>,
+    /// Selected besides `selected`, the region last clicked.
+    pub also: Vec<(usize, usize)>,
+    /// A drag of the selected regions: each, and where it started in beats.
+    group_drag: Vec<(usize, usize, f64)>,
+    /// A box being dragged over the lanes: where it began, in beats and points down the tracks.
+    marquee: Option<(f64, f32)>,
+    /// The track under the last right-click on the lanes.
+    lane_menu_row: Option<usize>,
     /// A drag on an edge of a region in progress.
     trim: Option<TrimDrag>,
     /// A track was clicked last, in its header or its mixer strip: Delete means that track.
@@ -217,12 +225,73 @@ pub struct TracksView {
     pub tempo_editor: crate::smart_tempo::Editor,
 }
 
+impl TracksView {
+    pub fn is_selected(&self, region: (usize, usize)) -> bool {
+        self.selected == Some(region) || self.also.contains(&region)
+    }
+
+    /// Every selected region, the one last clicked first.
+    pub fn all_selected(&self) -> Vec<(usize, usize)> {
+        self.selected.iter().chain(&self.also).copied().collect()
+    }
+
+    pub fn select_only(&mut self, region: (usize, usize)) {
+        self.selected = Some(region);
+        self.also.clear();
+    }
+
+    pub fn select_many(&mut self, regions: Vec<(usize, usize)>) {
+        let mut regions = regions.into_iter();
+        self.selected = regions.next();
+        self.also = regions.collect();
+    }
+
+    /// Ctrl+click: in if it was out, out if it was in.
+    fn toggle(&mut self, region: (usize, usize)) {
+        if self.selected == Some(region) {
+            self.selected = self.also.pop();
+        } else if let Some(at) = self.also.iter().position(|x| *x == region) {
+            self.also.remove(at);
+        } else {
+            if let Some(last) = self.selected.replace(region) {
+                self.also.push(last);
+            }
+        }
+    }
+
+    pub fn select_all(&mut self, p: &Project) {
+        let all = p
+            .tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(t, track)| (0..track.regions.len()).map(move |r| (t, r)))
+            .collect();
+        self.select_many(all);
+    }
+
+    /// Regions may have gone since they were selected.
+    fn tidy_selection(&mut self, p: &Project) {
+        let exists = |(t, r): (usize, usize)| p.tracks.get(t).is_some_and(|x| r < x.regions.len());
+        self.also.retain(|x| exists(*x));
+        if self.selected.is_some_and(|x| !exists(x)) {
+            self.selected = None;
+        }
+        if self.selected.is_none() {
+            self.selected = self.also.pop();
+        }
+    }
+}
+
 impl Default for TracksView {
     fn default() -> Self {
         Self {
             track_focus: false,
-            clipboard: None,
+            clipboard: Vec::new(),
+            also: Vec::new(),
+            group_drag: Vec::new(),
+            marquee: None,
             trim: None,
+            lane_menu_row: None,
             bar_w: 62.0,
             row_h: 56.0,
             scroll_x: 0.0,
@@ -622,7 +691,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
         ui.set_min_width(260.0);
         crate::widgets::undo_items(ui, can_undo, can_redo, &mut undo_pick);
         ui.separator();
-        let has_clip = v.clipboard.is_some();
+        let has_clip = !v.clipboard.is_empty();
         for (label, key, enabled, action) in [
             (tr("Cut"), Key::X, sel.is_some(), EditCmd::Cut),
             (tr("Copy"), Key::C, sel.is_some(), EditCmd::Copy),
@@ -648,7 +717,14 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
             ui.close();
         }
         ui.separator();
-        todo_item(ui, tr("Select All"));
+        let select_keys = shortcut(ui, Modifiers::COMMAND, Key::A);
+        if ui
+            .add(egui::Button::new(tr("Select All")).shortcut_text(select_keys))
+            .clicked()
+        {
+            v.select_all(p);
+            ui.close();
+        }
         let can_split = crate::region_edit::can_split_at_playhead(p, v);
         let can_join = crate::region_edit::can_join(p, v);
         for (label, key, enabled, action) in [
@@ -961,6 +1037,10 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
 /// An entry picked in one of the Tracks area's right-click menus; run once the menus are drawn.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum CtxAction {
+    Edit(EditCmd),
+    NewRegion(usize),
+    OpenTrackPianoRoll(usize),
+    ToggleRecord(usize),
     NewTrack(TrackKind),
     ZoomToFit,
     OpenPianoRoll,
@@ -995,6 +1075,8 @@ enum CtxAction {
 
 /// What the track menu needs to know about the track that was right-clicked.
 struct TrackInfo {
+    rec: bool,
+    takes_midi: bool,
     i: usize,
     folder: bool,
     mute: bool,
@@ -1199,10 +1281,95 @@ fn region_items(
         picked,
     );
     ui.separator();
+    pick(
+        ui,
+        tr("Cut"),
+        "Ctrl+X",
+        CtxAction::Edit(EditCmd::Cut),
+        picked,
+    );
+    pick(
+        ui,
+        tr("Copy"),
+        "Ctrl+C",
+        CtxAction::Edit(EditCmd::Copy),
+        picked,
+    );
+    pick(
+        ui,
+        tr("Split at Playhead"),
+        "Ctrl+T",
+        CtxAction::Edit(EditCmd::Split),
+        picked,
+    );
+    pick(
+        ui,
+        tr("Join"),
+        "Ctrl+J",
+        CtxAction::Edit(EditCmd::Join),
+        picked,
+    );
     pick(ui, tr("Delete"), "⌫", CtxAction::DeleteRegion, picked);
 }
 
+/// What the menus need to know of track `i`.
+fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
+    let t = p.tracks.get(i)?;
+    Some(TrackInfo {
+        i,
+        folder: t.kind == TrackKind::Folder,
+        mute: t.mute,
+        solo: t.solo,
+        rec: t.rec,
+        takes_midi: matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi),
+        custom_height: t.height != 1.0,
+        last: p.tracks.len() == 1,
+        groove: t.params.groove,
+        follow_groove: crate::groove::groove_track(p)
+            .filter(|g| *g != i)
+            .map(|_| t.params.follow_groove),
+    })
+}
+
+/// What the menus of a track have first, wherever it is right-clicked.
+fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
+    if t.takes_midi {
+        pick(
+            ui,
+            tr("Open in Piano Roll"),
+            "",
+            CtxAction::OpenTrackPianoRoll(t.i),
+            picked,
+        );
+    }
+    let mute = if t.mute {
+        tr("Unmute Track")
+    } else {
+        tr("Mute Track")
+    };
+    pick(ui, mute, "M", CtxAction::ToggleMute(t.i), picked);
+    let solo = if t.solo {
+        tr("Unsolo Track")
+    } else {
+        tr("Solo Track")
+    };
+    pick(ui, solo, "S", CtxAction::ToggleSolo(t.i), picked);
+    let record = if t.rec {
+        "Disarm Recording"
+    } else {
+        "Arm for Recording"
+    };
+    pick(ui, record, "", CtxAction::ToggleRecord(t.i), picked);
+    let delete = ui.add_enabled(!t.last, egui::Button::new(tr("Delete Track")));
+    if delete.clicked() {
+        *picked = Some(CtxAction::DeleteTrack(t.i));
+        ui.close();
+    }
+}
+
 fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
+    track_action_items(ui, t, picked);
+    ui.separator();
     new_track_items(ui, picked);
     ui.separator();
     pick(
@@ -1222,18 +1389,6 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
         );
     }
     ui.separator();
-    let mute = if t.mute {
-        tr("Unmute Track")
-    } else {
-        tr("Mute Track")
-    };
-    pick(ui, mute, "", CtxAction::ToggleMute(t.i), picked);
-    let solo = if t.solo {
-        tr("Unsolo Track")
-    } else {
-        tr("Solo Track")
-    };
-    pick(ui, solo, "", CtxAction::ToggleSolo(t.i), picked);
     if t.custom_height {
         pick(
             ui,
@@ -1258,17 +1413,31 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
         };
         pick(ui, label, "", CtxAction::ToggleFollowGroove(t.i), picked);
     }
-    ui.separator();
-    let delete = ui.add_enabled(!t.last, egui::Button::new(tr("Delete Track")));
-    if delete.clicked() {
-        *picked = Some(CtxAction::DeleteTrack(t.i));
-    }
 }
 
 /// Runs a right-click menu entry.
 fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) {
     let v = &mut s.tracks;
     match action {
+        CtxAction::Edit(cmd) => run_edit(p, v, &mut s.status, cmd),
+        CtxAction::NewRegion(t) => {
+            let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+            if let Some(r) = p.add_midi_region(t, bar) {
+                v.select_only((t, r));
+                p.selected_track = t;
+                s.bottom = Bottom::PianoRoll;
+            }
+        }
+        CtxAction::OpenTrackPianoRoll(t) => {
+            p.selected_track = t;
+            v.select_many(Vec::new());
+            s.bottom = Bottom::PianoRoll;
+        }
+        CtxAction::ToggleRecord(t) => {
+            if let Some(track) = p.tracks.get_mut(t) {
+                track.rec = !track.rec;
+            }
+        }
         CtxAction::NewTrack(kind) => {
             p.add_track(kind);
         }
@@ -1276,10 +1445,22 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::OpenPianoRoll => s.bottom = Bottom::PianoRoll,
         CtxAction::ConvertToMidi(t, r) => p.convert_to_midi_region(t, r),
         CtxAction::ToggleRegionMute(t, r) => {
-            if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
-                region.params.mute = !region.params.mute;
-                p.song_rev += 1;
+            let group = if v.is_selected((t, r)) {
+                v.all_selected()
+            } else {
+                vec![(t, r)]
+            };
+            let on = p
+                .tracks
+                .get(t)
+                .and_then(|x| x.regions.get(r))
+                .is_some_and(|x| !x.params.mute);
+            for (t, r) in group {
+                if let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) {
+                    region.params.mute = on;
+                }
             }
+            p.song_rev += 1;
         }
         CtxAction::ToggleTakeFolder(t, r) => {
             if let Some(f) = p
@@ -1447,7 +1628,12 @@ fn forget_track_indexes(s: &mut UiState) {
 // ------------------------------------------------------------------ actions
 
 pub(crate) fn delete_selected(p: &mut Project, v: &mut TracksView) {
-    if let Some((t, r)) = v.selected.take() {
+    let mut gone = v.all_selected();
+    v.select_many(Vec::new());
+    // From the back, so the numbers of those still to go stay right.
+    gone.sort_unstable_by(|a, b| b.cmp(a));
+    gone.dedup();
+    for (t, r) in gone {
         if let Some(track) = p.tracks.get_mut(t) {
             if r < track.regions.len() {
                 track.regions.remove(r);
@@ -1457,20 +1643,32 @@ pub(crate) fn delete_selected(p: &mut Project, v: &mut TracksView) {
     }
 }
 
-fn repeat_selected(p: &mut Project, v: &mut TracksView) {
-    let Some((t, r)) = v.selected else { return };
-    let Some(track) = p.tracks.get_mut(t) else {
+/// Copies of the selected regions right after them, which end up selected.
+pub(crate) fn repeat_selected(p: &mut Project, v: &mut TracksView) {
+    let selected = v.all_selected();
+    let regions = || {
+        selected
+            .iter()
+            .filter_map(|(t, r)| p.tracks.get(*t).and_then(|x| x.regions.get(*r)))
+    };
+    let start = regions().map(|r| r.start_bar).fold(f32::INFINITY, f32::min);
+    let end = regions()
+        .map(|r| r.start_bar + r.len_bars)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if selected.is_empty() || !start.is_finite() {
         return;
-    };
-    let Some(src) = track.regions.get(r).cloned() else {
-        return;
-    };
-    let copy = Region {
-        start_bar: src.start_bar + src.len_bars,
-        ..src
-    };
-    track.regions.push(copy);
-    v.selected = Some((t, track.regions.len() - 1));
+    }
+    let span = end - start;
+    let mut copies = Vec::with_capacity(selected.len());
+    for (t, r) in selected.clone() {
+        let Some(src) = p.tracks.get(t).and_then(|x| x.regions.get(r)).cloned() else {
+            continue;
+        };
+        let start_bar = src.start_bar + span;
+        p.tracks[t].regions.push(Region { start_bar, ..src });
+        copies.push((t, p.tracks[t].regions.len() - 1));
+    }
+    v.select_many(copies);
     p.song_rev += 1;
 }
 
@@ -2219,7 +2417,7 @@ fn header(
     hdr: Rect,
     peaks: (f32, f32),
     silenced: bool,
-) -> egui::Response {
+) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
     g.line_segment(
@@ -2288,7 +2486,7 @@ fn header(
         if !compact {
             folder_buttons(ui, g, p, i, name_x, hdr.center().y + 3.0, selected);
         }
-        return resp;
+        return (resp, Vec::new());
     }
 
     // M S R (I) buttons under the name (compact tracks: hidden, like Logic at small heights).
@@ -2363,16 +2561,16 @@ fn header(
         vec2(SLIDER_W, SLIDER_H),
     );
     let travel = (sl.left() + SLIDER_H / 2.0, sl.right() - SLIDER_H / 2.0);
-    let resp = ui.interact(
+    let volume = ui.interact(
         sl.expand2(vec2(4.0, 6.0)),
         id(("vol", i)),
         Sense::click_and_drag(),
     );
-    if let Some(pt) = resp.interact_pointer_pos() {
+    if let Some(pt) = volume.interact_pointer_pos() {
         let f = (pt.x - travel.0) / (travel.1 - travel.0);
         t.volume_db = slider_to_db(f.clamp(0.0, 1.0));
     }
-    if resp.double_clicked() {
+    if volume.double_clicked() {
         t.volume_db = 0.0;
     }
     g.rect_filled(sl, SLIDER_H / 2.0, Color32::from_rgb(55, 54, 54));
@@ -2426,7 +2624,7 @@ fn header(
         t.pan = 0.0;
     }
     crate::widgets::draw_knob(g, kc, 9.0, t.pan);
-    resp
+    (resp, vec![volume, kresp])
 }
 
 // ------------------------------------------------------------------ main view
@@ -2554,7 +2752,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
 
     // Click on an empty lane: select that track, deselect regions.
-    let lane_resp = ui.interact(lanes, id("lanes"), Sense::click());
+    let lane_resp = ui.interact(lanes, id("lanes"), Sense::click_and_drag());
+    v.tidy_selection(p);
+    if lane_resp.drag_started() {
+        let origin = ui.input(|i| i.pointer.press_origin());
+        if let Some(pt) = origin.or(lane_resp.interact_pointer_pos()) {
+            v.marquee = Some((beat_of(pt.x), pt.y - lanes.top() + scroll_y));
+            v.track_focus = false;
+        }
+    }
     let mut picked: Option<CtxAction> = None;
     if lane_resp.clicked() || context_click(&lane_resp) {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
@@ -2648,7 +2854,35 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
     }
+    if context_click(&lane_resp) {
+        v.lane_menu_row = lane_resp
+            .interact_pointer_pos()
+            .and_then(|pt| row_at(&rows, pt.y - lanes.top() + scroll_y));
+    }
+    let lane_track = v.lane_menu_row.and_then(|i| track_info(p, i));
+    let can_paste = !v.clipboard.is_empty();
     context_menu(&lane_resp, |ui| {
+        if let Some(info) = &lane_track {
+            track_action_items(ui, info, &mut picked);
+            ui.separator();
+            if info.takes_midi {
+                pick(
+                    ui,
+                    "New MIDI Region",
+                    "",
+                    CtxAction::NewRegion(info.i),
+                    &mut picked,
+                );
+            }
+        }
+        if ui
+            .add_enabled(can_paste, egui::Button::new(tr("Paste")))
+            .clicked()
+        {
+            picked = Some(CtxAction::Edit(EditCmd::Paste));
+            ui.close();
+        }
+        ui.separator();
         new_track_items(ui, &mut picked);
         ui.separator();
         if ui.button(tr("Zoom to Fit")).clicked() {
@@ -2693,7 +2927,23 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
             let resp = ui.interact(rr, id(("region", ti, ri)), Sense::click_and_drag());
             if resp.clicked() || resp.drag_started() || context_click(&resp) {
-                v.selected = Some((ti, ri));
+                let ctrl = ui.input(|i| i.modifiers.command);
+                let here = (ti, ri);
+                if context_click(&resp) || resp.drag_started() {
+                    // On the group, or dragging: the group stays.
+                    if !v.is_selected(here) {
+                        if ctrl {
+                            v.toggle(here);
+                        } else {
+                            v.select_only(here);
+                        }
+                    }
+                } else if ctrl {
+                    v.toggle(here);
+                } else {
+                    v.select_only(here);
+                }
+                v.track_focus = false;
                 p.selected_track = ti;
             }
             if resp.double_clicked() && p.tracks[ti].kind != TrackKind::Audio {
@@ -2748,6 +2998,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     let origin = ui.input(|i| i.pointer.press_origin());
                     if let Some(pt) = origin.or(resp.interact_pointer_pos()) {
                         v.grab_beats = beat_of(pt.x) - start_beat;
+                        v.group_drag = v
+                            .all_selected()
+                            .into_iter()
+                            .filter_map(|(t, r)| {
+                                let region = p.tracks.get(t)?.regions.get(r)?;
+                                Some((t, r, p.region_start_beats(region)))
+                            })
+                            .collect();
                         v.trim = if !trimmable {
                             None
                         } else if full.right() - pt.x < TRIM_EDGE {
@@ -2772,9 +3030,27 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                                 crate::region_edit::trim_start(p, ti, ri, from, at);
                             }
                             None => {
+                                // All of them by what this one moved, none before the start.
                                 let nb = snap_pos((beat_of(pt.x) - v.grab_beats).max(0.0));
-                                p.tracks[ti].regions[ri].start_bar =
-                                    p.beats_to_bar(nb) as f32 + 1.0;
+                                let was = v
+                                    .group_drag
+                                    .iter()
+                                    .find(|(t, r, _)| (*t, *r) == (ti, ri))
+                                    .map_or(start_beat, |g| g.2);
+                                let earliest = v
+                                    .group_drag
+                                    .iter()
+                                    .map(|g| g.2)
+                                    .fold(f64::INFINITY, f64::min);
+                                let by = (nb - was).max(-earliest);
+                                for &(t, r, from) in &v.group_drag {
+                                    let bar = p.beats_to_bar(from + by) as f32 + 1.0;
+                                    if let Some(region) =
+                                        p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r))
+                                    {
+                                        region.start_bar = bar;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2782,6 +3058,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 if resp.drag_stopped() {
                     moved = true;
                     v.trim = None;
+                    v.group_drag.clear();
                     // Dropped on another audio region: X-Fade crossfades them, the other
                     // modes leave them overlapping.
                     if p.tracks[ti].kind == TrackKind::Audio && overlaps_another(p, ti, ri) {
@@ -2808,7 +3085,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     &mut picked,
                 );
             });
-            let selected = v.selected == Some((ti, ri));
+            let selected = v.is_selected((ti, ri));
             if folder_open.is_some() {
                 // The triangle opens and closes the folder; the rows of an opened one are
                 // swiped to pick which take plays where.
@@ -2904,6 +3181,35 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     if moved {
         p.song_rev += 1;
     }
+    // The box over the lanes: everything it touches is selected, and Ctrl keeps what already was.
+    if let (Some((beat0, y0)), Some(pt)) = (v.marquee, lane_resp.interact_pointer_pos()) {
+        let (beat1, y1) = (beat_of(pt.x), pt.y - lanes.top() + scroll_y);
+        let (b0, b1) = (beat0.min(beat1), beat0.max(beat1));
+        let (top, bottom) = (y0.min(y1), y0.max(y1));
+        let mut inside = Vec::new();
+        for (t, &(row_top, row_h)) in rows.iter().enumerate() {
+            if row_h > 0.0 && row_top < bottom && row_top + row_h > top {
+                for (r, region) in p.tracks[t].regions.iter().enumerate() {
+                    if p.region_start_beats(region) < b1 && p.region_end_beats(region) > b0 {
+                        inside.push((t, r));
+                    }
+                }
+            }
+        }
+        v.select_many(inside);
+        let screen = |beat: f64, y: f32| pos2(x_of(beat), y + lanes.top() - scroll_y);
+        let boxed = Rect::from_two_pos(screen(b0, top), screen(b1, bottom));
+        g.rect_filled(boxed, 0.0, Color32::from_white_alpha(22));
+        g.rect_stroke(
+            boxed,
+            0.0,
+            Stroke::new(1.0, Color32::from_white_alpha(150)),
+            StrokeKind::Inside,
+        );
+    }
+    if lane_resp.drag_stopped() {
+        v.marquee = None;
+    }
     if let Some((t, r, tool, beat)) = region_click {
         let done = match tool {
             TrackTool::Glue => crate::region_edit::join_with_next(p, t, r),
@@ -2960,17 +3266,21 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
 
+    if let Some(request) = s.mixer.strip_request.take() {
+        use crate::mixer::StripRequest;
+        picked = Some(match request {
+            StripRequest::PianoRoll(t) => CtxAction::OpenTrackPianoRoll(t),
+            StripRequest::Delete(t) => CtxAction::DeleteTrack(t),
+        });
+    }
     if std::mem::take(&mut s.mixer.track_clicked) {
         v.track_focus = true;
         v.selected = None;
     }
     // ---- keyboard: Delete, Cmd/Ctrl+R
     if !ui.ctx().egui_wants_keyboard_input() && !s.piano_focus {
-        let (del, rep) = ui.input(|i| {
-            (
-                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
-                i.modifiers.command && i.key_pressed(Key::R),
-            )
+        let del = ui.input(|i| {
+            !i.modifiers.command && (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
         });
         if del {
             if v.track_focus && v.selected.is_none() {
@@ -2979,32 +3289,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 delete_selected(p, v);
             }
         }
-        if rep {
-            repeat_selected(p, v);
-        }
-        let command_key = ui.input(|i| {
-            if !i.modifiers.command || i.modifiers.alt || i.modifiers.shift {
-                return None;
-            }
-            [
-                (Key::X, EditCmd::Cut),
-                (Key::C, EditCmd::Copy),
-                (Key::V, EditCmd::Paste),
-                (Key::T, EditCmd::Split),
-                (Key::J, EditCmd::Join),
-            ]
-            .into_iter()
-            .find(|(key, _)| i.key_pressed(*key))
-            .map(|(_, cmd)| cmd)
-        });
-        if let Some(cmd) = command_key {
-            run_edit(p, v, &mut s.status, cmd);
-        }
     }
 
     // ---- headers
     let gh = ui.painter_at(headers);
     gh.rect_filled(headers, 0.0, Color32::from_gray(0x3a));
+    // Below the last track too, a right-click can make one.
+    let blank = ui.interact(headers, id("headers_blank"), Sense::click());
+    context_menu(&blank, |ui| new_track_items(ui, &mut picked));
     for (i, &(top, row_h)) in rows.iter().enumerate() {
         if row_h <= 0.0 {
             continue;
@@ -3016,26 +3308,20 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let hdr = Rect::from_min_size(pos2(headers.left(), y), vec2(HEADER_W, row_h));
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
-        let resp = header(ui, &gh, p, i, hdr, peaks, silenced);
+        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;
         }
-        let t = &p.tracks[i];
-        let info = TrackInfo {
-            i,
-            folder: t.kind == TrackKind::Folder,
-            mute: t.mute,
-            solo: t.solo,
-            custom_height: t.height != 1.0,
-            last: p.tracks.len() == 1,
-            groove: t.params.groove,
-            follow_groove: crate::groove::groove_track(p)
-                .filter(|g| *g != i)
-                .map(|_| t.params.follow_groove),
+        let Some(info) = track_info(p, i) else {
+            continue;
         };
         let shown = s.tracks.shot_menu == Some((i, None));
         crate::widgets::context_menu_shown(&resp, shown, |ui| track_items(ui, &info, &mut picked));
+        // The controls on top of the header have the same menu.
+        for control in &controls {
+            context_menu(control, |ui| track_items(ui, &info, &mut picked));
+        }
     }
     if let Some(action) = picked {
         apply_ctx(action, p, s, lanes.width());
@@ -3630,7 +3916,10 @@ mod row_tests {
         let mut press = |key: Key, p: &mut Project, s: &mut UiState| {
             h.modifiers = Modifiers::COMMAND;
             h.frame(vec![], |ui| show(ui, p, s, &meters));
-            h.key(key, |ui| show(ui, p, s, &meters));
+            h.key(key, |ui| {
+                crate::key_commands::run(ui.ctx(), p, s);
+                show(ui, p, s, &meters)
+            });
             h.modifiers = Modifiers::NONE;
             h.frame(vec![], |ui| show(ui, p, s, &meters));
         };
@@ -3656,8 +3945,95 @@ mod row_tests {
         s.tracks.selected = Some((t, 1));
         press(Key::X, &mut p, &mut s);
         assert_eq!(p.tracks[t].regions.len(), 1);
-        assert!(s.tracks.clipboard.is_some());
+        assert!(!s.tracks.clipboard.is_empty());
         press(Key::V, &mut p, &mut s);
         assert_eq!(p.tracks[t].regions.len(), 2);
+    }
+
+    /// Whether a right-click at `pos` opens a menu.
+    fn right_click_opens_a_menu(pos: egui::Pos2, p: &mut Project, s: &mut UiState) -> bool {
+        let meters = crate::mixer::Meters::default();
+        let mut h = crate::ui_test::Harness::new(1200.0, 700.0);
+        h.settle(|ui| show(ui, p, s, &meters));
+        h.right_click(pos, |ui| show(ui, p, s, &meters));
+        h.settle(|ui| show(ui, p, s, &meters));
+        egui::Popup::is_any_open(&h.ctx)
+    }
+
+    #[test]
+    fn right_clicking_anywhere_on_the_tracks_area_has_a_menu() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 1.0).unwrap();
+        let header_x = 40.0;
+        let lane_x = HEADER_W + 600.0;
+        let mut s = UiState::new();
+        assert!(
+            right_click_opens_a_menu(egui::pos2(header_x, 660.0), &mut p, &mut s),
+            "under the headers"
+        );
+        let mut s = UiState::new();
+        assert!(
+            right_click_opens_a_menu(egui::pos2(lane_x, 660.0), &mut p, &mut s),
+            "under the tracks"
+        );
+        let mut s = UiState::new();
+        assert!(
+            right_click_opens_a_menu(egui::pos2(header_x, 130.0), &mut p, &mut s),
+            "on a header"
+        );
+        let mut s = UiState::new();
+        assert!(
+            right_click_opens_a_menu(egui::pos2(lane_x, 130.0), &mut p, &mut s),
+            "on a lane"
+        );
+    }
+
+    #[test]
+    fn selection_grows_shrinks_and_a_box_selects_what_it_touches() {
+        let mut v = TracksView::default();
+        v.select_only((0, 0));
+        v.toggle((1, 0));
+        v.toggle((2, 0));
+        assert_eq!(v.all_selected().len(), 3);
+        assert!(v.is_selected((0, 0)) && v.is_selected((2, 0)));
+        v.toggle((2, 0));
+        assert!(!v.is_selected((2, 0)));
+        v.select_only((5, 5));
+        assert_eq!(v.all_selected(), [(5, 5)]);
+
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 1.0).unwrap();
+        p.add_midi_region(t, 9.0).unwrap();
+        v.select_all(&p);
+        assert_eq!(v.all_selected().len(), 2);
+        p.tracks[t].regions.pop();
+        v.tidy_selection(&p);
+        assert_eq!(v.all_selected(), [(t, 0)], "gone regions drop out");
+    }
+
+    #[test]
+    fn a_selected_group_deletes_and_repeats_together() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        for bar in [1.0, 5.0, 9.0] {
+            let r = p.add_midi_region(t, bar).unwrap();
+            p.tracks[t].regions[r].len_bars = 2.0;
+        }
+        let mut v = TracksView::default();
+        v.select_many(vec![(t, 0), (t, 1)]);
+        repeat_selected(&mut p, &mut v);
+        assert_eq!(p.tracks[t].regions.len(), 5);
+        assert_eq!(
+            p.tracks[t].regions[3].start_bar, 7.0,
+            "after the group's end"
+        );
+        assert_eq!(v.all_selected().len(), 2);
+        v.select_many(vec![(t, 0), (t, 2)]);
+        delete_selected(&mut p, &mut v);
+        assert_eq!(p.tracks[t].regions.len(), 3);
+        assert_eq!(p.tracks[t].regions[0].start_bar, 5.0);
+        assert!(v.all_selected().is_empty());
     }
 }

@@ -20,6 +20,7 @@ mod groups;
 mod i18n;
 mod import;
 mod inspector;
+mod key_commands;
 mod left_panel;
 mod library;
 mod marker_track;
