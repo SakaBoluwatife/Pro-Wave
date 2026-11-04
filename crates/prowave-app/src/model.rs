@@ -42,6 +42,8 @@ pub struct Note {
     pub len: f32,
     pub pitch: u8,
     pub vel: u8,
+    /// It stays in the region but does not play.
+    pub muted: bool,
 }
 
 /// One pass of a cycle recording.
@@ -799,6 +801,7 @@ fn demo_notes(seed: u32, bars: f32, lo: u8, hi: u8) -> Vec<Note> {
             len: len * 0.9,
             pitch,
             vel: 70 + (lcg(&mut s) % 50) as u8,
+            muted: false,
         });
         t += [0.5, 1.0, 0.25, 0.75][(lcg(&mut s) % 4) as usize];
     }

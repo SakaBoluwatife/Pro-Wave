@@ -10,6 +10,9 @@ prowave-engine = { path = "../prowave-engine" }
 clack-host = "0.2.0"
 clack-extensions = { version = "0.2.0", features = ["clack-host", "audio-ports", "gui", "latency", "state", "params", "note-ports"] }
 tracing = "0.1.44"
+rtrb = "0.4.0"
+vst3 = "0.3.0"
+libloading = "0.8"
 
 # The window a plugin's editor is shown in.
 [target.'cfg(windows)'.dependencies.windows]
@@ -23,4 +26,5 @@ features = [
 ]
 
 [dev-dependencies]
+assert_no_alloc = "1.1.2"
 tempfile = "3.27.0"

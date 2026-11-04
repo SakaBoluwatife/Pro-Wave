@@ -413,6 +413,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                             len: n.len,
                             pitch: n.pitch,
                             vel: n.vel,
+                            muted: n.muted,
                         })
                         .collect(),
                     controls: r
@@ -436,6 +437,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                                         len: n.len,
                                         pitch: n.pitch,
                                         vel: n.vel,
+                                        muted: n.muted,
                                     })
                                     .collect(),
                                 controls: t
@@ -596,6 +598,7 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
                     len: finite_in(n.len, 1.0 / 960.0, MAX_BEATS, 0.25),
                     pitch: n.pitch.min(127),
                     vel: n.vel.clamp(1, 127),
+                    muted: n.muted,
                 })
                 .collect(),
             controls: t
@@ -679,6 +682,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                         len: finite_in(n.len, 1.0 / 960.0, MAX_BEATS, 0.25),
                         pitch: n.pitch.min(127),
                         vel: n.vel.clamp(1, 127),
+                        muted: n.muted,
                     })
                     .collect(),
                 controls: r
@@ -1090,7 +1094,7 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
         id: i.id.clone(),
         name: i.name.clone(),
         vendor: i.vendor.clone(),
-        format: "CLAP".into(),
+        format: prowave_host::PluginFormat::of(&i.path).name().into(),
         path: i.path.display().to_string(),
         bypass: i.bypass,
         // Only when saving, as this runs after every gesture: see `save_project`.
@@ -1957,6 +1961,7 @@ pub(crate) mod tests {
                             len: 0.0,
                             pitch: 255,
                             vel: 0,
+                            muted: false,
                         }],
                         ..RegionDoc::default()
                     },
@@ -2023,6 +2028,7 @@ pub(crate) mod tests {
             len: 0.5,
             pitch,
             vel: 90,
+            muted: false,
         };
         let pedal = |val: u8| Control {
             start: 0.0,

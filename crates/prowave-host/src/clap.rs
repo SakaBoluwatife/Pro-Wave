@@ -408,6 +408,53 @@ impl Drop for LoadedClap {
     }
 }
 
+impl crate::LoadedPlugin for LoadedClap {
+    fn latency_samples(&self) -> usize {
+        LoadedClap::latency_samples(self)
+    }
+
+    fn released(&self) -> bool {
+        LoadedClap::released(self)
+    }
+
+    fn tick(&mut self) {
+        LoadedClap::tick(self);
+    }
+
+    fn editor_is_open(&self) -> bool {
+        LoadedClap::editor_is_open(self)
+    }
+
+    fn take_closed_position(&mut self) -> Option<(i32, i32)> {
+        LoadedClap::take_closed_position(self)
+    }
+
+    fn open_editor(
+        &mut self,
+        title: &str,
+        owner: Option<isize>,
+        position: Option<(i32, i32)>,
+    ) -> Result<(), Error> {
+        LoadedClap::open_editor(self, title, owner, position)
+    }
+
+    fn close_editor(&mut self) {
+        LoadedClap::close_editor(self);
+    }
+
+    fn save_state(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        LoadedClap::save_state(self)
+    }
+
+    fn load_state(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        LoadedClap::load_state(self, bytes)
+    }
+
+    fn take_dirty(&mut self) -> bool {
+        LoadedClap::take_dirty(self)
+    }
+}
+
 /// How many channels each audio port in one direction has.
 fn port_layout(
     instance: &mut PluginInstance<Handlers>,
@@ -529,7 +576,7 @@ impl PortBuffers {
 
 /// Copies `src` into the first port: stereo into its first two channels, mixed down for a mono
 /// port. Everything else (a side chain, say) is silent.
-fn fill_main_input(ports: &mut [Vec<Vec<f32>>], src: [&[f32]; 2]) {
+pub(crate) fn fill_main_input(ports: &mut [Vec<Vec<f32>>], src: [&[f32]; 2]) {
     let Some(main) = ports.first_mut() else {
         return;
     };
@@ -544,7 +591,7 @@ fn fill_main_input(ports: &mut [Vec<Vec<f32>>], src: [&[f32]; 2]) {
 }
 
 /// Copies the first port to `dst`: a mono port goes to both sides, no port gives silence.
-fn read_main_output(ports: &[Vec<Vec<f32>>], dst: [&mut [f32]; 2]) {
+pub(crate) fn read_main_output(ports: &[Vec<Vec<f32>>], dst: [&mut [f32]; 2]) {
     let [dst_l, dst_r] = dst;
     match ports.first().map(Vec::as_slice) {
         Some([l, r, ..]) => {

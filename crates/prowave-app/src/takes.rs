@@ -101,6 +101,7 @@ mod tests {
             len: 0.5,
             pitch: 60,
             vel: 100,
+            muted: false,
         }
     }
 

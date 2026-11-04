@@ -7,6 +7,8 @@ pub struct Harness {
     pub ctx: Context,
     time: f64,
     pub size: Vec2,
+    /// The keys held down in the frames that follow.
+    pub modifiers: Modifiers,
 }
 
 impl Harness {
@@ -15,12 +17,14 @@ impl Harness {
             ctx: Context::default(),
             time: 0.0,
             size: Vec2::new(width, height),
+            modifiers: Modifiers::NONE,
         }
     }
 
     /// Runs one frame with `events`.
-    pub fn frame(&mut self, events: Vec<Event>, mut ui: impl FnMut(&mut Ui)) {
+    pub fn frame(&mut self, mut events: Vec<Event>, mut ui: impl FnMut(&mut Ui)) {
         self.time += 1.0 / 60.0;
+        events.insert(0, Event::ModifiersChanged(self.modifiers));
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
             time: Some(self.time),
@@ -60,6 +64,20 @@ impl Harness {
 
     pub fn release(&mut self, pos: Pos2, button: PointerButton, ui: impl FnMut(&mut Ui)) {
         self.frame(vec![Self::button(pos, button, false)], ui);
+    }
+
+    /// A key pressed and let go.
+    pub fn key(&mut self, key: egui::Key, mut ui: impl FnMut(&mut Ui)) {
+        let event = |pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: self.modifiers,
+        };
+        let (down, up) = (event(true), event(false));
+        self.frame(vec![down], &mut ui);
+        self.frame(vec![up], &mut ui);
     }
 
     /// A left click.

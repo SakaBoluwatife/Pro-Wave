@@ -914,7 +914,12 @@ pub fn handle_keys(ctx: &egui::Context, p: &mut Project, s: &mut crate::UiState)
     if ctx.egui_wants_keyboard_input() {
         return;
     }
+    // The piano roll takes Shift+I (invert the selection), which would match Show Inspector too.
+    let piano_shift = s.piano_focus && ctx.input(|i| i.modifiers.shift);
     for label in ["Show Library", "Show Inspector", "Show Mixer"] {
+        if piano_shift {
+            break;
+        }
         if let Some(k) = shortcut(label) {
             if ctx.input_mut(|i| i.consume_shortcut(&k)) {
                 apply(label, p, s);

@@ -161,6 +161,7 @@ pub fn capture(rec: &mut Recorder, p: &mut Project) -> Option<(usize, usize)> {
                     len: MIN_LEN,
                     pitch,
                     vel,
+                    muted: false,
                 });
             }
             LiveNote::Off { pitch } => {
@@ -297,6 +298,7 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
                     len: MIN_LEN,
                     pitch,
                     vel,
+                    muted: false,
                 });
                 rec.open.insert(pitch, region.notes.len() - 1);
             }

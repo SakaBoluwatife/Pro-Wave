@@ -53,6 +53,8 @@ pub struct NoteDoc {
     pub len: f32,
     pub pitch: u8,
     pub vel: u8,
+    /// It stays in the region but does not play.
+    pub muted: bool,
 }
 
 /// One take of a take folder.
@@ -726,6 +728,7 @@ mod tests {
                             len: 1.0,
                             pitch: 60,
                             vel: 90,
+                            muted: true,
                         }],
                         quantize: Some(0.25),
                         ..RegionDoc::default()

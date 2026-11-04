@@ -2,8 +2,7 @@
 //!
 //! - **Library:** Logic's patch browser (`library.rs`), as before.
 //! - **Browser:** your sample folders (`sample_browser.rs`).
-//! - **Plugins:** the plugins found on this computer. CLAP plugins go on a track from here; VST3
-//!   plugins cannot load yet, so they are only listed, and the tab says so.
+//! - **Plugins:** the CLAP and VST3 plugins found on this computer, ready to go on a track.
 use crate::i18n::tr;
 use crate::model::Project;
 use crate::plugin_scan::PluginScan;
@@ -11,13 +10,10 @@ use crate::widgets::{BLUE, TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, UiBuilder};
 use prowave_host::PluginInfo;
-use std::path::{Path, PathBuf};
 
 const TAB_H: f32 = 26.0;
 const PANEL_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
 const ROW_H: f32 = 20.0;
-/// Folders inside a VST3 folder that are searched too (vendors keep plugins in subfolders).
-const SCAN_DEPTH: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LeftTab {
@@ -43,72 +39,10 @@ impl LeftTab {
 #[derive(Clone, Debug)]
 pub struct PluginDrag(pub PluginInfo);
 
-/// The plugins found on this computer: CLAP, which can load, and VST3, which is only listed.
+/// The plugins found on this computer.
 #[derive(Default)]
 pub struct PluginList {
     clap: PluginScan,
-    scanned: bool,
-    found: Vec<(String, PathBuf)>,
-}
-
-/// Where VST3 plugins are installed.
-fn vst3_folders() -> Vec<PathBuf> {
-    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
-    let mut dirs = Vec::new();
-    if cfg!(windows) {
-        if let Some(d) = var("COMMONPROGRAMFILES") {
-            dirs.push(d.join("VST3"));
-        }
-        if let Some(d) = var("LOCALAPPDATA") {
-            dirs.push(d.join("Programs").join("Common").join("VST3"));
-        }
-    } else if cfg!(target_os = "macos") {
-        dirs.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
-        if let Some(h) = var("HOME") {
-            dirs.push(h.join("Library/Audio/Plug-Ins/VST3"));
-        }
-    } else {
-        dirs.push(PathBuf::from("/usr/lib/vst3"));
-        dirs.push(PathBuf::from("/usr/local/lib/vst3"));
-        if let Some(h) = var("HOME") {
-            dirs.push(h.join(".vst3"));
-        }
-    }
-    dirs
-}
-
-fn is_vst3(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("vst3"))
-}
-
-/// Plugins in `dir`: `.vst3` files or bundles, looking `depth` folders down into the others.
-fn scan_dir(dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in read.flatten() {
-        let path = e.path();
-        if is_vst3(&path) {
-            let name = path
-                .file_stem()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-            out.push((name, path));
-        } else if depth > 0 && path.is_dir() {
-            scan_dir(&path, depth - 1, out);
-        }
-    }
-}
-
-/// Every VST3 plugin in `dirs`, sorted by name, each once.
-fn scan(dirs: &[PathBuf]) -> Vec<(String, PathBuf)> {
-    let mut found = Vec::new();
-    for d in dirs {
-        scan_dir(d, SCAN_DEPTH, &mut found);
-    }
-    found.sort_by_key(|(n, p)| (n.to_lowercase(), p.clone()));
-    found.dedup();
-    found
 }
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
@@ -170,28 +104,19 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     ui.painter_at(panel).rect_filled(panel, 0.0, PANEL_BG);
     let ctx = ui.ctx().clone();
     let list = &mut s.plugins;
-    if !list.scanned {
-        list.found = scan(&vst3_folders());
-        list.scanned = true;
-    }
     list.clap.ensure_started(&ctx);
     list.clap.drain();
     let mut add = None;
     let inner = panel.shrink2(vec2(8.0, 6.0));
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
         ui.horizontal(|ui| {
-            let counts = format!(
-                "{} CLAP, {} VST3",
-                list.clap.plugins.len(),
-                list.found.len()
-            );
+            let counts = format!("{} plugins", list.clap.plugins.len());
             ui.label(egui::RichText::new(counts).color(TEXT));
             if ui
                 .small_button("Rescan")
                 .on_hover_text("Look for new plugins and try the ones that failed again")
                 .clicked()
             {
-                list.scanned = false;
                 list.clap.start(true, &ctx);
             }
         });
@@ -200,8 +125,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         };
         note(
             ui,
-            "Double-click a plugin to add it to the selected track, or drag it onto a track. \
-             VST3 cannot load yet."
+            "Double-click a plugin to add it to the selected track, or drag it onto a track."
                 .to_string(),
         );
         if let Some((done, of)) = list.clap.progress {
@@ -226,23 +150,10 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show_rows(ui, ROW_H, clap.len() + list.found.len(), |ui, range| {
-                for i in range {
-                    if let Some(info) = clap.get(i) {
-                        if clap_row(ui, info) {
-                            add = Some(info.clone());
-                        }
-                    } else if let Some((name, path)) = list.found.get(i - clap.len()) {
-                        let (rect, resp) = ui
-                            .allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
-                        ui.painter_at(rect).text(
-                            pos2(rect.left() + 4.0, rect.center().y),
-                            Align2::LEFT_CENTER,
-                            format!("{name}  (VST3)"),
-                            FontId::proportional(12.5),
-                            TEXT_DIM,
-                        );
-                        resp.on_hover_text(path.display().to_string());
+            .show_rows(ui, ROW_H, clap.len(), |ui, range| {
+                for info in &clap[range] {
+                    if clap_row(ui, info) {
+                        add = Some(info.clone());
                     }
                 }
             });
@@ -266,7 +177,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
 }
 
-/// One CLAP plugin: its name and vendor, ready to drag. True when double-clicked.
+/// One plugin: its name, vendor and format, ready to drag. True when double-clicked.
 fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
     let (rect, resp) =
         ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
@@ -282,11 +193,12 @@ fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
         FontId::proportional(12.5),
         TEXT,
     );
-    let vendor = if info.is_instrument {
-        format!("{}, instrument", info.vendor)
+    let kind = if info.is_instrument {
+        ", instrument"
     } else {
-        info.vendor.clone()
+        ""
     };
+    let vendor = format!("{}, {}{kind}", info.vendor, info.format.name());
     g.text(
         pos2(name.right() + 8.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -303,24 +215,6 @@ fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_scan_finds_vst3_files_and_bundles_in_vendor_folders() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("Zeta.vst3"), b"").unwrap();
-        std::fs::create_dir_all(root.join("Alpha.vst3").join("Contents")).unwrap();
-        std::fs::create_dir_all(root.join("Vendor").join("Sub")).unwrap();
-        std::fs::write(root.join("Vendor").join("beta.VST3"), b"").unwrap();
-        std::fs::write(root.join("Vendor").join("Sub").join("Gamma.vst3"), b"").unwrap();
-        std::fs::write(root.join("Vendor").join("readme.txt"), b"").unwrap();
-        let names: Vec<String> = scan(&[root.to_path_buf(), root.to_path_buf()])
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
-        assert_eq!(names, ["Alpha", "beta", "Gamma", "Zeta"]);
-        assert!(scan(&[root.join("missing")]).is_empty());
-    }
 
     #[test]
     fn the_tabs_have_their_names() {

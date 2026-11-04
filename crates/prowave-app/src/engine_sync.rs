@@ -279,6 +279,7 @@ pub(crate) fn region_notes(t: &Track, r: &Region, origin: f64, track: u16) -> Ve
     let (rp, tp) = (r.params, t.params);
     r.notes
         .iter()
+        .filter(|n| !n.muted)
         .filter_map(|n| {
             let start = match rp.quantize {
                 Some(q) if q > 0.0 => (n.start / q).round() * q,
@@ -901,6 +902,7 @@ mod tests {
             len: 0.5,
             pitch,
             vel,
+            muted: false,
         }
     }
 

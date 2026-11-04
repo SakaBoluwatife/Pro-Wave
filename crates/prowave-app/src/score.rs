@@ -732,6 +732,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
                 len: 1.0,
                 pitch,
                 vel: 100,
+                muted: false,
             });
             p.song_rev += 1;
             s.audition.push(crate::piano_roll::Audition::On {
@@ -1016,6 +1017,7 @@ mod tests {
             len,
             pitch,
             vel: 90,
+            muted: false,
         }
     }
 
@@ -1359,6 +1361,7 @@ mod tests {
                 len: [0.01, 0.3, 1.0, 1.4, 2.4, 3.0, 9.0, 0.75][i],
                 pitch,
                 vel: 100,
+                muted: false,
             });
         }
         let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 420.0));

@@ -7,7 +7,7 @@ use crate::model::{PluginInsert, Project, Track, TrackKind};
 use prowave_engine::{
     Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS, PLUGIN_BLOCK,
 };
-use prowave_host::{load_clap, LoadedClap, PluginInfo};
+use prowave_host::{load_plugin, LoadedPlugin, PluginInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -154,7 +154,7 @@ struct Live {
     id: String,
     /// As last told to the engine.
     bypass: bool,
-    loaded: LoadedClap,
+    loaded: Box<dyn LoadedPlugin>,
 }
 
 const WINDOWS_FILE: &str = "plugin-windows";
@@ -189,7 +189,7 @@ pub struct Rack {
     live: HashMap<u64, Live>,
     /// Taken out of the engine, kept until the engine has given the audio half back: an instance
     /// dropped before that is never destroyed.
-    retiring: Vec<LoadedClap>,
+    retiring: Vec<Box<dyn LoadedPlugin>>,
     /// Where editor windows were. `None` until first needed.
     positions: Option<HashMap<String, (i32, i32)>>,
     /// The settings a plugin with this uid starts from, newest last.
@@ -423,7 +423,7 @@ impl Rack {
             return true;
         };
         let (mut loaded, processor) =
-            match load_clap(&plugin.path, &plugin.id, engine.sample_rate()) {
+            match load_plugin(&plugin.path, &plugin.id, engine.sample_rate()) {
                 Ok(both) => both,
                 Err(e) => {
                     *message = Some(e.to_string());
@@ -641,12 +641,12 @@ mod tests {
     #[test]
     #[ignore = "needs a sound device and an installed CLAP plugin"]
     fn rack_runs_a_real_plugin_in_the_engine() {
-        use prowave_host::{clap_folders, find_clap_files, scan_clap_file};
+        use prowave_host::{clap_folders, find_clap_files, scan_plugin_file};
         let file = std::env::var_os("PROWAVE_TEST_CLAP")
             .map(PathBuf::from)
             .or_else(|| find_clap_files(&clap_folders()).into_iter().next())
             .unwrap();
-        let info = scan_clap_file(&file).unwrap().remove(0);
+        let info = scan_plugin_file(&file).unwrap().remove(0);
         println!("{} / {}", info.vendor, info.name);
         let mut p = Project::empty();
         p.tracks.push(p.tracks.first().cloned().unwrap_or_else(|| {
@@ -654,11 +654,16 @@ mod tests {
             demo.tracks.remove(0)
         }));
         p.tracks.truncate(1);
-        p.tracks[0].kind = TrackKind::Audio;
+        p.tracks[0].kind = if info.is_instrument {
+            TrackKind::Instrument
+        } else {
+            TrackKind::Audio
+        };
         p.tracks[0].inserts.clear();
         p.tracks[0].plugins.clear();
+        p.tracks[0].instrument_plugin = None;
         add_plugin(&mut p, 0, &info).unwrap();
-        let uid = p.tracks[0].plugins[0].uid;
+        let uid = p.tracks[0].hosted().next().unwrap().uid;
 
         let mut engine = Engine::start().unwrap();
         let mut rack = Rack::default();
@@ -671,6 +676,7 @@ mod tests {
 
         // Taken off the track, the instance waits until the engine has given it back.
         p.tracks[0].plugins.clear();
+        p.tracks[0].instrument_plugin = None;
         assert!(rack.sync(&mut p, &mut engine, &mut message));
         assert_eq!(rack.latency_of(uid), 0);
         assert_eq!(rack.retiring.len(), 1);
@@ -697,7 +703,7 @@ mod tests {
         add_plugin(&mut p, 0, &missing).unwrap();
         assert!(rack.sync(&mut p, &mut engine, &mut message));
         assert!(message.take().is_some());
-        assert!(p.tracks[0].plugins[0].failed.is_some());
+        assert!(p.tracks[0].hosted().next().unwrap().failed.is_some());
         assert!(rack.sync(&mut p, &mut engine, &mut message));
         assert_eq!(message, None, "it is not tried again");
     }

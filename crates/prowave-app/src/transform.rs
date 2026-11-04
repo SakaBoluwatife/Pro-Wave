@@ -252,6 +252,7 @@ mod tests {
             len,
             pitch,
             vel,
+            muted: false,
         }
     }
 

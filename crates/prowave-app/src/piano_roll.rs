@@ -64,18 +64,58 @@ pub enum Audition {
     Off { pitch: u8 },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// The tools, as in FL Studio's piano roll, with their keys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tool {
-    Pointer,
-    Pencil,
+    /// P: click to place a note and drag it; click a note to move it, its end to resize it.
+    Draw,
+    /// B: drag to lay notes one after the other.
+    Paint,
+    /// D: drag across notes to delete them.
+    Delete,
+    /// T: drag across notes to mute or unmute them.
+    Mute,
+    /// C: drag to a place in time and let go to cut the notes there.
+    Slice,
+    /// E: drag a box to select.
+    Select,
+}
+
+impl Tool {
+    const ALL: [Tool; 6] = [
+        Tool::Draw,
+        Tool::Paint,
+        Tool::Delete,
+        Tool::Mute,
+        Tool::Slice,
+        Tool::Select,
+    ];
+
+    fn hint(self) -> &'static str {
+        match self {
+            Tool::Draw => "Draw (P)",
+            Tool::Paint => "Paint (B)",
+            Tool::Delete => "Delete (D)",
+            Tool::Mute => "Mute (T)",
+            Tool::Slice => "Slice (C)",
+            Tool::Select => "Select (E)",
+        }
+    }
+
+    /// The letter on its button; Draw and Select have pictures.
+    fn letter(self) -> Option<&'static str> {
+        match self {
+            Tool::Draw | Tool::Select => None,
+            Tool::Paint => Some("B"),
+            Tool::Delete => Some("D"),
+            Tool::Mute => Some("T"),
+            Tool::Slice => Some("C"),
+        }
+    }
 }
 
 enum Drag {
     None,
-    /// Pencil: a note was just created; dragging sets its length.
-    Create {
-        index: usize,
-    },
     Move {
         anchor_beat: f32,
         anchor_pitch: i32,
@@ -87,6 +127,24 @@ enum Drag {
     },
     Marquee {
         from: Pos2,
+        /// What stays selected whatever the box covers.
+        base: Vec<usize>,
+    },
+    /// Right button, or the Delete tool.
+    Erase,
+    /// The Mute tool: what it sets the notes it crosses to, and those it has set.
+    Mute {
+        on: bool,
+        done: Vec<usize>,
+    },
+    /// The Paint tool: where it started, on one key.
+    Paint {
+        pitch: u8,
+        start: f32,
+    },
+    /// The Slice tool: where the cut would go.
+    Slice {
+        beat: f32,
     },
 }
 
@@ -110,17 +168,23 @@ pub struct PianoView {
     swing: f32,
     scale_root: Option<u8>,
     scale_mode: usize,
+    /// What a new note copies: the length and velocity of the last one placed or touched.
+    last_len: f32,
     new_velocity: u8,
+    /// Ctrl+C and Ctrl+X.
+    clipboard: Vec<Note>,
     drag: Drag,
     centered_for: Option<(usize, usize)>,
     /// Edits waiting for the mouse to be released before the engine song is rebuilt.
     dirty: bool,
+    /// Where the note grid was last drawn.
+    last_grid: Rect,
 }
 
 impl Default for PianoView {
     fn default() -> Self {
         Self {
-            tool: Tool::Pointer,
+            tool: Tool::Draw,
             held: None,
             fit: true,
             vel_drag: None,
@@ -135,10 +199,13 @@ impl Default for PianoView {
             swing: 0.0,
             scale_root: None,
             scale_mode: 0,
+            last_len: 0.25,
             new_velocity: 100,
+            clipboard: Vec::new(),
             drag: Drag::None,
             centered_for: None,
             dirty: false,
+            last_grid: Rect::NOTHING,
         }
     }
 }
@@ -389,18 +456,12 @@ fn toolbar(
         todo_item(ui, tr("Note Colors"));
     });
 
-    // Tool buttons: Pointer / Pencil (shortcuts: Esc and P).
-    for (i, tool) in [Tool::Pointer, Tool::Pencil].into_iter().enumerate() {
-        let r = Rect::from_min_size(pos2(x + i as f32 * 30.0, cy - 10.0), vec2(26.0, 20.0));
-        let resp = ui.interact(
-            r,
-            uid(if i == 0 {
-                "tool_pointer"
-            } else {
-                "tool_pencil"
-            }),
-            Sense::click(),
-        );
+    // Tool buttons, with their keys.
+    for (i, tool) in Tool::ALL.into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(x + i as f32 * 28.0, cy - 10.0), vec2(26.0, 20.0));
+        let resp = ui
+            .interact(r, uid(tool.hint()), Sense::click())
+            .on_hover_text(tool.hint());
         let on = v.tool == tool;
         if on {
             g.rect_filled(r, 4.0, BLUE);
@@ -409,7 +470,15 @@ fn toolbar(
         }
         let col = if on { Color32::WHITE } else { TEXT };
         let c = r.center();
-        if i == 0 {
+        if let Some(letter) = tool.letter() {
+            g.text(
+                c,
+                Align2::CENTER_CENTER,
+                letter,
+                FontId::proportional(11.5),
+                col,
+            );
+        } else if tool == Tool::Select {
             g.add(Shape::line(
                 vec![
                     c + vec2(-3.0, -6.0),
@@ -642,6 +711,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     let v = &mut s.piano;
     let (down, now) = ui.input(|i| (i.pointer.primary_down(), i.time));
+    v.last_grid = grid;
     if v.held.is_some() && !down {
         match v.release_at {
             Some(t) if now < t => ui
@@ -849,198 +919,70 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
     }
 
-    // ---- Interaction
+    let p_position = p.position_beats;
+    // ---- Interaction, as in FL Studio's piano roll: things happen on the press, not on letting go.
     let resp = ui.interact(grid, id("grid"), Sense::click_and_drag());
-    let shift = ui.input(|i| i.modifiers.shift);
+    let (shift, ctrl, alt) =
+        ui.input(|i| (i.modifiers.shift, i.modifiers.command, i.modifiers.alt));
+    // Alt turns the snap off for as long as it is held.
+    let snap = if alt { 1.0 / 64.0 } else { step };
     let edge_beats = 10.0 / beat_px;
     let notes = &mut p.tracks[ti].regions[ri].notes;
-    // Right-click deletes the note under the pointer.
-    let (secondary, hover, down_now) = ui.input(|i| {
+    let (primary_press, secondary_press, hover, down_now, secondary_down) = ui.input(|i| {
         (
+            i.pointer.button_pressed(egui::PointerButton::Primary),
             i.pointer.button_pressed(egui::PointerButton::Secondary),
             i.pointer.hover_pos(),
             i.pointer.primary_down(),
+            i.pointer.secondary_down(),
         )
     });
     if let Some(pt) = hover.filter(|pt| grid.contains(*pt) && resp.hovered()) {
         let (beat, pitch) = (beat_at(pt.x), pitch_at(pt.y));
         let over_note = note_edit::hit_note(notes, beat, pitch as u8, edge_beats);
-        if over_note.is_some_and(|(_, on_edge)| on_edge) || matches!(v.drag, Drag::Resize { .. }) {
+        let resizes = matches!(v.tool, Tool::Draw | Tool::Select | Tool::Paint);
+        if (resizes && over_note.is_some_and(|(_, on_edge)| on_edge))
+            || matches!(v.drag, Drag::Resize { .. })
+        {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        if secondary {
-            if let Some((i, _)) = over_note {
-                notes.remove(i);
-                v.selected.clear();
-                v.dirty = true;
-            }
-        }
-    }
-    if let Drag::Create { index } = v.drag {
-        if down_now {
-            if let (Some(n), Some(pt)) = (notes.get_mut(index), hover) {
-                let len = snap_to((beat_at(pt.x) - n.start) as f64, step as f64) as f32;
-                n.len = len.max(step.max(0.0625));
-            }
-        } else {
-            v.drag = Drag::None;
-            v.dirty = true;
-        }
-    }
-    if resp.drag_started() && !matches!(v.drag, Drag::Create { .. }) {
-        let origin = ui.input(|i| i.pointer.press_origin());
-        if let Some(pt) = origin.or(resp.interact_pointer_pos()) {
-            let (beat, pitch) = (beat_at(pt.x), pitch_at(pt.y));
-            match note_edit::hit_note(notes, beat, pitch as u8, edge_beats) {
-                Some((i, on_edge)) => {
-                    audition(
-                        &mut s.audition,
-                        &mut v.held,
-                        Some(notes[i].pitch),
-                        notes[i].vel,
-                        track_u8,
-                    );
-                    v.release_at = None;
-                    if !v.selected.contains(&i) {
-                        if shift {
-                            v.selected.push(i);
-                        } else {
-                            v.selected = vec![i];
-                        }
+        if secondary_press {
+            v.drag = Drag::Erase;
+        } else if primary_press {
+            let hit = over_note;
+            // Ctrl selects, whatever the tool that draws: a box, or the note under the pointer.
+            if ctrl && matches!(v.tool, Tool::Draw | Tool::Paint) {
+                let base = hit.map(|(i, _)| vec![i]).unwrap_or_default();
+                v.selected = base.clone();
+                v.drag = Drag::Marquee { from: pt, base };
+            } else {
+                match (v.tool, hit) {
+                    (Tool::Delete, _) => v.drag = Drag::Erase,
+                    (Tool::Mute, Some((i, _))) => {
+                        let on = !notes[i].muted;
+                        v.drag = Drag::Mute {
+                            on,
+                            done: Vec::new(),
+                        };
                     }
-                    v.drag = if on_edge {
-                        Drag::Resize {
-                            anchor_beat: beat,
-                            orig: v.selected.iter().map(|&k| (k, notes[k].len)).collect(),
-                        }
-                    } else {
-                        Drag::Move {
-                            anchor_beat: beat,
-                            anchor_pitch: pitch,
-                            orig: v
-                                .selected
-                                .iter()
-                                .map(|&k| (k, notes[k].start, notes[k].pitch))
-                                .collect(),
-                        }
-                    };
-                }
-                None if v.tool == Tool::Pencil && beat >= 0.0 => {
-                    let start = (beat / step).floor() * step;
-                    notes.push(Note {
-                        start,
-                        len: step.max(0.0625),
-                        pitch: pitch as u8,
-                        vel: v.new_velocity,
-                    });
-                    let index = notes.len() - 1;
-                    v.selected = vec![index];
-                    v.drag = Drag::Create { index };
-                    audition(
-                        &mut s.audition,
-                        &mut v.held,
-                        Some(pitch as u8),
-                        v.new_velocity,
-                        track_u8,
-                    );
-                    v.release_at = None;
-                    v.dirty = true;
-                }
-                None => {
-                    if !shift {
+                    (Tool::Mute, None) => {}
+                    (Tool::Slice, _) => {
+                        v.drag = Drag::Slice {
+                            beat: snap_to(beat as f64, snap as f64) as f32,
+                        };
+                    }
+                    (Tool::Select, None) => {
+                        let base = if ctrl { v.selected.clone() } else { Vec::new() };
+                        v.selected = base.clone();
+                        v.drag = Drag::Marquee { from: pt, base };
+                    }
+                    (Tool::Paint, None) if beat >= 0.0 => {
+                        let start = (beat / snap).floor() * snap;
                         v.selected.clear();
-                    }
-                    v.drag = Drag::Marquee { from: pt };
-                }
-            }
-        }
-    }
-    if resp.dragged() {
-        if let Some(pt) = resp.interact_pointer_pos() {
-            let (beat, pitch) = (beat_at(pt.x), pitch_at(pt.y));
-            match &v.drag {
-                Drag::Move {
-                    anchor_beat,
-                    anchor_pitch,
-                    orig,
-                } => {
-                    let delta = snap_to((beat - anchor_beat) as f64, step as f64) as f32;
-                    let dp = pitch - anchor_pitch;
-                    for &(i, start, pc) in orig {
-                        notes[i].start = (start + delta).max(0.0);
-                        notes[i].pitch = (pc as i32 + dp).clamp(0, 127) as u8;
-                    }
-                }
-                Drag::Resize { anchor_beat, orig } => {
-                    let delta = snap_to((beat - anchor_beat) as f64, step as f64) as f32;
-                    for &(i, len) in orig {
-                        notes[i].len = (len + delta).max(0.0625);
-                    }
-                }
-                Drag::Marquee { from } => {
-                    let (b0, p0) = (beat_at(from.x), pitch_at(from.y));
-                    v.selected = note_edit::marquee(notes, b0, beat, p0 as u8, pitch as u8);
-                }
-                Drag::Create { index } => {
-                    if let Some(n) = notes.get_mut(*index) {
-                        n.len = (snap_to((beat - n.start) as f64, step as f64) as f32)
-                            .max(step.max(0.0625));
-                    }
-                }
-                Drag::None => {}
-            }
-            if let Drag::Move {
-                orig, anchor_pitch, ..
-            } = &v.drag
-            {
-                let first = orig.first().map(|o| o.2 as i32).unwrap_or(0);
-                let now_pitch = (first + pitch - anchor_pitch).clamp(0, 127) as u8;
-                audition(&mut s.audition, &mut v.held, Some(now_pitch), 100, track_u8);
-            }
-        }
-    }
-    if resp.drag_stopped() {
-        if matches!(
-            v.drag,
-            Drag::Move { .. } | Drag::Resize { .. } | Drag::Create { .. }
-        ) {
-            v.dirty = true;
-        }
-        v.drag = Drag::None;
-    }
-    if resp.clicked() {
-        if let Some(pt) = resp.interact_pointer_pos() {
-            match note_edit::hit_note(notes, beat_at(pt.x), pitch_at(pt.y) as u8, 0.0) {
-                Some((i, _)) if shift => {
-                    if let Some(k) = v.selected.iter().position(|x| *x == i) {
-                        v.selected.remove(k);
-                    } else {
-                        v.selected.push(i);
-                    }
-                }
-                Some((i, _)) => {
-                    v.selected = vec![i];
-                    audition(
-                        &mut s.audition,
-                        &mut v.held,
-                        Some(notes[i].pitch),
-                        notes[i].vel,
-                        track_u8,
-                    );
-                    v.release_at = Some(now + 0.25);
-                }
-                // A click (press and release without dragging) on empty space creates a note.
-                None if !shift => {
-                    let (beat, pitch) = (beat_at(pt.x), pitch_at(pt.y));
-                    if beat >= 0.0 {
-                        let start = (beat / step).floor() * step;
-                        notes.push(Note {
-                            start,
-                            len: step.max(0.0625),
+                        v.drag = Drag::Paint {
                             pitch: pitch as u8,
-                            vel: v.new_velocity,
-                        });
-                        v.selected = vec![notes.len() - 1];
+                            start,
+                        };
                         audition(
                             &mut s.audition,
                             &mut v.held,
@@ -1048,12 +990,191 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                             v.new_velocity,
                             track_u8,
                         );
-                        v.release_at = Some(now + 0.25);
+                        v.release_at = None;
+                    }
+                    (Tool::Draw, None) if beat >= 0.0 => {
+                        // A new note with the length and velocity of the last one, which moves
+                        // with the pointer until let go.
+                        let start = (beat / snap).floor() * snap;
+                        notes.push(Note {
+                            start,
+                            len: v.last_len.max(1.0 / 64.0),
+                            pitch: pitch as u8,
+                            vel: v.new_velocity,
+                            muted: false,
+                        });
+                        let index = notes.len() - 1;
+                        v.selected.clear();
+                        v.drag = Drag::Move {
+                            anchor_beat: beat,
+                            anchor_pitch: pitch,
+                            orig: vec![(index, start, pitch as u8)],
+                        };
+                        audition(
+                            &mut s.audition,
+                            &mut v.held,
+                            Some(pitch as u8),
+                            v.new_velocity,
+                            track_u8,
+                        );
+                        v.release_at = None;
+                        v.dirty = true;
+                    }
+                    (Tool::Draw | Tool::Paint | Tool::Select, Some((i, on_edge))) => {
+                        // A click on a note makes it the one new notes copy.
+                        v.last_len = notes[i].len;
+                        v.new_velocity = notes[i].vel;
+                        let group = v.selected.contains(&i) && v.tool != Tool::Paint;
+                        if !group {
+                            if v.tool == Tool::Select && ctrl {
+                                v.selected.push(i);
+                            } else if v.tool == Tool::Select {
+                                v.selected = vec![i];
+                            } else {
+                                v.selected.clear();
+                            }
+                        }
+                        let mut moving = if group || (v.tool == Tool::Select) {
+                            v.selected.clone()
+                        } else {
+                            vec![i]
+                        };
+                        if on_edge {
+                            v.drag = Drag::Resize {
+                                anchor_beat: beat,
+                                orig: moving.iter().map(|&k| (k, notes[k].len)).collect(),
+                            };
+                        } else {
+                            // Shift drags copies and leaves the originals.
+                            if shift {
+                                let clip: Vec<Note> = moving.iter().map(|&k| notes[k]).collect();
+                                let first = notes.len();
+                                notes.extend(clip);
+                                moving = (first..notes.len()).collect();
+                                v.selected = moving.clone();
+                                v.dirty = true;
+                            }
+                            v.drag = Drag::Move {
+                                anchor_beat: beat,
+                                anchor_pitch: pitch,
+                                orig: moving
+                                    .iter()
+                                    .map(|&k| (k, notes[k].start, notes[k].pitch))
+                                    .collect(),
+                            };
+                            audition(
+                                &mut s.audition,
+                                &mut v.held,
+                                Some(notes[i].pitch),
+                                notes[i].vel,
+                                track_u8,
+                            );
+                            v.release_at = None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    // A drag goes on until its button is let go, wherever the pointer goes.
+    let erasing = matches!(v.drag, Drag::Erase);
+    let held_down = if erasing && secondary_down {
+        true
+    } else {
+        down_now
+    };
+    if held_down {
+        if let Some(pt) = hover {
+            let (beat, pitch) = (beat_at(pt.x), pitch_at(pt.y));
+            match &mut v.drag {
+                Drag::Move {
+                    anchor_beat,
+                    anchor_pitch,
+                    orig,
+                } => {
+                    let delta = snap_to((beat - *anchor_beat) as f64, snap as f64) as f32;
+                    let dp = pitch - *anchor_pitch;
+                    for &(i, start, pc) in orig.iter() {
+                        if let Some(n) = notes.get_mut(i) {
+                            n.start = (start + delta).max(0.0);
+                            n.pitch = (pc as i32 + dp).clamp(0, 127) as u8;
+                        }
+                    }
+                    let first = orig.first().map_or(0, |o| o.2 as i32);
+                    let now_pitch = (first + dp).clamp(0, 127) as u8;
+                    audition(&mut s.audition, &mut v.held, Some(now_pitch), 100, track_u8);
+                }
+                Drag::Resize { anchor_beat, orig } => {
+                    let delta = snap_to((beat - *anchor_beat) as f64, snap as f64) as f32;
+                    for &(i, len) in orig.iter() {
+                        if let Some(n) = notes.get_mut(i) {
+                            n.len = (len + delta).max(snap.max(1.0 / 64.0));
+                            v.last_len = n.len;
+                        }
+                    }
+                }
+                Drag::Marquee { from, base } => {
+                    let (b0, p0) = (beat_at(from.x), pitch_at(from.y));
+                    let mut picked = note_edit::marquee(notes, b0, beat, p0 as u8, pitch as u8);
+                    for i in base.iter() {
+                        if !picked.contains(i) {
+                            picked.push(*i);
+                        }
+                    }
+                    v.selected = picked;
+                }
+                Drag::Erase => {
+                    if let Some((i, _)) = note_edit::hit_note(notes, beat, pitch as u8, 0.0) {
+                        notes.remove(i);
+                        v.selected.clear();
                         v.dirty = true;
                     }
                 }
-                None => {}
+                Drag::Mute { on, done } => {
+                    if let Some((i, _)) = note_edit::hit_note(notes, beat, pitch as u8, 0.0) {
+                        if !done.contains(&i) {
+                            notes[i].muted = *on;
+                            done.push(i);
+                            v.dirty = true;
+                        }
+                    }
+                }
+                Drag::Paint {
+                    pitch: key, start, ..
+                } => {
+                    let template = Note {
+                        start: 0.0,
+                        len: v.last_len,
+                        pitch: *key,
+                        vel: v.new_velocity,
+                        muted: false,
+                    };
+                    if note_edit::paint(notes, template, *key, *start, beat) > 0 {
+                        v.dirty = true;
+                    }
+                }
+                Drag::Slice { beat: at } => {
+                    *at = snap_to(beat as f64, snap as f64) as f32;
+                }
+                Drag::None => {}
             }
+        }
+    } else if !matches!(v.drag, Drag::None) {
+        // Let go. What the drag changed goes to the engine now.
+        match std::mem::replace(&mut v.drag, Drag::None) {
+            Drag::Slice { beat } => {
+                if note_edit::slice_at(notes, beat) > 0 {
+                    v.selected.clear();
+                    v.dirty = true;
+                }
+            }
+            Drag::Marquee { .. } | Drag::None => {}
+            Drag::Move { .. }
+            | Drag::Resize { .. }
+            | Drag::Erase
+            | Drag::Mute { .. }
+            | Drag::Paint { .. } => v.dirty = true,
         }
     }
     // ---- Velocity lane (FL Studio style): drag a stem up or down to set that note's velocity.
@@ -1102,37 +1223,105 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
     }
 
-    // ---- Keyboard (only while the pointer is over the editor)
+    // ---- Keyboard, as in FL Studio's piano roll (only while the pointer is over the editor)
     if hovered && !ui.ctx().egui_wants_keyboard_input() {
-        let (del, all, q, up, down, left, right, big) = ui.input(|i| {
+        let targets_now = |selected: &[usize], count: usize| -> Vec<usize> {
+            if selected.is_empty() {
+                (0..count).collect()
+            } else {
+                selected.to_vec()
+            }
+        };
+        let (m, pressed): (egui::Modifiers, Vec<Key>) = ui.input(|i| {
             (
-                i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
-                i.modifiers.command && i.key_pressed(Key::A),
-                !i.modifiers.command && i.key_pressed(Key::Q),
-                i.key_pressed(Key::ArrowUp),
-                i.key_pressed(Key::ArrowDown),
-                i.key_pressed(Key::ArrowLeft),
-                i.key_pressed(Key::ArrowRight),
-                i.modifiers.shift,
+                i.modifiers,
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Key {
+                            key, pressed: true, ..
+                        } => Some(*key),
+                        _ => None,
+                    })
+                    .collect(),
             )
         });
-        if ui.input(|i| i.key_pressed(Key::P) && !i.modifiers.command) {
-            v.tool = Tool::Pencil;
-        }
-        if ui.input(|i| i.key_pressed(Key::Escape)) {
-            v.tool = Tool::Pointer;
-        }
-        act.delete |= del;
-        act.select_all |= all;
-        act.quantize |= q;
-        let dp = (up as i32 - down as i32) * if big { 12 } else { 1 };
-        let dt = (right as i32 - left as i32) as f32 * step;
-        if (dp != 0 || dt != 0.0) && !v.selected.is_empty() {
-            for &i in &v.selected {
-                notes[i].pitch = (notes[i].pitch as i32 + dp).clamp(0, 127) as u8;
-                notes[i].start = (notes[i].start + dt).max(0.0);
+        let (ctrl, shift, alt) = (m.command, m.shift, m.alt);
+        let plain = !ctrl && !shift && !alt;
+        for key in pressed {
+            let targets = targets_now(&v.selected, notes.len());
+            let mut edited = true;
+            match key {
+                Key::P if plain => v.tool = Tool::Draw,
+                Key::B if plain => v.tool = Tool::Paint,
+                Key::D if plain => v.tool = Tool::Delete,
+                Key::T if plain => v.tool = Tool::Mute,
+                Key::C if plain => v.tool = Tool::Slice,
+                Key::E if plain => v.tool = Tool::Select,
+                Key::Escape => v.selected.clear(),
+                Key::Delete | Key::Backspace => act.delete = true,
+                Key::A if ctrl => act.select_all = true,
+                Key::D if ctrl => v.selected.clear(),
+                Key::Q if ctrl => act.quantize = true,
+                Key::Q if shift && !alt => note_edit::quantize_starts(notes, &targets, step),
+                Key::L if ctrl => note_edit::legato(notes, &targets, len_beats),
+                Key::U if ctrl => {
+                    let pieces = note_edit::chop(notes, &targets, step);
+                    v.selected = pieces;
+                }
+                Key::G if ctrl => {
+                    let joined = note_edit::glue(notes, &targets);
+                    v.selected = joined;
+                }
+                Key::B if ctrl => {
+                    let copies = note_edit::duplicate(notes, &targets);
+                    v.selected = copies;
+                }
+                Key::M if alt => {
+                    for &i in &targets {
+                        notes[i].muted = !shift;
+                    }
+                }
+                Key::C if ctrl => {
+                    v.clipboard = v.selected.iter().map(|&i| notes[i]).collect();
+                    edited = false;
+                }
+                Key::X if ctrl => {
+                    v.clipboard = v.selected.iter().map(|&i| notes[i]).collect();
+                    note_edit::remove_notes(notes, &v.selected);
+                    v.selected.clear();
+                }
+                Key::V if ctrl && !v.clipboard.is_empty() => {
+                    let at = (p_position - origin) as f32;
+                    let at = (at.max(0.0) / step).floor() * step;
+                    v.selected = note_edit::paste(notes, &v.clipboard, at);
+                }
+                Key::I if shift => {
+                    v.selected = note_edit::inverted(notes.len(), &v.selected);
+                    edited = false;
+                }
+                Key::ArrowUp | Key::ArrowDown if ctrl != shift => {
+                    let amount = if ctrl { 12 } else { 1 };
+                    let dp = if key == Key::ArrowUp { amount } else { -amount };
+                    for &i in &targets {
+                        notes[i].pitch = (notes[i].pitch as i32 + dp).clamp(0, 127) as u8;
+                    }
+                }
+                Key::ArrowLeft | Key::ArrowRight if shift => {
+                    let dt = if key == Key::ArrowLeft { -step } else { step };
+                    for &i in &targets {
+                        notes[i].start = (notes[i].start + dt).max(0.0);
+                    }
+                }
+                Key::ArrowLeft | Key::ArrowRight if plain => {
+                    let bar = bpb as f32 * beat_px;
+                    let d = if key == Key::ArrowLeft { -bar } else { bar };
+                    v.scroll_x = (v.scroll_x + d).max(0.0);
+                    edited = false;
+                }
+                _ => edited = false,
             }
-            v.dirty = true;
+            v.dirty |= edited;
         }
     }
     if act.select_all {
@@ -1472,7 +1661,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let selected = v.selected.contains(&i);
         // Logic draws a note with a light edge of its velocity colour around a deeper body.
         let color = velocity_color(n.vel);
-        let (fill, edge) = if selected {
+        let (fill, edge) = if n.muted {
+            (Color32::from_gray(0x55), Color32::from_gray(0x77))
+        } else if selected {
             (NOTE_SEL, Color32::WHITE)
         } else {
             (
@@ -1483,7 +1674,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         gg.rect_filled(r, 1.5, fill);
         gg.rect_stroke(r, 1.5, Stroke::new(1.0, edge), StrokeKind::Inside);
     }
-    if let Drag::Marquee { from } = &v.drag {
+    if let Drag::Slice { beat } = &v.drag {
+        let lx = x_of(*beat);
+        gg.line_segment(
+            [pos2(lx, grid.top()), pos2(lx, grid.bottom())],
+            Stroke::new(1.5, BLUE),
+        );
+    }
+    if let Drag::Marquee { from, .. } = &v.drag {
         if let Some(now) = ui.input(|i| i.pointer.hover_pos()) {
             let r = Rect::from_two_pos(*from, now);
             gg.rect_filled(r, 0.0, Color32::from_white_alpha(22));
@@ -1648,5 +1846,327 @@ mod tests {
         assert_eq!(piano_step(Snap::Smart, 10.0, 3.0, 0.5), 0.5);
         assert_eq!(piano_step(Snap::Smart, 100.0, 3.0, 0.5), 0.125);
         assert_eq!(piano_step(Snap::Beat, 100.0, 3.0, 0.5), 0.5);
+    }
+
+    use crate::ui_test::Harness;
+    use egui::{Modifiers, PointerButton};
+
+    /// A piano roll on an empty MIDI region, its snap one beat, ready to be clicked on.
+    struct Rig {
+        p: Project,
+        s: UiState,
+        h: Harness,
+        t: usize,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let mut p = Project::demo();
+            let t = p
+                .tracks
+                .iter()
+                .position(|t| {
+                    t.kind == TrackKind::Instrument
+                        && t.regions
+                            .first()
+                            .is_some_and(|r| r.generated.is_none() && r.folder.is_none())
+                })
+                .unwrap();
+            p.tracks[t].regions[0].notes.clear();
+            p.tracks[t].regions[0].len_bars = 16.0;
+            let mut s = UiState::new();
+            s.tracks.selected = Some((t, 0));
+            s.tracks.snap = Snap::Beat;
+            s.score_tab = false;
+            let mut rig = Self {
+                p,
+                s,
+                h: Harness::new(1400.0, 800.0),
+                t,
+            };
+            rig.settle();
+            rig
+        }
+
+        fn settle(&mut self) {
+            let (p, s) = (&mut self.p, &mut self.s);
+            self.h.settle(|ui| show(ui, p, s));
+        }
+
+        fn notes(&self) -> &Vec<Note> {
+            &self.p.tracks[self.t].regions[0].notes
+        }
+
+        /// A row in the middle of the grid, whatever it has scrolled to.
+        fn row(&self, up: i32) -> i32 {
+            let v = &self.s.piano;
+            127 - ((v.scroll_y + v.last_grid.height() * 0.5) / v.key_h) as i32 + up
+        }
+
+        fn at(&self, beat: f32, row: i32) -> Pos2 {
+            let v = &self.s.piano;
+            let g = v.last_grid;
+            pos2(
+                g.left() + beat * v.beat_px - v.scroll_x,
+                g.top() + (127 - row) as f32 * v.key_h - v.scroll_y + v.key_h * 0.5,
+            )
+        }
+
+        fn click(&mut self, pos: Pos2) {
+            let (p, s) = (&mut self.p, &mut self.s);
+            self.h.click(pos, |ui| show(ui, p, s));
+        }
+
+        fn drag(&mut self, path: &[Pos2], button: PointerButton) {
+            let (p, s) = (&mut self.p, &mut self.s);
+            self.h.drag(path, button, |ui| show(ui, p, s));
+        }
+
+        /// Keys only count with the pointer over the editor.
+        fn key(&mut self, key: Key) {
+            let centre = self.s.piano.last_grid.center();
+            let (p, s) = (&mut self.p, &mut self.s);
+            self.h.move_to(centre, |ui| show(ui, p, s));
+            self.h.key(key, |ui| show(ui, p, s));
+        }
+
+        fn with(&mut self, modifiers: Modifiers, then: impl FnOnce(&mut Self)) {
+            self.h.modifiers = modifiers;
+            self.settle();
+            then(self);
+            self.h.modifiers = Modifiers::NONE;
+            self.settle();
+        }
+
+        fn add(&mut self, start: f32, row: i32, len: f32) {
+            self.p.tracks[self.t].regions[0].notes.push(Note {
+                start,
+                len,
+                pitch: row as u8,
+                vel: 90,
+                muted: false,
+            });
+        }
+    }
+
+    #[test]
+    fn a_press_places_a_note_at_once_and_a_drag_moves_it_with_the_last_length() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        let (from, to) = (r.at(2.5, row), r.at(4.5, row + 2));
+        let (p, s) = (&mut r.p, &mut r.s);
+        r.h.press(from, PointerButton::Primary, |ui| show(ui, p, s));
+        assert_eq!(r.notes().len(), 1, "it is there before letting go");
+        assert_eq!(r.notes()[0].start, 2.0, "on the step it was pressed in");
+        let (p, s) = (&mut r.p, &mut r.s);
+        r.h.move_to(to, |ui| show(ui, p, s));
+        r.h.frame(vec![], |ui| show(ui, p, s));
+        assert_eq!(r.notes()[0].start, 4.0, "it moves, it does not get longer");
+        assert_eq!(r.notes()[0].pitch as i32, row + 2);
+        assert_eq!(r.notes()[0].len, 0.25);
+        let (p, s) = (&mut r.p, &mut r.s);
+        r.h.release(to, PointerButton::Primary, |ui| show(ui, p, s));
+        r.settle();
+        assert_eq!(r.notes().len(), 1);
+
+        // Its end makes it longer, and the next note takes that length.
+        r.p.tracks[r.t].regions[0].notes[0].len = 1.0;
+        let row2 = row + 2;
+        r.settle();
+        let a = r.at(4.95, row2);
+        let b = r.at(6.95, row2);
+        r.drag(&[a, b], PointerButton::Primary);
+        assert_eq!(r.notes()[0].len, 3.0);
+        assert_eq!(r.notes()[0].start, 4.0);
+        let empty = r.at(9.5, row);
+        r.click(empty);
+        assert_eq!(r.notes().len(), 2);
+        assert_eq!(r.notes()[1].len, 3.0, "the last length");
+    }
+
+    #[test]
+    fn the_right_button_deletes_what_it_is_dragged_across() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        for beat in 0..4 {
+            r.add(beat as f32, row, 0.5);
+        }
+        r.add(8.0, row, 0.5);
+        r.settle();
+        let path: Vec<Pos2> = (0..8).map(|k| r.at(k as f32 * 0.5 + 0.2, row)).collect();
+        r.drag(&path, PointerButton::Secondary);
+        assert_eq!(r.notes().len(), 1);
+        assert_eq!(r.notes()[0].start, 8.0, "only what it crossed");
+    }
+
+    #[test]
+    fn the_tool_keys_pick_tools_and_each_tool_does_its_job() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        assert_eq!(r.s.piano.tool, Tool::Draw);
+
+        // Delete: the left button deletes.
+        r.add(1.0, row, 0.5);
+        r.settle();
+        r.key(Key::D);
+        assert_eq!(r.s.piano.tool, Tool::Delete);
+        let at = r.at(1.2, row);
+        r.click(at);
+        assert!(r.notes().is_empty());
+
+        // Mute: across notes, all to the same state; muted notes stay.
+        r.add(1.0, row, 0.5);
+        r.add(2.0, row, 0.5);
+        r.settle();
+        r.key(Key::T);
+        let path: Vec<Pos2> = (0..5).map(|k| r.at(1.1 + k as f32 * 0.25, row)).collect();
+        r.drag(&path, PointerButton::Primary);
+        assert!(r.notes().iter().all(|n| n.muted));
+        assert_eq!(r.notes().len(), 2);
+        let at = r.at(1.2, row);
+        r.click(at);
+        assert!(!r.notes()[0].muted && r.notes()[1].muted, "and back");
+
+        // Slice: cuts where it is let go, on the snap.
+        r.p.tracks[r.t].regions[0].notes.clear();
+        r.add(0.0, row, 4.0);
+        r.settle();
+        r.key(Key::C);
+        let (a, b) = (r.at(1.1, row + 3), r.at(2.1, row + 3));
+        r.drag(&[a, b], PointerButton::Primary);
+        assert_eq!(r.notes().len(), 2);
+        assert_eq!((r.notes()[0].len, r.notes()[1].start), (2.0, 2.0));
+
+        // Paint: notes one after the other, as long as the last one.
+        r.p.tracks[r.t].regions[0].notes.clear();
+        r.s.piano.last_len = 1.0;
+        r.settle();
+        r.key(Key::B);
+        let (a, b) = (r.at(2.1, row), r.at(5.5, row));
+        r.drag(&[a, b], PointerButton::Primary);
+        let mut starts: Vec<f32> = r.notes().iter().map(|n| n.start).collect();
+        starts.sort_by(f32::total_cmp);
+        assert_eq!(starts, [2.0, 3.0, 4.0, 5.0]);
+
+        // Select: a box, and no note is made.
+        r.key(Key::E);
+        let (a, b) = (r.at(1.5, row + 2), r.at(3.5, row - 2));
+        r.drag(&[a, b], PointerButton::Primary);
+        assert_eq!(r.notes().len(), 4);
+        assert_eq!(r.s.piano.selected.len(), 2);
+        r.key(Key::P);
+        assert_eq!(r.s.piano.tool, Tool::Draw);
+    }
+
+    #[test]
+    fn ctrl_selects_while_drawing_and_shift_drags_copies() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(1.0, row, 0.5);
+        r.add(2.0, row, 0.5);
+        r.add(6.0, row, 0.5);
+        r.settle();
+        let (a, b) = (r.at(0.5, row + 2), r.at(3.5, row - 2));
+        r.with(Modifiers::COMMAND, |r| {
+            r.drag(&[a, b], PointerButton::Primary)
+        });
+        assert_eq!(r.notes().len(), 3, "no note is made");
+        let mut picked = r.s.piano.selected.clone();
+        picked.sort_unstable();
+        assert_eq!(picked, [0, 1]);
+
+        // A selected note drags the whole selection.
+        let (a, b) = (r.at(1.2, row), r.at(2.2, row + 1));
+        r.drag(&[a, b], PointerButton::Primary);
+        assert_eq!((r.notes()[0].start, r.notes()[1].start), (2.0, 3.0));
+        assert_eq!(r.notes()[0].pitch as i32, row + 1);
+        assert_eq!(r.notes()[2].start, 6.0, "the other stays");
+
+        // Shift drags copies and leaves the originals.
+        let (a, b) = (r.at(2.2, row + 1), r.at(10.2, row + 1));
+        r.with(Modifiers::SHIFT, |r| {
+            r.drag(&[a, b], PointerButton::Primary)
+        });
+        assert_eq!(r.notes().len(), 5);
+        assert_eq!(r.notes()[0].start, 2.0);
+        assert_eq!((r.notes()[3].start, r.notes()[4].start), (10.0, 11.0));
+
+        // Alt turns the snap off.
+        let c = r.at(6.1, row);
+        let d = r.at(6.6, row);
+        r.with(Modifiers::ALT, |r| r.drag(&[c, d], PointerButton::Primary));
+        let moved = r
+            .notes()
+            .iter()
+            .find(|n| n.pitch as i32 == row && n.start > 6.0);
+        let moved = moved.unwrap().start;
+        assert!((moved - 6.5).abs() < 0.03, "{moved}");
+    }
+
+    #[test]
+    fn the_editing_shortcuts_work_on_the_selection_or_on_everything() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(0.0, row, 0.25);
+        r.add(1.0, row, 0.25);
+        r.settle();
+        // Nothing selected: Ctrl+L takes all the notes.
+        r.with(Modifiers::COMMAND, |r| r.key(Key::L));
+        assert_eq!(r.notes()[0].len, 1.0);
+
+        // Ctrl+B copies right after; the copies are selected.
+        r.s.piano.selected = vec![0];
+        r.settle();
+        r.with(Modifiers::COMMAND, |r| r.key(Key::B));
+        assert_eq!(r.notes().len(), 3);
+        assert_eq!(r.notes()[2].start, 1.0);
+        assert_eq!(r.s.piano.selected, [2]);
+
+        // Ctrl+Up an octave, Shift+Up a semitone, Shift+Right a step.
+        r.with(Modifiers::COMMAND, |r| r.key(Key::ArrowUp));
+        assert_eq!(r.notes()[2].pitch as i32, row + 12);
+        r.with(Modifiers::SHIFT, |r| {
+            r.key(Key::ArrowUp);
+            r.key(Key::ArrowRight);
+        });
+        assert_eq!(r.notes()[2].pitch as i32, row + 13);
+        assert_eq!(r.notes()[2].start, 2.0);
+
+        // Alt+M mutes, Alt+Shift+M brings back; Shift+I selects the rest.
+        r.with(Modifiers::ALT, |r| r.key(Key::M));
+        assert!(r.notes()[2].muted && !r.notes()[0].muted);
+        let both = Modifiers::ALT | Modifiers::SHIFT;
+        r.with(both, |r| r.key(Key::M));
+        assert!(!r.notes()[2].muted);
+        r.with(Modifiers::SHIFT, |r| r.key(Key::I));
+        assert_eq!(r.s.piano.selected, [0, 1]);
+
+        // Ctrl+X, then Ctrl+V at the playhead.
+        r.with(Modifiers::COMMAND, |r| r.key(Key::X));
+        assert_eq!(r.notes().len(), 1);
+        let origin = r.p.region_start_beats(&r.p.tracks[r.t].regions[0]);
+        r.p.position_beats = origin + 8.0;
+        r.with(Modifiers::COMMAND, |r| r.key(Key::V));
+        assert_eq!(r.notes().len(), 3);
+        assert_eq!(r.notes()[1].start, 8.0);
+        // Ctrl+Up on a selection stays in the piano range; Ctrl+A takes all.
+        r.with(Modifiers::COMMAND, |r| r.key(Key::A));
+        assert_eq!(r.s.piano.selected.len(), 3);
+    }
+
+    #[test]
+    fn a_muted_note_is_saved_and_does_not_play() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(1.0, row, 0.5);
+        r.add(2.0, row, 0.5);
+        r.p.tracks[r.t].regions[0].notes[0].muted = true;
+        let t = &r.p.tracks[r.t];
+        let played = crate::engine_sync::region_notes(t, &t.regions[0], 0.0, 0);
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0].start_beat, 2.0);
+        let doc = crate::project_io::to_doc(&r.p).0;
+        assert!(doc.tracks[r.t].regions[0].notes[0].muted);
+        assert!(!doc.tracks[r.t].regions[0].notes[1].muted);
     }
 }

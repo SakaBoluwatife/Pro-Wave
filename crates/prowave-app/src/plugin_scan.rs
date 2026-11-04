@@ -2,18 +2,22 @@
 //! its code, so each file is read by a copy of this program started just for it (`--scan-plugin`),
 //! on a background thread. A file that crashes or hangs that copy is remembered and left alone
 //! until the user asks again. Results are cached by the file's modification time.
-use prowave_host::{clap_folders, find_clap_files, scan_clap_file, PluginFormat, PluginInfo};
+use prowave_host::{find_plugin_files, scan_plugin_file, PluginFormat, PluginInfo};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const SCAN_ARG: &str = "--scan-plugin";
 const CACHE_FILE: &str = "plugin-cache";
 /// How long one file may take. Some plugins check licenses or read big libraries when loaded.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Files read at the same time. A big collection takes minutes otherwise, one by one.
+const SCAN_WORKERS: usize = 4;
 
 /// The file to read when this copy was started as a scanner.
 pub fn scan_request(args: &[OsString]) -> Option<PathBuf> {
@@ -51,7 +55,7 @@ fn parse_plugin_line(line: &str, path: &Path) -> Option<PluginInfo> {
         name: name.to_string(),
         vendor: vendor.to_string(),
         version: version.to_string(),
-        format: PluginFormat::Clap,
+        format: PluginFormat::of(path),
         path: path.to_path_buf(),
         is_instrument: instrument.trim() == "1",
     })
@@ -60,7 +64,7 @@ fn parse_plugin_line(line: &str, path: &Path) -> Option<PluginInfo> {
 /// The scanner copy's whole job: prints what `path` offers, one plugin a line. Plugins print things
 /// of their own, which the reader skips. Returns the process's exit code.
 pub fn scan_and_print(path: &Path) -> i32 {
-    match scan_clap_file(path) {
+    match scan_plugin_file(path) {
         Ok(found) => {
             for info in &found {
                 println!("{}", plugin_line(info));
@@ -216,20 +220,40 @@ fn scan_all(
     files: &[PathBuf],
     cache: &[Scanned],
     retry: bool,
-    read: impl Fn(&Path) -> Result<Vec<PluginInfo>, String>,
-    mut progress: impl FnMut(usize),
+    read: impl Fn(&Path) -> Result<Vec<PluginInfo>, String> + Sync,
+    progress: impl Fn(usize) + Sync,
 ) -> Vec<Scanned> {
-    let mut all = Vec::with_capacity(files.len());
-    for (i, path) in files.iter().enumerate() {
-        let stamp = stamp_of(path);
-        all.push(reuse(cache, path, stamp, retry).unwrap_or_else(|| Scanned {
-            path: path.clone(),
-            stamp,
-            result: read(path),
-        }));
-        progress(i + 1);
-    }
-    all
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let results: Vec<Mutex<Option<Scanned>>> = files.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..SCAN_WORKERS.min(files.len()) {
+            scope.spawn(|| {
+                while let Some(path) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let stamp = stamp_of(path);
+                    let scanned = reuse(cache, path, stamp, retry).unwrap_or_else(|| Scanned {
+                        path: path.clone(),
+                        stamp,
+                        result: read(path),
+                    });
+                    let i = next_index(files, path);
+                    if let Ok(mut slot) = results[i].lock() {
+                        *slot = Some(scanned);
+                    }
+                    progress(done.fetch_add(1, Ordering::Relaxed) + 1);
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .filter_map(|slot| slot.into_inner().ok().flatten())
+        .collect()
+}
+
+/// Where `path`, which comes from `files`, sits in it.
+fn next_index(files: &[PathBuf], path: &Path) -> usize {
+    files.iter().position(|f| f == path).unwrap_or_default()
 }
 
 enum ScanMsg {
@@ -275,7 +299,7 @@ impl PluginScan {
         self.progress = Some((0, 0));
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let files = find_clap_files(&clap_folders());
+            let files = find_plugin_files();
             let total = files.len();
             let Ok(exe) = std::env::current_exe() else {
                 let _ = tx.send(ScanMsg::Done(Vec::new()));
@@ -343,7 +367,6 @@ impl PluginScan {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     fn info(name: &str, is_instrument: bool, path: &Path) -> PluginInfo {
         PluginInfo {
@@ -433,26 +456,37 @@ mod tests {
             },
         ];
         let files = [good.clone(), bad.clone(), new.clone()];
-        let reads = Cell::new(0);
+        let reads = AtomicUsize::new(0);
         let read = |p: &Path| {
-            reads.set(reads.get() + 1);
+            reads.fetch_add(1, Ordering::Relaxed);
             Ok(vec![info("Read", false, p)])
         };
-        let mut last = 0;
-        let all = scan_all(&files, &cache, false, read, |n| last = n);
-        assert_eq!(reads.get(), 1, "only the new file");
-        assert_eq!(last, 3);
+        let last = AtomicUsize::new(0);
+        let all = scan_all(&files, &cache, false, read, |n| {
+            last.fetch_max(n, Ordering::Relaxed);
+        });
+        assert_eq!(reads.load(Ordering::Relaxed), 1, "only the new file");
+        assert_eq!(last.load(Ordering::Relaxed), 3);
+        assert_eq!(all[0].path, good, "in the order of the files");
         assert!(all[1].result.is_err(), "a crash is not tried again");
-        reads.set(0);
+        reads.store(0, Ordering::Relaxed);
         scan_all(&files, &cache, true, read, |_| {});
-        assert_eq!(reads.get(), 2, "a retry reads the failure too");
-        reads.set(0);
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            2,
+            "a retry reads the failure too"
+        );
+        reads.store(0, Ordering::Relaxed);
         let changed = vec![Scanned {
             stamp: 1,
             ..cache[0].clone()
         }];
         scan_all(&files[..1], &changed, false, read, |_| {});
-        assert_eq!(reads.get(), 1, "a changed file is read again");
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            1,
+            "a changed file is read again"
+        );
     }
 
     #[test]
