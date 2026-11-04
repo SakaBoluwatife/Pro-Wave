@@ -1,22 +1,31 @@
 # Pro Wave: Logic-for-Windows Wireframe
 
-Feature map for turning Pro Wave into a Logic-style DAW on Windows. Structure follows the chapter layout of Apple's public Logic Pro User Guide and the inventory in `ROADMAP.md` section 1. Written in our own words. No Apple text, artwork or branding goes into the app.
+Feature map for turning Pro Wave into a Logic-style DAW on Windows with FL Studio's piano roll and channel rack. Structure follows the chapter layout of Apple's public Logic Pro User Guide and the inventory in `ROADMAP.md` section 1. Written in our own words. No Apple text, artwork or branding goes into the app.
 
-**Scope rule:** the DAW ships with no stock instruments, stock effects or sound library. Everything sonic is brought by the user as **VST3 or CLAP** plugins and their own sample folders. What stays built in is the host, the editors, the mixer and the utilities (metronome, tuner-free tools, meters).
+**Scope rule:** the DAW ships with no stock instruments, stock effects or sound library. Everything sonic is brought by the user as **VST3 or CLAP** plugins and their own sample folders. What stays built in is the host, the editors, the mixer and the utilities (metronome, a one-shot sampler, meters).
 
 Status key: **HAVE** works now · **PART** partly done · **GREY** menu/control exists but does nothing · **TODO** not started · **OUT** deliberately not built.
 
 Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio becomes WASAPI (default) plus optional ASIO, CoreMIDI becomes WinMM/WinRT MIDI, Finder becomes File Explorer, app bundle becomes `.exe` plus installer.
 
+**Last checked against the code:** 2026-11-04, commit `c723928`. HAVE means built and tested in code; the owner's own testing by ear and by hand is still going on.
+
 ---
 
-## 0. Priority order
+## 0. What is left, in the suggested order
 
-1. **Plugin hosting** (VST3, then CLAP). Nothing else matters if sound cannot come from user plugins.
-2. **Browser** (done: samples; next: plugins, presets, project audio).
-3. **Channel rack / pattern model** with drum-rack and piano-roll views over the same notes.
-4. Export/bounce, audio clip gain and fades, comping.
-5. Everything else below, in chapter order.
+1. **CPU optimization.** Run `cargo xtask bench`; nothing has been measured since plugins went in. Likely first: a bigger plugin block than 64 samples when not recording, then block processing and more than one mixing thread.
+2. **Remove stock instruments and effects (Task 3)**, and let the last track be deleted.
+3. **Audio comping:** take folders exist for MIDI only.
+4. **Crash isolation:** plugins in a process of their own. A crash while loading is handled; one while playing or in a plugin window still ends the program.
+5. **Automation, second part:** recording moves made in a plugin's window, plugin knobs following their lanes, lanes for the output chain, the Show/Create automation menu entries.
+6. **Piano roll, second part:** time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M.
+7. **Audio setup, second part:** sample rate, the ASIO driver's control panel, separate input and output devices.
+8. **Key command remap window**, then Smart Controls.
+9. **Plugin presets in the Browser**, project audio browser, Plugin Manager window.
+10. **Small menu entries** (section 16): rename track, track color and icon, Go to Position, Undo History.
+11. **Installer run for real**, code signing, Mac and Linux plugin windows.
+12. **Later or to decide:** Live Loops, score printing and MusicXML, Mackie control, Alternatives, the system-wide audio driver idea.
 
 ---
 
@@ -24,15 +33,16 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 | Area | Logic role | Pro Wave | Notes |
 |---|---|---|---|
-| Control bar / transport | Play, record, cycle, tempo, LCD | HAVE | Count-in and Capture Recording are GREY |
-| Left panel | Library | HAVE | Now tabs: Library, Browser, Plugins |
-| Left panel, Browser tab | Sample/loop browser | HAVE (new) | Folder tree over several locations, search, favorites, preview, drag to track |
-| Left panel, Plugins tab | Plugin manager | PART | Lists installed VST3 only, cannot load |
-| Inspector | Track and region parameters | PART | Several rows GREY (Channel, Freeze, Flex mode, Q-rows) |
-| Tracks area | Arrange | HAVE | Most tools except Pointer and Fade are GREY |
-| Bottom editor area | Mixer, Piano Roll, Score, Step Seq, Audio editor | PART | Mixer and Piano Roll work |
-| Right side | Media/Loop browser, Notepad, Quick Help | PART | Loop Browser and All Files toggle exists |
-| Smart Controls | 8 macro knobs per plugin | TODO | Needs plugin parameter list first |
+| Control bar / transport | Play, record, cycle, tempo, LCD | HAVE | Tempo can be typed; buttons name themselves on hover. Low Latency and Tuner buttons do nothing |
+| Left panel | Library | HAVE | Tabs: Library, Browser, Plugins |
+| Left panel, Browser tab | Sample/loop browser | HAVE | Folder tree, search, favorites, preview with stop, waveform panel with kHz, BPM and length |
+| Left panel, Plugins tab | Plugin manager | HAVE | Filter by kind, search, folders, rescan, double-click or drag to a track |
+| Inspector | Track and region parameters | PART | Sample BPM row added. Channel, Freeze, Flex mode and the Q-rows are GREY |
+| Tracks area | Arrange | HAVE | Pointer, Fade, Scissors, Glue, multi-select, marquee, right-click menus |
+| Bottom editor area | Mixer, Piano Roll, Score, Step Seq, Audio editor | PART | Mixer and Piano Roll switch by tab; the others open from the selected region |
+| Channel Rack window | Not in Logic | HAVE | F6 |
+| Right side | Media/Loop browser, Notepad, Quick Help | PART | |
+| Smart Controls | 8 macro knobs per plugin | TODO | The plugin parameter list it needs now exists |
 | Toolbar customize, full screen | | GREY | |
 
 ## 2. Projects and files (chapters: projects, sharing)
@@ -40,12 +50,13 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Feature | Status | Windows note |
 |---|---|---|
 | New/Open/Save `.prowave` (zip) | HAVE | |
-| Save as Template, Close, Project Settings | GREY | |
-| Alternatives, Backups, Clean Up | TODO | Alternatives = named snapshots of the arrangement |
-| Import audio (drag in) | HAVE | |
-| Import other projects, MIDI file import | PART | |
+| Save as Template, Close | GREY | |
+| Alternatives, Backups, Clean Up, Consolidate | TODO | Alternatives = named snapshots of the arrangement |
+| Import audio (drag in), MIDI files | HAVE | The File > Import > Audio File entry is GREY |
+| Import other projects | GREY | |
 | Export MIDI selection | HAVE | |
-| Bounce project/region/track, export stems | TODO | Needs an offline render module in the engine |
+| Bounce project or section, track, all tracks (stems) | HAVE | Through a second engine faster than real time: WAV, FLAC, MP3 320. Plugins, automation, delay compensation, tails |
+| Bounce regions in place, Bounce and Join | HAVE | Tracks in Place is GREY |
 | Export MusicXML, AAF | TODO | Low priority |
 | Show in File Manager | GREY | Becomes "Show in Explorer" |
 | Share to services | OUT | |
@@ -55,74 +66,79 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 | Feature | Status | Notes |
 |---|---|---|
-| Audio, Software Instrument, Aux, Bus, Output, Master | HAVE | Instrument tracks need a hosted plugin to make sound |
-| External MIDI track | PART | Port and channel fields exist in the model |
-| Drummer track | HAVE (generated notes) | Uses internal note generation, no stock kit; needs user plugin |
-| Folder / Summing stacks | PART | Folder in model, Functions > Folder GREY |
+| Audio, Software Instrument, Aux, Bus, Output, Master | HAVE | Plugins on Stereo Out and Master, one chain shown on both |
+| External MIDI track | HAVE | |
+| Drummer track | HAVE (generated notes) | Stock kit goes with Task 3; needs a user plugin then |
+| Folder / Summing stacks | HAVE | |
+| Delete with the key, right-click menus | HAVE | The last track cannot be deleted yet |
 | Track rename, color, icon, header config | GREY | Quick wins |
-| VCA | PART | Field exists |
-| Freeze, Bounce in Place | GREY | Needs offline render |
+| VCA | HAVE | |
+| Freeze | GREY | The bounce engine makes this possible |
 | Track alternatives (playlists) | TODO | |
-| Groove track | TODO | |
-| Global tracks (Arrangement, Chord, Marker, Tempo, Signature, Movie) | PART | Tempo works; others GREY |
+| Groove track | PART | MIDI followers only |
+| Global tracks (Marker, Tempo, Signature) | HAVE | Chord, Arrangement, Movie GREY or OUT |
 
 ## 4. Recording and comping
 
 | Feature | Status | Notes |
 |---|---|---|
-| MIDI and audio recording | HAVE | WASAPI shared; ASIO is a later cargo feature |
-| Record enable on instrument tracks, input monitor on audio | GREY | |
+| MIDI and audio recording | HAVE | Keyboard, MIDI ports and laptop keys |
+| Record enable, input monitor | HAVE | |
+| Capture Recording, count-in, metronome | HAVE | Metronome is a built-in click |
 | Punch in/out, replace mode, Record Repeat | GREY | |
-| Take folders, quick swipe comping | TODO | Needs clip-take model |
-| Count-in, metronome | PART | Metronome is a built-in click, not a sample instrument |
-| Low latency mode | TODO | Needs PDC awareness of plugins |
+| MIDI take folders, swipe comping | HAVE | |
+| Audio take folders, swipe comping | TODO | Needs takes of audio in the clip model |
+| Low latency mode | TODO | Button does nothing |
 
 ## 5. Audio editing (chapters: loops/media, Audio Track Editor, Flex)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Region trim, move, fade tool | HAVE | |
-| Clip gain, fade curves, crossfades | PART | Engine has `ClipEdit` and `FadeCurve`, UI is thin |
-| Split, Join, Cut, Copy, Paste | GREY | **High value**, add soon |
-| Flex Time / Flex Pitch | PART | Engine has warp and pitch modules; UI mode picker GREY |
-| Transient detection, strip silence | PART | `analysis` module exists |
-| Marquee, Normalize, Reverse | TODO | |
+| Trim, move, fade handles, Split, Join, Cut, Copy, Paste | HAVE | |
+| Clip gain, fade curves, crossfades | HAVE | Gain in the Region panel; no gain handle on the region itself |
+| Normalize, Reverse | HAVE | |
+| Tempo following | HAVE | Sample BPM typed or found; other regions resize live with the tempo |
+| Flex Time / Flex Pitch | PART | Modes, quantize, correct to key work. Markers by mouse and per-note pitch editing TODO |
+| Transient detection, Smart Tempo | HAVE | |
+| Strip silence | TODO | |
 | Project audio browser | TODO | |
 
 ## 6. MIDI editing
 
 | Feature | Status | Notes |
 |---|---|---|
-| Piano Roll | HAVE | Note Repeat and Note Colors GREY |
-| Step Sequencer / Pattern region | HAVE | Max 16 rows by 64 steps; target for the channel rack |
-| Score editor | PART | Window GREY |
-| Event List | TODO | |
-| Step Editor (hyper) | PART | `step_editor.rs` exists |
-| MIDI Transform | TODO | |
-| Quantize, swing, humanize | PART | Q-rows GREY in Inspector |
-| MIDI FX (arp, chord trigger, randomizer) | PART | `midi_fx` field exists. Own implementations, not stock "sounds" |
-| Piano-roll tools (arpeggiate, strum, chop, flip, etc.) | TODO | Port algorithms from Lemon Studio |
+| Piano Roll, FL behaviour | HAVE | Draw, Paint, Delete, Mute, Slice, Select; type to MIDI; ghost notes |
+| Note tools | HAVE | Arpeggiate, Strum, Flam, Note Repeat, Claw, Limit, Levels, Velocity LFO, Randomize, Chord Stamp, Flip, select by pitch or position |
+| Quantize, swing, scale quantize, scale highlight, humanize | HAVE | |
+| Time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M | TODO | |
+| Step Sequencer / Pattern region | HAVE | 16 rows by 64 steps |
+| Score editor | PART | Clefs, keys, rests and ties; no printing or MusicXML |
+| Event List | HAVE | |
+| Step Editor (controller lanes) | TODO | `step_editor.rs` is the Pattern editor |
+| MIDI Transform | HAVE | |
+| MIDI FX (arp, chord trigger, randomizer, Scripter) | HAVE | |
 
 ## 7. Channel rack (FL-style, our addition)
 
-Not in Logic. Design in short:
+HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 
-- Notes stay the single source of truth. A channel is a track plus a note lane.
-- **Rack view** shows one row per channel with step buttons. **Piano-roll view** shows the same notes. A toggle per channel switches views. Editing in either updates both.
-- A **pattern** is a named set of channel note lanes. Placing a pattern clip puts one region on every channel track it touches. Edit the pattern, every placed clip updates.
-- Each channel strip has its own mixer slot (Logic style, no routing window).
-- Channel's sound = a hosted plugin or a sample from the Browser (Browser drop on a channel makes a sampler channel once a user sampler plugin or a minimal built-in one-shot player exists).
-
-Status: TODO. Depends on section 11 (hosting).
+- Pattern lanes are the source of truth. One row per instrument track: mute, solo, volume, pan, mixer shortcut.
+- Per channel: step buttons or a small piano roll over the same notes. Notes the steps cannot show get a mark and are never deleted.
+- Patterns: new, clone, rename, color, length; drag one onto the Tracks area. Every placed clip follows the pattern; a Piano Roll edit of a clip goes back to it.
+- Make Unique and Clone Pattern from the clip's menu. Split, Join and trimming the start detach a clip.
+- A sample dropped on a row loads there; on Add Channel it makes a channel.
+- Limits: only the first pass of a clip longer than its pattern edits back; all steps of a pattern have one velocity.
 
 ## 8. Mixing and automation
 
 | Feature | Status | Notes |
 |---|---|---|
-| Faders, pan, mute, solo, sends, buses | HAVE | |
-| Inserts with PDC | HAVE | Today these are the 11 built-in effects. Keep the engine, but the user's plugins become the main content |
-| Mixer groups, VCA | PART | Menu GREY |
-| Automation lanes and modes | PART | Engine `AutoLane`; Show/Create/Convert GREY |
+| Faders, pan, mute, solo, sends, buses | HAVE | Lit arcs on pan and send knobs |
+| Inserts with delay compensation | HAVE | Up to 32, ending in a plus; they scroll when the fader needs the room |
+| Effect plugins in any slot, instrument plugins on the Inst slot | HAVE | Bypass and remove buttons, hover names |
+| Mixer groups, VCA | HAVE | |
+| Automation lanes and modes | HAVE | Fader, pan, built-in effects. Show/Create/Convert menu entries GREY |
+| Plugin parameter automation | PART | Drawn lanes play, in bounces too. Writing from the plugin window, and on-screen knobs following, TODO |
 | Metering (peak) | HAVE | LUFS, true peak, pre-fader TODO |
 | Channel strip settings save/load | TODO | |
 | Signal flow view | GREY | |
@@ -131,42 +147,42 @@ Status: TODO. Depends on section 11 (hosting).
 
 | Feature | Status | Notes |
 |---|---|---|
-| Tempo map, signatures | HAVE | |
-| Smart Tempo | PART | `TempoEstimate` in engine; window GREY |
-| MTC out/in | HAVE | |
-| SMPTE ruler, Go to Position | GREY | |
+| Tempo map, signatures, Cycle | HAVE | Cycle takes the selection when turned on |
+| Smart Tempo | HAVE | |
+| MTC out/in, SMPTE | HAVE | |
+| Go to Position | GREY | |
 | Tuning (Scala .tun) | TODO | |
 | Video track | OUT for now | |
 
 ## 10. Live Loops
 
-TODO. Grid of cells and scenes, quantized launch, record performance to arrangement. Needs engine clip launcher. After section 7.
+TODO. Grid of cells and scenes, quantized launch, record performance to arrangement. Needs an engine clip launcher. To decide if it is wanted now that the channel rack exists.
 
-## 11. Plugin hosting (the big one)
+## 11. Plugin hosting
 
-| Piece | Status | Plan |
+| Piece | Status | Notes |
 |---|---|---|
-| Scan VST3 folders | HAVE (child process) | `%COMMONPROGRAMFILES%\VST3`, `%LOCALAPPDATA%\Programs\Common\VST3` |
-| Scan CLAP folders | TODO | `%COMMONPROGRAMFILES%\CLAP`, `%LOCALAPPDATA%\Programs\Common\CLAP` |
-| Load plugin, process audio on audio thread | TODO | New crate `prowave-host`; engine only sees a trait object slot with preallocated buffers |
-| Instruments: MIDI/note events in, audio out | TODO | |
-| Parameters, automation, Smart Controls | TODO | |
-| Plugin editor window (HWND child or separate window) | TODO | Windows-specific; use `raw-window-handle` |
-| State save/load inside `.prowave` | TODO | Format change, bump project version |
-| Latency report into PDC | TODO | Engine PDC already exists |
-| Crash isolation (out-of-process) | TODO | ROADMAP Phase 7. Start in-process, design the trait so a bridge can replace it |
-| Scanner timeout and blacklist | TODO | Scan in a child process |
-| Plugin manager UI | PART | Plugins tab lists names only |
-
-Crate choice to evaluate: CLAP via `clack-host`; VST3 via `vst3` (bindings) with a hand-written host. VST3 uses the `vst3` crate; the Steinberg SDK is MIT-licensed (checked 2026-11-04).
+| Scan VST3 and CLAP folders, the user's own too | HAVE | In child processes with a timeout and a cache |
+| Effects and instruments | HAVE | Tried on 20 CLAP plugins, and Lounge Lizard and an ERA 6 plugin as VST3 |
+| Plugin editor windows | HAVE | Windows only |
+| State in `.prowave`, undo | HAVE | |
+| Latency into delay compensation | HAVE | |
+| Parameters | PART | Listed and moved by automation; tried on Lounge Lizard, Pro-C 3, Pro-DS |
+| Blocked after crashing on load | HAVE | Until Rescan |
+| Crash isolation (out-of-process) | TODO | The engine only sees a trait, so a bridge can replace an instance |
+| Presets in the Browser | TODO | |
+| Plugin Manager window | GREY | The Plugins tab does most of it |
+| VST2 | OUT unless asked | |
 
 ## 12. Settings, key commands, control surfaces
 
 | Feature | Status | Notes |
 |---|---|---|
-| Audio device and buffer settings | PART | WASAPI; add ASIO behind cargo feature |
-| MIDI ports | HAVE | |
-| Key commands (editor and remap) | GREY | Ctrl-based defaults |
+| Settings window (Ctrl+,) | HAVE | Audio, Keyboard, Plugins, General |
+| Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. All five outputs of the dev PC start. Sample rate and the driver's panel TODO |
+| Project Settings entries (General, Tuning...) | GREY | |
+| MIDI ports | HAVE | All ports, automatically |
+| Key commands | PART | Logic's, moved to Ctrl and Alt (`key_commands.rs`); remap window TODO |
 | MIDI learn, controller assignments | TODO | |
 | Mackie / HUI support | TODO | |
 | Remote control from phone/web | TODO | ROADMAP suggests WebSocket |
@@ -175,26 +191,36 @@ Crate choice to evaluate: CLAP via `clack-host`; VST3 via `vst3` (bindings) with
 ## 13. Explicitly OUT (user brings their own)
 
 - All stock instruments (Alchemy, ES2, samplers, Drum Kit Designer, etc.) and the sound library.
-- All stock effects beyond the existing built-ins, which stay as basic utilities only.
+- All stock effects. The built-in ones are still in the slot menus until Task 3.
 - Apple Loops content, Session Player content.
 - Any Apple artwork, names, icons, or trademarked terms. UI says "Pro Wave", not "Logic".
 
 ## 14. Windows-specific tasks
 
-- Installer (`cargo xtask` target producing an `.exe`/MSI, e.g. cargo-wix or Inno Setup).
-- File associations for `.prowave`.
-- High-DPI manifest, dark title bar.
-- ASIO cargo feature and driver picker.
-- Per-user config dir under `%APPDATA%` (already used by `sample_browser`).
-- Code signing later.
+| Task | Status | Notes |
+|---|---|---|
+| ASIO cargo feature and driver picker | HAVE | SDK in `third_party/asio-sdk` under its GPL3 option. Building it needs LLVM |
+| Installer and `.prowave` file association | PART | `dist/windows/installer.iss`, never run: Inno Setup is not installed here |
+| Per-user config under `%APPDATA%` | HAVE | |
+| High-DPI, dark title bar | PART | The program draws its own dark title bar; high-DPI not checked on its own |
+| Code signing | TODO | |
 
-## 15. Suggested next milestones
+## 15. Other systems
 
-1. **M1 Plugin host, CLAP effect loads** (simplest to prove the audio path).
-2. **M2 VST3 instrument plays from a MIDI region**, editor window opens.
-3. **M3 Plugin state in project**, Plugins tab can drag a plugin onto a track.
-4. **M4 Pattern model and channel rack**, rack/piano-roll toggle.
-5. **M5 Edit menu (Cut/Copy/Paste/Split/Join/Select All)** and Undo History.
-6. **M6 Bounce and export**.
-7. **M7 Comping, clip gain/fades UI, Flex UI.**
-8. **M8 Key commands, Smart Controls, automation UI.**
+CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows only (`editor_window.rs`, `vst3_plugin.rs`). Mac needs a Cocoa window, signing and notarization; Linux an X11 one. The name "Pro Wave" and the UI can change later: the audio engine only talks to the UI through commands, but colours are written into each screen and need moving into one theme first.
+
+## 16. Menu entries still greyed (checked 2026-11-04)
+
+- **File:** Close, Save as Template, Alternatives, Clean Up, Consolidate, Rename Project, Project Settings (General, Synchronization, Metronome, Recording, Tuning, Audio, MIDI), Page Setup, Print, Movie, Import Audio File, Import Other Projects, Score as MusicXML, Tracks in Place, Share, Show in File Manager, Open in Sound Library Manager
+- **Edit:** Undo History, Paste Replace
+- **Track:** Rename Track, Show Master / Chord / Arrangement Track, Assign Track Color / Icon, Configure Track Header
+- **Navigate:** Go to Position
+- **Record:** Record Repeat, Record Toggle, Record Enable, New Take, Delete Take, Record Project Settings
+- **Mix:** Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering, Mastering, Create Mastering Track, Stem Splitter
+- **View:** the automation entries, Advanced Tools, Smart Controls, Score Editor, Step Sequencer, Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global Tracks, Colors, Markers, Grid, Smart Tempo, Full Screen
+- **Window:** Minimize, Zoom, Score Editor, Step Sequencer, Smart Tempo, Plugin Manager, Video, Bring All to Front
+- **Help:** Key Commands, About Pro Wave
+- **Tracks area:** Functions (Folder, Quantize, Bounce in Place, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks, Configure Track Header)
+- **Piano Roll:** Note Colors
+- **Mixer:** Select Audio Channel Strips, Create New Output Channel Strip, Show Signal Flow
+- **Inspector:** Channel, Freeze Mode, Flex Mode, the rows under More

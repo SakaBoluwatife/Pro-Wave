@@ -1,6 +1,6 @@
 # Pro Wave — Status Summary
 
-_Last updated: 2026-10-19_
+_Last updated: 2026-11-04_
 
 Pro Wave is a pure-Rust (egui + cpal) DAW whose look and workflow follow Apple Logic Pro.
 It runs on Windows and is written to be portable to macOS and Linux. Everything is drawn from
@@ -8,14 +8,14 @@ scratch (vector shapes, own patch names); no Apple artwork or code is copied.
 
 ## Where we are in the roadmap (short version)
 
-| Phase | Status |
-|---|---|
-| **0 — Foundation** | **Mostly done.** CI is green on Linux, Windows and macOS. Missing: triple-buffer/`basedrop`, latency target (<20 ms) on Windows |
-| **1 — Engine core + tracks** | **About half done.** Tempo map (engine), audio/MIDI regions, streaming and `.prowave` files work. Missing: the 24-track DoD test sign-off |
-| 2 — MIDI & sequencer | Started early: Piano Roll editing, quantize, velocity. Everything else missing |
-| 3 – 9 | Not started (some UI from Phase 4/8 — mixer look, Library — is drawn, without DSP) |
+What is built and what is left, in order, is kept in one place: **`docs/LOGIC-WIREFRAME.md`**.
+Section 0 there is the order of work and section 16 the controls still greyed. In short: plugin
+hosting, region editing, the FL-style piano roll, the Channel Rack, bounce and export, ASIO and
+Settings work on Windows. Next are CPU optimization, removing stock instruments and effects, audio
+comping and crash isolation.
 
-Details per item are in [Phase status](#phase-status) below.
+**Everything below "How to run" and "Builds for other systems" is a record of the project as of
+2026-10-19, not its status today.**
 
 ## How to run
 

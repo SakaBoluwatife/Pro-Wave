@@ -52,6 +52,12 @@ fn decode(path: &Path) -> Result<AudioBuffer> {
 - Sampler instruments (SFZ, EXS): Parse with size limits, path traversal check for sample references
 
 ### 3.3 Plugin Sandboxing — The Biggest Risk (Logic runs plugins in-process, we will NOT)
+
+**Today (2026-11-04) this is a plan, not what runs.** Scanning happens in a child process with a
+30 s timeout, but plugins are loaded **into the program itself, unsandboxed**, so a plugin can do
+anything the user can, and its crash ends the program. A plugin that crashes while loading is
+blocked until Rescan. Only load plugins you trust.
+
 ```
 [ ProWave Main Process ] <--SHM ringbuf (rtrb) + IPC (postcard)--> [ Plugin Sandbox Process per plugin ]
                                                                         seccomp-bpf (Linux) + landlock

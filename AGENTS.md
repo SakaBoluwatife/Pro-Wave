@@ -2,7 +2,9 @@
 This file tells AI coding agents (Claude Code, Codex, Cursor, Jolly) how to work in this repo. If you are an AI agent, read this first.
 
 ## 1. Project Intent
-We are building Pro Wave — a complete functional clone of Apple Logic Pro 11 in pure Rust + WASM. Every Logic Pro feature must be cloned: Drummer, Flex Time/Pitch, Sampler, Quick Sampler, Drum Machine Designer, Alchemy-lite, ES2, Vintage B3/Clav/E-Piano, Sculpture, Retro Synth, Ultrabeat, Studio Strings/Horns, Channel EQ, Compressor (6 models), Space Designer, ChromaVerb, Delay Designer, Pedalboard, Amp Designer, Mastering Assistant, Stem Splitter, Live Loops, Smart Tempo, Score Editor, etc. See roadmap.md Section 1 for exhaustive inventory.
+**The owner's scope comes first (see `CLAUDE.md` and `docs/LOGIC-WIREFRAME.md`):** Logic Pro for Windows with FL Studio's piano roll and channel rack, and **no stock instruments, effects or sound library**. Users bring VST3 and CLAP plugins and their own samples. Do not build the instruments and effects named in this file. Plugin code is in `prowave-host`; of the crates in the table below only `prowave-engine` exists, with `prowave-app`, `prowave-host` and `prowave-project` beside it. `docs/LOGIC-WIREFRAME.md` section 0 is the current order of work, not the phases of `roadmap.md`.
+
+The original plan, kept for reference: a complete functional clone of Apple Logic Pro 11 in pure Rust + WASM. Every Logic Pro feature was to be cloned: Drummer, Flex Time/Pitch, Sampler, Quick Sampler, Drum Machine Designer, Alchemy-lite, ES2, Vintage B3/Clav/E-Piano, Sculpture, Retro Synth, Ultrabeat, Studio Strings/Horns, Channel EQ, Compressor (6 models), Space Designer, ChromaVerb, Delay Designer, Pedalboard, Amp Designer, Mastering Assistant, Stem Splitter, Live Loops, Smart Tempo, Score Editor, etc. See roadmap.md Section 1 for exhaustive inventory.
 
 This is NOT a wrapper around JUCE or Electron. Every agent must respect audio-thread constraints.
 
@@ -125,4 +127,4 @@ No secrets. If you need signing cert for macOS, ask human. Never commit `.p12`, 
 If plugin sandbox crashes >3 times on scan, @plugin-agent must quarantine plugin and log to `quarantine.json` - never infinite loop scan. If audio thread xrun >10 times per minute, @qa-agent must open issue.
 
 ---
-> TL;DR for agents: You are building Pro Wave, a complete Logic Pro clone in Rust + WASM. Audio thread is real-time, no alloc. UI is egui + wgpu. Everything is Rust. If you allocate on audio thread, you break music. Check roadmap.md Section 1 for exact Logic features to clone.
+> TL;DR for agents: You are building Pro Wave, Logic Pro for Windows with FL Studio's piano roll and channel rack, and no stock sounds: users bring plugins. Audio thread is real-time, no alloc. UI is egui + wgpu. If you allocate on audio thread, you break music. `docs/LOGIC-WIREFRAME.md` section 0 says what is next.

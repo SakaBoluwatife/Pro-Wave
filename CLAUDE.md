@@ -18,10 +18,9 @@ Goal: daily-driver DAW. **No stock instruments, effects or sound library.** User
 
 ## Priorities
 
-1. VST3/CLAP plugin hosting (new crate, not yet started).
-2. Browser: samples done; plugins and presets next.
-3. Channel rack: notes are the source of truth; per-channel toggle between drum-rack and piano-roll views; patterns place a region on each channel track.
-4. Edit menu (Cut/Copy/Paste/Split/Join), bounce/export, clip gain and fades, comping.
+1. CPU optimization.
+2. Remove stock instruments and effects (Task 3).
+3. Audio comping, crash isolation, the rest of automation and the piano roll.
 
 ## Commands (PowerShell, from the repo root)
 
@@ -53,21 +52,9 @@ Pattern for adding engine state: add a `Command` variant, a `Garbage` variant fo
 - Keep CRLF line endings in files edited on Windows; do not reformat whole files.
 - Param ranges match Logic's where a Logic equivalent exists.
 
-## What exists from our work (uncommitted unless the owner says otherwise)
+## Known gaps and next step
 
-- `sample_browser.rs`: expandable folder tree over several sample locations, recursive search, favorites, preview through the engine (`Command::SetPreview`), drag a sample onto the Tracks area (audio or MIDI), double-click to add. Locations are in `browser-roots` and open folders in `browser-expanded` in the config dir (the old `browser-root` is migrated); it starts empty.
-- `left_panel.rs`: tabs Library | Browser | Plugins. Plugins tab only lists installed `.vst3` files.
-- `import.rs`: `import_audio_at` places audio at a bar on a chosen track.
-- `tracks_area.rs`: drop handling for `SampleDrag`.
-- `core.rs` / `lib.rs`: `Preview` playback in the engine, with test `preview_plays_once_and_stops`.
-
-## Known gaps (see ROADMAP.md section 3b for the full list of greyed controls)
-
-Plugin hosting, bounce/export, Cut/Copy/Paste/Split/Join, clip gain and fade UI, comping, Flex UI, key commands, automation UI, FL-style patterns. wasm32 check was not run for the browser work; run `cargo xtask check` before any push.
-
-## Next step
-
-Start M1 in `docs/LOGIC-WIREFRAME.md` section 11: a `prowave-host` crate that scans and loads a CLAP effect and runs it as an insert with preallocated buffers and PDC, then VST3.
+`docs/LOGIC-WIREFRAME.md` is the up-to-date feature map: section 0 is the order of what is left, section 16 the greyed entries. Next: CPU optimization (run `cargo xtask bench`), then removing stock instruments and effects (Task 3), then audio comping. ASIO builds need LLVM and `--features asio`. wasm32 check and cargo-deny are not installed here; run `cargo xtask check` steps individually before any push.
 
 ## Output style (from drona23/claude-token-efficient, trimmed)
 

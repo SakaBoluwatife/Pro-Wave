@@ -488,6 +488,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Project Notes"
         | "Show Media Browser"
         | "Show Piano Roll"
+        | "Show Channel Rack"
         | "Show Mixer"
         | "Show Library"
         | "Show Inspector"
@@ -1067,6 +1068,7 @@ mod tests {
                     s.tracks.also.len(),
                     s.bounce.dialog,
                     s.settings.open,
+                    s.rack.open,
                     s.bounce.queue.len(),
                 ),
                 (

@@ -2,6 +2,27 @@
 **Codename: `prowave-studio` | Stack: Pure Rust + WebAssembly | Targets: macOS, Linux, Windows, Web**
 > Pro Wave is an independent, clean-room DAW inspired by Apple Logic Pro. Logic Pro is a trademark of Apple Inc. No Apple code, assets, samples, or UI assets are reused. This document is a functional specification for re-implementation.
 
+## Where we are (2026-11-04)
+
+**The owner's scope replaces section 0 and the instrument and effect lists below:** Logic Pro for
+Windows with FL Studio's piano roll and channel rack, and **no stock instruments, effects or sound
+library**: users bring VST3 and CLAP plugins and their own samples. Checkboxes marked `[-]` are out
+for that reason, and do not count in the status chart. `docs/LOGIC-WIREFRAME.md` is the up-to-date
+feature map, and its section 0 is the order of what is left.
+
+Built since section 3 was last brought up to date: VST3 and CLAP hosting with editors, state and
+delay compensation; plugin parameter automation; the Browser and Plugins tabs; region editing,
+multi-select, right-click menus and Logic's keys; the FL-style piano roll and its note tools; the
+Channel Rack and patterns; bounce and export (WAV, FLAC, MP3, stems, in place); a chain on the
+output; inserts up to 32; ASIO with a driver picker; the Settings window.
+
+Left, in order: CPU optimization; removing the stock instruments and effects; audio comping; crash
+isolation; automation written from plugin windows; the rest of the piano roll; sample rate and the
+ASIO panel; key remapping and Smart Controls; plugin presets; the greyed menu entries; a tested
+installer and signing; Mac and Linux plugin windows.
+
+---
+
 ## 0. Goal
 
 Build a 1:1 functional clone of Logic Pro 11 (as of 2024-2025) in pure Rust + WASM. Every menu, editor, instrument, effect, and workflow must be accounted for so an AI coding agent (Claude) can implement without guessing.
@@ -373,67 +394,67 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 ### Phase 2: MIDI & Sequencer (Weeks 11-18)
 - [ ] MIDI 1.0/2.0 parser, MPE, Articulation ID, SysEx
   - Standard MIDI Files (2026-10-21): File > Import > MIDI File… (or drop a `.mid` on the window) makes a track for each track and channel (channel 10 becomes a Drummer track) with one region of its notes and the sustain pedal, and takes the file's tempo and signature changes when the project has no regions yet. File > Export > Selection as MIDI File… writes the selected region, or all MIDI, as format 1: a tempo track (tempo curves as a step for each quarter note, signatures) and a track for each MIDI track, with what plays (region transpose, quantize, mute, MIDI FX). Reading and writing round-trip in tests, damaged files are refused without panicking. Not done: SMPTE-timed files, program changes, other controllers, pitch bend, lyrics and markers, MPE, SysEx, MIDI 2.0.
-- [ ] Piano Roll: full Logic parity (Quantize, Velocity, Brush, Time Handles, MIDI Draw for CC, Scale Quantize, Humanize, Flam, Note Color)
-- [ ] Score Editor v0: render notes with `staff` crate, basic printing, MusicXML export
+- [~] Piano Roll: full Logic parity (Quantize, Velocity, Brush, Time Handles, MIDI Draw for CC, Scale Quantize, Humanize, Flam, Note Color) (2026-11-04): FL-style tools, Brush, Scale Quantize, Humanize, Flam and more done; Note Color, Time Handles, MIDI Draw for CC to do.
+- [~] Score Editor v0: render notes with `staff` crate, basic printing, MusicXML export (2026-11-04): notes, clefs, keys, rests and ties shown; printing and MusicXML to do.
   - Score v0 (2026-10-21): the editor's Score tab shows an ordinary MIDI region as notation on a grand staff (treble from middle C up, bass below), in C major with sharps, each note as the nearest plain or dotted note value with stem, flag, ledger lines and dots; click to add a quarter note at the nearest eighth, right-click a note to delete it. The clefs are the letters G and F, not the clef shapes (the bundled fonts have no music symbols). Upgraded the same day: drawn clefs, the key signature (a key picker, 30 keys), the time signature, accidentals that carry through a bar, rests, and ties for notes that cross a bar line or are not one note value long. Not done: beams, chords' stem sharing, voices, printing, MusicXML, and editing notes' lengths.
 - [x] Hardening pass (2026-10-21) of the newest features: MIDI file import is bounded (128 MB, 4096 tempo and 1024 signature changes, tracks up to the engine's 1024, regions inside bar 9999, note pairing in linear time), pattern regions stop at 250 000 notes and a MIDI FX chain at 1 000 000, MTC positions cannot overflow, the MIDI and MTC input queues are bounded, and generated regions are only compared with their bars when the region or the song changed. Tests: headless pointer tests for the Pattern grid, Drummer pad, Score and MIDI FX window (`ui_test.rs`), a hostile-file test, and Linux and macOS compile checks (the tests themselves run on Windows here and on all three in CI).
 - [x] Step Sequencer: Pattern region with rows, per-step Chance, Repeat, Tie, Gate, Loop Direction
   - Done (2026-10-21): Pattern regions with rows, steps, rate, swing, gate and per-step velocity, Chance (percent, the same every time for a seed; New Variation changes it), Repeat (1-4 notes in a step, click to count up) and Tie (carries on the note before it, also over the loop), and a play direction (Forward, Backward, Ping-Pong, Random). The Edit box above the grid picks what a click sets. Pending: automation per row, per-row gate.
-- [ ] Event List, Step Editor, MIDI Transform (conditions + operations), MIDI FX chain (Arp, Chord Trigger, Scripter via Rhai)
+- [~] Event List, Step Editor, MIDI Transform (conditions + operations), MIDI FX chain (Arp, Chord Trigger, Scripter via Rhai) (2026-11-04): Event List, MIDI Transform and MIDI FX done; Logic's Step Editor to do (`step_editor.rs` is the Pattern editor).
   - MIDI FX (2026-10-21): Track > MIDI FX… opens a chain of up to 8 effects for the selected track: Transposer, Velocity Processor, Scale Quantizer, Chord Trigger (8 chords), Note Repeater, Arpeggiator (Up, Down, Up and Down, Random, As Played; 1-4 octaves; gate) and Randomizer (pitch, velocity, timing; the same every time). Each can be switched off, moved and removed; they change the notes the engine plays (and what Export MIDI writes) and leave the regions as recorded. Saved in `.prowave`. Added later the same day: Modulator (sine, triangle, saw or square to a MIDI controller or pitch bend of an External MIDI track) and Scripter (Rhai script, sandboxed, with an operation limit). The sustain pedal and the controllers now go out to External MIDI tracks. Not done: the MIDI FX slot in the channel strip, and showing the changed notes in the Piano Roll.
   - MIDI Transform (2026-10-21): Piano Roll > Functions > MIDI Transform… selects notes by pitch, velocity, position or length and operates on them (transpose, velocity, position, length, scale, randomize), with presets (Transpose, Fixed Velocity, Legato, Humanize, ...). Not done: conditions on other regions' notes and saving your own presets.
-- [ ] Drummer Track v0: 2 drummers, Complexity/Loudness X/Y, Follow Track, Convert to MIDI
+- [~] Drummer Track v0: 2 drummers, Complexity/Loudness X/Y, Follow Track, Convert to MIDI (2026-11-04): generated notes work; the stock kit goes with the no-stock rule.
 - **DoD:** Create Drummer + Bass (MIDI) + Keys, quantize, bounce
 
 ### Phase 3: Flex & Smart Tempo (Weeks 19-24) — Logic's secret sauce
-- [ ] Smart Tempo Editor: detect tempo from audio (✅ one region, steady tempo), edit downbeats, multitrack analysis
-- [ ] Flex Time: Implement 5 modes - Slicing (use `aubio` onset detection), Rhythmic, Monophonic (use `rubberband` or `signalsmith`), Polyphonic (Elastique-like via `rubberband`), Tempophone, Speed
-- [ ] Flex Pitch: Pitch detection (YIN via `aubio` or `pitch-detection` crate), per-note editing, Gain, Drift, Vibrato, Formant
-- [ ] Groove Track: master track that other tracks follow (extract groove, apply)
+- [x] Smart Tempo Editor: detect tempo from audio (✅ one region, steady tempo), edit downbeats, multitrack analysis (2026-11-04): done.
+- [~] Flex Time: Implement 5 modes - Slicing (use `aubio` onset detection), Rhythmic, Monophonic (use `rubberband` or `signalsmith`), Polyphonic (Elastique-like via `rubberband`), Tempophone, Speed (2026-11-04): modes, quantize and tempo following done; markers by mouse to do.
+- [~] Flex Pitch: Pitch detection (YIN via `aubio` or `pitch-detection` crate), per-note editing, Gain, Drift, Vibrato, Formant (2026-11-04): detection and correct to key done; per-note editing to do.
+- [~] Groove Track: master track that other tracks follow (extract groove, apply) (2026-11-04): MIDI followers done; audio followers to do.
 - [ ] Audio Track Editor integration
 - **DoD:** Import vocal, Flex Pitch correct to scale, Flex Time quantize to groove
 
 ### Phase 4: Mixer & Channel Strip (Weeks 25-30)
-- [~] Mixer UI: faders, pan, inserts (8 slots, done), sends (4 slots, pre/post, done), VCA, Sends on Fader and Groups (done); stereo pan puck, 15 inserts and 8 sends to do
+- [~] Mixer UI: faders, pan, inserts (8 slots, done), sends (4 slots, pre/post, done), VCA, Sends on Fader and Groups (done); stereo pan puck, 15 inserts and 8 sends to do (2026-11-04): inserts now up to 32 with a plus, plugins in any slot and on the output.
 - [~] DSP (basic versions done: 3-band Channel EQ, 6-band Multi-Band EQ, Compressor, Noise Gate, Limiter, Overdrive): Channel EQ (8-band with FFT analyzer - use `rustfft` + `egui` plot), Compressor (6 models: Platinum, VCA, FET, Vintage VCA/FET/Opto with sidechain), Gate, Limiter, Overdrive
-- [~] Automation (fader, pan and every effect setting with Read/Touch/Latch/Write, curved stretches: done): Track vs Region, Trim, two-handle Bezier curves, Automation Quick Access, Sample-accurate parameter automation
-- [~] Bus summing: 64-bit double (done), PDC (done for the effects' look-ahead; plug-in and instrument latency to do), Low Latency Mode
+- [~] Automation (fader, pan and every effect setting with Read/Touch/Latch/Write, curved stretches: done): Track vs Region, Trim, two-handle Bezier curves, Automation Quick Access, Sample-accurate parameter automation (2026-11-04): drawn lanes for plugin parameters done, in bounces too; writing from the plugin's window to do.
+- [~] Bus summing: 64-bit double (done), PDC (done for the effects' look-ahead; plug-in and instrument latency to do), Low Latency Mode (2026-11-04): plug-in latency done; Low Latency Mode to do.
 - **DoD:** Mix 24 tracks with EQ/Comp on each, automation, PDC verified null test
 
 ### Phase 5: Instruments - Part 1 (Weeks 31-40)
-- [ ] Sampler (EXS24 clone): Zone/Group editor UI, Velocity layers, Round Robin, Mod Matrix 10 slots, Filter (LP/HP/BP), LFOs, Import SFZ/EXS
-- [ ] Quick Sampler: drag-drop, Slice/One-Shot/Classic, auto-slice by transient/beat, Record, Trim
-- [ ] Drum Machine Designer: 48 pads, each pad = Quick Sampler + strip
-- [ ] Drum Kit Designer: acoustic kits with multi-mic (Close, Overhead, Room, Bleed controls)
-- [ ] ES2: Vector synth clone - 3 osc (Saw, Pulse, Sine with FM), Filter, Distortion, Vector Envelope, Router 10 slots. Must match Logic presets byte-for-byte parameter wise
-- [ ] Vintage Series: B3 Organ (drawbars 9 + percussion + Leslie with Horn/Rotor speed, distortion), Vintage Clav (D6 pickup), Vintage E-Piano
-- [ ] Retro Synth: 4 engines Analog/Sync/Wavetable/FM in one UI
+- [-] Sampler (EXS24 clone): Zone/Group editor UI, Velocity layers, Round Robin, Mod Matrix 10 slots, Filter (LP/HP/BP), LFOs, Import SFZ/EXS OUT: no stock instruments or effects (see "Where we are").
+- [-] Quick Sampler: drag-drop, Slice/One-Shot/Classic, auto-slice by transient/beat, Record, Trim OUT: no stock instruments or effects (see "Where we are").
+- [-] Drum Machine Designer: 48 pads, each pad = Quick Sampler + strip OUT: no stock instruments or effects (see "Where we are").
+- [-] Drum Kit Designer: acoustic kits with multi-mic (Close, Overhead, Room, Bleed controls) OUT: no stock instruments or effects (see "Where we are").
+- [-] ES2: Vector synth clone - 3 osc (Saw, Pulse, Sine with FM), Filter, Distortion, Vector Envelope, Router 10 slots. Must match Logic presets byte-for-byte parameter wise OUT: no stock instruments or effects (see "Where we are").
+- [-] Vintage Series: B3 Organ (drawbars 9 + percussion + Leslie with Horn/Rotor speed, distortion), Vintage Clav (D6 pickup), Vintage E-Piano OUT: no stock instruments or effects (see "Where we are").
+- [-] Retro Synth: 4 engines Analog/Sync/Wavetable/FM in one UI OUT: no stock instruments or effects (see "Where we are").
 - **DoD:** Load Sampler instrument, play with MIDI, patch saving
 
 ### Phase 6: Instruments - Part 2 & FX Suite (Weeks 41-50)
-- [ ] Sculpture: physical modeling (string model with Object, Material, Pick, etc.)
-- [ ] Alchemy-Lite: 2 sources (VA + Sampler), Morph pad, MSEG, Arp, Granular basic (for v1.0)
-- [ ] Ultrabeat: 25 voices drum synth, built-in step sequencer
-- [ ] Studio Strings/Horns: Articulation ID system (key switch, channel, velocity)
-- [ ] Guitar and bass amp emulation (tester request, 2026-10-30): next after audio recording
-- [ ] FX full suite: Space Designer (convolution reverb with IR loading, envelope, filter, length), ChromaVerb (14 models), Delay Designer (visual tap editor, 26 taps, pitch/filter per tap), Tape Delay, Echo, Chorus, Ensemble, Flanger, Phaser, Tremolo, AutoFilter, Ringshifter, Distortion II, Bitcrusher, Overdrive, Pedalboard (35 pedals), Amp Designer (amps + cabs + mics), Match EQ, Multipressor, Exciter, SubBass, Voice Transformer, etc.
-- [ ] Mastering Assistant: rule-based chain (EQ -> Comp -> Limiter) + LUFS targeting -14 LUFS, analyze using `ebur128` crate
+- [-] Sculpture: physical modeling (string model with Object, Material, Pick, etc.) OUT: no stock instruments or effects (see "Where we are").
+- [-] Alchemy-Lite: 2 sources (VA + Sampler), Morph pad, MSEG, Arp, Granular basic (for v1.0) OUT: no stock instruments or effects (see "Where we are").
+- [-] Ultrabeat: 25 voices drum synth, built-in step sequencer OUT: no stock instruments or effects (see "Where we are").
+- [-] Studio Strings/Horns: Articulation ID system (key switch, channel, velocity) OUT: no stock instruments or effects (see "Where we are").
+- [-] Guitar and bass amp emulation (tester request, 2026-10-30): next after audio recording OUT: no stock instruments or effects (see "Where we are").
+- [-] FX full suite: Space Designer (convolution reverb with IR loading, envelope, filter, length), ChromaVerb (14 models), Delay Designer (visual tap editor, 26 taps, pitch/filter per tap), Tape Delay, Echo, Chorus, Ensemble, Flanger, Phaser, Tremolo, AutoFilter, Ringshifter, Distortion II, Bitcrusher, Overdrive, Pedalboard (35 pedals), Amp Designer (amps + cabs + mics), Match EQ, Multipressor, Exciter, SubBass, Voice Transformer, etc. OUT: no stock instruments or effects (see "Where we are").
+- [-] Mastering Assistant: rule-based chain (EQ -> Comp -> Limiter) + LUFS targeting -14 LUFS, analyze using `ebur128` crate OUT: no stock instruments or effects (see "Where we are").
 - **DoD:** A/B test Channel EQ curve vs Logic (within 0.5dB), Space Designer IR load
 
 ### Phase 7: Plugin Hosting & Sandboxing (Weeks 51-56)
-- [ ] CLAP host full (note, params, latency, state), VST3 host via `vst3-sys`, AU host on macOS via `coreaudio-sys`
-- [ ] Out-of-process sandbox: separate process, SHM ring buffer (1ms latency overhead max), seccomp (Linux), seatbelt (macOS), AppContainer (Win). Heartbeat, crash isolation, auto-restart
-- [ ] Plugin scanner with quarantine, timeout 5s per plugin, blacklist
-- [ ] Plug-in Manager UI showing latency, type, manufacturer
+- [~] CLAP host full (note, params, latency, state), VST3 host via `vst3-sys`, AU host on macOS via `coreaudio-sys` (2026-11-04): CLAP and VST3 on Windows done (notes, parameters, latency, state, editors). AU left out; other systems to do.
+- [ ] Out-of-process sandbox: separate process, SHM ring buffer (1ms latency overhead max), seccomp (Linux), seatbelt (macOS), AppContainer (Win). Heartbeat, crash isolation, auto-restart (2026-11-04): not started. A plugin that crashes on load is blocked until Rescan.
+- [x] Plugin scanner with quarantine, timeout 5s per plugin, blacklist (2026-11-04): child processes, 30 s timeout, cache.
+- [~] Plug-in Manager UI showing latency, type, manufacturer (2026-11-04): the Plugins tab, no latency column.
 - **DoD:** Load Vital, Serum, Kontakt without crashing main DAW if plugin crashes
 
 ### Phase 8: UI - The Logic Look + Live Loops (Weeks 57-66)
-- [ ] Main window: Tracks area (with Track Headers, Track Inspector left, Library right), Mixer (separate window or bottom), Editors (Piano Roll bottom, Score, Audio Editor)
-- [ ] Library: Patches (Channel Strip + Instrument + FX), save/load, search
+- [~] Main window: Tracks area (with Track Headers, Track Inspector left, Library right), Mixer (separate window or bottom), Editors (Piano Roll bottom, Score, Audio Editor) (2026-11-04): most of it works; see `docs/LOGIC-WIREFRAME.md`.
+- [~] Library: Patches (Channel Strip + Instrument + FX), save/load, search (2026-11-04): browsing works; Save and Delete greyed; patches go with the no-stock rule.
 - [ ] Smart Controls: 8 knobs per patch, mapping editor (map knob to multiple params with range scaling), Learn
-- [ ] Key Commands: 1200+ commands, searchable, customizable, Presets, Conflict detection
+- [~] Key Commands: 1200+ commands, searchable, customizable, Presets, Conflict detection (2026-11-04): Logic's main ones on Windows keys; remap window to do.
 - [ ] Live Loops: Grid (Cells, Scenes, Trigger modes, Quantize Start), Record Live Loops performance to Tracks, Remix FX (X/Y pad with Gate, Filter, Repeater, Reverse)
-- [ ] Loop Browser: Apple Loops metadata parsing (key, tempo, style), drag-drop with auto tempo/key adaptation, All Files Browser
+- [~] Loop Browser: Apple Loops metadata parsing (key, tempo, style), drag-drop with auto tempo/key adaptation, All Files Browser (2026-11-04): sample browser with BPM and waveform; Apple Loops are OUT.
   - Started (2026-10-30): Loop Browser and All Files panes list a folder and add a file on
     double-click. No Apple Loops tags or tempo matching yet.
   - Done (2026-10-31): ALAC and AAC decoding are enabled (with Ogg Vorbis, M4A/MP4 and ADPCM),
@@ -446,7 +467,7 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 - [ ] Compile `prowave-engine` to WASM + AudioWorklet (128-sample blocks, SharedArrayBuffer + Atomics)
 - [ ] `prowave-wasm`: OPFS for project storage, Web UI via `egui_web` (same egui code), Web Remote (like Logic Remote but via browser/WebSocket)
 - [ ] Collaboration: Project file with Ed25519 signing, simple CRDT for arrangement (optional)
-- [ ] Export: Bounce Project/Region/Track in Place (offline/real-time, normalize, dither Apogee UV22HR via `r8brain`), Export All Tracks as Audio, Export MIDI, MusicXML, AAF, ADM BWF (Atmos)
+- [~] Export: Bounce Project/Region/Track in Place (offline/real-time, normalize, dither Apogee UV22HR via `r8brain`), Export All Tracks as Audio, Export MIDI, MusicXML, AAF, ADM BWF (Atmos) (2026-11-04): project, section, track, all tracks and regions in place, WAV, FLAC, MP3; normalize, MusicXML and Tracks in Place to do.
 - [ ] Performance: SIMD (`wide`, `std::simd`), benchmarks vs Logic/Reaper
 - **DoD:** Open in Chrome/Firefox, play 16-track project <30ms latency, bounce to WAV
 
@@ -475,41 +496,10 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 
 ---
 
-## 3b. Controls that do nothing yet (checked 2026-10-30)
+## 3b. Controls that do nothing yet
 
-Everything here can be seen in the app but has no effect. All of it is greyed or dimmed, so a
-click never silently does nothing. The controls that looked active and did nothing were built
-on 2026-10-30: Count-in, Capture Recording, Quick Help, Toolbar, Note Pad, Loop Browser, All
-Files, R on instrument tracks, I on audio tracks, and the mixer's Setting and Output slots.
-
-- File: Close, Save as Template, Alternatives, Project Management, Project Settings, Page Setup,
-  Print, Movie, Import Audio File and Other Projects (dragging audio in works), Export of audio
-  and MusicXML (Selection as MIDI File works), Bounce, Share, Show in File Manager, Open in
-  Sound Library Manager, Project Alternatives
-- Edit: Undo History, Cut, Copy, Paste, Paste Replace, Select All, Split at Playhead, Join,
-  Bounce and Join
-- Track: Rename Track, Show Master / Chord / Arrangement Track, Assign Track Color / Icon,
-  Configure Track Header
-- Navigate: Go to Position
-- Record: Record / Record Repeat, Record Toggle, Record Enable, New Take,
-  Delete Take, Bounce In Place, Record Project Settings, Project Settings
-- Mix: Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering,
-  Mastering, Create Mastering Track, Stem Splitter
-- View: all automation entries, Advanced Tools, Smart Controls, Score Editor, Step Sequencer,
-  Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global
-  Tracks, Colors, Markers, Grid, Smart Tempo, Enter Full Screen
-- Window: Minimize, Zoom, Score Editor, Step Sequencer, Smart Tempo, Plugin Manager, Video,
-  Bring All to Front
-- Help: Key Commands, About Pro Wave
-- Tracks area: Edit (Cut, Copy, Paste, Select All, Split, Join), Functions (Folder, Quantize,
-  Bounce in Place, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks,
-  Configure Track Header), every tool except Pointer and Fade, waveform zoom buttons
-- Piano Roll: Note Repeat, Note Colors; tabs Step Sequencer, Drummer Editor, Smart Tempo
-- Mixer: Select Audio Channel Strips, Create New Output Channel Strip, Show Signal Flow
-- Inspector: Channel, Freeze Mode, Q-Reference, Flex Mode, MIDI In Port and Channel, and the
-  rows under More (Dynamics, Gate Time, Clip Length, Score, Q-Velocity, Q-Length, Q-Flam,
-  Q-Range, Q-Strength)
-- Library: Delete, Save
+The list checked against the code is section 16 of `docs/LOGIC-WIREFRAME.md` (2026-11-04). All of
+it is greyed or dimmed, so a click never silently does nothing.
 
 ---
 

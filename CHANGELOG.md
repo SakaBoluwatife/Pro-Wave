@@ -3,6 +3,26 @@
 What changed in each Pro Wave release. The release workflow copies the section of the version
 being released into the GitHub Release notes, so keep one `## <version>` heading per release.
 
+## Unreleased
+
+### Windows
+
+✅ **VST3 and CLAP plugins:** effects and instruments with their own windows, saved settings and delay compensation, in any slot of a strip or on the whole mix. Your own plugin folders, and a plugin that crashes while loading is blocked until you rescan.
+✅ **ASIO:** optional build with a driver picker.
+
+### All systems
+
+✅ **Plugin automation:** draw lanes for a plugin's parameters.
+✅ **Piano Roll in FL Studio's way:** new tools, playing on the computer keyboard, ghost notes, and Arpeggiate, Strum, Flam, Note Repeat, Claw, Limit, Levels, Velocity LFO, Randomize, Chord Stamp and Flip.
+✅ **Channel Rack (F6):** patterns of steps or notes per channel, placed as clips that follow the pattern.
+✅ **Bounce and export:** the mix, a track, all tracks or regions in place, as WAV, FLAC or MP3.
+✅ **Region editing:** cut, copy, paste, split, join, trim, multi-select, right-click menus and Logic's keys.
+✅ **Browser:** folder tree, search, favorites, preview you can stop, waveform panel, and samples as audio clips or a sampler.
+✅ **Tempo:** type it in the top bar; audio resizes live, and samples can be given a BPM to follow.
+✅ **Settings (Ctrl+,):** audio driver, device and buffer size, the computer keyboard, plugin folders, interface size.
+✅ **Mixer:** up to 32 inserts ending in a plus, the fader keeps its room, and knobs light up the way they are turned.
+✅ **Cycle:** takes what is selected when turned on, and no longer looks like the highlight of a selected region.
+
 ## 0.2.1
 
 ### All systems (Windows, macOS, Linux)

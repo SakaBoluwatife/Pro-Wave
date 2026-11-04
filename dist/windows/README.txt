@@ -27,14 +27,16 @@ From a terminal:
   prowave.exe --play                start playing right away
   prowave.exe --piano               open the Piano Roll on start
 
-Audio files supported: WAV, AIFF, FLAC. You can also drag audio files onto the window.
+Audio files supported: WAV, AIFF, FLAC, MP3, CAF, Ogg Vorbis, M4A and MP4 (AAC, ALAC), ADPCM. You
+can also drag audio files onto the window.
 
 Requirements
 ------------
 
 - Windows 10 or 11, 64-bit.
 - A graphics driver with DirectX 12 or Vulkan (any recent Intel, AMD or NVIDIA driver).
-- Sound goes through WASAPI (shared mode). ASIO is not built in yet.
+- Sound goes through WASAPI (shared mode). Builds made with the asio feature can also use ASIO
+  drivers: choose in Settings (Ctrl+,).
 
 Where it keeps things
 ---------------------
