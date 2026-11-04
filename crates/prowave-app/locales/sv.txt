@@ -132,7 +132,6 @@ Zoom Out = Zooma ut
 Zoom to Fit = Zooma till passande storlek
 Note Colors = Notfärger
 Snap: = Fäst:
-Select a MIDI region to edit its notes = Markera en MIDI-region för att redigera dess noter
 Time Quantize (classic) = Tidskvantisering (klassisk)
 Strength = Styrka
 Swing = Swing

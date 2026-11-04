@@ -386,6 +386,12 @@ pub enum Command {
     },
     /// Plays a Browser preview from its start, replacing the one playing; `None` stops it.
     SetPreview(Option<Box<Preview>>),
+    /// A live controller (a sustain pedal) for the instrument of `track`.
+    LiveControl {
+        track: u16,
+        number: u8,
+        value: u8,
+    },
     /// Live note (clicking the Piano Roll keys, auditioning while editing). Works while the
     /// transport is stopped and is released by `NoteOff` (or automatically after 4 s).
     NoteOn {
@@ -1546,6 +1552,16 @@ impl EngineCore {
                 }
                 Command::NoteOff { pitch } => self.live_note_off(pitch, None),
                 Command::NoteOffTrack { pitch, track } => self.live_note_off(pitch, Some(track)),
+                Command::LiveControl {
+                    track,
+                    number,
+                    value,
+                } => self.send_control(ControlEvent {
+                    beat: 0.0,
+                    track,
+                    number,
+                    value,
+                }),
                 Command::SetTrackExternal { track, external } => {
                     if let Some(slot) = self.track_external.get_mut(track as usize) {
                         let was = std::mem::replace(slot, external);

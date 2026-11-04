@@ -8,10 +8,12 @@
 mod clap;
 #[cfg(windows)]
 mod editor_window;
+mod sampler;
 #[cfg(windows)]
 mod vst3_plugin;
 
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
+pub use crate::sampler::load_sampler;
 #[cfg(windows)]
 pub use crate::vst3_plugin::{find_vst3_files, load_vst3, scan_vst3_file, vst3_folders};
 #[doc(no_inline)]
@@ -22,18 +24,23 @@ use std::path::{Path, PathBuf};
 pub enum PluginFormat {
     Clap,
     Vst3,
+    /// An audio file, played by the built-in sampler.
+    Sampler,
 }
 
 impl PluginFormat {
     /// The format of a plugin file, by its name.
     pub fn of(path: &Path) -> Self {
-        let vst3 = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("vst3"));
-        if vst3 {
+        let is = |ext: &str| {
+            path.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        };
+        if is("vst3") {
             Self::Vst3
-        } else {
+        } else if is("clap") {
             Self::Clap
+        } else {
+            Self::Sampler
         }
     }
 
@@ -41,6 +48,7 @@ impl PluginFormat {
         match self {
             Self::Clap => "CLAP",
             Self::Vst3 => "VST3",
+            Self::Sampler => "Sampler",
         }
     }
 }
@@ -113,6 +121,7 @@ pub fn find_plugin_files() -> Vec<PathBuf> {
 /// plugin that crashes here crashes the caller: scan in a process of its own.
 pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
     match PluginFormat::of(path) {
+        PluginFormat::Sampler => Err(HostError(format!("{} is not a plugin", path.display()))),
         PluginFormat::Clap => scan_clap_file(path),
         #[cfg(windows)]
         PluginFormat::Vst3 => scan_vst3_file(path),
@@ -124,6 +133,7 @@ pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
 /// Loads plugin `id` of a file of any format, for the engine's sample rate.
 pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, HostError> {
     match PluginFormat::of(path) {
+        PluginFormat::Sampler => load_sampler(path, sample_rate),
         PluginFormat::Clap => {
             let (loaded, audio) = load_clap(path, id, sample_rate)?;
             Ok((Box::new(loaded), audio))
@@ -144,5 +154,9 @@ mod tests {
         assert_eq!(PluginFormat::of(Path::new("a.clap")), PluginFormat::Clap);
         assert_eq!(PluginFormat::of(Path::new("B.VST3")), PluginFormat::Vst3);
         assert_eq!(PluginFormat::Vst3.name(), "VST3");
+        assert_eq!(
+            PluginFormat::of(Path::new("kick.wav")),
+            PluginFormat::Sampler
+        );
     }
 }

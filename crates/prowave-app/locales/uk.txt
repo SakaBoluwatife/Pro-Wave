@@ -132,7 +132,6 @@ Zoom Out = Зменшити
 Zoom to Fit = Масштабувати за розміром
 Note Colors = Кольори нот
 Snap: = Прив’язка:
-Select a MIDI region to edit its notes = Виберіть MIDI-регіон, щоб редагувати ноти
 Time Quantize (classic) = Квантування часу (класичне)
 Strength = Сила
 Swing = Свінг

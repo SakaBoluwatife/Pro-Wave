@@ -44,6 +44,7 @@ pub fn audio_region(file: AudioFile, ctx: &egui::Context) -> AudioRegion {
         file,
         peaks,
         flex: None,
+        follow_bpm: None,
     }
 }
 

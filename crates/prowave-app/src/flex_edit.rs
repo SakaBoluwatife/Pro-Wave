@@ -138,6 +138,182 @@ struct Render {
     result: Receiver<Result<AudioFile, String>>,
 }
 
+/// A sample shorter than this is a hit, not a loop, and keeps its speed.
+const MIN_LOOP_SECONDS: f64 = 1.5;
+/// Below this the tempo heard in a sample is not to be trusted.
+const MIN_TEMPO_CONFIDENCE: f64 = 0.3;
+
+struct Detection {
+    track: usize,
+    region: usize,
+    path: PathBuf,
+    result: Receiver<Option<f64>>,
+}
+
+/// The tempo in a sample's name, as packs write it: `Loop_128bpm`, `Beat 90 BPM`, `Drums_140_Am`.
+/// A number with `bpm` beside it counts wherever it is; a bare one only in the usual range.
+pub fn bpm_from_name(name: &str) -> Option<f64> {
+    let lower = name.to_lowercase();
+    let numbers: Vec<(usize, usize, f64)> = {
+        let bytes = lower.as_bytes();
+        let mut found = Vec::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            if bytes[at].is_ascii_digit() {
+                let start = at;
+                while at < bytes.len() && (bytes[at].is_ascii_digit() || bytes[at] == b'.') {
+                    at += 1;
+                }
+                if let Ok(value) = lower[start..at].parse::<f64>() {
+                    found.push((start, at, value));
+                }
+            } else {
+                at += 1;
+            }
+        }
+        found
+    };
+    let in_range = |v: f64| (40.0..=300.0).contains(&v);
+    let marked = numbers.iter().find(|(start, end, value)| {
+        let after = lower[*end..].trim_start_matches([' ', '_', '-']);
+        let before = lower[..*start].trim_end_matches([' ', '_', '-']);
+        in_range(*value) && (after.starts_with("bpm") || before.ends_with("bpm"))
+    });
+    if let Some((_, _, value)) = marked {
+        return Some(*value);
+    }
+    // Bare numbers: on their own between separators, and not a part number like "Kick 01".
+    numbers
+        .iter()
+        .find(|(start, end, value)| {
+            let apart = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+            apart(lower[..*start].chars().last())
+                && apart(lower[*end..].chars().next())
+                && (60.0..=200.0).contains(value)
+        })
+        .map(|(_, _, value)| *value)
+}
+
+/// The tempo that makes a loop of `seconds` a whole number of bars of four, nearest to the tempo
+/// heard: a loop's length says its tempo more exactly than listening does.
+pub fn loop_bpm(seconds: f64, heard: f64) -> f64 {
+    if seconds <= 0.0 {
+        return heard;
+    }
+    let beats = seconds * heard / 60.0;
+    let bars = (beats / 4.0).round().max(1.0);
+    bars * 4.0 * 60.0 / seconds
+}
+
+/// Makes region `r` of track `t`, made at `bpm`, follow the project's tempo from now on.
+pub fn follow_source_tempo(p: &mut Project, t: usize, r: usize, bpm: f64) {
+    let Some(a) = p
+        .tracks
+        .get_mut(t)
+        .and_then(|t| t.regions.get_mut(r))
+        .and_then(|r| r.audio.as_mut())
+    else {
+        return;
+    };
+    a.follow_bpm = Some(bpm);
+    let duration = a
+        .flex
+        .as_ref()
+        .map_or(&a.file, |f| &f.original)
+        .duration_secs();
+    update_follower(p, t, r);
+    // Its length in bars from now on, which a change of tempo does not alter: the user may trim
+    // it, so it is set only here.
+    let Some(region) = p.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+        return;
+    };
+    let start_bar = f64::from(region.start_bar);
+    let start = p.bar_to_beats(start_bar - 1.0);
+    let length = duration * bpm / f64::from(p.tempo_at(start)).max(1.0);
+    let map = p.tempo_map();
+    let end = map.beat_at(map.seconds_at(start) + length);
+    let bars = p.beats_to_bar(end) - (start_bar - 1.0);
+    p.tracks[t].regions[r].len_bars = (bars as f32).max(1.0 / 64.0);
+}
+
+/// Sets the stretch of a region that follows the tempo for the tempo where it starts now. False if
+/// nothing had to change.
+fn update_follower(p: &mut Project, t: usize, r: usize) -> bool {
+    let Some(region) = p.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+        return false;
+    };
+    let Some(a) = region.audio.as_ref() else {
+        return false;
+    };
+    let Some(bpm) = a.follow_bpm else {
+        return false;
+    };
+    let original = a.flex.as_ref().map_or(&a.file, |f| &f.original).clone();
+    let duration = original.duration_secs();
+    let start = p.bar_to_beats(f64::from(region.start_bar) - 1.0);
+    let tempo = f64::from(p.tempo_at(start)).max(1.0);
+    let length = duration * bpm / tempo;
+    let markers = if (length - duration).abs() < 0.001 {
+        Vec::new()
+    } else {
+        vec![
+            WarpPoint { src: 0.0, dst: 0.0 },
+            WarpPoint {
+                src: duration,
+                dst: length,
+            },
+        ]
+    };
+    let same = a.flex.as_ref().is_some_and(|f| {
+        f.markers.len() == markers.len()
+            && f.markers
+                .iter()
+                .zip(&markers)
+                .all(|(x, y)| (x.src - y.src).abs() < 1e-6 && (x.dst - y.dst).abs() < 1e-6)
+    }) || (a.flex.is_none() && markers.is_empty());
+    let region = &mut p.tracks[t].regions[r];
+    if same {
+        return false;
+    }
+    if let Some(a) = region.audio.as_mut() {
+        let flex = a
+            .flex
+            .get_or_insert_with(|| FlexEdit::new(original, FlexMode::Rhythmic));
+        flex.markers = markers;
+    }
+    p.song_rev += 1;
+    true
+}
+
+/// Looks after the regions that follow the tempo: every one is set for the tempo now. Not while
+/// a button is held, so dragging the tempo does not stretch every loop at every value on the way.
+fn update_followers(p: &mut Project) {
+    for t in 0..p.tracks.len() {
+        for r in 0..p.tracks[t].regions.len() {
+            update_follower(p, t, r);
+        }
+    }
+}
+
+fn poll_detections(p: &mut Project, s: &mut UiState) {
+    let mut found = Vec::new();
+    s.flex.detecting.retain(|d| match d.result.try_recv() {
+        Ok(bpm) => {
+            found.push((d.track, d.region, d.path.clone(), bpm));
+            false
+        }
+        Err(TryRecvError::Empty) => true,
+        Err(TryRecvError::Disconnected) => false,
+    });
+    for (t, r, path, bpm) in found {
+        let same = audio_of(p, t, r).is_some_and(|a| a.file.path == path);
+        if let (true, Some(bpm)) = (same, bpm) {
+            follow_source_tempo(p, t, r, bpm);
+            s.status = Some(format!("Follows the project tempo: made at {bpm:.1} BPM"));
+        }
+    }
+}
+
 /// The Flex work running in the background.
 #[derive(Default)]
 pub struct FlexState {
@@ -145,12 +321,59 @@ pub struct FlexState {
     renders: Vec<Render>,
     /// Regions whose edits are to be removed (it needs the context, which the menus lack).
     removals: Vec<(usize, usize)>,
+    /// Clips being listened to for their tempo.
+    detecting: Vec<Detection>,
 }
 
 impl FlexState {
     /// Whether anything is still being worked on.
     pub fn busy(&self) -> bool {
-        !self.tasks.is_empty() || !self.renders.is_empty() || !self.removals.is_empty()
+        !self.tasks.is_empty()
+            || !self.renders.is_empty()
+            || !self.removals.is_empty()
+            || !self.detecting.is_empty()
+    }
+
+    /// Finds the tempo region `r` of track `t` was made at, and makes it follow the project's:
+    /// from the file's name at once, or else by listening to it on a thread. A sample too short to
+    /// be a loop stays as it is.
+    pub fn detect_tempo(&mut self, p: &mut Project, t: usize, r: usize, ctx: &egui::Context) {
+        let Some(a) = audio_of(p, t, r) else { return };
+        let file = a.file.clone();
+        let duration = file.duration_secs();
+        if duration < MIN_LOOP_SECONDS {
+            return;
+        }
+        let from_name = file
+            .path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .and_then(bpm_from_name);
+        if let Some(bpm) = from_name {
+            follow_source_tempo(p, t, r, bpm);
+            return;
+        }
+        let (tx, result) = channel();
+        let path = file.path.clone();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("prowave-tempo-detect".into())
+            .spawn(move || {
+                let found = file.analyze().ok().and_then(|a| a.tempo);
+                let bpm = found
+                    .filter(|t| t.confidence >= MIN_TEMPO_CONFIDENCE)
+                    .map(|t| loop_bpm(duration, t.bpm));
+                let _ = tx.send(bpm);
+                ctx.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.detecting.push(Detection {
+                track: t,
+                region: r,
+                path,
+                result,
+            });
+        }
     }
 
     /// Removes the Flex edits of region `r` of track `t` on the next [`poll`].
@@ -200,6 +423,14 @@ pub fn set_mode(p: &mut Project, t: usize, r: usize, mode: FlexMode) {
 
 /// Removes the Flex edits of a region: it plays its recording again.
 pub fn remove(p: &mut Project, t: usize, r: usize, ctx: &egui::Context) {
+    if let Some(a) = p
+        .tracks
+        .get_mut(t)
+        .and_then(|t| t.regions.get_mut(r))
+        .and_then(|r| r.audio.as_mut())
+    {
+        a.follow_bpm = None;
+    }
     let Some(a) = p
         .tracks
         .get_mut(t)
@@ -442,6 +673,10 @@ pub fn poll(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         remove(p, t, r, ctx);
     }
     poll_tasks(p, s);
+    poll_detections(p, s);
+    if !ctx.input(|i| i.pointer.any_down()) {
+        update_followers(p);
+    }
     start_renders(p, s);
     poll_renders(ctx, p, s);
     if s.flex.busy() {
@@ -1027,5 +1262,113 @@ mod tests {
         settle(&mut q, &mut s);
         assert!(q.tracks[t].regions.is_empty());
         settle(&mut p, &mut s);
+    }
+
+    #[test]
+    fn the_tempo_in_a_name_is_found_and_part_numbers_are_not_taken_for_one() {
+        for (name, bpm) in [
+            ("Loop_128bpm", Some(128.0)),
+            ("Beat 90 BPM", Some(90.0)),
+            ("BPM 140 drums", Some(140.0)),
+            ("Drums_140_Am", Some(140.0)),
+            ("Pad 174.5 bpm long", Some(174.5)),
+            ("Kick 01", None),
+            ("Snare_12", None),
+            ("808 Bass", None),
+            ("Vocal", None),
+            ("take2", None),
+            ("Loop 999 bpm", None),
+        ] {
+            assert_eq!(bpm_from_name(name), bpm, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_loops_length_corrects_the_tempo_heard() {
+        // Two bars at 120 BPM last 4 seconds; a little off, it still comes out 120.
+        assert!((loop_bpm(4.0, 121.7) - 120.0).abs() < 1e-9);
+        assert!((loop_bpm(8.0, 118.0) - 120.0).abs() < 1e-9);
+        assert_eq!(loop_bpm(0.0, 100.0), 100.0);
+    }
+
+    fn loop_project(seconds: f64) -> (Project, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("Drums_120_Am.wav");
+        let frames = (seconds * 48_000.0) as usize;
+        prowave_engine::write_wav(&wav, &vec![0.1; frames * 2], 48_000).unwrap();
+        let mut p = Project::empty();
+        let ctx = egui::Context::default();
+        crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).unwrap();
+        (p, dir)
+    }
+
+    #[test]
+    fn a_loop_follows_the_tempo_and_a_hit_stays_as_it_is() {
+        let (mut p, _dir) = loop_project(4.0);
+        let t = p.tracks.len() - 1;
+        let ctx = egui::Context::default();
+        p.tempo = 120.0;
+        let mut s = UiState::new();
+        s.flex.detect_tempo(&mut p, t, 0, &ctx);
+        let audio = p.tracks[t].regions[0].audio.as_ref().unwrap();
+        assert_eq!(audio.follow_bpm, Some(120.0), "from its name");
+        assert!(
+            audio.flex.is_none(),
+            "at its own tempo it needs no stretching"
+        );
+        let bars = p.tracks[t].regions[0].len_bars;
+        assert!((bars - 2.0).abs() < 0.01, "{bars}");
+
+        // Twice the tempo: half as long in seconds, the same two bars.
+        p.tempo = 240.0;
+        update_followers(&mut p);
+        let region = &p.tracks[t].regions[0];
+        let flex = region.audio.as_ref().unwrap().flex.as_ref().unwrap();
+        assert_eq!(flex.mode, FlexMode::Rhythmic);
+        let end = flex.markers.last().unwrap();
+        assert!((end.src - 4.0).abs() < 1e-6 && (end.dst - 2.0).abs() < 1e-6);
+        assert!((region.len_bars - 2.0).abs() < 0.01, "{}", region.len_bars);
+        // Nothing new at the same tempo, so nothing is rendered again.
+        let rev = p.song_rev;
+        update_followers(&mut p);
+        assert_eq!(p.song_rev, rev);
+
+        // Back to where it was made: it plays the file itself again.
+        p.tempo = 120.0;
+        update_followers(&mut p);
+        let flex = p.tracks[t].regions[0]
+            .audio
+            .as_ref()
+            .unwrap()
+            .flex
+            .as_ref()
+            .unwrap();
+        assert!(flex.is_neutral());
+
+        // A loop the user trimmed stays trimmed, through a change of tempo too.
+        p.tracks[t].regions[0].len_bars = 1.0;
+        update_followers(&mut p);
+        p.tempo = 90.0;
+        update_followers(&mut p);
+        assert_eq!(p.tracks[t].regions[0].len_bars, 1.0);
+
+        // Made at 120 and dropped in a song at 60: twice as long in seconds, the same two bars.
+        let (mut slow, _dir3) = loop_project(4.0);
+        let t3 = slow.tracks.len() - 1;
+        slow.tempo = 60.0;
+        follow_source_tempo(&mut slow, t3, 0, 120.0);
+        let bars = slow.tracks[t3].regions[0].len_bars;
+        assert!((bars - 2.0).abs() < 0.01, "{bars}");
+
+        // A hit is too short to be a loop.
+        let (mut p, _dir2) = loop_project(0.5);
+        let t = p.tracks.len() - 1;
+        let mut s = UiState::new();
+        s.flex.detect_tempo(&mut p, t, 0, &ctx);
+        assert_eq!(
+            p.tracks[t].regions[0].audio.as_ref().unwrap().follow_bpm,
+            None
+        );
+        assert!(s.flex.detecting.is_empty());
     }
 }

@@ -43,6 +43,7 @@ mod project_io;
 mod recent_files;
 mod recorder;
 mod sample_browser;
+mod sample_place;
 mod score;
 mod scripter;
 mod side_panes;
@@ -59,6 +60,7 @@ mod tracks_area;
 mod transform;
 mod transform_ui;
 mod transport;
+mod typing;
 mod ui_scale;
 #[cfg(test)]
 mod ui_test;
@@ -137,6 +139,11 @@ pub struct UiState {
     pub piano_focus: bool,
     /// Live notes from the Piano Roll, forwarded to the engine every frame.
     pub audition: Vec<piano_roll::Audition>,
+    /// A sample let go over the Tracks area, waiting for what it should become.
+    pub sample_drop: Option<sample_place::SampleDrop>,
+    /// The computer keyboard as a piano, and what it played this frame.
+    pub typing: typing::Typing,
+    pub typed: Vec<recorder::LiveNote>,
     /// File menu command picked this frame; run by `App` once the panels are drawn.
     pub file_cmd: Option<file_commands::FileCmd>,
     /// A New / Open waiting for the answer to the "save changes?" prompt.
@@ -205,6 +212,9 @@ impl UiState {
             midi_cmd: None,
             piano_focus: false,
             audition: Vec::new(),
+            sample_drop: None,
+            typing: typing::Typing::default(),
+            typed: Vec::new(),
             file_cmd: None,
             ask_save: None,
             ask_revert: false,
@@ -313,8 +323,15 @@ impl App {
             self.ui.status = Some(i18n::trf("not an audio file: {}", &[&path.display()]));
             return;
         }
-        if let Err(e) = import::import_audio(&mut self.project, path, ctx) {
-            self.ui.status = Some(i18n::trf("cannot import {}: {}", &[&path.display(), &e]));
+        match import::import_audio(&mut self.project, path, ctx) {
+            Ok(()) => {
+                // A loop follows the project's tempo.
+                let t = self.project.tracks.len().saturating_sub(1);
+                self.ui.flex.detect_tempo(&mut self.project, t, 0, ctx);
+            }
+            Err(e) => {
+                self.ui.status = Some(i18n::trf("cannot import {}: {}", &[&path.display(), &e]));
+            }
         }
     }
 }
@@ -389,7 +406,8 @@ impl App {
     /// MIDI keyboard notes: play them on the selected instrument and, while recording, put
     /// them into the new region.
     fn play_and_record_midi(&mut self, ctx: &egui::Context) {
-        let mut input = Vec::new();
+        // What was typed on the computer keyboard goes the way a MIDI keyboard's notes do.
+        let mut input = std::mem::take(&mut self.ui.typed);
         if let Some(midi) = self.midi.as_mut() {
             midi.poll(&mut input);
         }
@@ -411,8 +429,11 @@ impl App {
                     track: track.min(usize::from(u16::MAX)) as u16,
                 },
                 recorder::LiveNote::Off { pitch } => piano_roll::Audition::Off { pitch },
-                // The engine has no sustain pedal yet: it is only recorded.
-                recorder::LiveNote::Sustain { .. } => continue,
+                recorder::LiveNote::Sustain { val } => piano_roll::Audition::Control {
+                    track: track.min(usize::from(u16::MAX)) as u16,
+                    number: 64,
+                    value: val,
+                },
             });
         }
         // Record on an audio track is the audio recorder's (see `record_audio`).
@@ -520,6 +541,18 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Before anything else looks at the keys: while it is on, the note keys are its own.
+        let mut typed = std::mem::take(&mut self.ui.typed);
+        self.ui.typing.poll(&ctx, &mut typed);
+        self.ui.typed = typed;
+        // F7 as in FL Studio.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F7)) {
+            self.ui.bottom = if self.ui.bottom == Bottom::PianoRoll {
+                Bottom::Mixer
+            } else {
+                Bottom::PianoRoll
+            };
+        }
         let _frame_time = bench::frame_timer();
         let dt = ctx.input(|i| i.stable_dt) as f64;
         ui_scale::apply(&ctx, self.ui.ui_scale);
@@ -676,6 +709,7 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| tracks_area::show(ui, p, s, &meters));
+        sample_place::menu(ui, p, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
@@ -715,6 +749,15 @@ impl eframe::App for App {
                     piano_roll::Audition::Off { pitch } => {
                         Some(prowave_engine::Command::NoteOff { pitch })
                     }
+                    piano_roll::Audition::Control {
+                        track,
+                        number,
+                        value,
+                    } => Some(prowave_engine::Command::LiveControl {
+                        track,
+                        number,
+                        value,
+                    }),
                 };
                 if cmd.is_some_and(|cmd| !sync.engine.send(cmd)) {
                     break;

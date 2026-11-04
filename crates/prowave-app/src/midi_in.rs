@@ -1,4 +1,4 @@
-//! MIDI keyboard input: connects to the first MIDI input port (not the system's "Through"
+//! MIDI keyboard input: connects to every MIDI input port (not the system's "Through"
 //! port) and turns its note messages into [`LiveNote`]s for the app to play and record.
 //! Without a MIDI device nothing happens; the app looks again every few seconds.
 
@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 const RESCAN: Duration = Duration::from_secs(3);
 
 pub struct MidiIn {
-    connection: Option<MidiInputConnection<()>>,
-    port: Option<String>,
+    /// Every input open now, by name.
+    connections: Vec<(String, MidiInputConnection<()>)>,
+    /// Inputs that would not open, so the log says so once.
+    refused: Vec<String>,
     /// A port another input uses (MIDI Time Code): this one leaves it alone, since some systems
     /// let only one program or connection open a port.
     avoided: Option<String>,
@@ -46,8 +48,8 @@ impl MidiIn {
         // Bounded: a device that floods the port cannot fill the memory.
         let (tx, rx) = sync_channel(4096);
         let mut midi = Self {
-            connection: None,
-            port: None,
+            connections: Vec::new(),
+            refused: Vec::new(),
             avoided: None,
             tx,
             rx,
@@ -57,12 +59,6 @@ impl MidiIn {
         midi
     }
 
-    /// The name of the connected keyboard.
-    #[allow(dead_code)]
-    pub fn port_name(&self) -> Option<&str> {
-        self.port.as_deref()
-    }
-
     /// Keeps away from the port named `name` (or stops doing so with `None`): a connection to
     /// it is closed, and the keyboard is looked for on the other ports.
     pub fn avoid(&mut self, name: Option<&str>) {
@@ -70,26 +66,47 @@ impl MidiIn {
             return;
         }
         self.avoided = name.map(str::to_string);
-        if self.port.is_some() && self.port == self.avoided {
-            self.connection = None;
-            self.port = None;
+        if let Some(name) = name {
+            self.connections.retain(|(open, _)| open != name);
         }
         // Look again at once: the port that was avoided may be the keyboard.
         self.last_try = None;
     }
 
+    /// Opens every input not open yet, closes those that are gone. A keyboard is not always the
+    /// first port: drivers and other programs make ports of their own.
     fn connect(&mut self) {
         self.last_try = Some(Instant::now());
         let Ok(input) = MidiInput::new("Pro Wave") else {
             return;
         };
+        let names: Vec<String> = input
+            .ports()
+            .iter()
+            .filter_map(|port| input.port_name(port).ok())
+            .collect();
+        self.connections
+            .retain(|(open, _)| names.iter().any(|n| n == open));
+        for name in names {
+            let wanted = !name.to_lowercase().contains("through")
+                && self.avoided.as_deref() != Some(&name)
+                && !self.connections.iter().any(|(open, _)| *open == name);
+            if wanted {
+                self.open(name);
+            }
+        }
+    }
+
+    fn open(&mut self, name: String) {
+        // A connection takes the input object with it, so each gets its own.
+        let Ok(input) = MidiInput::new("Pro Wave") else {
+            return;
+        };
         let ports = input.ports();
-        let picked = ports.iter().find_map(|port| {
-            let name = input.port_name(port).ok()?;
-            (!name.to_lowercase().contains("through") && self.avoided.as_deref() != Some(&name))
-                .then_some((port, name))
-        });
-        let Some((port, name)) = picked else {
+        let Some(port) = ports
+            .iter()
+            .find(|port| input.port_name(port).ok().as_deref() == Some(&name))
+        else {
             return;
         };
         let tx = self.tx.clone();
@@ -105,16 +122,22 @@ impl MidiIn {
         ) {
             Ok(connection) => {
                 tracing::info!("MIDI input: {name}");
-                self.connection = Some(connection);
-                self.port = Some(name);
+                self.refused.retain(|r| *r != name);
+                self.connections.push((name, connection));
             }
-            Err(e) => tracing::warn!("cannot open MIDI input {name}: {e}"),
+            Err(e) => {
+                // On Windows another program holding the port is the usual reason.
+                if !self.refused.contains(&name) {
+                    tracing::warn!("cannot open MIDI input {name}: {e}");
+                    self.refused.push(name);
+                }
+            }
         }
     }
 
     /// Appends the notes played since the last call to `out`.
     pub fn poll(&mut self, out: &mut Vec<LiveNote>) {
-        if self.connection.is_none() && self.last_try.is_none_or(|t| t.elapsed() >= RESCAN) {
+        if self.last_try.is_none_or(|t| t.elapsed() >= RESCAN) {
             self.connect();
         }
         while let Ok(note) = self.rx.try_recv() {

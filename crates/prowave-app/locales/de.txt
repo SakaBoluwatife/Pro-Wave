@@ -132,7 +132,6 @@ Zoom Out = Auszoomen
 Zoom to Fit = Passend zoomen
 Note Colors = Notenfarben
 Snap: = Einrasten:
-Select a MIDI region to edit its notes = Wähle eine MIDI-Region, um ihre Noten zu bearbeiten
 Time Quantize (classic) = Zeitquantisierung (klassisch)
 Strength = Stärke
 Swing = Swing

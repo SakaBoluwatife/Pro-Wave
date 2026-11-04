@@ -132,7 +132,6 @@ Zoom Out = Perkecil
 Zoom to Fit = Sesuaikan Ukuran
 Note Colors = Warna Nada
 Snap: = Snap:
-Select a MIDI region to edit its notes = Pilih region MIDI untuk mengedit nadanya
 Time Quantize (classic) = Kuantisasi Waktu (klasik)
 Strength = Kekuatan
 Swing = Swing

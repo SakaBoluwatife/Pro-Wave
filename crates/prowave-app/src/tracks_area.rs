@@ -2460,11 +2460,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     v.selected = Some((row, ri));
                 }
             }
+            // On an instrument track: an empty region, ready to draw in.
+            let midi_row = row_at(&rows, pt.y - lanes.top() + scroll_y)
+                .filter(|row| matches!(p.tracks[*row].kind, TrackKind::Instrument));
+            if let Some(row) = midi_row {
+                let bar = p.beats_to_bar(beat_of(pt.x)).floor() as f32 + 1.0;
+                if let Some(ri) = p.add_midi_region(row, bar) {
+                    p.selected_track = row;
+                    v.selected = Some((row, ri));
+                    s.bottom = Bottom::PianoRoll;
+                }
+            }
         }
     }
     // A sample dragged from the Browser: a line where it will start (the bar under the pointer),
-    // and when it is let go over the lanes it goes there, on the audio track under the pointer
-    // or on a new one (a MIDI file is imported as tracks).
+    // and when it is let go over the lanes the user is asked what it should become (a MIDI file
+    // is imported as tracks).
     if let Some(drag) = egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx()) {
         let over = ui
             .input(|i| i.pointer.hover_pos())
@@ -2482,15 +2493,13 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 if crate::midi_file::is_midi_path(path) {
                     s.open_paths.push(path.clone());
                 } else {
-                    let row = row_at(&rows, pt.y - lanes.top() + scroll_y);
-                    if let Err(e) =
-                        crate::import::import_audio_at(p, path, ui.ctx(), bar0 + 1.0, row)
-                    {
-                        s.status = Some(crate::i18n::trf(
-                            "cannot import {}: {}",
-                            &[&path.display(), &e],
-                        ));
-                    }
+                    // An audio clip, or something to play? The user says.
+                    s.sample_drop = Some(crate::sample_place::SampleDrop {
+                        path: path.clone(),
+                        at: pt,
+                        bar: bar0 + 1.0,
+                        track: row_at(&rows, pt.y - lanes.top() + scroll_y),
+                    });
                 }
             }
         }

@@ -121,6 +121,8 @@ pub struct RegionDoc {
     pub drummer: Option<DrummerDoc>,
     /// Flex Time and Flex Pitch edits of an audio region (`audio` is then the recording).
     pub flex: Option<FlexDoc>,
+    /// The tempo the audio was made at, when it follows the project's.
+    pub follow_bpm: Option<f64>,
 }
 
 /// The Flex edit of an audio region.

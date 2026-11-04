@@ -132,7 +132,6 @@ Zoom Out = Reduzir
 Zoom to Fit = Ajustar à tela
 Note Colors = Cores das notas
 Snap: = Encaixar:
-Select a MIDI region to edit its notes = Selecione uma região MIDI para editar as notas
 Time Quantize (classic) = Quantização de tempo (clássica)
 Strength = Intensidade
 Swing = Swing

@@ -478,6 +478,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                             })
                             .clone()
                     }),
+                    follow_bpm: r.audio.as_ref().and_then(|a| a.follow_bpm),
                     flex: r.audio.as_ref().and_then(|a| a.flex.as_ref()).map(|f| {
                         prowave_project::FlexDoc {
                             mode: f.mode.name().into(),
@@ -662,6 +663,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                     match file {
                         Some(f) => {
                             let mut a = audio_region(f.clone(), ctx);
+                            a.follow_bpm = r.follow_bpm.filter(|b| b.is_finite() && *b > 0.0);
                             a.flex = r.flex.as_ref().map(|d| flex_from_doc(d, f.clone()));
                             Some(a)
                         }

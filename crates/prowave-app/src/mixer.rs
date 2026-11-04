@@ -775,6 +775,19 @@ enum InsertAct {
     Move(isize),
 }
 
+/// The menu of a slot: it opens on either button.
+fn slot_menu(resp: &egui::Response) -> egui::Popup<'_> {
+    let either = resp.clicked() || resp.secondary_clicked();
+    egui::Popup::menu(resp).open_memory(either.then_some(egui::SetOpenCommand::Toggle))
+}
+
+/// Delete, with the pointer on a slot, for what is in it.
+fn delete_pressed(ui: &Ui, resp: &egui::Response) -> bool {
+    resp.hovered()
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+}
+
 /// One Audio FX slot of track `i`: the effect in it (blue, grey when bypassed or silenced),
 /// or the empty slot after the last. Click for the menu, double-click for the effect's window.
 #[allow(clippy::too_many_arguments)]
@@ -816,8 +829,9 @@ fn insert_slot(
     if have.is_some() && resp.double_clicked() {
         v.fx_window = Some((i, k));
     }
-    let mut act = None;
-    egui::Popup::menu(&resp).show(|ui| {
+    let mut act = (have.is_some() && delete_pressed(ui, &resp)).then_some(InsertAct::Remove);
+    // The left button opens the menu, and so does the right, as anywhere else.
+    let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         if let Some(fx) = have {
             if ui.button(tr("Open")).clicked() {
@@ -861,7 +875,8 @@ fn insert_slot(
                 }
             }
         }
-    });
+    };
+    slot_menu(&resp).show(&mut items);
     if let Some(act) = act {
         apply_insert(p, v, i, k, act);
     }
@@ -900,10 +915,10 @@ fn plugin_slot(
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(hover);
     let mut moved = None;
-    let mut remove = false;
+    let mut remove = delete_pressed(ui, &resp);
     let mut flip_bypass = false;
     let mut open = loaded && resp.double_clicked();
-    egui::Popup::menu(&resp).show(|ui| {
+    let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
             if ui.button(tr("Open")).clicked() {
@@ -932,7 +947,8 @@ fn plugin_slot(
             remove = true;
             ui.close();
         }
-    });
+    };
+    slot_menu(&resp).show(&mut items);
     if open {
         v.open_plugin = Some((plugin_uid, name));
     }
@@ -976,8 +992,8 @@ fn instrument_plugin_slot(
         .interact(r, uid, Sense::click())
         .on_hover_text_at_pointer(hover);
     let mut open = loaded && resp.double_clicked();
-    let mut remove = false;
-    egui::Popup::menu(&resp).show(|ui| {
+    let mut remove = delete_pressed(ui, &resp);
+    let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
             if ui.button(tr("Open")).clicked() {
@@ -990,7 +1006,8 @@ fn instrument_plugin_slot(
             remove = true;
             ui.close();
         }
-    });
+    };
+    slot_menu(&resp).show(&mut items);
     if open {
         v.open_plugin = Some((plugin.uid, plugin.name));
     }
@@ -2489,5 +2506,80 @@ mod tests {
             !strip_visible(TrackKind::Folder, &all),
             "a folder has no channel strip"
         );
+    }
+
+    /// The whole way a user goes: press the slot, press Remove in the menu that opens.
+    fn remove_through_the_menu(
+        p: &mut Project,
+        use_right_button: bool,
+        draw: impl Fn(&mut Ui, &mut Project, &mut MixerView, Rect),
+        count: impl Fn(&Project) -> usize,
+    ) -> bool {
+        let mut h = crate::ui_test::Harness::new(500.0, 500.0);
+        let mut v = MixerView::default();
+        let slot_r = Rect::from_min_size(pos2(50.0, 40.0), vec2(120.0, 15.0));
+        let before = count(p);
+        let button = if use_right_button {
+            egui::PointerButton::Secondary
+        } else {
+            egui::PointerButton::Primary
+        };
+        // The menu's Remove is below the slot; where exactly depends on the fonts.
+        for offset in (6..240).step_by(6) {
+            h.settle(|ui| draw(ui, p, &mut v, slot_r));
+            let centre = slot_r.center();
+            h.press(centre, button, |ui| draw(ui, p, &mut v, slot_r));
+            h.release(centre, button, |ui| draw(ui, p, &mut v, slot_r));
+            h.settle(|ui| draw(ui, p, &mut v, slot_r));
+            let at = pos2(centre.x + 10.0, slot_r.bottom() + offset as f32);
+            h.click(at, |ui| draw(ui, p, &mut v, slot_r));
+            h.settle(|ui| draw(ui, p, &mut v, slot_r));
+            if count(p) < before {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn inserts_can_be_removed_from_their_menu_with_either_button() {
+        for right in [false, true] {
+            let mut p = mixer_project();
+            p.tracks[0].plugins.clear();
+            p.tracks[0].inserts = vec![Insert::new(FxKind::Chorus)];
+            let removed = remove_through_the_menu(
+                &mut p,
+                right,
+                |ui, p, v, r| {
+                    let g = ui.painter().clone();
+                    insert_slot(ui, &g, r, p, v, 0, 0, egui::Id::unique("slot"), false);
+                },
+                |p| p.tracks[0].inserts.len(),
+            );
+            assert!(removed, "a built-in effect, right button {right}");
+
+            let mut p = mixer_project();
+            p.tracks[0].inserts.clear();
+            p.tracks[0].plugins =
+                vec![crate::model::PluginInsert::new(&prowave_host::PluginInfo {
+                    id: "x".into(),
+                    name: "Plug".into(),
+                    vendor: "Maker".into(),
+                    version: "1".into(),
+                    format: prowave_host::PluginFormat::Clap,
+                    path: "x.clap".into(),
+                    is_instrument: false,
+                })];
+            let removed = remove_through_the_menu(
+                &mut p,
+                right,
+                |ui, p, v, r| {
+                    let g = ui.painter().clone();
+                    insert_slot(ui, &g, r, p, v, 0, 0, egui::Id::unique("slot"), false);
+                },
+                |p| p.tracks[0].plugins.len(),
+            );
+            assert!(removed, "a hosted plugin, right button {right}");
+        }
     }
 }

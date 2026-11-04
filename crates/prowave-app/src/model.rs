@@ -552,6 +552,9 @@ pub struct AudioRegion {
     pub peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
     /// Flex Time and Flex Pitch: when set, `file` is the sound made from this edit.
     pub flex: Option<crate::flex_edit::FlexEdit>,
+    /// The tempo the audio was made at, when it stretches to follow the project's. A hit or a
+    /// recording has none and stays as it is.
+    pub follow_bpm: Option<f64>,
 }
 
 /// A hosted plugin on a channel strip: what the project knows of it. The running instance is kept
@@ -1511,6 +1514,27 @@ impl Project {
     /// Adds a Pattern or Drummer region of 4 bars to track `ti`, starting at the bar `at_bar`
     /// (1-based), with the notes its settings make. Returns its index; `None` for a track that
     /// holds no MIDI regions.
+    /// An empty MIDI region on track `ti`, four bars from `at_bar`. Returns its number.
+    pub fn add_midi_region(&mut self, ti: usize, at_bar: f32) -> Option<usize> {
+        let track = self.tracks.get_mut(ti)?;
+        if !matches!(track.kind, TrackKind::Instrument | TrackKind::ExternalMidi) {
+            return None;
+        }
+        track.regions.push(Region {
+            name: track.name.clone(),
+            start_bar: at_bar.max(1.0),
+            len_bars: 4.0,
+            notes: Vec::new(),
+            controls: Vec::new(),
+            folder: None,
+            generated: None,
+            audio: None,
+            params: RegionParams::default(),
+        });
+        self.song_rev += 1;
+        Some(self.tracks[ti].regions.len() - 1)
+    }
+
     pub fn add_generated_region(&mut self, ti: usize, drummer: bool, at_bar: f32) -> Option<usize> {
         let track = self.tracks.get_mut(ti)?;
         if !track.kind.has_regions() || track.kind == TrackKind::Audio {
@@ -2322,6 +2346,7 @@ mod tests {
             file: prowave_engine::AudioFile::open(dir.join("tone.caf")).unwrap(),
             peaks: Default::default(),
             flex: None,
+            follow_bpm: None,
         }
     }
 

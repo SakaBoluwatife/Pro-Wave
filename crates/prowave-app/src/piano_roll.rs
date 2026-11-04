@@ -60,8 +60,20 @@ fn region_bar_color(c: Color32) -> Color32 {
 /// Live notes the Piano Roll wants to play; `main` forwards them to the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audition {
-    On { pitch: u8, vel: u8, track: u16 },
-    Off { pitch: u8 },
+    On {
+        pitch: u8,
+        vel: u8,
+        track: u16,
+    },
+    Off {
+        pitch: u8,
+    },
+    /// A controller (a sustain pedal) for the instrument of `track`.
+    Control {
+        track: u16,
+        number: u8,
+        value: u8,
+    },
 }
 
 /// The tools, as in FL Studio's piano roll, with their keys.
@@ -177,6 +189,8 @@ pub struct PianoView {
     centered_for: Option<(usize, usize)>,
     /// Edits waiting for the mouse to be released before the engine song is rebuilt.
     dirty: bool,
+    /// Show the notes of the other regions behind this one's (Alt+V).
+    ghosts: bool,
     /// Where the note grid was last drawn.
     last_grid: Rect,
 }
@@ -205,9 +219,23 @@ impl Default for PianoView {
             drag: Drag::None,
             centered_for: None,
             dirty: false,
+            ghosts: false,
             last_grid: Rect::NOTHING,
         }
     }
+}
+
+/// Every note of the MIDI regions other than region `ri` of track `ti`, with where it is.
+fn ghost_notes(p: &Project, ti: usize, ri: usize) -> Vec<(usize, usize, Note)> {
+    let mut all = Vec::new();
+    for (t, track) in p.tracks.iter().enumerate() {
+        for (r, region) in track.regions.iter().enumerate() {
+            if (t, r) != (ti, ri) && region.audio.is_none() {
+                all.extend(region.notes.iter().map(|n| (t, r, *n)));
+            }
+        }
+    }
+    all
 }
 
 /// Starts, switches or stops the audition note; `pitch = None` releases.
@@ -348,6 +376,9 @@ struct Actions {
     can_undo: bool,
     can_redo: bool,
     undo: Option<crate::undo::UndoCmd>,
+    /// The computer keyboard plays notes, and its button was pressed.
+    typing_on: bool,
+    toggle_typing: bool,
 }
 
 fn toolbar(
@@ -509,6 +540,25 @@ fn toolbar(
         }
     }
 
+    // Type to MIDI and ghost notes.
+    let extras_x = x + Tool::ALL.len() as f32 * 28.0 + 8.0;
+    let typing_r = Rect::from_min_size(pos2(extras_x, cy - 10.0), vec2(52.0, 20.0));
+    if toggle_button(ui, &g, typing_r, uid("typing"), "Keys", act.typing_on)
+        .on_hover_text(
+            "Play notes on the computer keyboard (Ctrl+K). Numpad + and - change the octave.",
+        )
+        .clicked()
+    {
+        act.toggle_typing = true;
+    }
+    let ghost_r = Rect::from_min_size(pos2(extras_x + 56.0, cy - 10.0), vec2(52.0, 20.0));
+    if toggle_button(ui, &g, ghost_r, uid("ghosts"), "Ghost", v.ghosts)
+        .on_hover_text("Show the notes of the other regions behind these (Alt+V)")
+        .clicked()
+    {
+        v.ghosts = !v.ghosts;
+    }
+
     // Right side: zoom sliders, then Snap.
     let (lo, hi) = (12f32.ln(), 400f32.ln());
     let hz = Rect::from_min_size(pos2(bar.right() - 76.0, cy - 6.0), vec2(64.0, 12.0));
@@ -538,6 +588,39 @@ fn toolbar(
         FontId::proportional(12.5),
         TEXT_DIM,
     );
+}
+
+/// A small button that stays lit while its setting is on.
+fn toggle_button(
+    ui: &Ui,
+    g: &Painter,
+    r: Rect,
+    id: egui::Id,
+    label: &str,
+    on: bool,
+) -> egui::Response {
+    let resp = ui.interact(r, id, Sense::click());
+    if on {
+        g.rect_filled(r, 4.0, BLUE);
+    } else {
+        g.rect_filled(
+            r,
+            4.0,
+            if resp.hovered() {
+                Color32::from_white_alpha(14)
+            } else {
+                BTN_BG
+            },
+        );
+    }
+    g.text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(11.0),
+        if on { Color32::WHITE } else { TEXT },
+    );
+    resp
 }
 
 fn small_q(ui: &Ui, g: &Painter, r: Rect, key: &str, enabled: bool) -> bool {
@@ -572,6 +655,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let g = ui.painter_at(area);
     g.rect_filled(area, 0.0, PANEL_BG);
     let tab_bar = Rect::from_min_size(area.min, vec2(area.width(), TAB_H));
+    // An instrument track with nothing on it gets a region, so there is always a grid to draw on.
+    if target_region(p, s).is_none() {
+        let ti = p.selected_track;
+        let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+        if let Some(ri) = p.add_midi_region(ti, bar) {
+            s.tracks.selected = Some((ti, ri));
+        }
+    }
     let region = target_region(p, s);
     // A Pattern or Drummer region has its own editor.
     let generated = region.and_then(|(t, r)| {
@@ -628,9 +719,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         can_undo: s.can_undo,
         can_redo: s.can_redo,
         undo: None,
+        typing_on: s.typing.on,
+        toggle_typing: false,
     };
     let mut snap = s.tracks.snap;
     toolbar(ui, bar, &mut s.piano, has_sel, &mut snap, &mut act);
+    if act.toggle_typing {
+        s.typing.on = !s.typing.on;
+    }
+    let typing_on = s.typing.on;
     s.tracks.snap = snap;
     if let Some(preset) = act.transform {
         s.transform.open_with(preset);
@@ -640,13 +737,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
 
     let Some((ti, ri)) = region else {
+        // An audio track has no notes. One click makes a track that does.
         g.text(
-            body.center(),
+            body.center() - vec2(0.0, 18.0),
             Align2::CENTER_CENTER,
-            tr("Select a MIDI region to edit its notes"),
+            "This track holds audio. Notes go on an instrument track.",
             FontId::proportional(13.0),
             TEXT_DIM,
         );
+        let button = Rect::from_center_size(body.center() + vec2(0.0, 10.0), vec2(190.0, 24.0));
+        if ui
+            .put(button, egui::Button::new("New instrument track"))
+            .clicked()
+        {
+            let ti = p.add_track(TrackKind::Instrument);
+            let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+            if let Some(ri) = p.add_midi_region(ti, bar) {
+                s.tracks.selected = Some((ti, ri));
+            }
+        }
         return;
     };
     // A take folder's notes are its comp: they are edited after it is flattened.
@@ -1248,17 +1357,23 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         });
         let (ctrl, shift, alt) = (m.command, m.shift, m.alt);
         let plain = !ctrl && !shift && !alt;
+        // While the keyboard plays notes, Shift picks the tools.
+        let tool_key = plain || (typing_on && shift && !ctrl && !alt);
         for key in pressed {
             let targets = targets_now(&v.selected, notes.len());
             let mut edited = true;
             match key {
-                Key::P if plain => v.tool = Tool::Draw,
-                Key::B if plain => v.tool = Tool::Paint,
-                Key::D if plain => v.tool = Tool::Delete,
-                Key::T if plain => v.tool = Tool::Mute,
-                Key::C if plain => v.tool = Tool::Slice,
-                Key::E if plain => v.tool = Tool::Select,
+                Key::P if tool_key => v.tool = Tool::Draw,
+                Key::B if tool_key => v.tool = Tool::Paint,
+                Key::D if tool_key => v.tool = Tool::Delete,
+                Key::T if tool_key => v.tool = Tool::Mute,
+                Key::C if tool_key => v.tool = Tool::Slice,
+                Key::E if tool_key => v.tool = Tool::Select,
                 Key::Escape => v.selected.clear(),
+                Key::V if alt => {
+                    v.ghosts = !v.ghosts;
+                    edited = false;
+                }
                 Key::Delete | Key::Backspace => act.delete = true,
                 Key::A if ctrl => act.select_all = true,
                 Key::D if ctrl => v.selected.clear(),
@@ -1644,6 +1759,19 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 FontId::proportional(9.5),
                 Color32::from_gray(0x30),
             );
+        }
+    }
+    if v.ghosts {
+        for (t, r_at, n) in ghost_notes(p, ti, ri) {
+            let start =
+                (p.region_start_beats(&p.tracks[t].regions[r_at]) - origin) as f32 + n.start;
+            let r = Rect::from_min_size(
+                pos2(x_of(start), y_of(n.pitch as i32) + 1.0),
+                vec2((n.len * beat_px).max(3.0), key_h - 2.0),
+            );
+            if r.right() >= grid.left() && r.left() <= grid.right() {
+                gg.rect_filled(r, 2.0, Color32::from_white_alpha(26));
+            }
         }
     }
     for (i, n) in notes.iter().enumerate() {
@@ -2168,5 +2296,55 @@ mod tests {
         let doc = crate::project_io::to_doc(&r.p).0;
         assert!(doc.tracks[r.t].regions[0].notes[0].muted);
         assert!(!doc.tracks[r.t].regions[0].notes[1].muted);
+    }
+
+    #[test]
+    fn an_empty_instrument_track_gets_a_region_to_draw_in_and_an_audio_track_offers_one() {
+        let mut p = Project::empty();
+        let keys = p.add_track(TrackKind::Instrument);
+        let mut s = UiState::new();
+        let mut h = Harness::new(1400.0, 800.0);
+        h.settle(|ui| show(ui, &mut p, &mut s));
+        assert_eq!(p.tracks[keys].regions.len(), 1, "opened on an empty track");
+        assert!(target_region(&p, &s).is_some());
+        h.settle(|ui| show(ui, &mut p, &mut s));
+        assert_eq!(p.tracks[keys].regions.len(), 1, "only the one");
+
+        // On an audio track nothing is made, but a click makes an instrument track.
+        let audio = p.add_track(TrackKind::Audio);
+        s.tracks.selected = None;
+        p.selected_track = audio;
+        let tracks = p.tracks.len();
+        h.settle(|ui| show(ui, &mut p, &mut s));
+        assert!(p.tracks[audio].regions.is_empty());
+        assert_eq!(p.tracks.len(), tracks);
+    }
+
+    #[test]
+    fn ghost_notes_are_those_of_the_other_regions_and_alt_v_shows_them() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(1.0, row, 0.5);
+        let others = ghost_notes(&r.p, r.t, 0);
+        assert!(others
+            .iter()
+            .all(|(t, region, _)| (*t, *region) != (r.t, 0)));
+        assert!(!others.is_empty(), "the demo has other regions");
+        assert!(!r.s.piano.ghosts);
+        r.with(Modifiers::ALT, |r| r.key(Key::V));
+        assert!(r.s.piano.ghosts);
+        r.settle();
+    }
+
+    #[test]
+    fn while_typing_is_on_the_keys_play_and_shift_picks_the_tools() {
+        let mut r = Rig::new();
+        r.s.typing.on = true;
+        // The app takes the note keys before the piano roll sees them, so here D reaches it only
+        // with Shift held, which is what picks the tool.
+        r.with(Modifiers::SHIFT, |r| r.key(Key::D));
+        assert_eq!(r.s.piano.tool, Tool::Delete);
+        r.with(Modifiers::SHIFT, |r| r.key(Key::P));
+        assert_eq!(r.s.piano.tool, Tool::Draw);
     }
 }

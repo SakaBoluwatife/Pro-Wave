@@ -132,7 +132,6 @@ Zoom Out = ज़ूम आउट
 Zoom to Fit = फ़िट करने के लिए ज़ूम
 Note Colors = स्वरों के रंग
 Snap: = स्नैप:
-Select a MIDI region to edit its notes = स्वर संपादित करने के लिए कोई MIDI क्षेत्र चुनें
 Time Quantize (classic) = समय क्वांटाइज़ (क्लासिक)
 Strength = तीव्रता
 Swing = स्विंग

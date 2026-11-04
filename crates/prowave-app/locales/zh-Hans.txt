@@ -132,7 +132,6 @@ Zoom Out = 缩小
 Zoom to Fit = 缩放以适合
 Note Colors = 音符颜色
 Snap: = 吸附：
-Select a MIDI region to edit its notes = 选择一个 MIDI 片段以编辑其音符
 Time Quantize (classic) = 时间量化（经典）
 Strength = 强度
 Swing = 摇摆

@@ -132,7 +132,6 @@ Zoom Out = 縮小
 Zoom to Fit = 全体を表示
 Note Colors = ノートカラー
 Snap: = スナップ：
-Select a MIDI region to edit its notes = ノートを編集するには MIDI リージョンを選択してください
 Time Quantize (classic) = タイムクオンタイズ（クラシック）
 Strength = ストレングス
 Swing = スウィング

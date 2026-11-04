@@ -132,7 +132,6 @@ Zoom Out = Zoom arrière
 Zoom to Fit = Zoom ajusté
 Note Colors = Couleurs des notes
 Snap: = Magnétisme :
-Select a MIDI region to edit its notes = Sélectionnez une région MIDI pour modifier ses notes
 Time Quantize (classic) = Quantification temporelle (classique)
 Strength = Force
 Swing = Swing

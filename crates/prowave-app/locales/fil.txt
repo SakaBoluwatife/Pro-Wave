@@ -132,7 +132,6 @@ Zoom Out = Mag-zoom Out
 Zoom to Fit = I-zoom para Magkasya
 Note Colors = Mga Kulay ng Nota
 Snap: = Snap:
-Select a MIDI region to edit its notes = Pumili ng MIDI region para i-edit ang mga nota nito
 Time Quantize (classic) = Time Quantize (klasiko)
 Strength = Lakas
 Swing = Swing

@@ -132,7 +132,6 @@ Zoom Out = Mažinti
 Zoom to Fit = Pritaikyti mastelį
 Note Colors = Natų spalvos
 Snap: = Pritraukimas:
-Select a MIDI region to edit its notes = Pasirinkite MIDI sritį, kad redaguotumėte jos natas
 Time Quantize (classic) = Laiko kvantavimas (klasikinis)
 Strength = Stiprumas
 Swing = Svingas

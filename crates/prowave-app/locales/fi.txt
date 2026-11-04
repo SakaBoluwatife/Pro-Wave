@@ -132,7 +132,6 @@ Zoom Out = Loitonna
 Zoom to Fit = Sovita näkymään
 Note Colors = Nuottien värit
 Snap: = Kohdistus:
-Select a MIDI region to edit its notes = Valitse MIDI-alue muokataksesi sen nuotteja
 Time Quantize (classic) = Aikakvantisointi (klassinen)
 Strength = Voimakkuus
 Swing = Swing
