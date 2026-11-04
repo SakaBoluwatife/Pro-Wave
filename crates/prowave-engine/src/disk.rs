@@ -529,6 +529,7 @@ enum Msg {
         producer: Producer<Block>,
         shared: Arc<ClipShared>,
         out_rate: u32,
+        out_offset: u64,
         out_len: u64,
         edit: ClipEdit,
     },
@@ -549,6 +550,9 @@ struct Stream {
     producer: Producer<Block>,
     shared: Arc<ClipShared>,
     ratio: f64,
+    /// The clip's first frame in the file, in output frames.
+    out_offset: u64,
+    /// The clip's length: `out_frame` counts within it, from 0.
     out_len: u64,
     gen: Option<u16>,
     out_frame: u64,
@@ -561,7 +565,7 @@ struct Stream {
 impl Stream {
     fn seek_out(&mut self, frame: u64) {
         self.out_frame = frame.min(self.out_len);
-        let s = (self.out_frame as f64 * self.ratio) as u64;
+        let s = ((self.out_frame + self.out_offset) as f64 * self.ratio) as u64;
         self.buf.clear();
         self.eof = false;
         match self.src.seek(s) {
@@ -620,15 +624,16 @@ impl Stream {
             data: [0.0; BLOCK_FRAMES * 2],
         };
         if self.reverse && n > 0 {
-            let first = self.out_len - self.out_frame - 1;
-            let last = self.out_len - self.out_frame - n as u64;
+            let first = self.out_offset + self.out_len - self.out_frame - 1;
+            let last = self.out_offset + self.out_len - self.out_frame - n as u64;
             let lo = (last as f64 * self.ratio).floor() as u64;
             let hi = (first as f64 * self.ratio).floor() as u64 + 1;
             match self.ensure_reverse_window(lo, hi) {
                 Ok(()) => {
                     for i in 0..n {
-                        let pos =
-                            (self.out_len - (self.out_frame + i as u64) - 1) as f64 * self.ratio;
+                        let pos = (self.out_offset + self.out_len - (self.out_frame + i as u64) - 1)
+                            as f64
+                            * self.ratio;
                         let i0 = pos.floor() as u64;
                         let frac = (pos - i0 as f64) as f32;
                         let (l0, r0) = self.frame(i0);
@@ -643,7 +648,7 @@ impl Stream {
             return block;
         }
         for i in 0..n {
-            let pos = (self.out_frame + i as u64) as f64 * self.ratio;
+            let pos = (self.out_offset + self.out_frame + i as u64) as f64 * self.ratio;
             let i0 = pos.floor() as u64;
             let frac = (pos - i0 as f64) as f32;
             self.ensure(i0 + 1);
@@ -654,7 +659,8 @@ impl Stream {
         }
         self.out_frame += n as u64;
         // Drop source frames we will never read again.
-        let keep_from = ((self.out_frame as f64 * self.ratio).floor() as u64).saturating_sub(1);
+        let keep_from = (((self.out_offset + self.out_frame) as f64 * self.ratio).floor() as u64)
+            .saturating_sub(1);
         if keep_from > self.buf_base {
             let drop_frames = ((keep_from - self.buf_base) as usize).min(self.buf.len() / 2);
             self.buf.drain(..drop_frames * 2);
@@ -750,8 +756,16 @@ impl DiskThread {
         edit: ClipEdit,
         ring_blocks: usize,
     ) -> AudioClip {
-        let out_len =
-            (file.frames as f64 * out_rate as f64 / file.sample_rate.max(1) as f64) as u64;
+        // The region's window on the file, in output frames.
+        let total = (file.frames as f64 * out_rate as f64 / file.sample_rate.max(1) as f64) as u64;
+        let out_offset = (edit.source_start_secs.max(0.0) * out_rate as f64) as u64;
+        let out_offset = out_offset.min(total);
+        let rest = total - out_offset;
+        let out_len = if edit.length_secs > 0.0 {
+            rest.min((edit.length_secs * out_rate as f64) as u64)
+        } else {
+            rest
+        };
         let ring_blocks = ring_blocks.clamp(RING_BLOCKS, RING_BLOCKS_MAX);
         let (producer, consumer): (Producer<Block>, Consumer<Block>) = RingBuffer::new(ring_blocks);
         let shared = Arc::new(ClipShared::default());
@@ -761,6 +775,7 @@ impl DiskThread {
             producer,
             shared: shared.clone(),
             out_rate,
+            out_offset,
             out_len,
             edit,
         };
@@ -788,6 +803,7 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
             producer,
             shared,
             out_rate,
+            out_offset,
             out_len,
             edit,
         } => {
@@ -801,6 +817,7 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
                     idle_since: None,
                     producer,
                     shared,
+                    out_offset,
                     out_len,
                     gen: None,
                     out_frame: 0,
@@ -927,6 +944,7 @@ mod tests {
                 producer,
                 shared: Arc::new(ClipShared::default()),
                 out_rate: SRC_RATE,
+                out_offset: 0,
                 out_len: file.frames,
                 edit: ClipEdit::default(),
             })
@@ -957,6 +975,7 @@ mod tests {
         let mut streams = Vec::new();
         assert!(handle(
             Msg::Register {
+                out_offset: 0,
                 out_len: file.frames,
                 file,
                 producer,
@@ -1104,6 +1123,74 @@ mod tests {
         assert_eq!(r.shared.underruns.load(Ordering::Relaxed), 0);
     }
 
+    /// A file whose left channel counts its frames, as a clip of it reads them.
+    fn window_rig(edit: ClipEdit) -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ramp.wav");
+        // Half a second at the engine's rate: each frame says where it is.
+        let frames = OUT_RATE as usize / 2;
+        let ramp: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let v = i as f32 / frames as f32;
+                [v, v]
+            })
+            .collect();
+        crate::write_wav(&path, &ramp, OUT_RATE).unwrap();
+        let file = AudioFile::open(&path).unwrap();
+        let disk = DiskThread::spawn();
+        let clip = disk.stream_with(&file, OUT_RATE, 0, 0.0, edit);
+        let (mut tx, rx) = RingBuffer::new(64);
+        let (gtx, grx) = RingBuffer::new(8);
+        let shared = Arc::new(Shared::new());
+        let core = EngineCore::new(OUT_RATE, rx, gtx, shared.clone());
+        let song = Song::new(vec![], vec![TrackMix::default()]).with_clips(vec![clip]);
+        assert!(tx.push(Command::SetSong(Box::new(song))).is_ok());
+        Rig {
+            core,
+            tx,
+            shared,
+            _garbage: grx,
+            _disk: disk,
+            _dir: dir,
+        }
+    }
+
+    #[test]
+    fn a_clip_plays_only_its_window_on_the_file() {
+        // A quarter of a second in, for a tenth of a second.
+        let mut r = window_rig(ClipEdit {
+            source_start_secs: 0.25,
+            length_secs: 0.1,
+            ..ClipEdit::default()
+        });
+        prefetch(&mut r);
+        assert!(r.tx.push(Command::Play).is_ok());
+        let out = run(&mut r, 0.2);
+        let gain = out[1000] / (0.5 + 1000.0 / (OUT_RATE as f32 / 2.0));
+        let first = out[0] / gain.max(1e-6);
+        assert!((first - 0.5).abs() < 0.01, "starts mid-file: {first}");
+        let end = (0.1 * OUT_RATE as f32) as usize;
+        assert!(out[end - 50].abs() > 0.1, "still playing near its end");
+        assert!(out[end + 50].abs() < 1e-6, "stopped after its length");
+    }
+
+    #[test]
+    fn a_reversed_clip_plays_its_window_backwards() {
+        let mut r = window_rig(ClipEdit {
+            source_start_secs: 0.25,
+            length_secs: 0.1,
+            reverse: true,
+            ..ClipEdit::default()
+        });
+        prefetch(&mut r);
+        assert!(r.tx.push(Command::Play).is_ok());
+        let out = run(&mut r, 0.05);
+        // From just before 0.35 s of the half-second file, going down.
+        assert!(out[1000] > out[2000], "going backwards");
+        assert!(out[0] > out[100]);
+        assert!(out[2000].abs() > 0.1);
+    }
+
     #[test]
     fn reverse_starts_at_the_source_end() {
         let mut r = rig_with(ClipEdit {
@@ -1148,6 +1235,7 @@ mod tests {
                 producer,
                 shared: Arc::new(ClipShared::default()),
                 ratio,
+                out_offset: 0,
                 out_len,
                 gen: None,
                 out_frame: 0,
@@ -1561,6 +1649,7 @@ mod tests {
         assert!(src.is_mapped());
         let mut stream = Stream {
             ratio: 1.0,
+            out_offset: 0,
             out_len: 30_000,
             src,
             idle_since: None,

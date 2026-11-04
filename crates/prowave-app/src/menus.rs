@@ -442,7 +442,10 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Undo" => s.can_undo,
         "Redo" => s.can_redo,
         "Delete Undo History" => s.can_undo || s.can_redo,
-        "Delete" | "Deselect All" => s.tracks.selected.is_some(),
+        "Delete" | "Deselect All" | "Cut" | "Copy" => s.tracks.selected.is_some(),
+        "Join" => crate::region_edit::can_join(p, &s.tracks),
+        "Paste" => s.tracks.clipboard.is_some(),
+        "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => p.tracks.len() > 1,
         "Release Track Stack" => p
             .tracks
@@ -629,6 +632,17 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Redo" => s.undo_cmd = Some(UndoCmd::Redo),
         "Delete Undo History" => s.undo_cmd = Some(UndoCmd::Clear),
         "Delete" => crate::tracks_area::delete_selected(p, &mut s.tracks),
+        "Cut" | "Copy" | "Paste" | "Split at Playhead" | "Join" => {
+            use crate::tracks_area::{run_edit, EditCmd};
+            let cmd = match label {
+                "Cut" => EditCmd::Cut,
+                "Copy" => EditCmd::Copy,
+                "Paste" => EditCmd::Paste,
+                "Join" => EditCmd::Join,
+                _ => EditCmd::Split,
+            };
+            run_edit(p, &mut s.tracks, &mut s.status, cmd);
+        }
         "Deselect All" => s.tracks.selected = None,
         "Go to End" => {
             p.position_beats = p
@@ -1026,7 +1040,12 @@ mod tests {
                 p.position_beats,
                 p.recording,
                 (s.show_mixer, s.show_library, s.show_inspector, s.show_lists),
-                (s.update_check, s.update_auto, s.show_midi_fx),
+                (
+                    s.update_check,
+                    s.update_auto,
+                    s.show_midi_fx,
+                    s.tracks.clipboard.is_some()
+                ),
                 (
                     s.capture_cmd,
                     s.show_quick_help,
@@ -1107,15 +1126,7 @@ mod tests {
             );
         }
         // And unimplemented ones are greyed, like the ones from the GitHub report.
-        for label in [
-            "Cut",
-            "Copy",
-            "Paste",
-            "Close",
-            "Export",
-            "Stem Splitter…",
-            "Join",
-        ] {
+        for label in ["Close", "Export", "Stem Splitter…"] {
             assert!(!enabled(label, &p, &s), "{label}");
         }
     }

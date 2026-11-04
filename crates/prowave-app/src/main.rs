@@ -42,6 +42,7 @@ mod plugin_scan;
 mod project_io;
 mod recent_files;
 mod recorder;
+mod region_edit;
 mod sample_browser;
 mod sample_place;
 mod score;

@@ -279,6 +279,11 @@ fn update_follower(p: &mut Project, t: usize, r: usize) -> bool {
         let flex = a
             .flex
             .get_or_insert_with(|| FlexEdit::new(original, FlexMode::Rhythmic));
+        // A trimmed or split part keeps playing the same music in the file's new length.
+        let was = flex.markers.last().map_or(duration, |m| m.dst).max(1e-6);
+        let scale = (length / was) as f32;
+        region.params.source_start *= scale;
+        region.params.source_len *= scale;
         flex.markers = markers;
     }
     p.song_rev += 1;

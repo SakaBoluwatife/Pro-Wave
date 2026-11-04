@@ -175,6 +175,10 @@ pub struct ClipEdit {
     pub fade_out_beats: f64,
     pub fade_curve: FadeCurve,
     pub reverse: bool,
+    /// Where in the file the region begins, in seconds of the file.
+    pub source_start_secs: f64,
+    /// How much of the file it plays, in seconds; 0 is on to the end of the file.
+    pub length_secs: f64,
 }
 
 impl Default for ClipEdit {
@@ -185,6 +189,8 @@ impl Default for ClipEdit {
             fade_out_beats: 0.0,
             fade_curve: FadeCurve::EqualPower,
             reverse: false,
+            source_start_secs: 0.0,
+            length_secs: 0.0,
         }
     }
 }
@@ -212,6 +218,16 @@ impl ClipEdit {
             },
             fade_out_beats: if self.fade_out_beats.is_finite() {
                 self.fade_out_beats.max(0.0)
+            } else {
+                0.0
+            },
+            source_start_secs: if self.source_start_secs.is_finite() {
+                self.source_start_secs.max(0.0)
+            } else {
+                0.0
+            },
+            length_secs: if self.length_secs.is_finite() {
+                self.length_secs.max(0.0)
             } else {
                 0.0
             },

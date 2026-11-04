@@ -95,6 +95,8 @@ impl DragMode {
 
 /// Where the Fade tool is in [`TOOLS`].
 const FADE_TOOL: usize = 9;
+const SCISSORS_TOOL: usize = 4;
+const GLUE_TOOL: usize = 5;
 
 pub(crate) const TOOLS: [&str; 14] = [
     "Pointer Tool",
@@ -127,11 +129,53 @@ pub struct NormalizeJob {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrackTool {
     Pointer,
+    /// Click a region to cut it there.
+    Scissors,
+    /// Click a region to join it with the next one.
+    Glue,
     /// Drag on an audio region to set its fade in (left half) or fade out (right half).
     Fade,
 }
 
+/// A region edit, from a menu or a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCmd {
+    Cut,
+    Copy,
+    Paste,
+    Split,
+    Join,
+}
+
+/// Carries out a region edit. What it cannot do goes to the status line.
+pub fn run_edit(p: &mut Project, v: &mut TracksView, status: &mut Option<String>, cmd: EditCmd) {
+    use crate::region_edit as edit;
+    let done = match cmd {
+        EditCmd::Copy => edit::copy(p, v),
+        EditCmd::Cut => edit::copy(p, v).map(|()| delete_selected(p, v)),
+        EditCmd::Paste => edit::paste(p, v).map(|_| ()),
+        EditCmd::Split => edit::split_at_playhead(p, v),
+        EditCmd::Join => edit::join_selected(p, v),
+    };
+    if let Err(e) = done {
+        *status = Some(e);
+    }
+}
+
+/// Which edge of a region is being dragged.
+enum TrimDrag {
+    End,
+    Start(crate::region_edit::TrimStart),
+}
+
+/// How close to a region's edge, in points, a drag trims it instead of moving it.
+const TRIM_EDGE: f32 = 7.0;
+
 pub struct TracksView {
+    /// What Copy or Cut took, and the track it came from.
+    pub clipboard: Option<(usize, Region)>,
+    /// A drag on an edge of a region in progress.
+    trim: Option<TrimDrag>,
     /// A track was clicked last, in its header or its mixer strip: Delete means that track.
     pub track_focus: bool,
     /// Width of one bar in points (horizontal zoom).
@@ -177,6 +221,8 @@ impl Default for TracksView {
     fn default() -> Self {
         Self {
             track_focus: false,
+            clipboard: None,
+            trim: None,
             bar_w: 62.0,
             row_h: 56.0,
             scroll_x: 0.0,
@@ -569,15 +615,28 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
 
     let mut x = bar.left() + 32.0;
     let sel = v.selected;
+    let mut edit_pick = None;
     let (edit, w) = menu_title(ui, &g, x, cy, tr("Edit"), id(("menu", "Edit")));
     x += w + 2.0;
     egui::Popup::menu(&edit).show(|ui| {
         ui.set_min_width(260.0);
         crate::widgets::undo_items(ui, can_undo, can_redo, &mut undo_pick);
         ui.separator();
-        todo_item(ui, tr("Cut"));
-        todo_item(ui, tr("Copy"));
-        todo_item(ui, tr("Paste"));
+        let has_clip = v.clipboard.is_some();
+        for (label, key, enabled, action) in [
+            (tr("Cut"), Key::X, sel.is_some(), EditCmd::Cut),
+            (tr("Copy"), Key::C, sel.is_some(), EditCmd::Copy),
+            (tr("Paste"), Key::V, has_clip, EditCmd::Paste),
+        ] {
+            let keys = shortcut(ui, Modifiers::COMMAND, key);
+            if ui
+                .add_enabled(enabled, egui::Button::new(label).shortcut_text(keys))
+                .clicked()
+            {
+                edit_pick = Some(action);
+                ui.close();
+            }
+        }
         if ui
             .add_enabled(
                 sel.is_some(),
@@ -590,8 +649,26 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
         }
         ui.separator();
         todo_item(ui, tr("Select All"));
-        todo_item(ui, tr("Split Regions at Playhead"));
-        todo_item(ui, tr("Join Regions"));
+        let can_split = crate::region_edit::can_split_at_playhead(p, v);
+        let can_join = crate::region_edit::can_join(p, v);
+        for (label, key, enabled, action) in [
+            (
+                tr("Split Regions at Playhead"),
+                Key::T,
+                can_split,
+                EditCmd::Split,
+            ),
+            (tr("Join Regions"), Key::J, can_join, EditCmd::Join),
+        ] {
+            let keys = shortcut(ui, Modifiers::COMMAND, key);
+            if ui
+                .add_enabled(enabled, egui::Button::new(label).shortcut_text(keys))
+                .clicked()
+            {
+                edit_pick = Some(action);
+                ui.close();
+            }
+        }
         let rep = shortcut(ui, Modifiers::COMMAND, Key::R);
         if ui
             .add_enabled(
@@ -606,6 +683,9 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
     });
     if undo_pick.is_some() {
         s.undo_cmd = undo_pick;
+    }
+    if let Some(cmd) = edit_pick {
+        run_edit(p, v, &mut s.status, cmd);
     }
     let (func, w) = menu_title(ui, &g, x, cy, tr("Functions"), id(("menu", "Functions")));
     x += w + 2.0;
@@ -826,6 +906,15 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
         let icon_at = pos2(r.left() + 13.0, cy);
         if i == 0 && v.tool == TrackTool::Fade {
             draw_fade_tool(g, icon_at, TEXT);
+        } else if i == 0 && matches!(v.tool, TrackTool::Scissors | TrackTool::Glue) {
+            let letter = if v.tool == TrackTool::Glue { "G" } else { "S" };
+            g.text(
+                icon_at,
+                Align2::CENTER_CENTER,
+                letter,
+                FontId::proportional(11.0),
+                TEXT,
+            );
         } else if i == 0 {
             draw_pointer(g, icon_at, TEXT);
         } else {
@@ -846,6 +935,8 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
                 let tool = match n {
                     0 => Some(TrackTool::Pointer),
                     FADE_TOOL => Some(TrackTool::Fade),
+                    SCISSORS_TOOL => Some(TrackTool::Scissors),
+                    GLUE_TOOL => Some(TrackTool::Glue),
                     _ => None,
                 };
                 match tool {
@@ -1822,7 +1913,8 @@ fn draw_region(
     if let Some(peaks) = region.audio.as_ref().and_then(|a| a.peaks.get()) {
         let gain = 10f32.powf(region.params.gain_db / 20.0);
         let full_x = (full.left(), full.width());
-        draw_peaks(g, inner, full_x, peaks, gain, region.params.reverse, ink);
+        let part = played_part(region, peaks);
+        draw_peaks(g, inner, full_x, part, gain, region.params.reverse, ink);
     } else if region.audio.is_some() {
         g.line_segment(
             [
@@ -1982,6 +2074,25 @@ fn draw_fades(
 
 /// Draws a recorded waveform: `full_x` is the left edge and width of the whole region on
 /// screen, `gain` its region gain (linear) and `reverse` plays it back to front.
+/// The part of a file's overview that an audio region plays.
+fn played_part<'a>(region: &Region, peaks: &'a [(f32, f32)]) -> &'a [(f32, f32)] {
+    let Some(audio) = region.audio.as_ref() else {
+        return peaks;
+    };
+    let seconds = audio.file.duration_secs() as f32;
+    if seconds <= 0.0 {
+        return peaks;
+    }
+    let start = (region.params.source_start / seconds).clamp(0.0, 1.0);
+    let end = if region.params.source_len > 0.0 {
+        ((region.params.source_start + region.params.source_len) / seconds).clamp(start, 1.0)
+    } else {
+        1.0
+    };
+    let bin = |f: f32| ((f * peaks.len() as f32) as usize).min(peaks.len());
+    &peaks[bin(start)..bin(end)]
+}
+
 fn draw_peaks(
     g: &Painter,
     body: Rect,
@@ -2558,6 +2669,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         }
     };
     let mut moved = false;
+    // What the Scissors or Glue tool was clicked on, done once the regions have been drawn.
+    let mut region_click: Option<(usize, usize, TrackTool, f64)> = None;
     for (ti, &(top, row_h)) in rows.iter().enumerate() {
         if row_h <= 0.0 {
             continue;
@@ -2590,7 +2703,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             if fade_tool && resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
-            if fade_tool {
+            let click_tool = matches!(v.tool, TrackTool::Scissors | TrackTool::Glue);
+            if click_tool && resp.clicked() {
+                if let Some(pt) = resp.interact_pointer_pos() {
+                    region_click = Some((ti, ri, v.tool, snap_pos(beat_of(pt.x))));
+                }
+            }
+            if click_tool {
+                // It only clicks: nothing moves.
+            } else if fade_tool {
                 // The Fade tool: the left half of the region gets a fade in, the right half a
                 // fade out, as long as the pointer is dragged (in 1/16 notes, as the Inspector).
                 if resp.drag_started() {
@@ -2614,19 +2735,53 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     moved = true;
                 }
             } else {
+                // Near an edge a drag trims the region, anywhere else it moves it.
+                let trimmable =
+                    p.tracks[ti].regions[ri].folder.is_none() && full.width() > TRIM_EDGE * 3.0;
+                let hover_edge = resp.hover_pos().filter(|_| trimmable).is_some_and(|pt| {
+                    pt.x - full.left() < TRIM_EDGE || full.right() - pt.x < TRIM_EDGE
+                });
+                if hover_edge || (v.trim.is_some() && resp.dragged()) {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
                 if resp.drag_started() {
-                    if let Some(pt) = resp.interact_pointer_pos() {
+                    let origin = ui.input(|i| i.pointer.press_origin());
+                    if let Some(pt) = origin.or(resp.interact_pointer_pos()) {
                         v.grab_beats = beat_of(pt.x) - start_beat;
+                        v.trim = if !trimmable {
+                            None
+                        } else if full.right() - pt.x < TRIM_EDGE {
+                            Some(TrimDrag::End)
+                        } else if pt.x - full.left() < TRIM_EDGE {
+                            crate::region_edit::TrimStart::of(p, ti, ri)
+                                .ok()
+                                .map(TrimDrag::Start)
+                        } else {
+                            None
+                        };
                     }
                 }
                 if resp.dragged() {
                     if let Some(pt) = resp.interact_pointer_pos() {
-                        let nb = snap_pos((beat_of(pt.x) - v.grab_beats).max(0.0));
-                        p.tracks[ti].regions[ri].start_bar = p.beats_to_bar(nb) as f32 + 1.0;
+                        let at = snap_pos(beat_of(pt.x).max(0.0));
+                        match &v.trim {
+                            Some(TrimDrag::End) => {
+                                let _ = crate::region_edit::trim_end(p, ti, ri, at);
+                            }
+                            Some(TrimDrag::Start(from)) => {
+                                crate::region_edit::trim_start(p, ti, ri, from, at);
+                            }
+                            None => {
+                                let nb = snap_pos((beat_of(pt.x) - v.grab_beats).max(0.0));
+                                p.tracks[ti].regions[ri].start_bar =
+                                    p.beats_to_bar(nb) as f32 + 1.0;
+                            }
+                        }
                     }
                 }
                 if resp.drag_stopped() {
                     moved = true;
+                    v.trim = None;
                     // Dropped on another audio region: X-Fade crossfades them, the other
                     // modes leave them overlapping.
                     if p.tracks[ti].kind == TrackKind::Audio && overlaps_another(p, ti, ri) {
@@ -2749,6 +2904,16 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     if moved {
         p.song_rev += 1;
     }
+    if let Some((t, r, tool, beat)) = region_click {
+        let done = match tool {
+            TrackTool::Glue => crate::region_edit::join_with_next(p, t, r),
+            _ => crate::region_edit::split(p, t, r, beat),
+        };
+        match done {
+            Ok(_) => v.selected = None,
+            Err(e) => s.status = Some(e),
+        }
+    }
 
     if marker_h > 0.0 {
         let top = ruler_y + RULER_H;
@@ -2816,6 +2981,24 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         }
         if rep {
             repeat_selected(p, v);
+        }
+        let command_key = ui.input(|i| {
+            if !i.modifiers.command || i.modifiers.alt || i.modifiers.shift {
+                return None;
+            }
+            [
+                (Key::X, EditCmd::Cut),
+                (Key::C, EditCmd::Copy),
+                (Key::V, EditCmd::Paste),
+                (Key::T, EditCmd::Split),
+                (Key::J, EditCmd::Join),
+            ]
+            .into_iter()
+            .find(|(key, _)| i.key_pressed(*key))
+            .map(|(_, cmd)| cmd)
+        });
+        if let Some(cmd) = command_key {
+            run_edit(p, v, &mut s.status, cmd);
         }
     }
 
@@ -3432,5 +3615,49 @@ mod row_tests {
         h.key(Key::Delete, |ui| show(ui, &mut p, &mut s, &meters));
         assert_eq!(p.tracks.len(), tracks);
         assert!(p.tracks[keep].regions.is_empty());
+    }
+
+    #[test]
+    fn the_edit_keys_cut_copy_paste_split_and_join_the_selected_region() {
+        let meters = crate::mixer::Meters::default();
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        let r = p.add_midi_region(t, 1.0).unwrap();
+        let mut s = UiState::new();
+        s.tracks.selected = Some((t, r));
+        let mut h = crate::ui_test::Harness::new(1200.0, 700.0);
+        h.settle(|ui| show(ui, &mut p, &mut s, &meters));
+        let mut press = |key: Key, p: &mut Project, s: &mut UiState| {
+            h.modifiers = Modifiers::COMMAND;
+            h.frame(vec![], |ui| show(ui, p, s, &meters));
+            h.key(key, |ui| show(ui, p, s, &meters));
+            h.modifiers = Modifiers::NONE;
+            h.frame(vec![], |ui| show(ui, p, s, &meters));
+        };
+
+        // Split at the playhead, and join again.
+        p.position_beats = 8.0;
+        press(Key::T, &mut p, &mut s);
+        assert_eq!(p.tracks[t].regions.len(), 2);
+        s.tracks.selected = Some((t, 0));
+        press(Key::J, &mut p, &mut s);
+        assert_eq!(p.tracks[t].regions.len(), 1);
+        assert_eq!(p.tracks[t].regions[0].len_bars, 4.0);
+
+        // Copy, and paste at the playhead.
+        s.tracks.selected = Some((t, 0));
+        press(Key::C, &mut p, &mut s);
+        p.position_beats = 32.0;
+        press(Key::V, &mut p, &mut s);
+        assert_eq!(p.tracks[t].regions.len(), 2);
+        assert_eq!(p.tracks[t].regions[1].start_bar, 9.0);
+
+        // Cut takes it away, and it can come back.
+        s.tracks.selected = Some((t, 1));
+        press(Key::X, &mut p, &mut s);
+        assert_eq!(p.tracks[t].regions.len(), 1);
+        assert!(s.tracks.clipboard.is_some());
+        press(Key::V, &mut p, &mut s);
+        assert_eq!(p.tracks[t].regions.len(), 2);
     }
 }

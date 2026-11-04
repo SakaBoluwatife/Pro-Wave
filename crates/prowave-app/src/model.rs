@@ -145,6 +145,11 @@ pub struct RegionParams {
     pub transpose: i8,
     /// Added to every note velocity.
     pub velocity: i8,
+    /// Audio regions: where in the file this one begins, and how much of the file it plays
+    /// (0: on to the end), in seconds of the file. In seconds, so a change of tempo does not cut
+    /// a clip short.
+    pub source_start: f32,
+    pub source_len: f32,
     /// Audio regions (Logic: Region Inspector Gain, Fade In / Out, Curve, Reverse), applied
     /// non-destructively by the engine. Gain in dB; fades in quarter-note beats.
     pub gain_db: f32,
@@ -170,6 +175,8 @@ impl RegionParams {
             fade_out_beats: self.fade_out as f64,
             fade_curve: self.fade_curve,
             reverse: self.reverse,
+            source_start_secs: f64::from(self.source_start),
+            length_secs: f64::from(self.source_len),
         }
     }
 

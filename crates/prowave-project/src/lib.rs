@@ -107,6 +107,10 @@ pub struct RegionDoc {
     pub velocity: i8,
     /// Audio regions: gain in dB, fades in quarter-note beats, fade curve ("linear",
     /// "s_curve", anything else = equal power), reverse.
+    /// Where in its file an audio region begins, and how much of it plays (0: to the end), in
+    /// seconds.
+    pub source_start: f32,
+    pub source_len: f32,
     pub gain_db: f32,
     pub fade_in: f32,
     pub fade_out: f32,

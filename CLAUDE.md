@@ -68,3 +68,12 @@ Plugin hosting, bounce/export, Cut/Copy/Paste/Split/Join, clip gain and fade UI,
 ## Next step
 
 Start M1 in `docs/LOGIC-WIREFRAME.md` section 11: a `prowave-host` crate that scans and loads a CLAP effect and runs it as an insert with preallocated buffers and PDC, then VST3.
+
+## Output style (from drona23/claude-token-efficient, trimmed)
+
+- Read existing files before writing. Do not re-read unless changed.
+- Thorough in reasoning, concise in output.
+- Skip files over 100KB unless required.
+- No sycophantic openers or closing fluff.
+- No emojis or em-dashes.
+- Do not guess APIs, versions, flags, commit SHAs, or package names. Verify by reading code or docs before asserting.
