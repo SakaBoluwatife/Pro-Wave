@@ -1,0 +1,69 @@
+# Logic guide comparison
+
+Pro Wave compared with the chapters of the Logic Pro for Mac User Guide (1,324 pages), to decide what to improve. Written in our own words. The guide is a checklist of features, not a source of text or artwork.
+
+This compares chapter headings against the feature map and a search of the code. "Have" does not mean it matches Logic in depth, and nothing here has been checked by hand. Nothing is removed by this plan.
+
+## Skip for now: stays greyed or unbuilt
+
+The owner said not to build these:
+
+- Session Player, Performers
+- Song to Mobile Device, Open in Sound Library Manager
+
+Proposed, for the owner to confirm:
+
+- Logic Remote, GarageBand and iPad project sharing, AirDrop, Music app and Voice Memos: Apple-only
+- Surround and binaural panning: a large job for a stereo workflow
+- Apple Loops library features: there is no stock library, though users' own loops still work
+- Live Loops, full score engraving (staff styles, score sets, parts): large, and outside the priorities so far
+
+## Improve: built, but shallower than Logic
+
+| Area | Today | Better |
+|---|---|---|
+| Comping | Audio takes from Cycle recording | Takes when recording over a region; New Take, Delete Take |
+| Recording | Autopunch, one punch a pass | Record Repeat, replace mode, drag punch locators |
+| Fades | Fade tool and region values | Curve shapes on the region, crossfade editing |
+| Automation | Lanes in a window, region automation | Curves on the track itself in the Tracks area, select and move groups of points, snap to grid, Trim |
+| Smart Controls | Eight knobs per plugin, choices not saved | Save choices with the project, rename, mapping ranges |
+| Plugins | Hosted, presets, automation | Sidechain input, compare A/B, plugin window header with bypass and presets |
+| Channel strips | Settings files, copy and paste | Browse saved settings from the Setting menu, include sends |
+| Mixer | Groups, VCA, routing matrix | Reorder strips by dragging, I/O labels |
+| Piano roll | FL-style tools | Time selection, automation area under the notes, several regions at once |
+| Tempo | Tempo track, Smart Tempo | Beat mapping by hand, tempo curves between points |
+| Flex | Modes, quantize, pitch correction | A proper Flex view, Varispeed |
+| Stem Splitter | CPU helper, not proven yet | Stop button, progress, then speed |
+| Metering | Peak meters, pre-fader | Clip indicators with reset, input format choice per strip |
+
+## Build next: not found in the code
+
+Most useful for daily mixing and production first:
+
+1. **Track alternatives:** other versions of a track's regions, switched from its header.
+2. **Selection-based processing:** run plugins on part of a region and print the result.
+3. **Snap to zero crossings** when cutting and trimming audio.
+4. **Strip Silence:** cut silent passages out of a region.
+5. **Project Audio Browser:** every file in the project, with unused ones marked.
+6. **MIDI learn:** assign hardware controls to knobs and faders.
+7. **Audio File Editor:** destructive edits on a file, after a backup.
+8. **Chord track and arrangement markers:** move whole song sections.
+9. **Groove templates:** make a quantize grid from a region.
+10. **Screensets:** save and recall window layouts.
+11. **Tuning:** Project Settings' page, the one still greyed there.
+12. **Project Alternatives and backups:** named versions of a project.
+
+## Smaller entries still greyed
+
+Quick: About Pro Wave, Logic-style Key Commands (open the tab in Settings).
+
+Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie and Video, Create New Output Channel Strip.
+
+## Suggested order
+
+1. The owner's test results and the recording bug.
+2. Plugin process isolation, as already decided.
+3. Automation on the tracks, Track Alternatives, New Take and Record Repeat.
+4. Zero crossings, Strip Silence, Project Audio Browser, selection-based processing.
+5. Sidechain, MIDI learn.
+6. Everything else in the lists above.
