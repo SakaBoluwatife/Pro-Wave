@@ -89,7 +89,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Replace mode, Record Repeat | GREY | |
 | MIDI take folders, swipe comping | HAVE | |
 | Audio take folders, swipe comping | HAVE | From Cycle recording. Recording over an existing region makes no folder yet |
-| Low latency mode | HAVE | Transport button and menu |
+| Low latency mode | HAVE | Transport button and Project Settings |
 
 ## 5. Audio editing (chapters: loops/media, Audio Track Editor, Flex)
 
@@ -183,7 +183,7 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 | Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. All five outputs of the dev PC start. Sample rate and the driver's panel TODO |
 | Project Settings entries | HAVE | General, Synchronization, Metronome, Recording, Audio and MIDI. Tuning is GREY |
 | MIDI ports | HAVE | All ports, automatically |
-| Key commands | HAVE | Logic's, moved to Ctrl and Alt (`key_commands.rs`), with an editor to remap them |
+| Key commands | HAVE | Logic's, moved to Ctrl and Alt (`key_commands.rs`), with an editor to remap them in Settings |
 | MIDI learn, controller assignments | TODO | |
 | Mackie / HUI support | TODO | |
 | Remote control from phone/web | TODO | ROADMAP suggests WebSocket |
