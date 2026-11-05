@@ -4564,6 +4564,6 @@ mod tool_tests {
         }
         assert_eq!(TrackTool::of_entry(0), TrackTool::Pointer);
         assert_eq!(TrackTool::of_entry(SCISSORS_TOOL), TrackTool::Scissors);
-        assert!(!TrackTool::Pointer.only_clicks() \&\& !TrackTool::Fade.only_clicks());
+        assert!(!TrackTool::Pointer.only_clicks() && !TrackTool::Fade.only_clicks());
     }
 }
