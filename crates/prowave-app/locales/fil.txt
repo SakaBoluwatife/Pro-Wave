@@ -712,3 +712,6 @@ Settings… = Mga Setting…
 Autopunch = Autopunch
 Routing Matrix… = Routing Matrix…
 Side Chain = Side Chain
+Compare A/B = Ikumpara ang A/B
+Copy A to B = Kopyahin ang A sa B
+Copy B to A = Kopyahin ang B sa A

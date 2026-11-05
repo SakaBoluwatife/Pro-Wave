@@ -236,6 +236,22 @@ struct Live {
     loaded: Box<dyn LoadedPlugin>,
 }
 
+/// A/B compare of a plugin's settings: the set it is not using now. The first switch keeps A here
+/// and carries on from the same settings as B, so that what is changed next is the difference.
+#[derive(Default)]
+struct Compare {
+    other: Option<Arc<Vec<u8>>>,
+    on_b: bool,
+}
+
+impl Compare {
+    /// Switches sides, `now` being the settings in use. What to load, if there is anything yet.
+    fn flip(&mut self, now: Arc<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
+        self.on_b = !self.on_b;
+        self.other.replace(now)
+    }
+}
+
 const WINDOWS_FILE: &str = "plugin-windows";
 /// In Low Latency mode, plugins that delay the sound by this many samples or more step aside.
 const LOW_LATENCY_LIMIT: usize = 256;
@@ -283,6 +299,8 @@ pub struct Rack {
     reopen: Vec<u64>,
     /// The main window, as last told: what reopened editors stay above.
     owner: Option<isize>,
+    /// A/B compare, by plugin. For this run: what goes in the project is the side in use.
+    compare: HashMap<u64, Compare>,
 }
 
 impl Rack {
@@ -361,6 +379,44 @@ impl Rack {
         live.loaded.load_state(&state).map_err(|e| e.to_string())?;
         self.touched = true;
         Ok(())
+    }
+
+    /// A/B compare: switches plugin `uid` to its other set of settings.
+    pub fn compare_flip(&mut self, uid: u64) -> Result<(), String> {
+        let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
+        let now = live
+            .loaded
+            .save_state()
+            .map_err(|e| e.to_string())?
+            .ok_or("This plugin keeps no settings to compare")?;
+        let compare = self.compare.entry(uid).or_default();
+        if let Some(other) = compare.flip(Arc::new(now)) {
+            if let Err(e) = live.loaded.load_state(&other) {
+                // It stays where it was.
+                compare.flip(other);
+                return Err(e.to_string());
+            }
+        }
+        self.touched = true;
+        Ok(())
+    }
+
+    /// A/B compare: the settings of plugin `uid` also become its other set.
+    pub fn compare_copy(&mut self, uid: u64) -> Result<(), String> {
+        let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
+        let now = live
+            .loaded
+            .save_state()
+            .map_err(|e| e.to_string())?
+            .ok_or("This plugin keeps no settings to compare")?;
+        self.compare.entry(uid).or_default().other = Some(Arc::new(now));
+        Ok(())
+    }
+
+    /// The plugins showing the B side.
+    pub fn showing_b(&self) -> Vec<u64> {
+        let on_b = self.compare.iter().filter(|(_, c)| c.on_b);
+        on_b.map(|(uid, _)| *uid).collect()
     }
 
     /// Tells the engine to run plugins on several cores, the first time there are any.
@@ -526,6 +582,7 @@ impl Rack {
                     if !self.take_out(uid, engine) {
                         return false;
                     }
+                    self.compare.remove(&uid);
                 }
                 Step::Swap(a, b) => {
                     if !engine.send(Command::SwapPlugins { a, b }) {

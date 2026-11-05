@@ -798,6 +798,7 @@ impl eframe::App for App {
                     self.ui.status = Some(e);
                 }
             }
+            self.ui.mixer.showing_b = sync.showing_b();
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
                 sync.open_plugin_editor(uid, &name, main_window_handle(frame));
             }

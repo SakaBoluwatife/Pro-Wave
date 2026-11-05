@@ -712,3 +712,6 @@ Settings… = Pengaturan…
 Autopunch = Autopunch
 Routing Matrix… = Matriks Routing…
 Side Chain = Side Chain
+Compare A/B = Bandingkan A/B
+Copy A to B = Salin A ke B
+Copy B to A = Salin B ke A

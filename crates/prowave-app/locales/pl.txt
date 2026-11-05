@@ -712,3 +712,6 @@ Settings… = Ustawienia…
 Autopunch = Autopunch
 Routing Matrix… = Macierz routingu…
 Side Chain = Sidechain
+Compare A/B = Porównaj A/B
+Copy A to B = Kopiuj A do B
+Copy B to A = Kopiuj B do A

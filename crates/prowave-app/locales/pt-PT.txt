@@ -712,3 +712,6 @@ Settings… = Definições…
 Autopunch = Autopunch
 Routing Matrix… = Matriz de encaminhamento…
 Side Chain = Side-chain
+Compare A/B = Comparar A/B
+Copy A to B = Copiar A para B
+Copy B to A = Copiar B para A

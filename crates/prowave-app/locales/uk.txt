@@ -712,3 +712,6 @@ Settings… = Налаштування…
 Autopunch = Автопанч
 Routing Matrix… = Матриця маршрутизації…
 Side Chain = Сайдчейн
+Compare A/B = Порівняти A/B
+Copy A to B = Копіювати A до B
+Copy B to A = Копіювати B до A

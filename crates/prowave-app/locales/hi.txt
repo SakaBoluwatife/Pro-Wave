@@ -712,3 +712,6 @@ Settings… = सेटिंग्स…
 Autopunch = ऑटोपंच
 Routing Matrix… = रूटिंग मैट्रिक्स…
 Side Chain = साइड चेन
+Compare A/B = A/B तुलना
+Copy A to B = A को B में कॉपी करें
+Copy B to A = B को A में कॉपी करें

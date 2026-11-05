@@ -935,7 +935,14 @@ impl EngineSync {
         match cmd {
             PresetCmd::Save { uid, file } => self.rack.save_preset(*uid, file),
             PresetCmd::Load { uid, file } => self.rack.load_preset(*uid, file),
+            PresetCmd::Compare { uid } => self.rack.compare_flip(*uid),
+            PresetCmd::CopyCompare { uid } => self.rack.compare_copy(*uid),
         }
+    }
+
+    /// The plugins showing the B side of A/B compare.
+    pub fn showing_b(&self) -> Vec<u64> {
+        self.rack.showing_b()
     }
 
     /// Runs what the plugins asked for on this thread, with no other change.

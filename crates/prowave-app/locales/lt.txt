@@ -712,3 +712,6 @@ Settings… = Nustatymai…
 Autopunch = Automatinis įrašo intervalas
 Routing Matrix… = Maršrutų matrica…
 Side Chain = Šoninė grandinė
+Compare A/B = Palyginti A/B
+Copy A to B = Kopijuoti A į B
+Copy B to A = Kopijuoti B į A

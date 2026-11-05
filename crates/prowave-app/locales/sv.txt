@@ -712,3 +712,6 @@ Settings… = Inställningar…
 Autopunch = Autopunch
 Routing Matrix… = Routningsmatris…
 Side Chain = Sidokedja
+Compare A/B = Jämför A/B
+Copy A to B = Kopiera A till B
+Copy B to A = Kopiera B till A

@@ -7,8 +7,22 @@ const EXTENSION: &str = "pwpreset";
 /// What a plugin slot's menu asked for; `App` carries it out, as the plugin lives in the engine sync.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PresetCmd {
-    Save { uid: u64, file: PathBuf },
-    Load { uid: u64, file: PathBuf },
+    Save {
+        uid: u64,
+        file: PathBuf,
+    },
+    Load {
+        uid: u64,
+        file: PathBuf,
+    },
+    /// Switches the plugin to its other set of settings (A/B compare).
+    Compare {
+        uid: u64,
+    },
+    /// Copies the settings it has now over the other set.
+    CopyCompare {
+        uid: u64,
+    },
 }
 
 /// What a channel strip's Setting menu asked for that needs the running plugins.

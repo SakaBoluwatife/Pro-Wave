@@ -80,6 +80,8 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// The plugins showing the B side of A/B compare (`App` keeps this current).
+    pub showing_b: Vec<u64>,
     /// View > Show Signal Flow Channel Strips: only the path of the selected strip.
     pub signal_flow: bool,
     /// Mix > Pre-Fader Metering.
@@ -181,6 +183,7 @@ impl Default for MixerView {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
+            showing_b: Vec::new(),
             strip_cmd: None,
             signal_flow: false,
             pre_fader: false,
@@ -1217,6 +1220,29 @@ fn preset_items(
     });
 }
 
+/// A/B compare of plugin `uid`, in a slot's menu.
+fn compare_items(
+    ui: &mut Ui,
+    uid: u64,
+    on_b: bool,
+    cmd: &mut Option<crate::plugin_presets::PresetCmd>,
+) {
+    use crate::plugin_presets::PresetCmd;
+    if ui.selectable_label(on_b, tr("Compare A/B")).clicked() {
+        *cmd = Some(PresetCmd::Compare { uid });
+        ui.close();
+    }
+    let copy = if on_b {
+        tr("Copy B to A")
+    } else {
+        tr("Copy A to B")
+    };
+    if ui.button(copy).clicked() {
+        *cmd = Some(PresetCmd::CopyCompare { uid });
+        ui.close();
+    }
+}
+
 /// The Side Chain menu of a plugin that offers a side-chain input: every other track that makes
 /// sound. What was picked goes in `pick`, `Some(None)` for none.
 fn side_chain_items(
@@ -1524,6 +1550,7 @@ fn plugin_slot(
     let side_now = plugin.sidechain;
     let side_offered = plugin.side_offered;
     let mut side_pick = None;
+    let on_b = v.showing_b.contains(&plugin_uid);
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1549,6 +1576,9 @@ fn plugin_slot(
             }
         });
         preset_items(ui, plugin_uid, &plugin_id, &name, &mut preset);
+        if loaded {
+            compare_items(ui, plugin_uid, on_b, &mut preset);
+        }
         if side_offered {
             side_chain_items(ui, &sources, side_now, &mut side_pick);
         }
@@ -1663,6 +1693,8 @@ fn instrument_plugin_slot(
         Vec::new()
     };
     let mut side_pick = None;
+    let on_b = v.showing_b.contains(&plugin.uid);
+    let mut compare = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1671,6 +1703,9 @@ fn instrument_plugin_slot(
                 ui.close();
             }
         });
+        if loaded {
+            compare_items(ui, plugin.uid, on_b, &mut compare);
+        }
         if plugin.side_offered {
             side_chain_items(ui, &sources, plugin.sidechain, &mut side_pick);
         }
@@ -1686,6 +1721,9 @@ fn instrument_plugin_slot(
         }
     };
     slot_menu(&resp, false).show(&mut items);
+    if compare.is_some() {
+        v.preset_cmd = compare;
+    }
     if let (Some(source), Some(live)) = (side_pick, p.tracks[i].instrument_plugin.as_mut()) {
         live.sidechain = source;
     }
