@@ -25,6 +25,9 @@ const MAX_VOICES: usize = 48;
 const ACTIVE_CLIPS: usize = 65_536;
 /// Samples between two readings of the automation (0.7 ms at 48 kHz).
 const AUTO_BLOCK: u32 = 32;
+/// The most frames rendered in one go. The mix runs strip by strip over a span, which ends where
+/// anything has to happen at an exact frame.
+const SPAN: usize = crate::plugin::PLUGIN_BLOCK;
 
 /// A note scheduled on the timeline (beats are 0-based quarter notes).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -855,18 +858,29 @@ pub struct EngineCore {
     /// The signal of each strip for the current sample, before effects and fader.
     /// The strips' signals and the buses are summed in 64 bits, so many strips (and the
     /// buses they feed) add up without losing the quiet ones to rounding.
-    in_l: Vec<f64>,
-    in_r: Vec<f64>,
+    in_l: Vec<[f64; SPAN]>,
+    in_r: Vec<[f64; SPAN]>,
+    /// What the strips sum to, for the span being rendered.
+    mix_l: [f64; SPAN],
+    mix_r: [f64; SPAN],
+    /// The playhead at each frame of the span.
+    beats: [f64; SPAN],
+    /// Peaks and overs of the callback so far.
+    span_pk_l: f32,
+    span_pk_r: f32,
+    span_over: bool,
+    /// Automated strips whose gain moved this span by running.
+    gain_ran: Vec<bool>,
     /// Each strip's sound for side-chain inputs, as of the frame it last ran.
-    side_l: Vec<f32>,
-    side_r: Vec<f32>,
+    side_l: Vec<[f32; SPAN]>,
+    side_r: Vec<[f32; SPAN]>,
     /// The strips a side-chain input listens to. They keep running when muted or not soloed, so a
     /// silent strip can still key a compressor: only what leaves them goes.
     side_source: Vec<bool>,
     touched: Vec<bool>,
     dirty: Vec<u16>,
-    bus_l: Vec<f64>,
-    bus_r: Vec<f64>,
+    bus_l: Vec<[f64; SPAN]>,
+    bus_r: Vec<[f64; SPAN]>,
     /// The buses that hold sound this frame, so that only those are cleared after it.
     bus_used: Vec<u16>,
     bus_marked: Vec<bool>,
@@ -1012,15 +1026,22 @@ impl EngineCore {
             complex: Vec::with_capacity(MAX_TRACKS),
             aux: Vec::with_capacity(MAX_TRACKS),
             strip_kind: vec![0; MAX_TRACKS],
-            in_l: vec![0.0; MAX_TRACKS],
-            in_r: vec![0.0; MAX_TRACKS],
-            side_l: vec![0.0; MAX_TRACKS],
-            side_r: vec![0.0; MAX_TRACKS],
+            in_l: vec![[0.0; SPAN]; MAX_TRACKS],
+            in_r: vec![[0.0; SPAN]; MAX_TRACKS],
+            mix_l: [0.0; SPAN],
+            mix_r: [0.0; SPAN],
+            beats: [0.0; SPAN],
+            span_pk_l: 0.0,
+            span_pk_r: 0.0,
+            span_over: false,
+            gain_ran: vec![false; MAX_TRACKS],
+            side_l: vec![[0.0; SPAN]; MAX_TRACKS],
+            side_r: vec![[0.0; SPAN]; MAX_TRACKS],
             side_source: vec![false; MAX_TRACKS],
             touched: vec![false; MAX_TRACKS],
             dirty: Vec::with_capacity(MAX_TRACKS),
-            bus_l: vec![0.0; MAX_BUSES],
-            bus_r: vec![0.0; MAX_BUSES],
+            bus_l: vec![[0.0; SPAN]; MAX_BUSES],
+            bus_r: vec![[0.0; SPAN]; MAX_BUSES],
             bus_used: Vec::with_capacity(MAX_BUSES),
             bus_marked: vec![false; MAX_BUSES],
             auto_any: false,
@@ -1411,8 +1432,8 @@ impl EngineCore {
         for i in 0..MAX_TRACKS {
             // A strip that stops being a source must not leave its last sample standing.
             if !self.side_source[i] {
-                self.side_l[i] = 0.0;
-                self.side_r[i] = 0.0;
+                self.side_l[i] = [0.0; SPAN];
+                self.side_r[i] = [0.0; SPAN];
             }
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
             let has_plugin =
@@ -1443,18 +1464,19 @@ impl EngineCore {
 
     /// Keeps what plugins are told of the song current: the position every frame, the rest, which
     /// takes some looking up in the tempo map, every so often.
-    fn update_plugin_transport(&mut self) {
-        self.transport.beat = self.beat;
-        if self.transport_left > 0 {
-            self.transport_left -= 1;
+    fn update_plugin_transport(&mut self, n: usize) {
+        let beat = self.beats[n - 1];
+        self.transport.beat = beat;
+        if self.transport_left as usize >= n {
+            self.transport_left -= n as u32;
             return;
         }
         self.transport_left = AUTO_BLOCK;
         let map = &self.tempo_map;
-        let position = map.position(self.beat);
+        let position = map.position(beat);
         self.transport.playing = self.playing;
-        self.transport.seconds = map.seconds_at(self.beat);
-        self.transport.tempo = f64::from(map.tempo_at(self.beat));
+        self.transport.seconds = map.seconds_at(beat);
+        self.transport.tempo = f64::from(map.tempo_at(beat));
         self.transport.signature = (position.num, position.den);
         self.transport.bar_start = map.beat_of_bar(position.bar);
         self.transport.bar_number = position.bar as i32;
@@ -1516,10 +1538,10 @@ impl EngineCore {
 
     /// Adds to bus `bus` (from 1). Each bus goes in the list once, and the list has room for all.
     #[inline]
-    fn add_to_bus(&mut self, bus: u16, l: f64, r: f64) {
+    fn add_to_bus(&mut self, bus: u16, j: usize, l: f64, r: f64) {
         let b = bus as usize - 1;
-        self.bus_l[b] += l;
-        self.bus_r[b] += r;
+        self.bus_l[b][j] += l;
+        self.bus_r[b][j] += r;
         if !self.bus_marked[b] {
             self.bus_marked[b] = true;
             self.bus_used.push(b as u16);
@@ -1529,96 +1551,103 @@ impl EngineCore {
     /// Runs one strip: effects, delay compensation, pre-fader sends, fader and pan,
     /// post-fader sends, and into the mix.
     #[inline]
-    fn run_strip(&mut self, t: usize, out: &mut (f64, f64)) {
+    fn run_strip(&mut self, t: usize, n: usize) {
         let route = self.routes[t];
         let audible = self.track_audible[t];
         let runs = audible || self.side_source[t];
-        let (mut xl, mut xr) = (self.in_l[t], self.in_r[t]);
-        self.in_l[t] = 0.0;
-        self.in_r[t] = 0.0;
-        if route.bus_in > 0 {
-            let b = route.bus_in as usize - 1;
-            xl += self.bus_l[b];
-            xr += self.bus_r[b];
-        }
-        if !runs {
-            xl = 0.0;
-            xr = 0.0;
-        }
-        // The effects work in 32 bits.
-        let (mut xl, mut xr) = (xl as f32, xr as f32);
-        if let Some(instrument) = self.instruments[t].as_mut() {
-            if let Some(source) = instrument.side_source() {
-                let source = source as usize;
-                instrument.feed_side(self.side_l[source], self.side_r[source]);
+        let ramped = self.auto_any && self.auto_on[t];
+        for j in 0..n {
+            if ramped {
+                self.track_gain_l[t] = self.track_ramp_l[t].next();
+                self.track_gain_r[t] = self.track_ramp_r[t].next();
             }
-            let (il, ir) = instrument.process(0.0, 0.0, &self.transport);
-            // It goes on sounding while muted, so that it can be heard again at once.
-            if runs {
-                xl += il;
-                xr += ir;
+            let (mut xl, mut xr) = (self.in_l[t][j], self.in_r[t][j]);
+            self.in_l[t][j] = 0.0;
+            self.in_r[t][j] = 0.0;
+            if route.bus_in > 0 {
+                let b = route.bus_in as usize - 1;
+                xl += self.bus_l[b][j];
+                xr += self.bus_r[b][j];
             }
-        }
-        if let Some(chain) = self.chains[t].as_mut() {
-            (xl, xr) = chain.process(xl, xr);
-        }
-        for plugin in self.plugins[t].iter_mut().flatten() {
-            if let Some(source) = plugin.side_source() {
-                let source = source as usize;
-                plugin.feed_side(self.side_l[source], self.side_r[source]);
+            if !runs {
+                xl = 0.0;
+                xr = 0.0;
             }
-            (xl, xr) = plugin.process(xl, xr, &self.transport);
-        }
-        // Before the delay compensation: that lines the strip up with the slowest in the mix, which
-        // would make the key later than the sound it is keying.
-        self.side_l[t] = xl;
-        self.side_r[t] = xr;
-        if !audible {
-            xl = 0.0;
-            xr = 0.0;
-        }
-        if let Some(pdc) = self.pdc[t].as_mut() {
-            (xl, xr) = pdc.delay_before(xl, xr);
-        }
-        let (xl, xr) = (xl as f64, xr as f64);
-        if audible {
-            for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
-                let g = send_gain(s.level) as f64;
-                self.add_to_bus(s.bus, xl * g, xr * g);
+            // The effects work in 32 bits.
+            let (mut xl, mut xr) = (xl as f32, xr as f32);
+            if let Some(instrument) = self.instruments[t].as_mut() {
+                if let Some(source) = instrument.side_source() {
+                    let source = source as usize;
+                    instrument.feed_side(self.side_l[source][j], self.side_r[source][j]);
+                }
+                let (il, ir) = instrument.process(0.0, 0.0, &self.transport);
+                // It goes on sounding while muted, so that it can be heard again at once.
+                if runs {
+                    xl += il;
+                    xr += ir;
+                }
             }
-        }
-        let (yl, yr) = (
-            xl * self.track_gain_l[t] as f64,
-            xr * self.track_gain_r[t] as f64,
-        );
-        if audible {
-            for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
-                let g = send_gain(s.level) as f64;
-                self.add_to_bus(s.bus, yl * g, yr * g);
+            if let Some(chain) = self.chains[t].as_mut() {
+                (xl, xr) = chain.process(xl, xr);
             }
-            let (ml, mr) = if self.pre_fader_meter {
-                (xl, xr)
-            } else {
-                (yl, yr)
+            for plugin in self.plugins[t].iter_mut().flatten() {
+                if let Some(source) = plugin.side_source() {
+                    let source = source as usize;
+                    plugin.feed_side(self.side_l[source][j], self.side_r[source][j]);
+                }
+                (xl, xr) = plugin.process(xl, xr, &self.transport);
+            }
+            // Before the delay compensation: that lines the strip up with the slowest in the mix, which
+            // would make the key later than the sound it is keying.
+            self.side_l[t][j] = xl;
+            self.side_r[t][j] = xr;
+            if !audible {
+                xl = 0.0;
+                xr = 0.0;
+            }
+            if let Some(pdc) = self.pdc[t].as_mut() {
+                (xl, xr) = pdc.delay_before(xl, xr);
+            }
+            let (xl, xr) = (xl as f64, xr as f64);
+            if audible {
+                for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
+                    let g = send_gain(s.level) as f64;
+                    self.add_to_bus(s.bus, j, xl * g, xr * g);
+                }
+            }
+            let (yl, yr) = (
+                xl * self.track_gain_l[t] as f64,
+                xr * self.track_gain_r[t] as f64,
+            );
+            if audible {
+                for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
+                    let g = send_gain(s.level) as f64;
+                    self.add_to_bus(s.bus, j, yl * g, yr * g);
+                }
+                let (ml, mr) = if self.pre_fader_meter {
+                    (xl, xr)
+                } else {
+                    (yl, yr)
+                };
+                self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
+                self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
+            }
+            // The compensation after the fader keeps running while the strip is silent, so its
+            // timing is right the moment it is heard.
+            let (yl, yr) = match self.pdc[t].as_mut() {
+                Some(pdc) => {
+                    let (a, b) = pdc.delay_after(yl as f32, yr as f32);
+                    (a as f64, b as f64)
+                }
+                None => (yl, yr),
             };
-            self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
-            self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
-        }
-        // The compensation after the fader keeps running while the strip is silent, so its
-        // timing is right the moment it is heard.
-        let (yl, yr) = match self.pdc[t].as_mut() {
-            Some(pdc) => {
-                let (a, b) = pdc.delay_after(yl as f32, yr as f32);
-                (a as f64, b as f64)
-            }
-            None => (yl, yr),
-        };
-        if audible {
-            if route.output > 0 {
-                self.add_to_bus(route.output, yl, yr);
-            } else {
-                out.0 += yl;
-                out.1 += yr;
+            if audible {
+                if route.output > 0 {
+                    self.add_to_bus(route.output, j, yl, yr);
+                } else {
+                    self.mix_l[j] += yl;
+                    self.mix_r[j] += yr;
+                }
             }
         }
     }
@@ -1643,7 +1672,7 @@ impl EngineCore {
     }
 
     /// One frame of the live input into the strips of the tracks that monitor it.
-    fn hear_input(&mut self) {
+    fn hear_input(&mut self, j: usize) {
         let Some(feed) = self.input.as_mut() else {
             return;
         };
@@ -1659,8 +1688,8 @@ impl EngineCore {
             } else {
                 l
             };
-            self.in_l[t] += l as f64;
-            self.in_r[t] += r as f64;
+            self.in_l[t][j] += l as f64;
+            self.in_r[t][j] += r as f64;
             if !self.touched[t] {
                 self.touched[t] = true;
                 self.dirty.push(t as u16);
@@ -1669,49 +1698,114 @@ impl EngineCore {
     }
 
     /// The strips' signals of this sample, through their effects, faders and sends, summed.
-    fn mix_strips(&mut self) -> (f64, f64) {
+    fn mix_strips(&mut self, n: usize) {
         if self.any_plugin {
-            self.update_plugin_transport();
+            self.update_plugin_transport(n);
         }
-        let mut out = (0f64, 0f64);
+        self.mix_l[..n].fill(0.0);
+        self.mix_r[..n].fill(0.0);
+        let pre_fader = self.pre_fader_meter;
         for k in 0..self.dirty.len() {
             let t = self.dirty[k] as usize;
             self.touched[t] = false;
             if self.strip_kind[t] != 0 {
                 continue;
             }
-            let (yl, yr) = (
-                self.in_l[t] * self.track_gain_l[t] as f64,
-                self.in_r[t] * self.track_gain_r[t] as f64,
-            );
-            let (ml, mr) = if self.pre_fader_meter {
-                (self.in_l[t], self.in_r[t])
-            } else {
-                (yl, yr)
-            };
-            self.in_l[t] = 0.0;
-            self.in_r[t] = 0.0;
-            out.0 += yl;
-            out.1 += yr;
-            self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
-            self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
+            let ramped = self.auto_any && self.auto_on[t];
+            let (mut gain_l, mut gain_r) = (self.track_gain_l[t], self.track_gain_r[t]);
+            let (mut pk_l, mut pk_r) = (self.track_pk_l[t], self.track_pk_r[t]);
+            for j in 0..n {
+                if ramped {
+                    gain_l = self.track_ramp_l[t].next();
+                    gain_r = self.track_ramp_r[t].next();
+                }
+                let (xl, xr) = (self.in_l[t][j], self.in_r[t][j]);
+                let (yl, yr) = (xl * gain_l as f64, xr * gain_r as f64);
+                let (ml, mr) = if pre_fader { (xl, xr) } else { (yl, yr) };
+                self.mix_l[j] += yl;
+                self.mix_r[j] += yr;
+                pk_l = pk_l.max(ml.abs() as f32);
+                pk_r = pk_r.max(mr.abs() as f32);
+            }
+            self.track_gain_l[t] = gain_l;
+            self.track_gain_r[t] = gain_r;
+            self.track_pk_l[t] = pk_l;
+            self.track_pk_r[t] = pk_r;
+            self.in_l[t][..n].fill(0.0);
+            self.in_r[t][..n].fill(0.0);
+            self.gain_ran[t] = ramped;
         }
         self.dirty.clear();
         for k in 0..self.complex.len() {
-            self.run_strip(self.complex[k] as usize, &mut out);
+            self.run_strip(self.complex[k] as usize, n);
         }
         for k in 0..self.aux.len() {
-            self.run_strip(self.aux[k] as usize, &mut out);
+            self.run_strip(self.aux[k] as usize, n);
         }
-        // Only what was used: clearing every bus for every sample would cost more than the mix.
+        // An automated strip with no sound this span still moves along its lane.
+        if self.auto_any {
+            for k in 0..self.auto_tracks.len() {
+                let t = self.auto_tracks[k] as usize;
+                if self.strip_kind[t] == 0 && !std::mem::take(&mut self.gain_ran[t]) {
+                    for _ in 0..n {
+                        self.track_gain_l[t] = self.track_ramp_l[t].next();
+                        self.track_gain_r[t] = self.track_ramp_r[t].next();
+                    }
+                }
+            }
+        }
+        // Only what was used: clearing every bus for every span would cost more than the mix.
         for k in 0..self.bus_used.len() {
             let b = self.bus_used[k] as usize;
-            self.bus_l[b] = 0.0;
-            self.bus_r[b] = 0.0;
+            self.bus_l[b][..n].fill(0.0);
+            self.bus_r[b][..n].fill(0.0);
             self.bus_marked[b] = false;
         }
         self.bus_used.clear();
-        out
+    }
+
+    /// How many frames can go together from here, up to `limit`, with the playhead at each in
+    /// `beats`. The span ends before any frame where a note, a controller, the end of the Cycle, a
+    /// click or a note-off falls, so those stay exact to the frame.
+    fn plan_span(&mut self, limit: usize, frame_secs: f64) -> usize {
+        self.beats[0] = self.beat;
+        if !self.playing {
+            self.beats[..limit].fill(self.beat);
+            return limit;
+        }
+        let next_note = self.song.notes.get(self.next_note).map(|e| e.start_beat);
+        let next_control = self.song.controls.get(self.next_control).map(|e| e.beat);
+        let cycle_end = self.cycle.map(|c| c.1);
+        let ext_end = self
+            .ext_notes
+            .iter()
+            .filter(|e| !e.live)
+            .map(|e| e.end_beat)
+            .fold(f64::INFINITY, f64::min);
+        let due = next_note
+            .unwrap_or(f64::INFINITY)
+            .min(next_control.unwrap_or(f64::INFINITY))
+            .min(cycle_end.unwrap_or(f64::INFINITY))
+            .min(ext_end);
+        let mut beat = self.beat;
+        for i in 1..limit {
+            let before = beat;
+            beat = self.tempo_map.advance(before, frame_secs);
+            if beat >= due {
+                return i;
+            }
+            if self.metronome {
+                let (a, b) = (
+                    self.tempo_map.position(before),
+                    self.tempo_map.position(beat),
+                );
+                if (a.bar, a.beat) != (b.bar, b.beat) {
+                    return i;
+                }
+            }
+            self.beats[i] = beat;
+        }
+        limit
     }
 
     fn drain_commands(&mut self) {
@@ -2175,210 +2269,220 @@ impl EngineCore {
         }
     }
 
-    /// Render interleaved stereo (`out.len() == frames * 2`).
-    pub fn process(&mut self, out: &mut [f32]) {
-        self.drain_commands();
+    /// Renders the next frames into `out`, as many as can go together, and says how many.
+    fn render_span(&mut self, out: &mut [f32], callback_frames: usize) -> usize {
         let frame_secs = 1.0 / self.sr as f64;
-        let (mut pk_l, mut pk_r) = (0f32, 0f32);
-        let mut over = false;
-        for c in self.song.clips.iter_mut() {
-            c.service();
+        let mut limit = (out.len() / 2).min(SPAN);
+        if let Some(round) = self.plugin_round.as_mut() {
+            if round.phase == crate::plugin::PLUGIN_BLOCK {
+                round.phase = 0;
+                round.run(&self.transport);
+            }
+            limit = limit.min(crate::plugin::PLUGIN_BLOCK - round.phase);
         }
-        self.track_pk_l.fill(0.0);
-        self.track_pk_r.fill(0.0);
-        if let Some(feed) = self.input.as_mut() {
-            feed.trim(self.monitor_count > 0);
+        if self.counting {
+            self.tick_count_in();
+            limit = 1;
         }
-
-        crate::plugin::flush_denormals();
-        let callback_frames = out.len() / 2;
-        self.find_active_clips(callback_frames);
-        for frame in out.as_chunks_mut::<2>().0 {
-            if let Some(round) = self.plugin_round.as_mut() {
-                if round.phase == crate::plugin::PLUGIN_BLOCK {
-                    round.phase = 0;
-                    round.run(&self.transport);
-                }
-                round.phase += 1;
-            }
-            if self.counting {
-                self.tick_count_in();
-            }
-            let sample_beat = self.beat;
-            // Advance once per track/sample, not once per voice or overlapping audio clip.
-            if self.mix_ramp_remaining > 0 {
-                for i in 0..self.song.tracks.len().min(MAX_TRACKS) {
-                    if !self.auto_on[i] {
-                        self.track_gain_l[i] = self.track_ramp_l[i].next();
-                        self.track_gain_r[i] = self.track_ramp_r[i].next();
-                    }
-                }
-                self.mix_ramp_remaining -= 1;
-            }
-            if self.auto_any {
-                if self.auto_left == 0 {
-                    self.update_automation();
-                    self.auto_left = AUTO_BLOCK;
-                }
-                self.auto_left -= 1;
-                for k in 0..self.auto_tracks.len() {
-                    let t = self.auto_tracks[k] as usize;
-                    self.track_gain_l[t] = self.track_ramp_l[t].next();
-                    self.track_gain_r[t] = self.track_ramp_r[t].next();
+        // A gain moving sample by sample: for the moment it moves.
+        if self.mix_ramp_remaining > 0 {
+            for i in 0..self.song.tracks.len().min(MAX_TRACKS) {
+                if !self.auto_on[i] {
+                    self.track_gain_l[i] = self.track_ramp_l[i].next();
+                    self.track_gain_r[i] = self.track_ramp_r[i].next();
                 }
             }
-            let (mut l, mut r) = (0f64, 0f64);
-            if self.playing {
-                while let Some(n) = self.song.notes.get(self.next_note).copied() {
-                    if n.start_beat > self.beat {
-                        break;
-                    }
-                    self.next_note += 1;
-                    if n.end_beat > self.beat {
-                        self.trigger(n);
-                    }
+            self.mix_ramp_remaining -= 1;
+            limit = 1;
+        }
+        if self.auto_any {
+            if self.auto_left == 0 {
+                self.update_automation();
+                self.auto_left = AUTO_BLOCK;
+            }
+            limit = limit.min(self.auto_left as usize);
+        }
+        if self.playing {
+            while let Some(n) = self.song.notes.get(self.next_note).copied() {
+                if n.start_beat > self.beat {
+                    break;
                 }
-                while let Some(c) = self.song.controls.get(self.next_control).copied() {
-                    if c.beat > self.beat {
-                        break;
-                    }
-                    self.next_control += 1;
-                    self.send_control(c);
+                self.next_note += 1;
+                if n.end_beat > self.beat {
+                    self.trigger(n);
                 }
-                self.clip_frames += 1;
-                let count = if self.all_clips_active {
-                    self.song.clips.len()
+            }
+            while let Some(c) = self.song.controls.get(self.next_control).copied() {
+                if c.beat > self.beat {
+                    break;
+                }
+                self.next_control += 1;
+                self.send_control(c);
+            }
+            if self.mtc.is_on() {
+                limit = 1;
+            }
+        }
+        // The built-in voices work a sample at a time.
+        if self.voices.iter().any(|v| v.active) {
+            limit = 1;
+        }
+        let n = self.plan_span(limit, frame_secs);
+        if self.auto_any {
+            self.auto_left -= n as u32;
+        }
+        if let Some(round) = self.plugin_round.as_mut() {
+            round.phase += n;
+        }
+        if self.playing {
+            self.clip_frames += n as i64;
+            let count = if self.all_clips_active {
+                self.song.clips.len()
+            } else {
+                self.active_clips.len()
+            };
+            for k in 0..count {
+                let i = if self.all_clips_active {
+                    k
                 } else {
-                    self.active_clips.len()
+                    self.active_clips[k] as usize
                 };
-                for k in 0..count {
-                    let i = if self.all_clips_active {
-                        k
-                    } else {
-                        self.active_clips[k] as usize
-                    };
-                    let c = &mut self.song.clips[i];
+                let c = &mut self.song.clips[i];
+                let t = (c.track as usize).min(MAX_TRACKS - 1);
+                let audible = self.track_audible[t] || self.side_source[t];
+                let faded = c.edit.fade_in_beats > 0.0 || c.edit.fade_out_beats > 0.0;
+                let gain = c.gain_linear;
+                let (in_l, in_r) = (&mut self.in_l[t], &mut self.in_r[t]);
+                let mut sounded = false;
+                for j in 0..n {
                     if let Some((cl, cr)) = c.tick() {
-                        let t = (c.track as usize).min(MAX_TRACKS - 1);
-                        if self.track_audible[t] || self.side_source[t] {
-                            let edit_gain = c.envelope(sample_beat, c.end_beat);
-                            self.in_l[t] += (cl * edit_gain) as f64;
-                            self.in_r[t] += (cr * edit_gain) as f64;
-                            if !self.touched[t] {
-                                self.touched[t] = true;
-                                self.dirty.push(t as u16);
-                            }
+                        if audible {
+                            let edit_gain = if faded {
+                                c.envelope(self.beats[j], c.end_beat)
+                            } else {
+                                gain
+                            };
+                            in_l[j] += (cl * edit_gain) as f64;
+                            in_r[j] += (cr * edit_gain) as f64;
+                            sounded = true;
                         }
                     }
                 }
+                if sounded && !self.touched[t] {
+                    self.touched[t] = true;
+                    self.dirty.push(t as u16);
+                }
             }
-            if !self.ext_notes.is_empty() {
-                self.release_ext_notes(false);
+        }
+        if !self.ext_notes.is_empty() {
+            self.release_ext_notes(false);
+        }
+        if self.monitor_count > 0 {
+            for j in 0..n {
+                self.hear_input(j);
             }
-            if self.monitor_count > 0 {
-                self.hear_input();
-            }
-            for v in self.voices.iter_mut().filter(|v| v.active) {
-                if v.live {
-                    v.live_left = v.live_left.saturating_sub(1);
-                    if v.live_left == 0 {
-                        v.releasing = true;
-                    }
-                } else if self.beat >= v.end_beat || !self.playing {
+        }
+        for v in self.voices.iter_mut().filter(|v| v.active) {
+            if v.live {
+                v.live_left = v.live_left.saturating_sub(1);
+                if v.live_left == 0 {
                     v.releasing = true;
                 }
-                let sr = self.sr;
-                if v.releasing && v.stage != 3 {
-                    v.stage = 3;
-                    v.rel_step = v.env / (v.patch.release.max(0.002) * sr);
-                }
-                let pt = &v.patch;
-                match v.stage {
-                    0 => {
-                        v.env += v.attack_step;
-                        if v.env >= 1.0 {
-                            v.env = 1.0;
-                            v.stage = 1;
-                        }
-                    }
-                    1 => {
-                        v.env -= v.decay_step;
-                        if v.env <= pt.sustain {
-                            v.env = pt.sustain;
-                            v.stage = 2;
-                        }
-                    }
-                    2 => {}
-                    _ => {
-                        v.env -= v.rel_step;
-                        if v.env <= 0.0 {
-                            v.active = false;
-                            continue;
-                        }
+            } else if self.beat >= v.end_beat || !self.playing {
+                v.releasing = true;
+            }
+            let sr = self.sr;
+            if v.releasing && v.stage != 3 {
+                v.stage = 3;
+                v.rel_step = v.env / (v.patch.release.max(0.002) * sr);
+            }
+            let pt = &v.patch;
+            match v.stage {
+                0 => {
+                    v.env += v.attack_step;
+                    if v.env >= 1.0 {
+                        v.env = 1.0;
+                        v.stage = 1;
                     }
                 }
-                let filtered = pt.cutoff < 19_000.0 || pt.highpass;
-                if v.ctrl_left == 0 {
-                    v.ctrl_left = CTRL_BLOCK;
-                    let vib = if pt.vibrato_cents != 0.0 {
-                        v.vibrato = (v.vibrato + pt.vibrato_hz * CTRL_BLOCK as f32 / sr).fract();
-                        (v.vibrato * std::f32::consts::TAU).sin() * pt.vibrato_cents / 1200.0
-                    } else {
-                        0.0
-                    };
-                    let bend = v.pitch_env / 12.0 + vib;
-                    let mul = if bend == 0.0 { 1.0 } else { 2f32.powf(bend) };
-                    if pt.pitch_drop != 0.0 {
-                        v.pitch_env *= v.pitch_decay_block;
-                    }
-                    v.dt_a = v.base_hz * mul / sr;
-                    v.dt_b = v.dt_a * v.ratio_b;
-                    if filtered {
-                        let fc = if pt.filter_env == 0.0 {
-                            pt.cutoff
-                        } else {
-                            pt.cutoff * 2f32.powf(pt.filter_env * v.env * 4.0)
-                        };
-                        v.filter_f =
-                            Svf::coefficient(fc, sr).min(Svf::max_coefficient(v.filter_damping));
+                1 => {
+                    v.env -= v.decay_step;
+                    if v.env <= pt.sustain {
+                        v.env = pt.sustain;
+                        v.stage = 2;
                     }
                 }
-                v.ctrl_left -= 1;
-                let (dt_a, dt_b) = (v.dt_a, v.dt_b);
-                v.phase_a = wrap_phase(v.phase_a + dt_a);
-                v.phase_b = wrap_phase(v.phase_b + dt_b);
-                let mut x = osc(pt.wave_a, v.phase_a, dt_a, pt.pulse_width) * pt.level_a
-                    + osc(pt.wave_b, v.phase_b, dt_b, pt.pulse_width) * pt.level_b;
-                if pt.noise > 0.0 {
-                    v.noise ^= v.noise << 13;
-                    v.noise ^= v.noise >> 17;
-                    v.noise ^= v.noise << 5;
-                    x += ((v.noise as f32 / u32::MAX as f32) * 2.0 - 1.0) * pt.noise;
-                }
-                if filtered {
-                    let (low, high) = v.filter.tick(x, v.filter_f, v.filter_damping);
-                    x = if pt.highpass { high } else { low };
-                }
-                // Last line of defence: a voice that ever goes NaN or infinite is silenced for
-                // that sample and its filter reset, instead of poisoning the mix and meters.
-                if !x.is_finite() {
-                    v.filter = Svf::default();
-                    x = 0.0;
-                }
-                let t = v.track as usize;
-                if self.track_audible[t] || self.side_source[t] {
-                    let x = finite_or_zero(x * v.amp * v.env);
-                    self.in_l[t] += x as f64;
-                    self.in_r[t] += x as f64;
-                    if !self.touched[t] {
-                        self.touched[t] = true;
-                        self.dirty.push(t as u16);
+                2 => {}
+                _ => {
+                    v.env -= v.rel_step;
+                    if v.env <= 0.0 {
+                        v.active = false;
+                        continue;
                     }
                 }
             }
-            let (ml, mr) = self.mix_strips();
-            l += ml;
-            r += mr;
+            let filtered = pt.cutoff < 19_000.0 || pt.highpass;
+            if v.ctrl_left == 0 {
+                v.ctrl_left = CTRL_BLOCK;
+                let vib = if pt.vibrato_cents != 0.0 {
+                    v.vibrato = (v.vibrato + pt.vibrato_hz * CTRL_BLOCK as f32 / sr).fract();
+                    (v.vibrato * std::f32::consts::TAU).sin() * pt.vibrato_cents / 1200.0
+                } else {
+                    0.0
+                };
+                let bend = v.pitch_env / 12.0 + vib;
+                let mul = if bend == 0.0 { 1.0 } else { 2f32.powf(bend) };
+                if pt.pitch_drop != 0.0 {
+                    v.pitch_env *= v.pitch_decay_block;
+                }
+                v.dt_a = v.base_hz * mul / sr;
+                v.dt_b = v.dt_a * v.ratio_b;
+                if filtered {
+                    let fc = if pt.filter_env == 0.0 {
+                        pt.cutoff
+                    } else {
+                        pt.cutoff * 2f32.powf(pt.filter_env * v.env * 4.0)
+                    };
+                    v.filter_f =
+                        Svf::coefficient(fc, sr).min(Svf::max_coefficient(v.filter_damping));
+                }
+            }
+            v.ctrl_left -= 1;
+            let (dt_a, dt_b) = (v.dt_a, v.dt_b);
+            v.phase_a = wrap_phase(v.phase_a + dt_a);
+            v.phase_b = wrap_phase(v.phase_b + dt_b);
+            let mut x = osc(pt.wave_a, v.phase_a, dt_a, pt.pulse_width) * pt.level_a
+                + osc(pt.wave_b, v.phase_b, dt_b, pt.pulse_width) * pt.level_b;
+            if pt.noise > 0.0 {
+                v.noise ^= v.noise << 13;
+                v.noise ^= v.noise >> 17;
+                v.noise ^= v.noise << 5;
+                x += ((v.noise as f32 / u32::MAX as f32) * 2.0 - 1.0) * pt.noise;
+            }
+            if filtered {
+                let (low, high) = v.filter.tick(x, v.filter_f, v.filter_damping);
+                x = if pt.highpass { high } else { low };
+            }
+            // Last line of defence: a voice that ever goes NaN or infinite is silenced for
+            // that sample and its filter reset, instead of poisoning the mix and meters.
+            if !x.is_finite() {
+                v.filter = Svf::default();
+                x = 0.0;
+            }
+            let t = v.track as usize;
+            if self.track_audible[t] || self.side_source[t] {
+                let x = finite_or_zero(x * v.amp * v.env);
+                self.in_l[t][0] += x as f64;
+                self.in_r[t][0] += x as f64;
+                if !self.touched[t] {
+                    self.touched[t] = true;
+                    self.dirty.push(t as u16);
+                }
+            }
+        }
+        self.mix_strips(n);
+        for j in 0..n {
+            let (mut l, mut r) = (self.mix_l[j], self.mix_r[j]);
             if self.test_hz > 0.0 {
                 self.test_phase += self.test_hz / self.sr;
                 if self.test_phase >= 1.0 {
@@ -2414,7 +2518,7 @@ impl EngineCore {
                 for plugin in self.master_plugins.iter_mut().flatten() {
                     if let Some(source) = plugin.side_source() {
                         let source = source as usize;
-                        plugin.feed_side(self.side_l[source], self.side_r[source]);
+                        plugin.feed_side(self.side_l[source][j], self.side_r[source][j]);
                     }
                     let (a, b) = plugin.process(l as f32, r as f32, &transport);
                     l = f64::from(a);
@@ -2432,60 +2536,85 @@ impl EngineCore {
                     let _ = tap.push(r);
                 }
             }
-            over |= l.abs() > 1.0 || r.abs() > 1.0;
+            self.span_over |= l.abs() > 1.0 || r.abs() > 1.0;
             // A sound card cannot take more than full scale. A float file can.
             let (l, r) = if self.keep_headroom {
                 (l, r)
             } else {
                 (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
             };
-            pk_l = pk_l.max(l.abs());
-            pk_r = pk_r.max(r.abs());
-            frame[0] = l;
-            frame[1] = r;
-            // Render events at the current sample position, then advance to the next one.
-            if self.playing {
-                let prev = self.beat;
-                self.beat = self.tempo_map.advance(prev, frame_secs);
-                if self.mtc.is_on() {
-                    self.mtc_secs += frame_secs;
-                    let frames = self.mtc_frames();
-                    let tx = &mut self.mtc_out;
-                    self.mtc.tick(frames, |m| {
-                        let _ = tx.push(m);
-                    });
-                }
-                if let Some((s, e)) = self.cycle {
-                    if self.beat >= e {
-                        let start = self.tempo_map.seconds_at(s);
-                        let end = self.tempo_map.seconds_at(e);
-                        let duration = end - start;
-                        if duration > 0.0 {
-                            let excess = self.tempo_map.seconds_at(self.beat) - end;
-                            let wrapped =
-                                self.tempo_map.beat_at(start + excess.rem_euclid(duration));
-                            self.seek(wrapped);
-                            // Every clip has just been put in its place.
-                            self.clip_frames = 0;
-                            self.find_active_clips(callback_frames);
-                            // A fractional-sample wrap must still trigger notes at cycle start.
-                            self.next_note = self.song.notes.partition_point(|n| n.start_beat < s);
-                            self.next_control = self.song.controls.partition_point(|c| c.beat < s);
-                        }
-                    }
-                }
-                if self.metronome {
-                    let (a, b) = (
-                        self.tempo_map.position(prev),
-                        self.tempo_map.position(self.beat),
-                    );
-                    if (a.bar, a.beat) != (b.bar, b.beat) {
-                        self.click_remaining = (0.03 * self.sr) as u32;
-                        self.click_phase = 0.0;
-                        self.click_freq = if b.beat == 0 { 1500.0 } else { 1000.0 };
+            self.span_pk_l = self.span_pk_l.max(l.abs());
+            self.span_pk_r = self.span_pk_r.max(r.abs());
+            out[j * 2] = l;
+            out[j * 2 + 1] = r;
+        }
+        // Render events at the current sample position, then advance to the next one.
+        if self.playing {
+            let prev = self.beats[n - 1];
+            self.beat = self.tempo_map.advance(prev, frame_secs);
+            if self.mtc.is_on() {
+                self.mtc_secs += frame_secs;
+                let frames = self.mtc_frames();
+                let tx = &mut self.mtc_out;
+                self.mtc.tick(frames, |m| {
+                    let _ = tx.push(m);
+                });
+            }
+            if let Some((s, e)) = self.cycle {
+                if self.beat >= e {
+                    let start = self.tempo_map.seconds_at(s);
+                    let end = self.tempo_map.seconds_at(e);
+                    let duration = end - start;
+                    if duration > 0.0 {
+                        let excess = self.tempo_map.seconds_at(self.beat) - end;
+                        let wrapped = self.tempo_map.beat_at(start + excess.rem_euclid(duration));
+                        self.seek(wrapped);
+                        // Every clip has just been put in its place.
+                        self.clip_frames = 0;
+                        self.find_active_clips(callback_frames);
+                        // A fractional-sample wrap must still trigger notes at cycle start.
+                        self.next_note = self.song.notes.partition_point(|n| n.start_beat < s);
+                        self.next_control = self.song.controls.partition_point(|c| c.beat < s);
                     }
                 }
             }
+            if self.metronome {
+                let (a, b) = (
+                    self.tempo_map.position(prev),
+                    self.tempo_map.position(self.beat),
+                );
+                if (a.bar, a.beat) != (b.bar, b.beat) {
+                    self.click_remaining = (0.03 * self.sr) as u32;
+                    self.click_phase = 0.0;
+                    self.click_freq = if b.beat == 0 { 1500.0 } else { 1000.0 };
+                }
+            }
+        }
+        n
+    }
+
+    /// Render interleaved stereo (`out.len() == frames * 2`).
+    pub fn process(&mut self, out: &mut [f32]) {
+        self.drain_commands();
+        for c in self.song.clips.iter_mut() {
+            c.service();
+        }
+        self.track_pk_l.fill(0.0);
+        self.track_pk_r.fill(0.0);
+        if let Some(feed) = self.input.as_mut() {
+            feed.trim(self.monitor_count > 0);
+        }
+
+        crate::plugin::flush_denormals();
+        let callback_frames = out.len() / 2;
+        self.find_active_clips(callback_frames);
+        self.span_pk_l = 0.0;
+        self.span_pk_r = 0.0;
+        self.span_over = false;
+        let total = out.len();
+        let mut done = 0;
+        while done < total {
+            done += self.render_span(&mut out[done..total], callback_frames) * 2;
         }
         let mut underruns = 0;
         for c in self.song.clips.iter_mut() {
@@ -2497,6 +2626,7 @@ impl EngineCore {
                 .fetch_add(underruns, Ordering::Relaxed);
         }
         self.settle_inactive_clips();
+        let (pk_l, pk_r, over) = (self.span_pk_l, self.span_pk_r, self.span_over);
         let shown = &mut self.shown;
         shown.position_beats = self.beat;
         shown.playing = self.playing;
@@ -4049,7 +4179,8 @@ mod tests {
         let mut feeds = Vec::new();
         let mut clips = Vec::new();
         for track in 0..5u16 {
-            let (producer, consumer) = rtrb::RingBuffer::new(FRAMES as usize / crate::disk::BLOCK_FRAMES + 4);
+            let (producer, consumer) =
+                rtrb::RingBuffer::new(FRAMES as usize / crate::disk::BLOCK_FRAMES + 4);
             let edit = if track == 1 {
                 ClipEdit {
                     fade_in_beats: 0.5,
@@ -4062,26 +4193,79 @@ mod tests {
                 ClipEdit::default()
             };
             let start = f64::from(track) * 0.13;
-            clips.push(AudioClip::new(track, start, FRAMES, edit, consumer, Arc::new(ClipShared::default())));
+            clips.push(AudioClip::new(
+                track,
+                start,
+                FRAMES,
+                edit,
+                consumer,
+                Arc::new(ClipShared::default()),
+            ));
             feeds.push(producer);
         }
         let mut mixes = vec![TrackMix::default(); 7];
         mixes[0].pan = -0.3;
         mixes[1].gain_db = -6.0;
-        let notes = vec![NoteEvent { track: 5, ..note(2.0, 3.0) }];
+        let notes = vec![NoteEvent {
+            track: 5,
+            ..note(2.0, 3.0)
+        }];
         let song = Song::new(notes, mixes).with_clips(clips);
         assert!(tx.push(Command::SetSong(Box::new(song))).is_ok());
         let mut send = Route::default();
-        send.sends[0] = SendSpec { bus: 1, level: 0.7, pre: false };
-        send.sends[1] = SendSpec { bus: 2, level: 0.4, pre: true };
-        assert!(tx.push(Command::SetRoute { track: 2, route: send }).is_ok());
-        let aux = Route { bus_in: 1, ..Route::default() };
-        assert!(tx.push(Command::SetRoute { track: 3, route: aux }).is_ok());
-        let second = Route { bus_in: 2, ..Route::default() };
-        assert!(tx.push(Command::SetRoute { track: 6, route: second }).is_ok());
-        assert!(tx.push(Command::SetInserts { track: 3, chain: effect(FxKind::ChannelEq, &[]) }).is_ok());
-        let plugin = PluginSlot::new(Box::new(FakePlugin { gain: 0.5, ..FakePlugin::default() }));
-        assert!(tx.push(Command::SetPlugin { track: 4, slot: 0, plugin: Some(Box::new(plugin)) }).is_ok());
+        send.sends[0] = SendSpec {
+            bus: 1,
+            level: 0.7,
+            pre: false,
+        };
+        send.sends[1] = SendSpec {
+            bus: 2,
+            level: 0.4,
+            pre: true,
+        };
+        assert!(tx
+            .push(Command::SetRoute {
+                track: 2,
+                route: send
+            })
+            .is_ok());
+        let aux = Route {
+            bus_in: 1,
+            ..Route::default()
+        };
+        assert!(tx
+            .push(Command::SetRoute {
+                track: 3,
+                route: aux
+            })
+            .is_ok());
+        let second = Route {
+            bus_in: 2,
+            ..Route::default()
+        };
+        assert!(tx
+            .push(Command::SetRoute {
+                track: 6,
+                route: second
+            })
+            .is_ok());
+        assert!(tx
+            .push(Command::SetInserts {
+                track: 3,
+                chain: effect(FxKind::ChannelEq, &[])
+            })
+            .is_ok());
+        let plugin = PluginSlot::new(Box::new(FakePlugin {
+            gain: 0.5,
+            ..FakePlugin::default()
+        }));
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 4,
+                slot: 0,
+                plugin: Some(Box::new(plugin))
+            })
+            .is_ok());
         let lane = AutoLane {
             track: 0,
             target: AutoTarget::Volume,
@@ -4103,7 +4287,12 @@ mod tests {
                     frame[0] = (at * hz * std::f32::consts::TAU).sin() * 0.3;
                     frame[1] = (at * hz * 1.5 * std::f32::consts::TAU).sin() * 0.2;
                 }
-                let block = Block { gen, start, frames: crate::disk::BLOCK_FRAMES as u32, data };
+                let block = Block {
+                    gen,
+                    start,
+                    frames: crate::disk::BLOCK_FRAMES as u32,
+                    data,
+                };
                 if feed.push(block).is_err() {
                     break;
                 }
@@ -4488,12 +4677,14 @@ mod tests {
         let mut first = None;
         for i in 0..400 {
             if i == 10 {
-                e.in_l[0] = 0.5;
-                e.in_r[0] = -0.5;
+                e.in_l[0][0] = 0.5;
+                e.in_r[0][0] = -0.5;
                 e.touched[0] = true;
                 e.dirty.push(0);
             }
-            let (l, r) = e.mix_strips();
+            e.beats[0] = e.beat;
+            e.mix_strips(1);
+            let (l, r) = (e.mix_l[0], e.mix_r[0]);
             if first.is_none() && l != 0.0 {
                 assert!((l - 0.5).abs() < 1e-6 && (r + 0.5).abs() < 1e-6, "{l} {r}");
                 first = Some(i);
@@ -4505,13 +4696,14 @@ mod tests {
         // 32 bits the 0.00001 would be lost: the spacing of numbers near 1000 is 0.00006).
         let (mut e, _tx, _s) = rig();
         for (t, v) in [(0usize, 1000.0f64), (1, 0.00001), (2, -1000.0)] {
-            e.in_l[t] = v;
+            e.in_l[t][0] = v;
             e.touched[t] = true;
             e.dirty.push(t as u16);
         }
-        let (l, _) = e.mix_strips();
+        e.mix_strips(1);
+        let l = e.mix_l[0];
         assert!((l - 0.00001).abs() < 1e-12, "{l}");
-        assert!(e.dirty.is_empty() && e.in_l[0] == 0.0);
+        assert!(e.dirty.is_empty() && e.in_l[0][0] == 0.0);
         // Garbage: the old compensation comes back through the queue, and a track past the
         // end is ignored.
         let (mut e, mut tx, _s) = rig();
