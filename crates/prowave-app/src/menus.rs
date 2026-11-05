@@ -278,6 +278,7 @@ const WINDOW: &[&str] = &[
     "Piano Roll",
     "Mixer",
     "Plugin Manager",
+    "Screensets…",
     "Video",
     "-",
     "Bring All to Front",
@@ -562,8 +563,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             s.mixer.auto_editor.track.is_some() || p.tracks.iter().any(|t| t.show_auto)
         }
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
-        "Create Mastering Track" | "Plugin Manager" => true,
         "Logic-style Key Commands…" | "About Pro Wave" | "Customize Toolbar…" => true,
+        "Create Mastering Track" | "Plugin Manager" | "Screensets…" => true,
         "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
         "Convert Automation" => s
@@ -847,6 +848,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.dialogs.customize_toolbar = true;
             s.show_toolbar = true;
         }
+        "Screensets…" => s.dialogs.screensets = !s.dialogs.screensets,
         "Other Projects…" => s.file_task = Some(FileTask::ImportProject),
         "Consolidate…" => s.file_task = Some(FileTask::Consolidate),
         "Clean Up…" => s.dialogs.clean_up = Some(crate::bounce::unused_freeze_files(p)),
@@ -908,6 +910,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             };
             let n = crate::region_edit::quantize_selected(p, &s.tracks, grid);
             s.status = Some(format!("Quantized {n} regions"));
+        }
+        "Make Groove Template" => {
+            if let Some((t, r)) = s.tracks.selected {
+                crate::groove_template::make(p, s, t, r);
+            }
         }
         "Move to Playhead" => crate::region_edit::move_selected_to_playhead(p, &s.tracks),
         "Convert to New Sampler Track" => {
@@ -1496,6 +1503,7 @@ mod tests {
                     s.mixer.auto_editor.track,
                     (
                         s.dialogs.groups,
+                        s.dialogs.screensets,
                         s.dialogs.plugin_manager,
                         s.dialogs.about,
                         s.dialogs.clean_up.is_some(),

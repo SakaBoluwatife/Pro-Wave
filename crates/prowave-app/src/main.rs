@@ -23,6 +23,7 @@ mod flex_edit;
 mod fx_ui;
 mod graphics;
 mod groove;
+mod groove_template;
 mod groups;
 mod i18n;
 mod import;
@@ -66,6 +67,7 @@ mod routing_matrix;
 mod sample_browser;
 mod sample_place;
 mod score;
+mod screensets;
 mod scripter;
 mod settings;
 mod side_panes;
@@ -158,12 +160,16 @@ pub struct UiState {
     /// The editor panel shows the Score instead of the Piano Roll for ordinary MIDI regions.
     pub score_tab: bool,
     pub score: score::ScoreView,
+    /// The screenset called back or saved last, for its window.
+    pub screenset_on: Option<u8>,
     /// A note the Score just added is sounding: its pitch and when it stops.
     pub score_heard: Option<(u8, f64)>,
     /// Flex Time and Flex Pitch work running in the background.
     pub flex: flex_edit::FlexState,
     /// The audio Groove Track's hits being read.
     pub groove: groove::GrooveState,
+    /// An audio region being read to make a groove template.
+    pub groove_make: groove_template::MakeState,
     /// File > Import > MIDI File… or Export > Selection as MIDI File…, run after the menus.
     pub midi_cmd: Option<midi_file::MidiCmd>,
     /// The Pattern and Drummer editors, which take the Piano Roll's place for those regions.
@@ -259,9 +265,11 @@ impl UiState {
             transform: transform_ui::TransformView::default(),
             score_tab: false,
             score: score::ScoreView::default(),
+            screenset_on: None,
             score_heard: None,
             flex: flex_edit::FlexState::default(),
             groove: groove::GrooveState::default(),
+            groove_make: groove_template::MakeState::default(),
             midi_cmd: None,
             piano_focus: false,
             audition: Vec::new(),
@@ -737,6 +745,7 @@ impl eframe::App for App {
         smart_tempo::poll(&ctx, &mut self.project, &mut self.ui);
         flex_edit::poll(&ctx, &mut self.project, &mut self.ui);
         groove::poll(&ctx, &mut self.project, &mut self.ui);
+        groove_template::poll(&ctx, &mut self.project, &mut self.ui);
         if let Some(probe) = self.bench.as_mut() {
             if probe.frame(&ctx) {
                 self.bench = None;
@@ -948,6 +957,10 @@ impl eframe::App for App {
         settings::show(&ctx, s);
         if let Some(label) = s.tracks.pending_menu.take() {
             menus::apply(label, p, s);
+        }
+        if let Some(index) = s.tracks.groove_quantize.take() {
+            let n = groove_template::quantize_selected(p, s, index);
+            s.status = Some(format!("Quantized {n} regions to the groove"));
         }
         quick_dialogs::show(&ctx, p, s);
         smart_controls::show(&ctx, p, s);

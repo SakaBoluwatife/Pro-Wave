@@ -344,6 +344,8 @@ pub struct TracksView {
     pub wave_zoom: f32,
     /// An entry of the Functions or View menu, for `menus::apply`.
     pub pending_menu: Option<&'static str>,
+    /// The groove template the selected regions' notes should be quantized to.
+    pub groove_quantize: Option<usize>,
 }
 
 impl TracksView {
@@ -449,6 +451,7 @@ impl Default for TracksView {
             show_colors: true,
             header_opts: HeaderOpts::default(),
             pending_menu: None,
+            groove_quantize: None,
         }
     }
 }
@@ -990,7 +993,20 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
                         ui.close();
                     }
                 }
+                if !p.grooves.is_empty() {
+                    ui.separator();
+                }
+                for (i, groove) in p.grooves.iter().enumerate() {
+                    if ui.button(format!("Groove: {}", groove.name)).clicked() {
+                        v.groove_quantize = Some(i);
+                        ui.close();
+                    }
+                }
             });
+            if ui.button("Make Groove Template").clicked() {
+                v.pending_menu = Some("Make Groove Template");
+                ui.close();
+            }
             if ui.button(tr("Bounce in Place…")).clicked() {
                 v.pending_menu = Some("Bounce In Place");
                 ui.close();

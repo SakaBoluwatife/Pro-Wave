@@ -626,6 +626,78 @@ pub struct ProjectDoc {
     pub mtc_out: Option<String>,
     /// MIDI input port (by name) that Pro Wave chases MIDI Time Code from, if any.
     pub mtc_in: Option<String>,
+    /// Groove templates, offered by Quantize.
+    pub grooves: Vec<GrooveDoc>,
+    /// Panel layouts on the number keys.
+    pub screensets: Vec<ScreensetDoc>,
+}
+
+/// A screenset: a layout of the panels, called back on a number key.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ScreensetDoc {
+    /// The number key, 1 to 9.
+    pub slot: u8,
+    pub name: String,
+    pub show_mixer: bool,
+    pub show_piano: bool,
+    pub score_tab: bool,
+    pub show_library: bool,
+    /// The left panel's tab: 0 Library, 1 Browser, 2 Plugins.
+    pub left_tab: u8,
+    pub show_inspector: bool,
+    pub show_lists: bool,
+    pub show_quick_help: bool,
+    pub show_toolbar: bool,
+    pub show_notes: bool,
+    /// The right pane: empty for none.
+    pub browser: String,
+    pub show_rack: bool,
+    pub show_smart: bool,
+    pub show_mastering: bool,
+    pub show_tempo: bool,
+    pub show_markers: bool,
+    pub show_signatures: bool,
+    /// Width of a bar in the Tracks area, in points.
+    pub bar_w: f32,
+}
+
+impl Default for ScreensetDoc {
+    fn default() -> Self {
+        Self {
+            slot: 1,
+            name: String::new(),
+            show_mixer: false,
+            show_piano: false,
+            score_tab: false,
+            show_library: false,
+            left_tab: 0,
+            show_inspector: true,
+            show_lists: false,
+            show_quick_help: false,
+            show_toolbar: false,
+            show_notes: false,
+            browser: String::new(),
+            show_rack: false,
+            show_smart: false,
+            show_mastering: false,
+            show_tempo: false,
+            show_markers: false,
+            show_signatures: false,
+            bar_w: 0.0,
+        }
+    }
+}
+
+/// A groove template: the places of a region's hits, kept as a quantize grid.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct GrooveDoc {
+    pub name: String,
+    /// It repeats every this many quarter notes, counted from the start of a bar.
+    pub length: f32,
+    /// Quarter notes from the start of the template, in order.
+    pub hits: Vec<f32>,
 }
 
 /// A time-signature change: `num/den` from the start of the 1-based `bar` on.
@@ -711,6 +783,8 @@ impl Default for ProjectDoc {
             smpte_start: [1, 0, 0, 0],
             mtc_out: None,
             mtc_in: None,
+            grooves: Vec::new(),
+            screensets: Vec::new(),
         }
     }
 }

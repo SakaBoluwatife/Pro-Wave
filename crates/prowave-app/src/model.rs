@@ -1071,6 +1071,10 @@ pub struct Project {
     pub master_plugins: Vec<PluginInsert>,
     /// Hardware controls assigned with MIDI learn.
     pub midi_map: Vec<MidiMapping>,
+    /// Groove templates, offered by Quantize (see `groove_template`).
+    pub grooves: Vec<prowave_project::GrooveDoc>,
+    /// Panel layouts on the number keys (see `screensets`).
+    pub screensets: Vec<prowave_project::ScreensetDoc>,
 }
 
 /// Deterministic pseudo-random so demo content is stable across runs.
@@ -1280,6 +1284,8 @@ impl Project {
             patterns: Vec::new(),
             master_plugins: Vec::new(),
             midi_map: Vec::new(),
+            grooves: Vec::new(),
+            screensets: Vec::new(),
             low_latency: false,
             punch: false,
             punch_start: 0.0,

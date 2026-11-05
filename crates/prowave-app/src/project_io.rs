@@ -747,6 +747,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         snap_zero: p.snap_zero,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
         midi_map: midi_map_to_doc(p),
+        grooves: p.grooves.clone(),
+        screensets: p.screensets.clone(),
         song_patterns: p
             .patterns
             .iter()
@@ -1222,6 +1224,8 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .collect(),
         })
         .collect();
+    p.grooves = crate::groove_template::from_docs(&doc.grooves);
+    p.screensets = crate::screensets::from_doc(&doc.screensets);
     p.punch = doc.punch;
     p.punch_start = doc.punch_start.max(0.0);
     p.punch_end = doc.punch_end.max(p.punch_start);

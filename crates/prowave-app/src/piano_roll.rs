@@ -7,6 +7,10 @@
 //! with Strength and Swing, Scale Quantize, velocity editing, zoom and scrolling. Edits go to
 //! the project and reach the engine when the mouse is released. Score, Step Sequencer and
 //! Smart Tempo are not implemented yet and show dimmed.
+//!
+//! As in FL Studio, dragging the ruler with the right button makes a time selection, which takes
+//! the notes that start in it; Ctrl+Delete and Ctrl+Insert take time out or open it up. The lane
+//! under the notes shows velocity or any MIDI controller, chosen from its label.
 use crate::i18n::{tr, trf};
 use crate::model::{Note, Project, TrackKind};
 use crate::note_edit::{self, GRIDS, MODES, ROOTS};
@@ -175,9 +179,116 @@ enum Drag {
     },
 }
 
+/// What the lane under the notes shows and edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    Velocity,
+    /// A MIDI controller of the region, by number.
+    Control(u8),
+}
+
+/// The controllers offered by name. Any other number can be typed in the same menu.
+const NAMED_CONTROLS: [(u8, &str, &str); 8] = [
+    (1, "Modulation", "Mod"),
+    (2, "Breath", "Breath"),
+    (7, "Volume", "Volume"),
+    (10, "Pan", "Pan"),
+    (11, "Expression", "Expr"),
+    (64, "Sustain", "Sustain"),
+    (71, "Resonance", "Reso"),
+    (74, "Cutoff", "Cutoff"),
+];
+
+impl Lane {
+    /// In full, for the menu and the inspector.
+    fn name(self) -> String {
+        match self {
+            Lane::Velocity => tr("Note Velocity").to_string(),
+            Lane::Control(n) => match NAMED_CONTROLS.iter().find(|c| c.0 == n) {
+                Some(c) => format!("{} (CC {n})", c.1),
+                None => format!("CC {n}"),
+            },
+        }
+    }
+
+    /// Short enough for the label beside the lane, which is as wide as the piano keys.
+    fn short(self) -> String {
+        match self {
+            Lane::Velocity => tr("Velocity").to_string(),
+            Lane::Control(n) => match NAMED_CONTROLS.iter().find(|c| c.0 == n) {
+                Some(c) => c.2.to_string(),
+                None => format!("CC {n}"),
+            },
+        }
+    }
+}
+
+/// The menu that picks what the lane shows. `used` are the controllers the region already has.
+fn lane_menu(ui: &mut Ui, lane: &mut Lane, used: &[u8]) {
+    ui.set_min_width(170.0);
+    if ui
+        .selectable_label(*lane == Lane::Velocity, Lane::Velocity.name())
+        .clicked()
+    {
+        *lane = Lane::Velocity;
+        ui.close();
+    }
+    ui.separator();
+    let others = used
+        .iter()
+        .copied()
+        .filter(|n| !NAMED_CONTROLS.iter().any(|c| c.0 == *n));
+    for n in NAMED_CONTROLS.iter().map(|c| c.0).chain(others) {
+        let choice = Lane::Control(n);
+        // A dot says the region has this controller already.
+        let text = if used.contains(&n) {
+            format!("{} •", choice.name())
+        } else {
+            choice.name()
+        };
+        if ui.selectable_label(*lane == choice, text).clicked() {
+            *lane = choice;
+            ui.close();
+        }
+    }
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label("Other CC");
+        let mut number = match *lane {
+            Lane::Control(n) => n,
+            Lane::Velocity => 0,
+        };
+        if ui
+            .add(egui::DragValue::new(&mut number).range(0..=127))
+            .changed()
+        {
+            *lane = Lane::Control(number);
+        }
+    });
+}
+
+/// A stroke in a controller lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LaneDrag {
+    /// Left button: draws from the last point it was at (beat, value).
+    Draw { beat: f32, value: u8 },
+    /// Right button: erases from the last beat it was at.
+    Erase { beat: f32 },
+}
+
 pub struct PianoView {
     /// View > Note Colors.
     pub note_colors: NoteColors,
+    /// What the lane under the notes shows.
+    lane: Lane,
+    lane_drag: Option<LaneDrag>,
+    /// The time selection, in beats from the region's start: made by dragging the ruler with the
+    /// right button, as in FL Studio.
+    time_sel: Option<(f32, f32)>,
+    /// Where that drag began.
+    time_anchor: Option<f32>,
+    /// The groove template Quantize uses, in place of the grid.
+    groove: Option<usize>,
     tool: Tool,
     /// Pitch currently sounding because of the mouse (key press or note edit).
     held: Option<u8>,
@@ -218,6 +329,11 @@ impl Default for PianoView {
     fn default() -> Self {
         Self {
             note_colors: NoteColors::default(),
+            lane: Lane::Velocity,
+            lane_drag: None,
+            time_sel: None,
+            time_anchor: None,
+            groove: None,
             tools: crate::note_tools::ToolSettings::default(),
             tool: Tool::Draw,
             held: None,
@@ -404,6 +520,24 @@ struct Actions {
     /// The computer keyboard plays notes, and its button was pressed.
     typing_on: bool,
     toggle_typing: bool,
+    /// There is a time selection, and what was asked of it.
+    has_time: bool,
+    delete_time: bool,
+    insert_time: bool,
+    loop_time: bool,
+    /// Make a groove template of this region, or delete the one in use.
+    make_groove: bool,
+    delete_groove: bool,
+}
+
+/// What an edit with no notes picked works on: the selection, or all the notes when nothing is
+/// picked. A time selection with no notes in it means no notes, never all of them.
+fn targets_of(selected: &[usize], count: usize, time_sel: bool) -> Vec<usize> {
+    if selected.is_empty() && !time_sel {
+        (0..count).collect()
+    } else {
+        selected.to_vec()
+    }
 }
 
 fn toolbar(
@@ -521,6 +655,22 @@ fn toolbar(
         if ui.button("Select Same Position").clicked() {
             act.same_start = true;
             ui.close();
+        }
+        ui.separator();
+        for (text, key, flag) in [
+            ("Delete Time", "Ctrl+Delete", &mut act.delete_time),
+            ("Insert Time", "Ctrl+Insert", &mut act.insert_time),
+            ("Set Locators to Time Selection", "", &mut act.loop_time),
+        ] {
+            let button = egui::Button::new(text).shortcut_text(key);
+            if ui
+                .add_enabled(act.has_time, button)
+                .on_disabled_hover_text("Drag the ruler with the right button first")
+                .clicked()
+            {
+                *flag = true;
+                ui.close();
+            }
         }
     });
     let (view, w) = menu_title(ui, &g, x, cy, tr("View"), uid("View"));
@@ -792,6 +942,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         undo: None,
         typing_on: s.typing.on,
         toggle_typing: false,
+        has_time: s.piano.time_sel.is_some(),
+        delete_time: false,
+        insert_time: false,
+        loop_time: false,
+        make_groove: false,
+        delete_groove: false,
     };
     let mut snap = s.tracks.snap;
     toolbar(ui, bar, &mut s.piano, has_sel, &mut snap, &mut act);
@@ -843,6 +999,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let origin = p.region_start_beats(&p.tracks[ti].regions[ri]);
     // The bar and beat length where the region starts (the grid draws every bar on its own).
     let bpb = p.bar_len_at(origin);
+    let groove_offset = crate::groove_template::bar_offset(p, origin) as f32;
     let unit = p.beat_unit_at(origin);
     let (region_name, start_bar, len_beats) = {
         let r = &p.tracks[ti].regions[ri];
@@ -923,6 +1080,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         v.scroll_y = (127.0 - mid) * v.key_h - grid.height() / 2.0;
         v.scroll_x = 0.0;
         v.selected.clear();
+        v.time_sel = None;
+        v.time_anchor = None;
+        v.lane_drag = None;
     }
 
     if v.fit {
@@ -1115,7 +1275,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     // Alt turns the snap off for as long as it is held.
     let snap = if alt { 1.0 / 64.0 } else { step };
     let edge_beats = 10.0 / beat_px;
-    let notes = &mut p.tracks[ti].regions[ri].notes;
+    let shown = &mut p.tracks[ti].regions[ri];
+    let (notes, controls) = (&mut shown.notes, &mut shown.controls);
     let (primary_press, secondary_press, hover, down_now, secondary_down) = ui.input(|i| {
         (
             i.pointer.button_pressed(egui::PointerButton::Primary),
@@ -1365,9 +1526,74 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             | Drag::Paint { .. } => v.dirty = true,
         }
     }
+    // ---- Time selection, as in FL Studio: drag the ruler with the right button. It takes the
+    // notes that start in it, so every tool and key works on them.
+    let ruler_resp = ui.interact(ruler, id("ruler"), Sense::click_and_drag());
+    let in_ruler = hover.is_some_and(|pt| ruler.contains(pt)) && ruler_resp.hovered();
+    let on_step = |x: f32| (snap_to(beat_at(x) as f64, snap as f64) as f32).max(0.0);
+    if in_ruler && secondary_press {
+        v.time_anchor = hover.map(|pt| on_step(pt.x));
+        v.time_sel = None;
+    }
+    if ruler_resp.clicked() {
+        v.time_sel = None;
+    }
+    if let Some(anchor) = v.time_anchor {
+        if !secondary_down {
+            v.time_anchor = None;
+        } else if let Some(pt) = hover {
+            let now = on_step(pt.x);
+            if (now - anchor).abs() > 1e-4 {
+                let range = (anchor.min(now), anchor.max(now));
+                v.time_sel = Some(range);
+                v.selected = note_edit::in_time(notes, range.0, range.1);
+            }
+        }
+    }
     // ---- Velocity lane (FL Studio style): drag a stem up or down to set that note's velocity.
     let vresp = ui.interact(vel_rect, id("vel_lane"), Sense::click_and_drag());
-    if vresp.drag_started() || vresp.clicked() {
+    // A controller lane: the left button draws the values, the right one rubs them out.
+    if let Lane::Control(number) = v.lane {
+        let beat_of = |x: f32| beat_at(x).clamp(0.0, len_beats);
+        let value_of = |y: f32| {
+            (((vel_rect.bottom() - y) / vel_rect.height()) * 127.0)
+                .round()
+                .clamp(0.0, 127.0) as u8
+        };
+        if let Some(pt) = hover.filter(|pt| vel_rect.contains(*pt) && vresp.hovered()) {
+            if primary_press {
+                v.lane_drag = Some(LaneDrag::Draw {
+                    beat: beat_of(pt.x),
+                    value: value_of(pt.y),
+                });
+            } else if secondary_press {
+                v.lane_drag = Some(LaneDrag::Erase {
+                    beat: beat_of(pt.x),
+                });
+            }
+        }
+        // Fine enough for a smooth line whatever the snap is; Alt is finest, as on the notes.
+        let every = snap.clamp(1.0 / 64.0, 0.125);
+        match (v.lane_drag, hover) {
+            (Some(LaneDrag::Draw { beat, value }), Some(pt)) if down_now => {
+                let (now, level) = (beat_of(pt.x), value_of(pt.y));
+                note_edit::draw_controls(controls, number, (beat, value), (now, level), every);
+                v.lane_drag = Some(LaneDrag::Draw {
+                    beat: now,
+                    value: level,
+                });
+                v.dirty = true;
+            }
+            (Some(LaneDrag::Erase { beat }), Some(pt)) if secondary_down => {
+                let now = beat_of(pt.x);
+                note_edit::erase_controls(controls, number, beat, now);
+                v.lane_drag = Some(LaneDrag::Erase { beat: now });
+                v.dirty = true;
+            }
+            (Some(_), _) if !down_now && !secondary_down => v.lane_drag = None,
+            _ => {}
+        }
+    } else if vresp.drag_started() || vresp.clicked() {
         let origin = ui.input(|i| i.pointer.press_origin());
         if let Some(pt) = origin.or(vresp.interact_pointer_pos()) {
             let near = |n: &Note| (x_of(n.start) - pt.x).abs();
@@ -1413,13 +1639,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     // ---- Keyboard, as in FL Studio's piano roll (only while the pointer is over the editor)
     if hovered && !ui.ctx().egui_wants_keyboard_input() {
-        let targets_now = |selected: &[usize], count: usize| -> Vec<usize> {
-            if selected.is_empty() {
-                (0..count).collect()
-            } else {
-                selected.to_vec()
-            }
-        };
         let (m, pressed): (egui::Modifiers, Vec<Key>) = ui.input(|i| {
             (
                 i.modifiers,
@@ -1439,7 +1658,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         // While the keyboard plays notes, Shift picks the tools.
         let tool_key = plain || (typing_on && shift && !ctrl && !alt);
         for key in pressed {
-            let targets = targets_now(&v.selected, notes.len());
+            let targets = targets_of(&v.selected, notes.len(), v.time_sel.is_some());
             let mut edited = true;
             match key {
                 Key::P if tool_key => v.tool = Tool::Draw,
@@ -1448,7 +1667,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 Key::T if tool_key => v.tool = Tool::Mute,
                 Key::C if tool_key => v.tool = Tool::Slice,
                 Key::E if tool_key => v.tool = Tool::Select,
-                Key::Escape => v.selected.clear(),
+                Key::Escape => {
+                    v.selected.clear();
+                    v.time_sel = None;
+                }
+                Key::Delete if ctrl && v.time_sel.is_some() => act.delete_time = true,
+                Key::Insert if ctrl && v.time_sel.is_some() => act.insert_time = true,
                 Key::PageUp => {
                     v.beat_px = (v.beat_px * 1.25).min(400.0);
                     edited = false;
@@ -1513,6 +1737,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                     let dt = if key == Key::ArrowLeft { -step } else { step };
                     for &i in &targets {
                         notes[i].start = (notes[i].start + dt).max(0.0);
+                    }
+                    // The time selection goes with its notes.
+                    if let Some((a, b)) = v.time_sel {
+                        let d = dt.max(-a);
+                        v.time_sel = Some((a + d, b + d));
                     }
                 }
                 Key::ArrowLeft | Key::ArrowRight if plain => {
@@ -1581,13 +1810,36 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     );
     y += 18.0;
     let grid_r = Rect::from_min_size(pos2(ix, y), vec2(iw - 38.0, 20.0));
-    let gresp = popup_button(ui, &gi, grid_r, id("grid_popup"), tr(GRIDS[v.grid].0));
+    v.groove = v.groove.filter(|i| *i < p.grooves.len());
+    let grid_text = match v.groove {
+        Some(i) => format!("Groove: {}", p.grooves[i].name),
+        None => tr(GRIDS[v.grid].0).to_string(),
+    };
+    let gresp = popup_button(ui, &gi, grid_r, id("grid_popup"), &grid_text);
     egui::Popup::menu(&gresp).show(|ui| {
         for (i, (label, _)) in GRIDS.iter().enumerate() {
-            if ui.selectable_label(v.grid == i, tr(label)).clicked() {
+            let on = v.groove.is_none() && v.grid == i;
+            if ui.selectable_label(on, tr(label)).clicked() {
                 v.grid = i;
+                v.groove = None;
                 ui.close();
             }
+        }
+        ui.separator();
+        for (i, groove) in p.grooves.iter().enumerate() {
+            let text = format!("Groove: {}", groove.name);
+            if ui.selectable_label(v.groove == Some(i), text).clicked() {
+                v.groove = Some(i);
+                ui.close();
+            }
+        }
+        if ui.button("Make Groove from This Region").clicked() {
+            act.make_groove = true;
+            ui.close();
+        }
+        if v.groove.is_some() && ui.button("Delete This Groove").clicked() {
+            act.delete_groove = true;
+            ui.close();
         }
     });
     if small_q(
@@ -1762,10 +2014,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         gi.text(
             pos2(box_r.center().x, box_r.top() + 10.0),
             Align2::CENTER_CENTER,
-            tr("Note Velocity"),
+            v.lane.name(),
             FontId::proportional(11.5),
             Color32::from_rgb(0x4c, 0xe0, 0x4c),
         );
+        gi.text(
+            pos2(box_r.center().x, box_r.top() + 30.0),
+            Align2::CENTER_CENTER,
+            "Click to choose",
+            FontId::proportional(10.0),
+            TEXT_DIM,
+        );
+        let pick = ui.interact(box_r, id("lane_box"), Sense::click());
+        let mut used: Vec<u8> = controls.iter().map(|c| c.num).collect();
+        used.sort_unstable();
+        used.dedup();
+        egui::Popup::menu(&pick).show(|ui| lane_menu(ui, &mut v.lane, &used));
     }
 
     let hint = "Click: place · Right-drag: delete · Ctrl-drag: select";
@@ -1780,13 +2044,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     );
 
     // ---- Apply toolbar/inspector actions
-    let targets: Vec<usize> = if v.selected.is_empty() {
-        (0..notes.len()).collect()
-    } else {
-        v.selected.clone()
-    };
+    let targets = targets_of(&v.selected, notes.len(), v.time_sel.is_some());
+    if let (true, Some((a, b))) = (act.delete_time, v.time_sel) {
+        note_edit::delete_time(notes, controls, a, b);
+        v.selected.clear();
+        v.time_sel = None;
+        v.dirty = true;
+    }
+    if let (true, Some((a, b))) = (act.insert_time, v.time_sel) {
+        note_edit::insert_time(notes, controls, a, b);
+        v.selected.clear();
+        v.dirty = true;
+    }
     if act.quantize {
-        note_edit::quantize(notes, &targets, GRIDS[v.grid].1, v.strength, v.swing);
+        match v.groove.and_then(|i| p.grooves.get(i)) {
+            Some(groove) => {
+                crate::groove_template::quantize(notes, &targets, groove, groove_offset, v.strength)
+            }
+            None => note_edit::quantize(notes, &targets, GRIDS[v.grid].1, v.strength, v.swing),
+        }
         v.dirty = true;
     }
     if act.scale {
@@ -1823,6 +2099,16 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             }
         }
         v.dirty = true;
+    }
+
+    if let (true, Some(i)) = (act.delete_groove, v.groove) {
+        p.grooves.remove(i);
+        v.groove = None;
+    }
+    if let (true, Some((a, b))) = (act.loop_time, v.time_sel) {
+        p.cycle_start = origin + f64::from(a);
+        p.cycle_end = origin + f64::from(b);
+        p.cycle = true;
     }
 
     // ---- Draw keys, notes, ruler, playhead (after edits so they show immediately)
@@ -1932,16 +2218,27 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
     }
 
-    // Velocity lane.
+    // Velocity or controller lane. Its label picks which.
     let gv = ui.painter_at(Rect::from_min_max(vel_label.min, vel_rect.max));
     gv.rect_filled(vel_label, 0.0, Color32::from_gray(0x2c));
     gv.text(
         vel_label.center(),
         Align2::CENTER_CENTER,
-        tr("Velocity"),
+        v.lane.short(),
         FontId::proportional(10.5),
         TEXT_DIM,
     );
+    let pick = ui
+        .interact(vel_label, id("lane_label"), Sense::click())
+        .on_hover_text("Choose what this lane shows: velocity or a MIDI controller");
+    let mut used: Vec<u8> = p.tracks[ti].regions[ri]
+        .controls
+        .iter()
+        .map(|c| c.num)
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    egui::Popup::menu(&pick).show(|ui| lane_menu(ui, &mut v.lane, &used));
     gv.rect_filled(vel_rect, 0.0, ROW_WHITE);
     for f in [0.25f32, 0.5, 0.75] {
         let y = vel_rect.bottom() - f * vel_rect.height();
@@ -1957,7 +2254,34 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             Stroke::new(1.0, Color32::from_gray(0x44)),
         );
     }
-    for (i, n) in p.tracks[ti].regions[ri].notes.iter().enumerate() {
+    if let Lane::Control(number) = v.lane {
+        // A controller holds its value until the next event.
+        let shape = p.tracks[ti].regions[ri]
+            .controls
+            .iter()
+            .filter(|c| c.num == number);
+        let y_of_val =
+            |val: u8| vel_rect.bottom() - 3.0 - f32::from(val) / 127.0 * (vel_rect.height() - 6.0);
+        let col = Color32::from_rgb(115, 197, 113);
+        let mut last: Option<(f32, f32)> = None;
+        for c in shape {
+            let (x, y) = (x_of(c.start), y_of_val(c.val));
+            if let Some((px, py)) = last {
+                gv.line_segment([pos2(px, py), pos2(x, py)], Stroke::new(1.5, col));
+                gv.line_segment([pos2(x, py), pos2(x, y)], Stroke::new(1.5, col));
+            }
+            last = Some((x, y));
+        }
+        if let Some((px, py)) = last {
+            gv.line_segment([pos2(px, py), pos2(rx1, py)], Stroke::new(1.5, col));
+        }
+    }
+    let velocities: &[Note] = if v.lane == Lane::Velocity {
+        &p.tracks[ti].regions[ri].notes
+    } else {
+        &[]
+    };
+    for (i, n) in velocities.iter().enumerate() {
         let x = x_of(n.start);
         if x < vel_rect.left() - 4.0 || x > vel_rect.right() + 4.0 {
             continue;
@@ -2050,6 +2374,23 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ],
         Stroke::new(1.0, Color32::from_gray(0x20)),
     );
+    // The time selection shades the grid and the lane, and shows on the ruler.
+    if let Some((a, b)) = v.time_sel {
+        let (x0, x1) = (x_of(a), x_of(b));
+        let tint = Color32::from_rgba_unmultiplied(0x5a, 0xa0, 0xff, 34);
+        for (painter, area) in [(&gg, grid), (&gv, vel_rect)] {
+            let band = Rect::from_min_max(pos2(x0, area.top()), pos2(x1, area.bottom()));
+            painter.rect_filled(band, 0.0, tint);
+            for x in [x0, x1] {
+                painter.line_segment(
+                    [pos2(x, area.top()), pos2(x, area.bottom())],
+                    Stroke::new(1.0, BLUE),
+                );
+            }
+        }
+        let top = Rect::from_min_max(pos2(x0, ruler.top()), pos2(x1, ruler.bottom()));
+        gr.rect_filled(top, 0.0, BLUE.gamma_multiply(0.75));
+    }
     let px = x_of(position as f32);
     if px >= grid.left() && px <= grid.right() {
         gg.line_segment(
@@ -2071,6 +2412,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     if v.dirty && !ui.input(|i| i.pointer.any_down()) {
         v.dirty = false;
         p.song_rev += 1;
+    }
+    if act.make_groove {
+        crate::groove_template::make(p, s, ti, ri);
     }
 }
 
@@ -2444,6 +2788,119 @@ mod tests {
         r.with(Modifiers::ALT, |r| r.key(Key::V));
         assert!(r.s.piano.ghosts);
         r.settle();
+    }
+
+    /// A point on the ruler at `beat`.
+    fn on_ruler(r: &Rig, beat: f32) -> Pos2 {
+        let v = &r.s.piano;
+        let g = v.last_grid;
+        pos2(
+            g.left() + beat * v.beat_px - v.scroll_x,
+            g.top() - REGION_H - RULER_H / 2.0,
+        )
+    }
+
+    /// A point in the lane under the notes, `level` of the way up.
+    fn in_lane(r: &Rig, beat: f32, level: f32) -> Pos2 {
+        let v = &r.s.piano;
+        let g = v.last_grid;
+        let top = g.bottom() + SB_H + 4.0;
+        pos2(
+            g.left() + beat * v.beat_px - v.scroll_x,
+            top + (1.0 - level) * VEL_H,
+        )
+    }
+
+    #[test]
+    fn right_dragging_the_ruler_selects_the_time_and_the_notes_in_it() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(1.0, row, 0.5);
+        r.add(2.0, row, 0.5);
+        r.add(5.0, row, 0.5);
+        r.settle();
+        let (a, b) = (on_ruler(&r, 0.9), on_ruler(&r, 3.1));
+        r.drag(&[a, b], PointerButton::Secondary);
+        assert_eq!(r.s.piano.time_sel, Some((1.0, 3.0)));
+        assert_eq!(r.notes().len(), 3, "the right button deletes nothing here");
+        let mut picked = r.s.piano.selected.clone();
+        picked.sort_unstable();
+        assert_eq!(picked, [0, 1]);
+
+        // The tools work on what it took, and an empty one takes nothing, never every note.
+        r.with(Modifiers::SHIFT, |r| r.key(Key::ArrowUp));
+        assert_eq!(r.notes()[0].pitch as i32, row + 1);
+        assert_eq!(r.notes()[2].pitch as i32, row);
+        let (a, b) = (on_ruler(&r, 9.0), on_ruler(&r, 11.0));
+        r.drag(&[a, b], PointerButton::Secondary);
+        assert!(r.s.piano.selected.is_empty());
+        r.with(Modifiers::SHIFT, |r| r.key(Key::ArrowUp));
+        assert_eq!(r.notes()[2].pitch as i32, row, "nothing moved");
+
+        // Escape lets it go.
+        r.key(Key::Escape);
+        assert_eq!(r.s.piano.time_sel, None);
+    }
+
+    #[test]
+    fn time_can_be_deleted_and_inserted_by_key() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(1.0, row, 0.5);
+        r.add(6.0, row, 0.5);
+        r.settle();
+        let (a, b) = (on_ruler(&r, 2.0), on_ruler(&r, 4.0));
+        r.drag(&[a, b], PointerButton::Secondary);
+        r.with(Modifiers::COMMAND, |r| r.key(Key::Insert));
+        assert_eq!(r.notes()[1].start, 8.0);
+        r.with(Modifiers::COMMAND, |r| r.key(Key::Delete));
+        assert_eq!(r.notes()[1].start, 6.0);
+        assert_eq!(r.notes()[0].start, 1.0);
+        assert_eq!(r.s.piano.time_sel, None);
+    }
+
+    #[test]
+    fn the_lane_draws_controllers_that_reach_a_plugin_and_are_saved() {
+        let mut r = Rig::new();
+        r.s.piano.lane = Lane::Control(1);
+        r.settle();
+        let (a, b) = (in_lane(&r, 1.0, 0.0), in_lane(&r, 2.0, 1.0));
+        r.drag(&[a, b], PointerButton::Primary);
+        let controls = r.p.tracks[r.t].regions[0].controls.clone();
+        assert!(controls.len() > 3, "{controls:?}");
+        assert!(controls.iter().all(|c| c.num == 1));
+        assert!(controls.first().unwrap().val < 20);
+        assert!(controls.last().unwrap().val > 110);
+        assert!(r.notes().is_empty(), "no notes come of it");
+        // The right button rubs them out.
+        let (c, d) = (in_lane(&r, 0.5, 0.5), in_lane(&r, 2.5, 0.5));
+        r.drag(&[c, d], PointerButton::Secondary);
+        assert!(r.p.tracks[r.t].regions[0].controls.is_empty());
+        // Velocity is left to itself, and what is drawn goes in the file.
+        r.s.piano.lane = Lane::Velocity;
+        r.p.tracks[r.t].regions[0].controls = controls;
+        let doc = crate::project_io::to_doc(&r.p).0;
+        assert!(!doc.tracks[r.t].regions[0].controls.is_empty());
+    }
+
+    #[test]
+    fn quantize_uses_the_groove_picked_in_place_of_the_grid() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(0.5, row, 0.25);
+        r.p.grooves.push(prowave_project::GrooveDoc {
+            name: "Late".into(),
+            length: 4.0,
+            hits: vec![0.0, 0.6, 1.0],
+        });
+        r.settle();
+        r.s.piano.groove = Some(0);
+        r.with(Modifiers::COMMAND, |r| r.key(Key::Q));
+        assert!((r.notes()[0].start - 0.6).abs() < 1e-3, "{:?}", r.notes());
+        // Gone from the project, the grid is back.
+        r.p.grooves.clear();
+        r.settle();
+        assert_eq!(r.s.piano.groove, None);
     }
 
     #[test]
