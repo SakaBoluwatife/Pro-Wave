@@ -35,6 +35,10 @@ const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
 const SOLO_ON: Color32 = Color32::from_rgb(0xe6, 0xc2, 0x2e);
 const REC_ON: Color32 = Color32::from_rgb(0xe0, 0x3a, 0x30);
 const MON_ON: Color32 = Color32::from_rgb(0xe8, 0x8a, 0x2c);
+const AUTO_ON: Color32 = Color32::from_rgb(0x4e, 0xa8, 0x5a);
+/// What the curve on a track leaves free at the top of the row: the regions' name bars, by which
+/// they are still moved.
+const AUTO_NAME_BAR: f32 = 14.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Snap {
@@ -276,6 +280,9 @@ pub struct TracksView {
     lane_menu_row: Option<usize>,
     /// A drag on an edge of a region in progress.
     trim: Option<TrimDrag>,
+    /// The points picked on the curve on a track, and a drag on one in progress.
+    pub auto_pick: Option<crate::automation::LanePick>,
+    auto_drag: Option<crate::automation::LaneDrag>,
     /// A track was clicked last, in its header or its mixer strip: Delete means that track.
     pub track_focus: bool,
     /// Width of one bar in points (horizontal zoom).
@@ -401,6 +408,8 @@ impl Default for TracksView {
             group_drag: Vec::new(),
             marquee: None,
             trim: None,
+            auto_pick: None,
+            auto_drag: None,
             lane_menu_row: None,
             bar_w: 62.0,
             row_h: 56.0,
@@ -684,6 +693,7 @@ fn header_button(
         "S" => "Solo (S)",
         "R" => "Record Enable",
         "I" => "Input Monitoring",
+        "A" => "Show the automation on the track",
         _ => "",
     };
     let mut resp = ui.interact(rect, id(("hdrbtn", key)), Sense::click());
@@ -1033,7 +1043,14 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
     let _ = icon_button(ui, &g, r, "list", true, draw_list_icon);
     x += 66.0;
     let r = Rect::from_center_size(pos2(x + 13.0, cy), vec2(26.0, 20.0));
-    let _ = icon_button(ui, &g, r, "automation", false, draw_curve_icon);
+    let shows_auto = p.tracks.get(p.selected_track).is_some_and(|t| t.show_auto);
+    let auto_button = icon_button(ui, &g, r, "automation", shows_auto, draw_curve_icon)
+        .on_hover_text("Show the selected track's automation on the track");
+    if auto_button.clicked() {
+        if let Some(t) = p.tracks.get_mut(p.selected_track) {
+            t.show_auto = !t.show_auto;
+        }
+    }
     let r = Rect::from_center_size(pos2(x + 41.0, cy), vec2(26.0, 20.0));
     let _ = icon_button(ui, &g, r, "flex", false, draw_flex_icon);
     let r = Rect::from_center_size(pos2(x + 69.0, cy), vec2(26.0, 20.0));
@@ -1275,6 +1292,7 @@ enum CtxAction {
     NewRegion(usize),
     OpenTrackPianoRoll(usize),
     ToggleRecord(usize),
+    ToggleTrackAuto(usize),
     NewTrack(TrackKind),
     ZoomToFit,
     OpenPianoRoll,
@@ -1314,6 +1332,7 @@ enum CtxAction {
 
 /// What the track menu needs to know about the track that was right-clicked.
 struct TrackInfo {
+    show_auto: bool,
     rec: bool,
     takes_midi: bool,
     i: usize,
@@ -1567,6 +1586,7 @@ fn region_items(
 fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
     let t = p.tracks.get(i)?;
     Some(TrackInfo {
+        show_auto: t.show_auto,
         i,
         folder: t.kind == TrackKind::Folder,
         mute: t.mute,
@@ -1612,6 +1632,14 @@ fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>
         "Arm for Recording"
     };
     pick(ui, record, "", CtxAction::ToggleRecord(t.i), picked);
+    if !t.folder {
+        let auto = if t.show_auto {
+            "Hide Automation on Track"
+        } else {
+            "Show Automation on Track"
+        };
+        pick(ui, auto, "", CtxAction::ToggleTrackAuto(t.i), picked);
+    }
     let delete = ui.button(tr("Delete Track"));
     if delete.clicked() {
         *picked = Some(CtxAction::DeleteTrack(t.i));
@@ -1707,6 +1735,11 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::ToggleRecord(t) => {
             if let Some(track) = p.tracks.get_mut(t) {
                 track.rec = !track.rec;
+            }
+        }
+        CtxAction::ToggleTrackAuto(t) => {
+            if let Some(track) = p.tracks.get_mut(t) {
+                track.show_auto = !track.show_auto;
             }
         }
         CtxAction::NewTrack(kind) => {
@@ -2729,6 +2762,48 @@ fn slider_to_db(f: f32) -> f32 {
     }
 }
 
+/// The room the mode and parameter of the curve on a track take on the name's row.
+const LANE_POPUPS_W: f32 = 170.0;
+
+/// The automation mode of track `t` and the control whose curve it shows.
+fn lane_popups(ui: &Ui, g: &Painter, t: &mut Track, i: usize, hdr: Rect, y: f32, beat: f64) {
+    use crate::automation::{lane_choices, lane_label, set_mode};
+    let mode = Rect::from_min_size(pos2(hdr.right() - 58.0, y - 8.0), vec2(52.0, 16.0));
+    let resp = popup_button(ui, g, mode, id(("lane_mode", i)), tr(t.auto.mode.label()));
+    egui::Popup::menu(&resp).show(|ui| {
+        for m in crate::model::AutoMode::ALL {
+            if ui
+                .selectable_label(t.auto.mode == m, tr(m.label()))
+                .clicked()
+            {
+                set_mode(t, m, beat);
+                ui.close();
+            }
+        }
+    });
+    let lane = Rect::from_min_size(pos2(mode.left() - 106.0, y - 8.0), vec2(102.0, 16.0));
+    let label = lane_label(t, t.auto.shown);
+    let resp = popup_button(ui, g, lane, id(("lane_target", i)), &label);
+    egui::Popup::menu(&resp).show(|ui| {
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for c in lane_choices(t) {
+                    let dot = if t.auto.lane(c).is_empty() {
+                        "  "
+                    } else {
+                        "• "
+                    };
+                    let name = format!("{dot}{}", lane_label(t, c));
+                    if ui.selectable_label(t.auto.shown == c, name).clicked() {
+                        t.auto.shown = c;
+                        ui.close();
+                    }
+                }
+            });
+    });
+}
+
 /// Draws track `i`'s header and returns the response of its background (for the right-click
 /// menu; the buttons on it handle their own clicks).
 #[allow(clippy::too_many_arguments)]
@@ -2806,7 +2881,14 @@ fn header(
     } else {
         hdr.center().y - 9.0
     };
-    let name_right = if opts.level { 8.0 } else { 6.0 };
+    let lane_controls = p.tracks[i].show_auto && !folder && !compact && opts.buttons;
+    let name_right = if lane_controls {
+        LANE_POPUPS_W
+    } else if opts.level {
+        8.0
+    } else {
+        6.0
+    };
     let name_w = hdr.right() - name_right - name_x;
     let shown_name = if p.tracks[i].frozen.is_some() {
         format!("{} (Frozen)", p.tracks[i].name)
@@ -2824,6 +2906,10 @@ fn header(
         TEXT,
     );
 
+    if lane_controls {
+        let beat = p.position_beats;
+        lane_popups(ui, g, &mut p.tracks[i], i, hdr, name_y, beat);
+    }
     // A folder only has M and S, which act on everything inside it, and no volume or pan.
     if folder {
         if !compact && opts.buttons {
@@ -2894,6 +2980,19 @@ fn header(
             ) {
                 t.monitor = !t.monitor;
             }
+        }
+        bx += 21.0;
+        if header_button(
+            ui,
+            g,
+            Rect::from_min_size(pos2(bx, by), size),
+            (i, "a"),
+            "A",
+            t.show_auto,
+            AUTO_ON,
+            selected,
+        ) {
+            t.show_auto = !t.show_auto;
         }
     }
 
@@ -3122,6 +3221,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     let mut pencil_at: Option<(usize, f64)> = None;
     let mut picked: Option<CtxAction> = None;
     if lane_resp.clicked() || context_click(&lane_resp) {
+        v.auto_pick = None;
         if let Some(pt) = lane_resp.interact_pointer_pos() {
             if let Some(row) = row_at(&rows, pt.y - lanes.top() + scroll_y) {
                 p.selected_track = row;
@@ -3328,6 +3428,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 v.tool
             };
             if resp.clicked() || resp.drag_started() || context_click(&resp) {
+                v.auto_pick = None;
                 let ctrl = ui.input(|i| i.modifiers.command);
                 let here = (ti, ri);
                 if context_click(&resp) || resp.drag_started() {
@@ -3631,6 +3732,36 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             crate::automation::draw_region_lanes(&g, full, &tr.regions[ri], beat_px);
         }
     }
+    // The curves of the tracks that show theirs, on top of the regions: registered after them, so
+    // the row's body edits the curve and the name bars still move the regions.
+    let tool_on_lane = matches!(v.tool, TrackTool::Pointer | TrackTool::Automation)
+        && !(ui.input(|i| i.modifiers.command) && v.tool2 != TrackTool::Pointer);
+    for (ti, &(top, row_h)) in rows.iter().enumerate() {
+        if row_h <= 0.0 || !p.tracks[ti].show_auto || p.tracks[ti].kind == TrackKind::Folder {
+            continue;
+        }
+        let y = lanes.top() + top - scroll_y;
+        let base_h = row_h - take_rows_height(&p.tracks[ti]);
+        if y + base_h < lanes.top() || y > lanes.bottom() {
+            continue;
+        }
+        let view = crate::automation::LaneView {
+            rect: Rect::from_min_max(
+                pos2(lanes.left(), y + AUTO_NAME_BAR.min(base_h * 0.3)),
+                pos2(lanes.right(), y + base_h - 3.0),
+            ),
+            x_of: &x_of,
+            beat_of: &beat_of,
+            snap: &snap_pos,
+            active: tool_on_lane,
+        };
+        let pressed =
+            crate::automation::track_lane(ui, &g, p, ti, &view, &mut v.auto_pick, &mut v.auto_drag);
+        if pressed {
+            v.select_many(Vec::new());
+            v.track_focus = false;
+        }
+    }
     if moved {
         p.song_rev += 1;
     }
@@ -3851,7 +3982,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let del = ui.input(|i| {
             !i.modifiers.command && (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
         });
-        if del {
+        if del && !crate::automation::delete_picked(p, &mut v.auto_pick) {
             if v.track_focus && v.selected.is_none() {
                 picked = Some(CtxAction::DeleteTrack(p.selected_track));
             } else {

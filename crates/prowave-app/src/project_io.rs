@@ -284,6 +284,57 @@ fn region_lanes_to_doc(t: &Track, r: &Region) -> Vec<prowave_project::RegionLane
         .collect()
 }
 
+/// Which lane a track shows: empty for the fader, `pan`, `fx:slot:param` or `plugin:slot:param`
+/// (slot -1 is the instrument). A plugin's number changes from run to run, so its place is saved.
+fn auto_lane_to_doc(t: &Track) -> String {
+    use crate::model::AutoTarget;
+    match t.auto.shown {
+        AutoTarget::Volume => String::new(),
+        AutoTarget::Pan => "pan".into(),
+        AutoTarget::Fx { slot, param } => format!("fx:{slot}:{param}"),
+        AutoTarget::Plugin { uid, param } => {
+            let slot = if t.instrument_plugin.as_ref().is_some_and(|i| i.uid == uid) {
+                Some(-1)
+            } else {
+                t.plugins
+                    .iter()
+                    .position(|i| i.uid == uid)
+                    .map(|at| at as i64)
+            };
+            slot.map_or_else(String::new, |slot| format!("plugin:{slot}:{param}"))
+        }
+    }
+}
+
+/// The lane a saved track shows; the fader's if what is saved makes no sense for it.
+fn auto_lane_from_doc(t: &Track, text: &str) -> crate::model::AutoTarget {
+    use crate::model::AutoTarget;
+    let mut parts = text.split(':');
+    let target = match (parts.next(), parts.next(), parts.next()) {
+        (Some("pan"), None, None) => Some(AutoTarget::Pan),
+        (Some("fx"), Some(slot), Some(param)) => slot
+            .parse()
+            .ok()
+            .zip(param.parse().ok())
+            .map(|(slot, param)| AutoTarget::Fx { slot, param }),
+        (Some("plugin"), Some(slot), Some(param)) => {
+            let plugin = match slot.parse::<i64>().ok() {
+                Some(-1) => t.instrument_plugin.as_ref(),
+                Some(at) => usize::try_from(at).ok().and_then(|at| t.plugins.get(at)),
+                None => None,
+            };
+            plugin
+                .zip(param.parse().ok())
+                .map(|(plugin, param)| AutoTarget::Plugin {
+                    uid: plugin.uid,
+                    param,
+                })
+        }
+        _ => None,
+    };
+    target.unwrap_or(AutoTarget::Volume)
+}
+
 /// While a project is read, a region's plugin lane holds the plugin's place (the slot plus one, 0
 /// for the instrument) where the instance's number goes: see [`resolve_region_plugins`].
 fn region_lanes_from_doc(r: &RegionDoc) -> Vec<crate::model::RegionLane> {
@@ -466,6 +517,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 })
                 .collect(),
             auto_mode: t.auto.mode.label().into(),
+            show_auto: t.show_auto,
+            auto_lane: auto_lane_to_doc(t),
             auto_volume: points_to_doc(&t.auto.volume),
             auto_pan: points_to_doc(&t.auto.pan),
             auto_fx: t
@@ -939,6 +992,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             } else {
                 0
             },
+            show_auto: t.show_auto,
             midi_fx: t
                 .midi_fx
                 .iter()
@@ -1077,6 +1131,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
     for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
         resolve_region_plugins(track);
+        track.auto.shown = auto_lane_from_doc(track, &d.auto_lane);
         for l in &d.auto_plugins {
             let plugin = if l.slot < 0 {
                 track.instrument_plugin.as_ref()
@@ -2402,6 +2457,24 @@ pub(crate) mod tests {
             intern("Some Third-Party Plug-in"),
             "Some Third-Party Plug-in"
         );
+    }
+
+    #[test]
+    fn the_curve_shown_on_a_track_survives_saving_and_old_files_have_none() {
+        let mut p = Project::empty();
+        p.tracks[0].show_auto = true;
+        p.tracks[0].auto.shown = crate::model::AutoTarget::Pan;
+        let (doc, _) = to_doc(&p);
+        let ctx = egui::Context::default();
+        let (q, _) = from_doc(&doc, Path::new("."), &ctx);
+        assert!(q.tracks[0].show_auto);
+        assert_eq!(q.tracks[0].auto.shown, crate::model::AutoTarget::Pan);
+        let mut old = doc.clone();
+        old.tracks[0].show_auto = false;
+        old.tracks[0].auto_lane = String::new();
+        let (q, _) = from_doc(&old, Path::new("."), &ctx);
+        assert!(!q.tracks[0].show_auto);
+        assert_eq!(q.tracks[0].auto.shown, crate::model::AutoTarget::Volume);
     }
 
     #[test]

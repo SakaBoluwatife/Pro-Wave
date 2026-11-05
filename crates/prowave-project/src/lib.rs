@@ -290,6 +290,10 @@ pub struct TrackDoc {
     /// Automation: "Off", "Read", "Touch", "Latch" or "Write", and the points (beat, value)
     /// of the fader (dB) and pan lanes.
     pub auto_mode: String,
+    /// The curve of its automation is drawn on the track in the Tracks area.
+    pub show_auto: bool,
+    /// Which lane that is: empty for the fader, `pan`, `fx:slot:param`, `plugin:slot:param`.
+    pub auto_lane: String,
     /// Points as [beat, value, curve].
     pub auto_volume: Vec<[f64; 3]>,
     pub auto_pan: Vec<[f64; 3]>,
@@ -474,6 +478,8 @@ impl Default for MidiFxDoc {
 impl Default for TrackDoc {
     fn default() -> Self {
         Self {
+            show_auto: false,
+            auto_lane: String::new(),
             channel: 0,
             name: String::new(),
             kind: TrackKindDoc::Instrument,

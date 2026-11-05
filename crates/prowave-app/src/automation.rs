@@ -676,24 +676,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     .selected_text(lane_label(t, target))
                     .width(190.0)
                     .show_ui(ui, |ui| {
-                        let mut choices = vec![AutoTarget::Volume, AutoTarget::Pan];
-                        for (slot, ins) in t.inserts.iter().enumerate() {
-                            for k in 0..ins.kind.params().len() {
-                                choices.push(AutoTarget::Fx {
-                                    slot: slot as u8,
-                                    param: k as u8,
-                                });
-                            }
-                        }
-                        for plugin in t.hosted() {
-                            for param in plugin.params.iter() {
-                                choices.push(AutoTarget::Plugin {
-                                    uid: plugin.uid,
-                                    param: param.id,
-                                });
-                            }
-                        }
-                        for c in choices {
+                        for c in lane_choices(t) {
                             let dot = if t.auto.lane(c).is_empty() {
                                 "  "
                             } else {
@@ -786,6 +769,494 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
 }
 
+/// Every control of track `t` that can have a lane.
+pub fn lane_choices(t: &Track) -> Vec<AutoTarget> {
+    let mut choices = vec![AutoTarget::Volume, AutoTarget::Pan];
+    for (slot, ins) in t.inserts.iter().enumerate() {
+        for k in 0..ins.kind.params().len() {
+            choices.push(AutoTarget::Fx {
+                slot: slot as u8,
+                param: k as u8,
+            });
+        }
+    }
+    for plugin in t.hosted() {
+        for param in plugin.params.iter() {
+            choices.push(AutoTarget::Plugin {
+                uid: plugin.uid,
+                param: param.id,
+            });
+        }
+    }
+    choices
+}
+
+/// The points picked on a track's lane in the Tracks area.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct LanePick {
+    pub track: usize,
+    pub target: AutoTarget,
+    pub points: Vec<usize>,
+}
+
+/// A drag on a track's lane in the Tracks area.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LaneDrag {
+    /// The picked points: the one grabbed, the lane as it was, and where the pointer began.
+    Points {
+        grabbed: usize,
+        from: Vec<AutoPoint>,
+        at: (f64, f32),
+    },
+    /// The handle that bends the stretch after a point.
+    Curve(usize),
+    /// A box that picks what it covers: where it began, in beats and 0..=1 up the lane.
+    Box(f64, f32),
+}
+
+/// Points of a lane never get closer than this, in beats, when a group is dragged.
+const POINT_GAP: f64 = 1e-3;
+
+/// The lane `from` with the `picked` points moved together by `by_beats` and `by_frac` (of the
+/// lane's height). A group keeps its shape: it stops at the first point it would pass, at the
+/// start of the song, and when its highest or lowest point reaches the edge of the lane.
+pub fn moved_group(
+    from: &[AutoPoint],
+    picked: &[usize],
+    target: AutoTarget,
+    by_beats: f64,
+    by_frac: f32,
+) -> Vec<AutoPoint> {
+    let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    let (mut low_frac, mut high_frac) = (1.0f32, 0.0f32);
+    for &i in picked {
+        let Some(point) = from.get(i) else { continue };
+        let before = (0..i).rev().find(|k| !picked.contains(k));
+        let after = (i + 1..from.len()).find(|k| !picked.contains(k));
+        lo = lo.max(before.map_or(-point.beat, |k| from[k].beat + POINT_GAP - point.beat));
+        hi = hi.min(after.map_or(f64::INFINITY, |k| from[k].beat - POINT_GAP - point.beat));
+        let f = frac_of(target, point.value);
+        low_frac = low_frac.min(f);
+        high_frac = high_frac.max(f);
+    }
+    let by_beats = if lo <= hi {
+        by_beats.clamp(lo, hi)
+    } else {
+        0.0
+    };
+    let by_frac = by_frac.clamp(-low_frac, (1.0 - high_frac).max(-low_frac));
+    let mut lane = from.to_vec();
+    for &i in picked {
+        if let Some(point) = lane.get_mut(i) {
+            point.beat += by_beats;
+            if by_frac != 0.0 {
+                point.value = value_of(target, frac_of(target, point.value) + by_frac);
+            }
+        }
+    }
+    lane
+}
+
+/// The points of `lane` inside the beats `beats` and the heights `fracs` (0..=1 up the lane).
+pub fn points_in_box(
+    lane: &[AutoPoint],
+    target: AutoTarget,
+    beats: (f64, f64),
+    fracs: (f32, f32),
+) -> Vec<usize> {
+    lane.iter()
+        .enumerate()
+        .filter(|(_, q)| {
+            let f = frac_of(target, q.value);
+            q.beat >= beats.0.min(beats.1)
+                && q.beat <= beats.0.max(beats.1)
+                && f >= fracs.0.min(fracs.1)
+                && f <= fracs.0.max(fracs.1)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Takes the `picked` points out of `lane`.
+pub fn delete_points(lane: &mut Vec<AutoPoint>, picked: &[usize]) {
+    let mut at = 0;
+    lane.retain(|_| {
+        at += 1;
+        !picked.contains(&(at - 1))
+    });
+}
+
+/// A point edited by hand plays: a strip with its automation Off is put in Read.
+fn plays_when_edited(t: &mut Track, beat: f64) {
+    if t.auto.mode == AutoMode::Off {
+        set_mode(t, AutoMode::Read, beat);
+    }
+}
+
+/// Deletes the points picked on a lane. Returns whether there were any.
+pub fn delete_picked(p: &mut Project, pick: &mut Option<LanePick>) -> bool {
+    let Some(picked) = pick.take().filter(|x| !x.points.is_empty()) else {
+        return false;
+    };
+    if let Some(t) = p.tracks.get_mut(picked.track) {
+        delete_points(t.auto.lane_mut(picked.target), &picked.points);
+        t.auto.prune();
+    }
+    true
+}
+
+/// What the lane on a track needs from the Tracks area.
+pub struct LaneView<'a> {
+    /// The whole width of the track's row, under the name bars of its regions.
+    pub rect: Rect,
+    pub x_of: &'a dyn Fn(f64) -> f32,
+    pub beat_of: &'a dyn Fn(f32) -> f64,
+    pub snap: &'a dyn Fn(f64) -> f64,
+    /// It takes the mouse: with another tool in hand it is only drawn.
+    pub active: bool,
+}
+
+/// What was asked of the lane's menu.
+enum LaneMenu {
+    SelectAll,
+    Delete,
+    Clear,
+    Hide,
+}
+
+/// Height in the lane (0 at the bottom, 1 at the top) of a pointer at `y`.
+fn frac_at(rect: Rect, y: f32) -> f32 {
+    ((rect.bottom() - y) / rect.height().max(1.0)).clamp(0.0, 1.0)
+}
+
+/// The curve of a lane drawn on its track, with its editing. A click adds a point (it lands on
+/// the snap grid, or anywhere with Alt held), a drag on a point moves it and the others picked with
+/// it, a drag from an empty spot picks with a box, and a double click or right click on a point
+/// deletes it.
+pub fn track_lane(
+    ui: &Ui,
+    g: &egui::Painter,
+    p: &mut Project,
+    ti: usize,
+    view: &LaneView,
+    pick: &mut Option<LanePick>,
+    drag: &mut Option<LaneDrag>,
+) -> bool {
+    let rect = view.rect;
+    if rect.height() < 6.0 || p.tracks.get(ti).is_none() {
+        return false;
+    }
+    let mut target = p.tracks[ti].auto.shown;
+    if lane_label(&p.tracks[ti], target) == "?" {
+        target = AutoTarget::Volume;
+        p.tracks[ti].auto.shown = target;
+    }
+    let colour = lane_colour(target);
+    let to_pos = |q: &AutoPoint| {
+        pos2(
+            (view.x_of)(q.beat),
+            rect.bottom() - frac_of(target, q.value) * rect.height(),
+        )
+    };
+    g.rect_filled(rect, 0.0, Color32::from_black_alpha(70));
+    let points: Vec<AutoPoint> = p.tracks[ti].auto.lane(target).to_vec();
+    let handle_pos = |i: usize| {
+        let (a, b) = (points[i], points[i + 1]);
+        let v = a.value + (b.value - a.value) * curve_shape(0.5, a.curve);
+        to_pos(&AutoPoint {
+            beat: (a.beat + b.beat) / 2.0,
+            value: v,
+            curve: 0.0,
+        })
+    };
+    let picked: Vec<usize> = pick
+        .as_ref()
+        .filter(|x| x.track == ti && x.target == target)
+        .map_or_else(Vec::new, |x| x.points.clone());
+
+    // The curve: it holds its first value before the first point and its last after the last.
+    if points.is_empty() {
+        let own = current(&p.tracks[ti], target);
+        let y = rect.bottom() - frac_of(target, own) * rect.height();
+        g.line_segment(
+            [pos2(rect.left(), y), pos2(rect.right(), y)],
+            Stroke::new(1.0, colour.gamma_multiply(0.5)),
+        );
+    } else {
+        let mut line = vec![pos2(rect.left(), to_pos(&points[0]).y)];
+        for (i, a) in points.iter().enumerate() {
+            line.push(to_pos(a));
+            if let (Some(b), true) = (points.get(i + 1), a.curve != 0.0) {
+                for k in 1..16 {
+                    let t = k as f32 / 16.0;
+                    line.push(to_pos(&AutoPoint {
+                        beat: a.beat + (b.beat - a.beat) * f64::from(t),
+                        value: a.value + (b.value - a.value) * curve_shape(t, a.curve),
+                        curve: 0.0,
+                    }));
+                }
+            }
+        }
+        line.push(pos2(rect.right(), line[line.len() - 1].y));
+        g.add(Shape::line(line, Stroke::new(1.6, colour)));
+        for i in 0..points.len() - 1 {
+            let c = handle_pos(i);
+            if points[i].value != points[i + 1].value && rect.expand(3.0).contains(c) {
+                let r = 3.0;
+                let shape = vec![
+                    c + vec2(0.0, -r),
+                    c + vec2(r, 0.0),
+                    c + vec2(0.0, r),
+                    c + vec2(-r, 0.0),
+                ];
+                let fill = if points[i].curve != 0.0 {
+                    colour
+                } else {
+                    crate::theme::BORDER
+                };
+                g.add(Shape::convex_polygon(shape, fill, Stroke::new(1.0, colour)));
+            }
+        }
+        for (i, q) in points.iter().enumerate() {
+            let c = to_pos(q);
+            if rect.expand(5.0).contains(c) {
+                let fill = if picked.contains(&i) {
+                    Color32::WHITE
+                } else {
+                    colour
+                };
+                g.circle_filled(c, 3.5, fill);
+                g.circle_stroke(c, 3.5, Stroke::new(1.0, Color32::from_gray(0x10)));
+            }
+        }
+    }
+    if !view.active {
+        return false;
+    }
+
+    let resp = ui.interact(
+        rect,
+        egui::Id::unique(("track_automation", ti)),
+        Sense::click_and_drag(),
+    );
+    let pressed = resp.clicked() || resp.drag_started() || resp.secondary_clicked();
+    let near_point = |pos: egui::Pos2| {
+        let closest = points
+            .iter()
+            .enumerate()
+            .map(|(i, q)| (i, to_pos(q).distance(pos)))
+            .filter(|(_, d)| *d <= GRAB)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        closest.map(|(i, _)| i)
+    };
+    let near_handle = |pos: egui::Pos2| {
+        (0..points.len().saturating_sub(1)).find(|i| {
+            points[*i].value != points[*i + 1].value && handle_pos(*i).distance(pos) <= GRAB
+        })
+    };
+    let (ctrl, free) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
+    let beat_at = |x: f32| {
+        let beat = (view.beat_of)(x).max(0.0);
+        if free {
+            beat
+        } else {
+            (view.snap)(beat).max(0.0)
+        }
+    };
+    let beat_now = p.position_beats;
+    if pressed {
+        p.selected_track = ti;
+    }
+    if resp.drag_started() {
+        let origin = ui.input(|i| i.pointer.press_origin());
+        *drag = origin.or(resp.interact_pointer_pos()).map(|pos| {
+            let start = ((view.beat_of)(pos.x), frac_at(rect, pos.y));
+            if let Some(i) = near_point(pos) {
+                if !picked.contains(&i) {
+                    let mut now = if ctrl { picked.clone() } else { Vec::new() };
+                    now.push(i);
+                    *pick = Some(LanePick {
+                        track: ti,
+                        target,
+                        points: now,
+                    });
+                }
+                LaneDrag::Points {
+                    grabbed: i,
+                    from: points.clone(),
+                    at: start,
+                }
+            } else if let Some(i) = near_handle(pos) {
+                LaneDrag::Curve(i)
+            } else {
+                LaneDrag::Box(start.0, start.1)
+            }
+        });
+    }
+    if let (true, Some(pos)) = (resp.dragged(), resp.interact_pointer_pos()) {
+        match drag.as_ref() {
+            Some(LaneDrag::Points { grabbed, from, at }) => {
+                let moving = pick.as_ref().map_or_else(Vec::new, |x| x.points.clone());
+                let by_beats = from.get(*grabbed).map_or(0.0, |lead| {
+                    let wanted = lead.beat + (view.beat_of)(pos.x) - at.0;
+                    let landed = if free { wanted } else { (view.snap)(wanted) };
+                    landed - lead.beat
+                });
+                let lane =
+                    moved_group(from, &moving, target, by_beats, frac_at(rect, pos.y) - at.1);
+                plays_when_edited(&mut p.tracks[ti], beat_now);
+                *p.tracks[ti].auto.lane_mut(target) = lane;
+            }
+            Some(LaneDrag::Curve(i)) => {
+                let i = *i;
+                let lane = p.tracks[ti].auto.lane_mut(target);
+                if i + 1 < lane.len() && lane[i].value != lane[i + 1].value {
+                    let v = value_of(target, frac_at(rect, pos.y));
+                    lane[i].curve = curve_from_fraction(
+                        (v - lane[i].value) / (lane[i + 1].value - lane[i].value),
+                    );
+                }
+            }
+            Some(LaneDrag::Box(beat, frac)) => {
+                let beats = (*beat, (view.beat_of)(pos.x));
+                let fracs = (*frac, frac_at(rect, pos.y));
+                *pick = Some(LanePick {
+                    track: ti,
+                    target,
+                    points: points_in_box(&points, target, beats, fracs),
+                });
+                let top = rect.bottom() - frac * rect.height();
+                let boxed = Rect::from_two_pos(pos2((view.x_of)(*beat), top), pos);
+                g.rect_filled(boxed, 0.0, Color32::from_white_alpha(22));
+                g.rect_stroke(
+                    boxed,
+                    0.0,
+                    Stroke::new(1.0, Color32::from_white_alpha(150)),
+                    StrokeKind::Inside,
+                );
+            }
+            None => {}
+        }
+    }
+    if resp.drag_stopped() {
+        *drag = None;
+    }
+    if resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            match near_point(pos) {
+                Some(i) if resp.double_clicked() => {
+                    p.tracks[ti].auto.lane_mut(target).remove(i);
+                    p.tracks[ti].auto.prune();
+                    *pick = None;
+                }
+                Some(i) => {
+                    let mut now = if ctrl { picked.clone() } else { Vec::new() };
+                    match now.iter().position(|k| *k == i) {
+                        Some(at) => {
+                            now.remove(at);
+                        }
+                        None => now.push(i),
+                    }
+                    *pick = Some(LanePick {
+                        track: ti,
+                        target,
+                        points: now,
+                    });
+                }
+                None if near_handle(pos).is_some() => {
+                    if let (true, Some(i)) = (resp.double_clicked(), near_handle(pos)) {
+                        p.tracks[ti].auto.lane_mut(target)[i].curve = 0.0;
+                    }
+                }
+                // With points picked, a click away lets them go; the next one adds a point.
+                None if !picked.is_empty() => *pick = None,
+                None => {
+                    plays_when_edited(&mut p.tracks[ti], beat_now);
+                    let value = value_of(target, frac_at(rect, pos.y));
+                    p.tracks[ti].auto.set_point(target, beat_at(pos.x), value);
+                }
+            }
+        }
+    }
+    let on_point = resp.interact_pointer_pos().and_then(near_point);
+    if let (true, Some(i)) = (resp.secondary_clicked(), on_point) {
+        p.tracks[ti].auto.lane_mut(target).remove(i);
+        p.tracks[ti].auto.prune();
+        *pick = None;
+        return pressed;
+    }
+    let mut asked = None;
+    crate::widgets::context_menu(&resp, |ui| {
+        if ui.button("Select All Points").clicked() {
+            asked = Some(LaneMenu::SelectAll);
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                !picked.is_empty(),
+                egui::Button::new("Delete Selected Points"),
+            )
+            .clicked()
+        {
+            asked = Some(LaneMenu::Delete);
+            ui.close();
+        }
+        if ui.button(tr("Clear Lane")).clicked() {
+            asked = Some(LaneMenu::Clear);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Hide Automation on Track").clicked() {
+            asked = Some(LaneMenu::Hide);
+            ui.close();
+        }
+    });
+    match asked {
+        Some(LaneMenu::SelectAll) => {
+            *pick = Some(LanePick {
+                track: ti,
+                target,
+                points: (0..points.len()).collect(),
+            });
+        }
+        Some(LaneMenu::Delete) => {
+            delete_picked(p, pick);
+        }
+        Some(LaneMenu::Clear) => {
+            p.tracks[ti].auto.lane_mut(target).clear();
+            p.tracks[ti].auto.prune();
+            *pick = None;
+        }
+        Some(LaneMenu::Hide) => {
+            p.tracks[ti].show_auto = false;
+            *pick = None;
+        }
+        None => {}
+    }
+    if let Some(pos) = resp.hover_pos() {
+        let (b, v) = match near_point(pos) {
+            Some(i) => (points[i].beat, points[i].value),
+            None => (
+                (view.beat_of)(pos.x),
+                value_of(target, frac_at(rect, pos.y)),
+            ),
+        };
+        let bar = p.beats_to_bar(b) + 1.0;
+        let text = format!("{} · {:.2}", value_text(&p.tracks[ti], target, v), bar);
+        resp.on_hover_text(text);
+    }
+    pressed
+}
+
+/// The colour of a lane's curve.
+fn lane_colour(target: AutoTarget) -> Color32 {
+    match target {
+        AutoTarget::Volume => Color32::from_rgb(0x6c, 0xd0, 0x5a),
+        AutoTarget::Pan => Color32::from_rgb(0x5a, 0xa8, 0xf0),
+        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => Color32::from_rgb(0xe6, 0x9a, 0x2e),
+    }
+}
+
 /// The lane's drawing area and its mouse editing.
 fn canvas(
     ui: &mut Ui,
@@ -855,11 +1326,7 @@ fn canvas(
             Color32::from_gray(0x78),
         );
     }
-    let colour = match target {
-        AutoTarget::Volume => Color32::from_rgb(0x6c, 0xd0, 0x5a),
-        AutoTarget::Pan => Color32::from_rgb(0x5a, 0xa8, 0xf0),
-        AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => Color32::from_rgb(0xe6, 0x9a, 0x2e),
-    };
+    let colour = lane_colour(target);
     let points: Vec<AutoPoint> = p.tracks[ti].auto.lane(target).to_vec();
     let to_pos = |beat: f64, value: f32| point_pos(rect, from, span, target, beat, value);
     // Where the handle that bends the stretch after point `i` is.
@@ -1154,6 +1621,138 @@ mod tests {
         assert!(t.auto.plugin_touch_until < 100.0, "let go");
     }
     use prowave_engine::FxKind;
+
+    fn lane(beats: &[f64]) -> Vec<AutoPoint> {
+        beats.iter().map(|b| AutoPoint::new(*b, 0.5)).collect()
+    }
+
+    #[test]
+    fn a_group_of_points_moves_together_and_stops_at_its_neighbours() {
+        let target = AutoTarget::Fx { slot: 0, param: 0 };
+        let from = lane(&[1.0, 2.0, 3.0, 8.0]);
+        let moved = moved_group(&from, &[1, 2], target, 1.0, 0.25);
+        assert_eq!(moved[0], from[0], "not picked");
+        assert_eq!((moved[1].beat, moved[2].beat), (3.0, 4.0));
+        assert!((moved[1].value - 0.75).abs() < 1e-6);
+        assert_eq!(moved[3], from[3], "not picked");
+        // It cannot pass the point after it, or the one before it.
+        let far = moved_group(&from, &[1, 2], target, 100.0, 0.0);
+        assert!((far[2].beat - (8.0 - POINT_GAP)).abs() < 1e-9);
+        assert!((far[1].beat - (7.0 - POINT_GAP)).abs() < 1e-9, "same shape");
+        let back = moved_group(&from, &[1, 2], target, -100.0, 0.0);
+        assert!((back[1].beat - (1.0 + POINT_GAP)).abs() < 1e-9);
+        // Nor go before the song, or off the lane: the group keeps its shape.
+        let all = moved_group(&from, &[0, 1, 2, 3], target, -100.0, 0.0);
+        assert_eq!(all[0].beat, 0.0);
+        assert_eq!(all[3].beat, 7.0);
+        let mut uneven = from.clone();
+        uneven[1].value = 0.9;
+        let up = moved_group(&uneven, &[0, 1], target, 0.0, 0.5);
+        assert!((up[1].value - 1.0).abs() < 1e-6);
+        assert!((up[0].value - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_box_picks_what_it_covers_and_picked_points_can_be_deleted() {
+        let target = AutoTarget::Pan;
+        let mut points = lane(&[1.0, 2.0, 3.0]);
+        points[1].value = -1.0;
+        // Backwards too. A pan of 0.5 is three quarters up the lane.
+        assert_eq!(
+            points_in_box(&points, target, (3.5, 0.5), (1.0, 0.5)),
+            [0, 2]
+        );
+        assert!(points_in_box(&points, target, (4.0, 5.0), (0.0, 1.0)).is_empty());
+        delete_points(&mut points, &[0, 2]);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].beat, 2.0);
+        let mut p = Project::empty();
+        p.tracks[0].auto.volume = lane(&[1.0, 2.0]);
+        let mut pick = Some(LanePick {
+            track: 0,
+            target: AutoTarget::Volume,
+            points: vec![0],
+        });
+        assert!(delete_picked(&mut p, &mut pick));
+        assert_eq!(p.tracks[0].auto.volume.len(), 1);
+        assert!(pick.is_none());
+        assert!(!delete_picked(&mut p, &mut pick), "nothing picked");
+    }
+
+    /// One track's lane, drawn over the whole 800 by 100 window.
+    fn lane_frame(
+        ui: &mut Ui,
+        p: &mut Project,
+        pick: &mut Option<LanePick>,
+        drag: &mut Option<LaneDrag>,
+    ) {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 100.0));
+        ui.allocate_rect(rect, Sense::hover());
+        let g = ui.painter_at(rect);
+        let view = LaneView {
+            rect,
+            x_of: &|b| b as f32 * 100.0,
+            beat_of: &|x| f64::from(x) / 100.0,
+            snap: &|b| b.round(),
+            active: true,
+        };
+        track_lane(ui, &g, p, 0, &view, pick, drag);
+    }
+
+    #[test]
+    fn the_lane_on_a_track_adds_snaps_moves_and_deletes_points_with_the_mouse() {
+        let mut p = Project::empty();
+        let target = AutoTarget::Fx { slot: 0, param: 0 };
+        p.tracks[0].inserts = vec![crate::model::Insert::new(FxKind::Limiter)];
+        p.tracks[0].auto.shown = target;
+        p.tracks[0].auto.mode = AutoMode::Off;
+        let (mut pick, mut drag) = (None, None);
+        let mut h = crate::ui_test::Harness::new(800.0, 100.0);
+        macro_rules! run {
+            () => {
+                |ui: &mut Ui| lane_frame(ui, &mut p, &mut pick, &mut drag)
+            };
+        }
+        h.settle(run!());
+        // A click adds a point, on the grid; the track now plays its lane.
+        h.click(pos2(210.0, 50.0), run!());
+        h.frame(vec![], run!());
+        assert_eq!(p.tracks[0].auto.lane(target).len(), 1);
+        assert_eq!(p.tracks[0].auto.lane(target)[0].beat, 2.0);
+        assert_eq!(p.tracks[0].auto.mode, AutoMode::Read);
+        h.click(pos2(590.0, 25.0), run!());
+        h.frame(vec![], run!());
+        assert_eq!(p.tracks[0].auto.lane(target)[1].beat, 6.0);
+        assert!((p.tracks[0].auto.lane(target)[1].value - 0.75).abs() < 0.01);
+        // Alt: off the grid.
+        h.modifiers = egui::Modifiers::ALT;
+        h.click(pos2(410.0, 50.0), run!());
+        h.modifiers = egui::Modifiers::NONE;
+        h.frame(vec![], run!());
+        assert!((p.tracks[0].auto.lane(target)[1].beat - 4.1).abs() < 0.01);
+        assert_eq!(p.tracks[0].auto.lane(target).len(), 3);
+        // A box picks the first two; dragging one moves both, by whole beats.
+        h.drag(
+            &[pos2(100.0, 95.0), pos2(300.0, 60.0), pos2(450.0, 5.0)],
+            egui::PointerButton::Primary,
+            run!(),
+        );
+        assert_eq!(pick.as_ref().map(|x| x.points.clone()), Some(vec![0, 1]));
+        let was = p.tracks[0].auto.lane(target).to_vec();
+        h.drag(
+            &[pos2(200.0, 50.0), pos2(250.0, 50.0), pos2(300.0, 50.0)],
+            egui::PointerButton::Primary,
+            run!(),
+        );
+        let now = p.tracks[0].auto.lane(target).to_vec();
+        assert_eq!(now[0].beat, 3.0, "grabbed: lands on a beat");
+        assert!((now[1].beat - (was[1].beat + 1.0)).abs() < 1e-6, "with it");
+        assert_eq!(now[2], was[2], "not picked");
+        // Right click on a point deletes it.
+        let at = pos2(now[2].beat as f32 * 100.0, 25.0);
+        h.right_click(at, run!());
+        assert_eq!(p.tracks[0].auto.lane(target).len(), 2);
+    }
 
     fn project() -> Project {
         let mut p = Project::empty();

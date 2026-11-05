@@ -527,7 +527,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Create Automation"
         | "Create Track Automation"
         | "Group" => !p.tracks.is_empty(),
-        "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Hide All Automation" => {
+            s.mixer.auto_editor.track.is_some() || p.tracks.iter().any(|t| t.show_auto)
+        }
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
         "Create Mastering Track" | "Plugin Manager" => true,
         "Show Master Track" => p.mastering_track().is_some(),
@@ -720,9 +722,14 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Record Toggle" => p.recording = !p.recording,
         "Record Project Settings" => s.dialogs.project_settings = true,
-        "Show Automation" | "Show Track Automation" => {
+        "Show Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);
             s.mixer.auto_editor.region = None;
+        }
+        "Show Track Automation" => {
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                t.show_auto = !t.show_auto;
+            }
         }
         "Show Region Automation" => {
             if let Some((t, r)) = s.tracks.selected {
@@ -774,6 +781,9 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Hide All Automation" => {
             s.mixer.auto_editor.track = None;
             s.mixer.auto_editor.region = None;
+            for t in &mut p.tracks {
+                t.show_auto = false;
+            }
         }
         "Create Automation" | "Create Track Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);

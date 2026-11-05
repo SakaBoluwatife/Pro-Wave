@@ -807,6 +807,8 @@ pub struct Track {
     pub midi_channel: u8,
     /// MIDI FX: effects that change the notes the track plays (see `midi_fx.rs`).
     pub midi_fx: Vec<crate::midi_fx::FxSlot>,
+    /// The curve of its automation (the lane `auto.shown`) is drawn on the track in the Tracks area.
+    pub show_auto: bool,
 }
 
 impl Track {
@@ -867,6 +869,7 @@ impl Track {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
         }
     }
 }
@@ -1033,6 +1036,7 @@ impl Project {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
         }];
         p.position_beats = 0.0;
         p.cycle = false;
@@ -1099,6 +1103,7 @@ impl Project {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
         };
         let tracks = vec![
             mk(

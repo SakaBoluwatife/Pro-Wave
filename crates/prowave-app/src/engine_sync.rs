@@ -1075,6 +1075,7 @@ mod tests {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
         }
     }
 
