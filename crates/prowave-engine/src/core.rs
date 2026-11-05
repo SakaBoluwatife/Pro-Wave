@@ -483,6 +483,8 @@ pub enum Command {
     },
     /// The strip meters read before the fader, or after it.
     SetPreFaderMeter(bool),
+    /// Whether plugins with nothing to process stop running.
+    SetPluginsMayRest(bool),
     /// Moves a parameter of the hosted plugin of a slot, as a position 0..=1 along its range.
     SetPluginParam {
         track: u16,
@@ -836,6 +838,8 @@ pub struct EngineCore {
     master_tap: Option<Box<rtrb::Producer<f32>>>,
     /// A render: the output is not cut at full scale.
     keep_headroom: bool,
+    /// Plugins with nothing to process stop running.
+    plugins_may_rest: bool,
     /// Whether any strip has one, and what they are told of the song.
     any_plugin: bool,
     transport: PluginTransport,
@@ -999,6 +1003,7 @@ impl EngineCore {
             clip_frames: 0,
             master_tap: None,
             keep_headroom: false,
+            plugins_may_rest: true,
             any_plugin: false,
             transport: PluginTransport::default(),
             transport_left: 0,
@@ -1045,6 +1050,8 @@ impl EngineCore {
     /// For a render: levels above full scale stay in the output instead of being cut there.
     pub fn keep_headroom(&mut self) {
         self.keep_headroom = true;
+        // A render is not in a hurry, and must not lose a tail after a long silence.
+        self.plugins_may_rest = false;
     }
 
     /// Stops playing where it is, with the voices let go and the effects still ringing: the end
@@ -1881,6 +1888,10 @@ impl EngineCore {
                     slot,
                     plugin,
                 } => {
+                    let mut plugin = plugin;
+                    if let Some(new) = plugin.as_mut() {
+                        new.set_may_rest(self.plugins_may_rest);
+                    }
                     let old = match self.plugin_place((track, slot)) {
                         Some(place) => std::mem::replace(place, plugin),
                         None => plugin,
@@ -1901,6 +1912,18 @@ impl EngineCore {
                     }
                 }
                 Command::SetPreFaderMeter(on) => self.pre_fader_meter = on,
+                Command::SetPluginsMayRest(may) => {
+                    self.plugins_may_rest = may && !self.keep_headroom;
+                    let may = self.plugins_may_rest;
+                    let effects = self.plugins.iter_mut().flat_map(|s| s.iter_mut());
+                    let others = self
+                        .instruments
+                        .iter_mut()
+                        .chain(self.master_plugins.iter_mut());
+                    for slot in effects.chain(others).flatten() {
+                        slot.set_may_rest(may);
+                    }
+                }
                 Command::SetPluginSidechain {
                     track,
                     slot,

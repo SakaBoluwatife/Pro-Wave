@@ -308,6 +308,8 @@ pub struct Rack {
     kept_states: Vec<(u64, Arc<Vec<u8>>)>,
     /// A plugin may have changed since the last save (it said so, or its editor was opened).
     touched: bool,
+    /// What the engine was last told about plugins resting.
+    keep_running: bool,
     /// Plugins loaded again for their side chain, whose editors were open: these open once more.
     reopen: Vec<u64>,
     /// The main window, as last told: what reopened editors stay above.
@@ -720,6 +722,12 @@ impl Rack {
             }
         }
         self.answer_headers(p, message);
+        if self.keep_running != p.keep_plugins_running {
+            if !engine.send(Command::SetPluginsMayRest(!p.keep_plugins_running)) {
+                return false;
+            }
+            self.keep_running = p.keep_plugins_running;
+        }
         for (plugin, place) in wanted_bypass(p) {
             let Some(live) = self.live.get_mut(&plugin.0) else {
                 continue;

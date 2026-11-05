@@ -1066,6 +1066,8 @@ pub struct Project {
     pub patterns: Vec<crate::song_pattern::SongPattern>,
     /// Plugins with a long delay step aside, for playing and recording with less delay. Not saved.
     pub low_latency: bool,
+    /// Plugins go on running with nothing to process. For the few that need it. Not saved.
+    pub keep_plugins_running: bool,
     /// Autopunch: recording happens only between these beats, however it is started.
     pub punch: bool,
     pub punch_start: f64,
@@ -1298,6 +1300,7 @@ impl Project {
             grooves: Vec::new(),
             screensets: Vec::new(),
             low_latency: false,
+            keep_plugins_running: false,
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,

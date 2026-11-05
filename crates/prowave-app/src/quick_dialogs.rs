@@ -274,6 +274,11 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
                 "Replace mode: a new recording takes away what it covers",
             );
             ui.checkbox(&mut p.low_latency, "Low Latency mode");
+            ui.checkbox(&mut p.keep_plugins_running, "Keep idle plugins running")
+                .on_hover_text(
+                    "Plugins with nothing to process stop using CPU after a few seconds. \
+                     Turn this on if one misbehaves, such as one that makes sound by itself.",
+                );
             ui.separator();
             ui.heading("Synchronization");
             crate::sync_menu::items(ui, p);

@@ -113,6 +113,16 @@ pub struct PluginRound {
     pub(crate) phase: usize,
 }
 
+/// Quieter than this counts as silence: about -100 dB.
+const QUIET: f32 = 1e-5;
+/// Blocks of silence, in and out, before a plugin rests: about five seconds at 48 kHz. Long enough
+/// for the gap before a long delay's next echo.
+const REST_AFTER_BLOCKS: u32 = 4096;
+
+fn is_quiet(block: &[f32]) -> bool {
+    block.iter().all(|s| s.abs() < QUIET)
+}
+
 /// A slot of a round. It stays where it is as long as the engine holds its box.
 #[derive(Clone, Copy)]
 struct SlotHandle(*mut PluginSlot);
@@ -158,7 +168,13 @@ impl PluginRound {
             // the run to finish before it touches a slot again.
             unsafe { (*slot).run_round(transport) }
         };
-        if slots.len() < 2 || !self.pool.run(&self.graph, &one) {
+        // Waking the workers costs more than a resting plugin does.
+        // SAFETY: as above: nothing else touches the slots between runs.
+        let working = slots
+            .iter()
+            .filter(|s| unsafe { (*s.0).has_work() })
+            .count();
+        if working < 2 || !self.pool.run(&self.graph, &one) {
             for j in 0..slots.len() {
                 one(j, 0);
             }
@@ -217,6 +233,13 @@ pub struct PluginSlot {
     side_r: Box<[f32]>,
     /// The source was taken away: the plugin is told silence once.
     side_flush: bool,
+    /// Blocks in a row with silence going in and coming out.
+    quiet_blocks: u32,
+    /// Resting: with nothing to process, the plugin is not called, and uses no CPU.
+    resting: bool,
+    may_rest: bool,
+    /// Whether the song was playing at the last block: a plugin may follow it.
+    was_playing: bool,
 }
 
 impl PluginSlot {
@@ -246,6 +269,10 @@ impl PluginSlot {
             side_l: buffer(),
             side_r: buffer(),
             side_flush: false,
+            quiet_blocks: 0,
+            resting: false,
+            may_rest: true,
+            was_playing: false,
         }
     }
 
@@ -270,6 +297,7 @@ impl PluginSlot {
                 self.sent_next = (self.sent_next + 1) % SENT_PARAMS;
             }
         }
+        self.wake();
         self.plugin.set_param(id, value);
     }
 
@@ -277,7 +305,38 @@ impl PluginSlot {
         self.plugin.latency_samples() + PLUGIN_BLOCK
     }
 
+    /// Whether the plugin may rest when it has nothing to process. Waking it if not.
+    pub fn set_may_rest(&mut self, may: bool) {
+        self.may_rest = may;
+        if !may {
+            self.wake();
+        }
+    }
+
+    fn wake(&mut self) {
+        self.resting = false;
+        self.quiet_blocks = 0;
+    }
+
+    /// Whether nothing is going into the plugin now, with the song as it was.
+    fn nothing_coming(&self, transport: &PluginTransport) -> bool {
+        self.events.is_empty()
+            && !self.side_flush
+            && transport.playing == self.was_playing
+            && is_quiet(&self.in_l)
+            && is_quiet(&self.in_r)
+            && (self.side_source.is_none() || (is_quiet(&self.side_l) && is_quiet(&self.side_r)))
+    }
+
+    /// Whether a block is ready that will have the plugin working.
+    fn has_work(&self) -> bool {
+        self.full
+            && (!self.resting
+                || !(self.events.is_empty() && is_quiet(&self.in_l) && is_quiet(&self.in_r)))
+    }
+
     pub fn set_bypass(&mut self, bypass: bool) {
+        self.wake();
         self.bypass = bypass;
     }
 
@@ -363,6 +422,12 @@ impl PluginSlot {
         }
         self.pass_by();
         if !self.bypass {
+            let quiet = self.nothing_coming(transport);
+            self.was_playing = transport.playing;
+            if quiet && self.resting {
+                return;
+            }
+            self.resting = false;
             if self.side_source.is_some() || self.side_flush {
                 self.side_flush = false;
                 self.plugin.set_side_input([&self.side_l, &self.side_r]);
@@ -373,6 +438,16 @@ impl PluginSlot {
                 &self.events,
                 transport,
             );
+            if quiet && is_quiet(&self.out_l) && is_quiet(&self.out_r) {
+                self.quiet_blocks = self.quiet_blocks.saturating_add(1);
+                if self.may_rest && self.quiet_blocks >= REST_AFTER_BLOCKS {
+                    self.resting = true;
+                    self.out_l.fill(0.0);
+                    self.out_r.fill(0.0);
+                }
+            } else {
+                self.quiet_blocks = 0;
+            }
         }
         self.events.clear();
         // A plugin that misbehaves must not reach the mix: NaN stays in filters and meters.
@@ -411,6 +486,37 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use std::sync::Arc;
+
+    #[test]
+    fn a_plugin_with_nothing_to_do_rests_and_wakes_on_sound_or_a_note() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut slot = PluginSlot::new(Box::new(FakePlugin {
+            runs: runs.clone(),
+            ..FakePlugin::default()
+        }));
+        let t = PluginTransport::default();
+        let blocks = |slot: &mut PluginSlot, n: usize, x: f32| {
+            let mut last = 0.0;
+            assert_no_alloc::assert_no_alloc(|| {
+                for _ in 0..n * PLUGIN_BLOCK {
+                    last = slot.process(x, x, &t).0;
+                }
+            });
+            last
+        };
+        blocks(&mut slot, REST_AFTER_BLOCKS as usize + 1, 0.0);
+        assert!(slot.resting);
+        let before = runs.load(Relaxed);
+        blocks(&mut slot, 50, 0.0);
+        assert_eq!(runs.load(Relaxed), before, "not called while it rests");
+        blocks(&mut slot, 2, 0.25);
+        assert!(!slot.resting, "sound wakes it");
+        assert!(runs.load(Relaxed) > before);
+        // A plugin that may not rest keeps running.
+        slot.set_may_rest(false);
+        blocks(&mut slot, REST_AFTER_BLOCKS as usize + 2, 0.0);
+        assert!(!slot.resting);
+    }
 
     #[test]
     fn low_latency_lets_the_sound_by_with_only_its_block_of_delay() {
