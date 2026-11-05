@@ -33,19 +33,21 @@ After the multi-core work, in one run with a compile going on the same machine, 
 - **Stage 2, reliability:** crash recovery; any track can be deleted, and a project with no tracks takes every menu entry and key; regression tests for save and load of every part, older files, undo and redo. Two wall-clock test limits that failed under load are generous now.
 - **Stage 3, performance:** plugins on several cores; the sample loop visits only clips that can sound; the mix ramp visits only the song's tracks; denormals flushed on the audio thread and workers.
 - **Stage 4, recording and editing:** audio take folders and swipe comping from Cycle recording; Autopunch; track rename and colour; Go to Position.
-- **Stage 5, mixer:** drag plugins between slots, strips and the output; routing matrix; a test that renders the routing and checks what comes out; Low Latency mode.
-- **Stage 6, plugins:** moves in plugin windows recorded to lanes; VST3 windows follow lanes; plugin presets as state files.
+- **Stage 5, mixer:** drag plugins between slots, strips and the output; routing matrix; a test that renders the routing and checks what comes out; Low Latency mode; channel strip settings files; Copy, Paste and Reset Channel Strip now include plugins (they left them behind before).
+- **Stage 6, plugins:** moves in plugin windows recorded to lanes; VST3 windows follow lanes; plugin presets as state files; Touch follows the hand on a VST3 control (`beginEdit` and `endEdit`).
 - **Stage 7, export:** float headroom kept; sample rate conversion; selected regions; Mastering window with BS.1770 loudness, true peak, spectrum and a reference file (checked against EBU tones).
-- **Stage 8, Logic features:** Undo History; key command editor; Project Settings. The Tuner button did nothing and was removed.
+- **Stage 8, Logic features:** Undo History; key command editor; Project Settings; Smart Controls. The Tuner button did nothing and was removed.
+- **Stage 9, look:** `theme.rs` names the shared colours, states, spacing and type, and the screens' panel, slot, accent and status colours now come from it. Library, Browser, Notes, Lists and the bottom panel can be dragged wider or taller, and the mixer starts taller, so faders have more room.
 - **Stage 10, Windows:** sample rate in Settings.
 
 ## Remaining and known issues
 
-- **Automation:** Touch on a plugin lets go a beat after the last move, not at the mouse release: `beginEdit` and `endEdit` are not used yet. CLAP windows are expected to follow by themselves; not tried.
+- **Automation:** on a CLAP plugin, Touch lets go a beat after the last move, not at the mouse release: CLAP's gesture events are not read yet. CLAP windows are expected to follow lanes by themselves; not tried.
 - **Audio takes:** only from Cycle recording. Recording over an existing region does not make a folder.
 - **Autopunch:** recording stops at the punch out, one punch a pass. The locators are set from the selection or Cycle, not by dragging.
 - **ASIO control panel:** neither cpal nor `asio-sys` offers it. Needs a small binding of its own.
 - **Plugin isolation:** not built. Plugins run inside the program, unsandboxed. A crash on load is blocked until Rescan; a crash while playing ends the program.
-- **Not built:** Smart Controls, Tuner, Step Editor, Live Loops, central design system, resizable and dockable panels, WAV past 4 GB (RF64).
+- **Not built:** Tuner, Step Editor controller lanes, Live Loops, dockable panels, independent input and output devices, WAV past 4 GB (RF64). The Inspector panel stays a fixed width because its strips are. Smart Control knob choices are not saved in the project. About 300 one-off colours remain in the screens.
+- **Tests that use the wall clock** (`capture`, flex `huge_edits`) fail when the machine sleeps during the run. Rerun them awake.
 - **Not run:** the installer (Inno Setup is not installed here), long playback and recording sessions, multi-monitor.
 - **Not verified by ear or by hand:** all of the above, including every window added in this pass.

@@ -25,8 +25,8 @@ use egui::{
     UiBuilder,
 };
 
-const BG: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
-const STRIP_BG: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
+const BG: Color32 = crate::theme::GRID_BG;
+const STRIP_BG: Color32 = crate::theme::TOOLBAR;
 const STRIP_H: f32 = 32.0;
 const ROW_H: f32 = 24.0;
 const LABEL_W: f32 = 124.0;
@@ -130,7 +130,7 @@ fn strip(ui: &Ui, body: Rect) -> Rect {
     g.rect_filled(strip, 0.0, STRIP_BG);
     g.line_segment(
         [strip.left_bottom(), strip.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     strip
 }
@@ -709,7 +709,7 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
     g.rect_filled(panel, 0.0, STRIP_BG);
     g.line_segment(
         [panel.right_top(), panel.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let pad = Rect::from_min_size(
         pos2(panel.left() + 14.0, panel.top() + 12.0),
@@ -866,7 +866,7 @@ fn xy_pad(
     d: &mut DrummerParams,
     (ti, ri): (usize, usize),
 ) -> bool {
-    g.rect_filled(pad, 4.0, Color32::from_gray(0x22));
+    g.rect_filled(pad, 4.0, crate::theme::BORDER);
     for k in 1..4 {
         let t = k as f32 / 4.0;
         let line = Stroke::new(1.0, Color32::from_gray(0x34));

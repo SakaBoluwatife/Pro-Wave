@@ -29,8 +29,8 @@ const REGION_H: f32 = 18.0;
 const SB_H: f32 = 12.0;
 const VEL_H: f32 = 72.0;
 
-const PANEL_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-const TOOLBAR_BG: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
+const PANEL_BG: Color32 = crate::theme::PANEL_BG;
+const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
 const ROW_WHITE: Color32 = Color32::from_rgb(26, 26, 26);
 const ROW_BLACK: Color32 = Color32::from_rgb(20, 20, 20);
 const NOTE_SEL: Color32 = Color32::from_rgb(0xe4, 0xff, 0xb0);
@@ -401,7 +401,7 @@ fn toolbar(
     g.rect_filled(bar, 0.0, TOOLBAR_BG);
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let cy = bar.center().y;
     back_chevron(&g, pos2(bar.left() + 16.0, cy));
@@ -1506,7 +1506,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     gi.rect_filled(insp, 0.0, PANEL_BG);
     gi.line_segment(
         [insp.right_top(), insp.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let ix = insp.left() + 12.0;
     let iw = insp.width() - 24.0;

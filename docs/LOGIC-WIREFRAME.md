@@ -8,24 +8,23 @@ Status key: **HAVE** works now · **PART** partly done · **GREY** menu/control 
 
 Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio becomes WASAPI (default) plus optional ASIO, CoreMIDI becomes WinMM/WinRT MIDI, Finder becomes File Explorer, app bundle becomes `.exe` plus installer.
 
-**Last checked against the code:** 2026-11-04, commit `c723928`. HAVE means built and tested in code; the owner's own testing by ear and by hand is still going on.
+**Last checked against the code:** 2026-11-05. HAVE means built and tested in code; the owner's own testing by ear and by hand is still going on.
 
 ---
 
 ## 0. What is left, in the suggested order
 
-1. **CPU optimization.** Run `cargo xtask bench`; nothing has been measured since plugins went in. Likely first: a bigger plugin block than 64 samples when not recording, then block processing and more than one mixing thread.
-2. **Remove stock instruments and effects (Task 3)**, and let the last track be deleted.
-3. **Audio comping:** take folders exist for MIDI only.
-4. **Crash isolation:** plugins in a process of their own. A crash while loading is handled; one while playing or in a plugin window still ends the program.
-5. **Automation, second part:** recording moves made in a plugin's window, plugin knobs following their lanes, lanes for the output chain, the Show/Create automation menu entries.
-6. **Piano roll, second part:** time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M.
-7. **Audio setup, second part:** sample rate, the ASIO driver's control panel, separate input and output devices.
-8. **Key command remap window**, then Smart Controls.
-9. **Plugin presets in the Browser**, project audio browser, Plugin Manager window.
-10. **Small menu entries** (section 16): rename track, track color and icon, Go to Position, Undo History.
-11. **Installer run for real**, code signing, Mac and Linux plugin windows.
-12. **Later or to decide:** Live Loops, score printing and MusicXML, Mackie control, Alternatives, the system-wide audio driver idea.
+1. **Crash isolation:** plugins in a process of their own. A crash while loading is handled; one while playing or in a plugin window still ends the program.
+2. **CPU, second part:** a clean measurement on an idle machine (`perf.rs`, ignored tests), then block processing of strips if sessions with many built-in effects or clips need it.
+3. **Audio takes when recording over a region** (Cycle recording makes folders already).
+4. **Piano roll, second part:** time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M.
+5. **Audio setup, second part:** the ASIO driver's control panel, separate input and output devices.
+6. **Theme, second part:** the shared colours and sizes are in `theme.rs`; about 300 one-off colours remain in the screens. Dockable panels.
+7. **Tuner, controller lanes in a Step Editor.**
+8. **Plugin presets in the Browser**, project audio browser, Plugin Manager window.
+9. **Small menu entries** (section 16).
+10. **Installer run for real**, code signing, Mac and Linux plugin windows.
+11. **Later or to decide:** Live Loops, score printing and MusicXML, Mackie control, Alternatives, the system-wide audio driver idea.
 
 ---
 
@@ -33,7 +32,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 | Area | Logic role | Pro Wave | Notes |
 |---|---|---|---|
-| Control bar / transport | Play, record, cycle, tempo, LCD | HAVE | Tempo can be typed; buttons name themselves on hover. Low Latency and Tuner buttons do nothing |
+| Control bar / transport | Play, record, cycle, tempo, LCD | HAVE | Tempo can be typed; buttons name themselves on hover. Low Latency works. Tuner not built |
 | Left panel | Library | HAVE | Tabs: Library, Browser, Plugins |
 | Left panel, Browser tab | Sample/loop browser | HAVE | Folder tree, search, favorites, preview with stop, waveform panel with kHz, BPM and length |
 | Left panel, Plugins tab | Plugin manager | HAVE | Filter by kind, search, folders, rescan, double-click or drag to a track |
@@ -42,7 +41,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Bottom editor area | Mixer, Piano Roll, Score, Step Seq, Audio editor | PART | Mixer and Piano Roll switch by tab; the others open from the selected region |
 | Channel Rack window | Not in Logic | HAVE | F6 |
 | Right side | Media/Loop browser, Notepad, Quick Help | PART | |
-| Smart Controls | 8 macro knobs per plugin | TODO | The plugin parameter list it needs now exists |
+| Smart Controls | 8 macro knobs per plugin | HAVE | View > Show Smart Controls. Knob choices are not saved in the project yet |
 | Toolbar customize, full screen | | GREY | |
 
 ## 2. Projects and files (chapters: projects, sharing)
@@ -140,7 +139,7 @@ HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 | Automation lanes and modes | HAVE | Fader, pan, built-in effects. Show/Create/Convert menu entries GREY |
 | Plugin parameter automation | PART | Drawn lanes play, in bounces too. Writing from the plugin window, and on-screen knobs following, TODO |
 | Metering (peak) | HAVE | LUFS, true peak, pre-fader TODO |
-| Channel strip settings save/load | TODO | |
+| Channel strip settings save/load | HAVE | Setting menu: effects and plugins with their settings, as `.pwstrip` files |
 | Signal flow view | GREY | |
 
 ## 9. Tempo, time, sync
@@ -180,7 +179,7 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 |---|---|---|
 | Settings window (Ctrl+,) | HAVE | Audio, Keyboard, Plugins, General |
 | Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. All five outputs of the dev PC start. Sample rate and the driver's panel TODO |
-| Project Settings entries (General, Tuning...) | GREY | |
+| Project Settings entries | HAVE | One window; General, Tuning and the like as far as they apply |
 | MIDI ports | HAVE | All ports, automatically |
 | Key commands | PART | Logic's, moved to Ctrl and Alt (`key_commands.rs`); remap window TODO |
 | MIDI learn, controller assignments | TODO | |
@@ -212,12 +211,11 @@ CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows 
 ## 16. Menu entries still greyed (checked 2026-11-04)
 
 - **File:** Close, Save as Template, Alternatives, Clean Up, Consolidate, Rename Project, Project Settings (General, Synchronization, Metronome, Recording, Tuning, Audio, MIDI), Page Setup, Print, Movie, Import Audio File, Import Other Projects, Score as MusicXML, Tracks in Place, Share, Show in File Manager, Open in Sound Library Manager
-- **Edit:** Undo History, Paste Replace
+- **Edit:** Paste Replace
 - **Track:** Rename Track, Show Master / Chord / Arrangement Track, Assign Track Color / Icon, Configure Track Header
-- **Navigate:** Go to Position
 - **Record:** Record Repeat, Record Toggle, Record Enable, New Take, Delete Take, Record Project Settings
 - **Mix:** Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering, Mastering, Create Mastering Track, Stem Splitter
-- **View:** the automation entries, Advanced Tools, Smart Controls, Score Editor, Step Sequencer, Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global Tracks, Colors, Markers, Grid, Smart Tempo, Full Screen
+- **View:** the automation entries, Advanced Tools, Score Editor, Step Sequencer, Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global Tracks, Colors, Markers, Grid, Smart Tempo, Full Screen
 - **Window:** Minimize, Zoom, Score Editor, Step Sequencer, Smart Tempo, Plugin Manager, Video, Bring All to Front
 - **Help:** Key Commands, About Pro Wave
 - **Tracks area:** Functions (Folder, Quantize, Bounce in Place, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks, Configure Track Header)

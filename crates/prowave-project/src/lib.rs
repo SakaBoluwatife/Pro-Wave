@@ -339,6 +339,14 @@ pub struct PluginDoc {
     pub state: String,
 }
 
+/// A channel strip's sound in a file of its own: its effects and plugins with their settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct StripDoc {
+    pub fx: Vec<InsertDoc>,
+    pub plugins: Vec<PluginDoc>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct InsertDoc {

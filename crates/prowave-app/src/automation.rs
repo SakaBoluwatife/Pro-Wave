@@ -117,6 +117,20 @@ pub fn plugin_moved(t: &mut Track, target: AutoTarget, value: f32, beat: f64, pl
     t.auto.write(target, beat, value, false);
 }
 
+/// What the plugin says about the hand on its control: holding a still control keeps Touch on the
+/// lane, and letting go gives the lane back at once rather than after the timer.
+pub fn plugin_gesture(t: &mut Track, uid: u64, editing: bool, ended: bool, beat: f64) {
+    let holds_it = matches!(t.auto.held, Some(AutoTarget::Plugin { uid: held, .. }) if held == uid);
+    if !holds_it {
+        return;
+    }
+    if editing {
+        t.auto.plugin_touch_until = beat + PLUGIN_TOUCH_BEATS;
+    } else if ended {
+        t.auto.plugin_touch_until = f64::NEG_INFINITY;
+    }
+}
+
 /// Whether the user can move the control: not while the strip plays its lane in Read mode.
 pub fn editable(t: &Track, target: AutoTarget) -> bool {
     !(t.auto.mode == AutoMode::Read && !t.auto.lane(target).is_empty())
@@ -437,7 +451,7 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
     let width = ui.available_width().max(200.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, CANVAS_H), Sense::click_and_drag());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 3.0, Color32::from_gray(0x24));
+    g.rect_filled(rect, 3.0, crate::theme::BORDER);
     let (from, span) = (ed.from, ed.span.max(1.0));
     // Bar lines.
     for bar in p.bars_in(from, from + span) {
@@ -531,7 +545,7 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
                 if bent || ed.drag == Some(Drag::Curve(i)) {
                     colour
                 } else {
-                    Color32::from_gray(0x24)
+                    crate::theme::BORDER
                 },
                 Stroke::new(1.0, colour),
             ));
@@ -668,6 +682,20 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_control_held_keeps_touch_and_letting_go_ends_it() {
+        let mut t = crate::model::Track::new("t", crate::model::TrackKind::Audio);
+        t.auto.mode = AutoMode::Touch;
+        let target = AutoTarget::Plugin { uid: 5, param: 1 };
+        plugin_moved(&mut t, target, 0.5, 1.0, true);
+        plugin_gesture(&mut t, 5, true, false, 100.0);
+        assert!(t.auto.plugin_touch_until > 100.0, "still held");
+        plugin_gesture(&mut t, 9, false, true, 100.0);
+        assert!(t.auto.plugin_touch_until > 100.0, "another plugin");
+        plugin_gesture(&mut t, 5, false, true, 100.0);
+        assert!(t.auto.plugin_touch_until < 100.0, "let go");
+    }
     use prowave_engine::FxKind;
 
     fn project() -> Project {

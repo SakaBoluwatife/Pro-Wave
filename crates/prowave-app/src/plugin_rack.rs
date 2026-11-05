@@ -257,6 +257,8 @@ impl Rack {
                     let target = crate::model::AutoTarget::Plugin { uid, param };
                     crate::automation::plugin_moved(t, target, value as f32, beat, playing);
                 }
+                let (editing, ended) = (live.loaded.editing(), live.loaded.take_edit_ended());
+                crate::automation::plugin_gesture(t, uid, editing, ended, beat);
             }
             if !playing {
                 continue;

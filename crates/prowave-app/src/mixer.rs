@@ -26,20 +26,20 @@ const TOOLBAR_H: f32 = 30.0;
 const LABEL_W: f32 = 88.0;
 const GAP: f32 = 2.0;
 
-const TOOLBAR_BG: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
-const MIXER_BG: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-const STRIP_BG: Color32 = Color32::from_rgb(0x3e, 0x3e, 0x3e);
-const STRIP_SEL: Color32 = Color32::from_rgb(0x4d, 0x4d, 0x4d);
-const SLOT_EMPTY: Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2c);
-const SLOT_GRAY: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
-const PLUGIN_BLUE: Color32 = Color32::from_rgb(0x36, 0x6f, 0xd2);
+const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
+const MIXER_BG: Color32 = crate::theme::MIXER_BG;
+const STRIP_BG: Color32 = crate::theme::STRIP;
+const STRIP_SEL: Color32 = crate::theme::STRIP_SELECTED;
+const SLOT_EMPTY: Color32 = crate::theme::SLOT_EMPTY;
+const SLOT_GRAY: Color32 = crate::theme::SLOT;
+const PLUGIN_BLUE: Color32 = crate::theme::ACCENT_BLUE;
 /// A strip that makes no sound (muted, or another track is soloed): instruments, plug-ins
 /// and sends turn grey, and so do the meters.
-const PLUGIN_OFF: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4a);
-const METER_OFF: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
-const READ_GREEN: Color32 = Color32::from_rgb(0x6c, 0xd0, 0x5a);
-const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
-const SOLO_ON: Color32 = Color32::from_rgb(0xe6, 0xc2, 0x2e);
+const PLUGIN_OFF: Color32 = crate::theme::SLOT_OFF;
+const METER_OFF: Color32 = crate::theme::METER_OFF;
+const READ_GREEN: Color32 = crate::theme::GOOD;
+const MUTE_ON: Color32 = crate::theme::MUTE;
+const SOLO_ON: Color32 = crate::theme::SOLO;
 const OUT_PURPLE: Color32 = Color32::from_rgb(0x8a, 0x3f, 0xc8);
 const MASTER_PINK: Color32 = Color32::from_rgb(0xb0, 0x3c, 0x9a);
 
@@ -79,6 +79,8 @@ pub struct MixerView {
     pub installed: std::sync::Arc<Vec<PluginInfo>>,
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
+    pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    pub strip_error: Option<String>,
     /// What went wrong putting one on, for the status line.
     pub message: Option<String>,
     pub mode: MixerMode,
@@ -111,9 +113,35 @@ pub struct MixerView {
 #[derive(Clone)]
 pub struct CopiedStrip {
     inserts: Vec<Insert>,
+    plugins: Vec<crate::model::PluginInsert>,
     sends: Vec<SendSlot>,
     volume_db: f32,
     pan: f32,
+}
+
+impl CopiedStrip {
+    /// The strip as it is now.
+    pub fn of(t: &crate::model::Track) -> Self {
+        Self {
+            inserts: t.inserts.clone(),
+            plugins: t.plugins.clone(),
+            sends: t.sends.clone(),
+            volume_db: t.volume_db,
+            pan: t.pan,
+        }
+    }
+
+    /// Puts it on a track. The plugins are new instances with the same settings.
+    pub fn paste_on(&self, t: &mut crate::model::Track) {
+        t.inserts = self.inserts.clone();
+        t.plugins = self.plugins.clone();
+        for plugin in &mut t.plugins {
+            plugin.uid = crate::plugin_rack::new_uid();
+        }
+        t.sends = self.sends.clone();
+        t.volume_db = self.volume_db;
+        t.pan = self.pan;
+    }
 }
 
 impl Default for MixerView {
@@ -122,6 +150,8 @@ impl Default for MixerView {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
+            strip_cmd: None,
+            strip_error: None,
             message: None,
             mode: MixerMode::Tracks,
             filters: [true; 8],
@@ -263,7 +293,7 @@ fn eq_thumb(
     r: Rect,
     eq: Option<(prowave_engine::FxKind, [f32; prowave_engine::MAX_FX_PARAMS])>,
 ) {
-    g.rect_filled(r, 3.0, Color32::from_gray(0x24));
+    g.rect_filled(r, 3.0, crate::theme::BORDER);
     g.rect_stroke(
         r,
         3.0,
@@ -580,7 +610,7 @@ fn fader_and_meter(
             pos2(cap.left() + 1.0, cap_y),
             pos2(cap.right() - 1.0, cap_y),
         ],
-        Stroke::new(1.8, Color32::from_gray(0x24)),
+        Stroke::new(1.8, crate::theme::BORDER),
     );
     g.line_segment(
         [
@@ -1988,7 +2018,7 @@ pub fn channel_strip(
         g,
         vol_r,
         &format!("{vol_db:.1}"),
-        Color32::from_gray(0x24),
+        crate::theme::BORDER,
         TEXT,
     );
     let hold_db = lin_to_db(*hold);
@@ -2002,7 +2032,7 @@ pub fn channel_strip(
     } else {
         READ_GREEN
     };
-    slot(g, pk_r, &pk_text, Color32::from_gray(0x24), pk_col);
+    slot(g, pk_r, &pk_text, crate::theme::BORDER, pk_col);
     if ui
         .interact(pk_r, id(ns, (key, "peak")), Sense::click())
         .clicked()
@@ -2144,32 +2174,54 @@ fn setting_menu(ui: &Ui, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, 
     let resp = ui.interact(r, id, Sense::click());
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(170.0);
-        let t = &mut p.tracks[i];
         if ui.button(tr("Copy Channel Strip")).clicked() {
-            v.copied = Some(CopiedStrip {
-                inserts: t.inserts.clone(),
-                sends: t.sends.clone(),
-                volume_db: t.volume_db,
-                pan: t.pan,
-            });
+            // `App` takes the copy, once the plugins have given their current settings.
+            v.strip_cmd = Some(crate::plugin_presets::StripCmd::Copy { track: i });
             ui.close();
         }
         let paste = egui::Button::new(tr("Paste Channel Strip"));
         if ui.add_enabled(v.copied.is_some(), paste).clicked() {
-            if let Some(c) = v.copied.clone() {
-                t.inserts = c.inserts;
-                t.sends = c.sends;
-                t.volume_db = c.volume_db;
-                t.pan = c.pan;
+            if let Some(c) = &v.copied {
+                c.paste_on(&mut p.tracks[i]);
+                p.song_rev += 1;
             }
             ui.close();
         }
         ui.separator();
+        if ui.button("Save Channel Strip...").clicked() {
+            let name = p.tracks[i].name.clone();
+            if let Some(file) = crate::plugin_presets::ask_where_strip(&name) {
+                v.strip_cmd = Some(crate::plugin_presets::StripCmd::Save { track: i, file });
+            }
+            ui.close();
+        }
+        let saved = crate::plugin_presets::list_strips();
+        ui.add_enabled_ui(!saved.is_empty(), |ui| {
+            ui.menu_button("Load Channel Strip", |ui| {
+                for (name, file) in saved {
+                    if ui.button(name).clicked() {
+                        let read = std::fs::read_to_string(&file).map_err(|e| e.to_string());
+                        let done = read.and_then(|text| {
+                            crate::project_io::strip_from_text(&mut p.tracks[i], &text)
+                        });
+                        match done {
+                            Ok(()) => p.song_rev += 1,
+                            Err(e) => v.strip_error = Some(e),
+                        }
+                        ui.close();
+                    }
+                }
+            });
+        });
+        ui.separator();
         if ui.button(tr("Reset Channel Strip")).clicked() {
+            let t = &mut p.tracks[i];
             t.inserts.clear();
+            t.plugins.clear();
             t.sends.clear();
             t.volume_db = 0.0;
             t.pan = 0.0;
+            p.song_rev += 1;
             ui.close();
         }
     });
@@ -2392,7 +2444,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
     g.rect_filled(bar, 0.0, TOOLBAR_BG);
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let cy = bar.center().y;
     back_chevron(&g, pos2(bar.left() + 16.0, cy));
@@ -2407,14 +2459,9 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
         ui.set_min_width(220.0);
         crate::widgets::undo_items(ui, can_undo, can_redo, &mut undo_pick);
         if ui.button(tr("Copy Channel Strip")).clicked() {
-            if let Some(t) = p.tracks.get(p.selected_track) {
-                v.copied = Some(CopiedStrip {
-                    inserts: t.inserts.clone(),
-                    sends: t.sends.clone(),
-                    volume_db: t.volume_db,
-                    pan: t.pan,
-                });
-            }
+            v.strip_cmd = Some(crate::plugin_presets::StripCmd::Copy {
+                track: p.selected_track,
+            });
             ui.close();
         }
         let can_paste = v.copied.is_some() && !p.tracks.is_empty();
@@ -2422,11 +2469,9 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             .add_enabled(can_paste, egui::Button::new(tr("Paste Channel Strip")))
             .clicked()
         {
-            if let (Some(c), Some(t)) = (v.copied.clone(), p.tracks.get_mut(p.selected_track)) {
-                t.inserts = c.inserts;
-                t.sends = c.sends;
-                t.volume_db = c.volume_db;
-                t.pan = c.pan;
+            if let (Some(c), Some(t)) = (&v.copied, p.tracks.get_mut(p.selected_track)) {
+                c.paste_on(t);
+                p.song_rev += 1;
             }
             ui.close();
         }

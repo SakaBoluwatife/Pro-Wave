@@ -98,6 +98,16 @@ pub trait LoadedPlugin {
         Vec::new()
     }
 
+    /// Whether a control in the plugin's window is being held now, for plugins that say so.
+    fn editing(&self) -> bool {
+        false
+    }
+
+    /// Whether a control in the plugin's window was let go since the last call.
+    fn take_edit_ended(&mut self) -> bool {
+        false
+    }
+
     /// Where a parameter is now, as a position 0..=1.
     fn param_value(&mut self, _id: u32) -> Option<f64> {
         None

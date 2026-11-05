@@ -25,12 +25,12 @@ const NUM_W: f32 = 24.0;
 /// How far each folder nesting level moves a track header's contents to the right.
 const INDENT_W: f32 = 14.0;
 
-const TOOLBAR_BG: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
+const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
 const HEADER_BG: Color32 = Color32::from_rgb(0x41, 0x41, 0x41);
 const HEADER_SEL: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
 const LANE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
 const LANE_SEL: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-const RULER_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
+const RULER_BG: Color32 = crate::theme::PANEL_BG;
 const CYCLE: Color32 = Color32::from_rgb(0xd4, 0x9e, 0x2a);
 const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
 const SOLO_ON: Color32 = Color32::from_rgb(0xe6, 0xc2, 0x2e);
@@ -484,7 +484,7 @@ fn mini_slider(ui: &Ui, g: &Painter, rect: Rect, key: &str, value: f32) -> f32 {
     let cy = rect.center().y;
     g.line_segment(
         [pos2(rect.left(), cy), pos2(rect.right(), cy)],
-        Stroke::new(2.0, Color32::from_gray(0x22)),
+        Stroke::new(2.0, crate::theme::BORDER),
     );
     g.circle_filled(
         pos2(rect.left() + rect.width() * v, cy),
@@ -680,7 +680,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
     g.rect_filled(bar, 0.0, TOOLBAR_BG);
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let cy = bar.center().y;
     let (can_undo, can_redo) = (s.can_undo, s.can_redo);
@@ -2789,7 +2789,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         }
         g.line_segment(
             [row.left_bottom(), row.right_bottom()],
-            Stroke::new(1.0, Color32::from_gray(0x22)),
+            Stroke::new(1.0, crate::theme::BORDER),
         );
     }
     for bar in &bars {
@@ -3442,7 +3442,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
     gh.line_segment(
         [headers.right_top(), headers.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
 
     // ---- corner above the headers: "+" (new track), duplicate track, global tracks
@@ -3450,7 +3450,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     gc.rect_filled(corner, 0.0, Color32::from_gray(0x3a));
     gc.line_segment(
         [corner.left_bottom(), corner.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let plus = Rect::from_center_size(
         pos2(corner.left() + 18.0, corner.center().y),
@@ -3546,7 +3546,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     gr.rect_filled(ruler, 0.0, RULER_BG);
     gr.line_segment(
         [ruler.left_bottom(), ruler.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     // The stretch of the ruler over the selected region is marked, in gray: gold is for Cycle.
     let selection = v

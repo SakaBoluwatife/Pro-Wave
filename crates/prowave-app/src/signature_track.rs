@@ -16,8 +16,8 @@ use egui::{pos2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui};
 /// Height of the Signature track, in points.
 pub const HEIGHT: f32 = 24.0;
 
-const BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-const HEADER_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const BG: Color32 = crate::theme::LANE;
+const HEADER_BG: Color32 = crate::theme::PANEL_BG;
 const BLOCK: Color32 = Color32::from_rgb(0x5a, 0x6a, 0x8c);
 const BLOCK_EDGE: Color32 = Color32::from_rgb(0x9a, 0xaa, 0xcc);
 
@@ -67,7 +67,7 @@ pub fn show(
     gh.rect_filled(header, 0.0, HEADER_BG);
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),

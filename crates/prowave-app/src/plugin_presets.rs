@@ -11,6 +11,55 @@ pub enum PresetCmd {
     Load { uid: u64, file: PathBuf },
 }
 
+/// What a channel strip's Setting menu asked for that needs the running plugins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StripCmd {
+    Copy { track: usize },
+    Save { track: usize, file: PathBuf },
+}
+
+const STRIP_EXTENSION: &str = "pwstrip";
+
+/// Where channel strip settings are kept.
+fn strip_folder() -> Option<PathBuf> {
+    Some(crate::recent_files::config_dir()?.join("channel strips"))
+}
+
+fn list_strips_in(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(STRIP_EXTENSION))
+        .filter_map(|p| Some((p.file_stem()?.to_str()?.to_string(), p)))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The saved channel strip settings: name and file, by name.
+pub fn list_strips() -> Vec<(String, PathBuf)> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    strip_folder().map_or_else(Vec::new, |dir| list_strips_in(&dir))
+}
+
+/// Asks where to save a channel strip setting. `None` if the user changed their mind.
+pub fn ask_where_strip(name: &str) -> Option<PathBuf> {
+    let dir = strip_folder()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut file = rfd::FileDialog::new()
+        .set_directory(&dir)
+        .add_filter("Pro Wave channel strip", &[STRIP_EXTENSION])
+        .set_file_name(format!("{name}.{STRIP_EXTENSION}"))
+        .save_file()?;
+    file.set_extension(STRIP_EXTENSION);
+    Some(file)
+}
+
 /// A name that is safe as a folder name, from a plugin's id.
 fn folder_name(id: &str) -> String {
     id.chars()

@@ -169,7 +169,7 @@ const BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x28);
 const SIDEBAR: Color32 = Color32::from_rgb(0x2f, 0x2f, 0x32);
 const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
 const DIM: Color32 = Color32::from_rgb(0x96, 0x96, 0x9a);
-const ACCENT: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xd8);
+const ACCENT: Color32 = crate::theme::ACCENT_BLUE;
 const TILE: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3d);
 
 /// A tile in the New Project / Templates grid. Returns (clicked, double-clicked).

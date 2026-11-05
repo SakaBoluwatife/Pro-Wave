@@ -12,7 +12,7 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, UiBuild
 use prowave_host::PluginInfo;
 
 const TAB_H: f32 = 26.0;
-const PANEL_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
+const PANEL_BG: Color32 = crate::theme::PANEL_BG;
 const ROW_H: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,11 +109,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         g.rect_filled(strip, 0.0, PANEL_BG);
         g.line_segment(
             [strip.left_bottom(), strip.right_bottom()],
-            Stroke::new(1.0, Color32::from_gray(0x22)),
+            Stroke::new(1.0, crate::theme::BORDER),
         );
         g.line_segment(
             [strip.right_top(), strip.right_bottom()],
-            Stroke::new(1.0, Color32::from_gray(0x22)),
+            Stroke::new(1.0, crate::theme::BORDER),
         );
     }
     let w = strip.width() / LeftTab::ALL.len() as f32;

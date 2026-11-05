@@ -19,8 +19,8 @@ use egui::{
 };
 use prowave_engine::FadeCurve;
 
-const PANEL_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-const HEADER_BG: Color32 = Color32::from_rgb(0x42, 0x42, 0x42);
+const PANEL_BG: Color32 = crate::theme::PANEL_BG;
+const HEADER_BG: Color32 = crate::theme::HEADER;
 const ROW_H: f32 = 20.0;
 const HEADER_H: f32 = 24.0;
 const LABEL_RIGHT: f32 = 104.0;

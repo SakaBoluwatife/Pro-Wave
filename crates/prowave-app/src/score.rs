@@ -24,7 +24,7 @@ const SPACE: f32 = 9.0;
 const HALF: f32 = SPACE / 2.0;
 const INK: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
 const STAFF_INK: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
-const PAPER: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
+const PAPER: Color32 = crate::theme::GRID_BG;
 /// Width reserved at the left for the clefs.
 const CLEF_W: f32 = 50.0;
 /// The height of the strip with the key picker above the staves.

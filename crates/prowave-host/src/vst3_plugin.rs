@@ -636,6 +636,9 @@ struct Handler {
     edits: RefCell<rtrb::Producer<(ParamID, ParamValue)>>,
     /// The same moves, for automation. On the UI thread, as `performEdit` is.
     moved: RefCell<Vec<(ParamID, ParamValue)>>,
+    /// Controls held in the plugin's window, and whether one was let go. On the UI thread too.
+    held: std::cell::Cell<u32>,
+    ended: std::cell::Cell<bool>,
     dirty: Arc<AtomicBool>,
 }
 
@@ -645,6 +648,7 @@ impl Class for Handler {
 
 impl IComponentHandlerTrait for Handler {
     unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+        self.held.set(self.held.get().saturating_add(1));
         kResultOk
     }
 
@@ -658,6 +662,8 @@ impl IComponentHandlerTrait for Handler {
     }
 
     unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+        self.held.set(self.held.get().saturating_sub(1));
+        self.ended.set(true);
         kResultOk
     }
 
@@ -880,6 +886,8 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
     let handler = ComWrapper::new(Handler {
         edits: RefCell::new(edits_in),
         moved: RefCell::new(Vec::new()),
+        held: std::cell::Cell::new(0),
+        ended: std::cell::Cell::new(false),
         dirty: dirty.clone(),
     });
     let frame = ComWrapper::new(Frame {
@@ -1098,6 +1106,14 @@ impl LoadedPlugin for LoadedVst3 {
 
     fn take_edits(&mut self) -> Vec<(u32, f64)> {
         std::mem::take(&mut *self.handler.moved.borrow_mut())
+    }
+
+    fn editing(&self) -> bool {
+        self.handler.held.get() > 0
+    }
+
+    fn take_edit_ended(&mut self) -> bool {
+        self.handler.ended.take()
     }
 
     fn param_value(&mut self, id: u32) -> Option<f64> {

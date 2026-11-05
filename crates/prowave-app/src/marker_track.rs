@@ -13,8 +13,8 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui};
 /// Height of the Marker track, in points.
 pub const HEIGHT: f32 = 24.0;
 
-const BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-const HEADER_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const BG: Color32 = crate::theme::LANE;
+const HEADER_BG: Color32 = crate::theme::PANEL_BG;
 
 /// What a right-click or double-click asked for, run after drawing.
 enum Action {
@@ -42,7 +42,7 @@ pub fn show(
     gh.rect_filled(header, 0.0, HEADER_BG);
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),

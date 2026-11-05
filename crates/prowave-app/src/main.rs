@@ -752,6 +752,30 @@ impl eframe::App for App {
                     self.ui.smart.values.insert((uid, param), value);
                 }
             }
+            if let Some(cmd) = self.ui.mixer.strip_cmd.take() {
+                use plugin_presets::StripCmd;
+                sync.collect_plugin_states(&mut self.project);
+                match cmd {
+                    StripCmd::Copy { track } => {
+                        if let Some(t) = self.project.tracks.get(track) {
+                            self.ui.mixer.copied = Some(mixer::CopiedStrip::of(t));
+                        }
+                    }
+                    StripCmd::Save { track, file } => {
+                        if let Some(t) = self.project.tracks.get(track) {
+                            let written = project_io::strip_to_text(t).and_then(|text| {
+                                std::fs::write(&file, text).map_err(|e| e.to_string())
+                            });
+                            if let Err(e) = written {
+                                self.ui.status = Some(e);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(e) = self.ui.mixer.strip_error.take() {
+                self.ui.status = Some(e);
+            }
             if let Some(cmd) = self.ui.mixer.preset_cmd.take() {
                 if let Err(e) = sync.run_preset(&cmd) {
                     self.ui.status = Some(e);
@@ -809,7 +833,9 @@ impl eframe::App for App {
             .show(ui, |ui| transport::control_bar(ui, p, s, master_peaks));
         if s.show_library {
             egui::Panel::left("library")
-                .exact_size(290.0)
+                .resizable(true)
+                .default_size(290.0)
+                .size_range(220.0..=520.0)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| left_panel::show(ui, p, s));
         }
@@ -826,34 +852,37 @@ impl eframe::App for App {
         }
         if s.browser.open.is_some() {
             egui::Panel::right("browser")
-                .exact_size(file_browser::WIDTH)
+                .resizable(true)
+                .default_size(file_browser::WIDTH)
+                .size_range(220.0..=560.0)
                 .show(ui, |ui| file_browser::show(ui, s));
         }
         if s.show_notes {
             egui::Panel::right("notes")
-                .exact_size(side_panes::NOTES_WIDTH)
+                .resizable(true)
+                .default_size(side_panes::NOTES_WIDTH)
+                .size_range(180.0..=560.0)
                 .show(ui, |ui| side_panes::note_pad(ui, p));
         }
         if s.show_lists {
             egui::Panel::right("lists")
-                .exact_size(event_list::WIDTH)
+                .resizable(true)
+                .default_size(event_list::WIDTH)
+                .size_range(event_list::WIDTH..=640.0)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| event_list::show(ui, p, s));
         }
         if s.show_mixer || s.bottom == Bottom::PianoRoll {
-            // About half of the space under the control bar (500 points at most), so the Tracks
-            // area keeps room on short screens. The Piano Roll can be pulled taller; the mixer
-            // has a fixed height, as in Logic: its strips have a natural size and a taller panel
-            // would only stretch the faders and meters. (It follows the window, so it is never
-            // outside its range when the window shrinks.)
+            // More than half of the space under the control bar (620 points at most), so the Tracks
+            // area keeps room on short screens.
             let room = ui.available_height();
-            let usual = (room * 0.48).clamp(160.0, 500.0);
+            let usual = (room * 0.55).clamp(160.0, 620.0);
             let panel = egui::Panel::bottom("bottom").frame(egui::Frame::new());
-            let panel = if s.bottom == Bottom::Mixer {
-                panel.resizable(false).exact_size(usual)
-            } else {
-                panel.resizable(true).default_size(usual)
-            };
+            // Pull it taller for longer faders. It stays inside the window when the window shrinks.
+            let panel = panel
+                .resizable(true)
+                .default_size(usual)
+                .size_range(160.0..=(room * 0.85).max(160.0));
             panel.show(ui, |ui| match s.bottom {
                 Bottom::Mixer => mixer::show(ui, p, s, &meters),
                 Bottom::PianoRoll => piano_roll::show(ui, p, s),

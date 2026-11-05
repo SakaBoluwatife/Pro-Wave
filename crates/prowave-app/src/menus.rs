@@ -367,11 +367,11 @@ struct Look {
 
 const DARK: Look = Look {
     bar: Color32::from_rgb(0x3a, 0x3a, 0x3c),
-    bar_text: Color32::from_rgb(0xdc, 0xdc, 0xdc),
+    bar_text: crate::theme::TEXT,
     menu: Color32::from_rgb(0x4a, 0x4a, 0x4c),
     text: Color32::from_rgb(0xe6, 0xe6, 0xe6),
     dim: Color32::from_rgb(0x8a, 0x8a, 0x8c),
-    hover: Color32::from_rgb(0x2f, 0x6f, 0xd8),
+    hover: crate::theme::ACCENT_BLUE,
     hover_text: Color32::WHITE,
     separator: Color32::from_rgb(0x5e, 0x5e, 0x60),
 };
@@ -956,7 +956,7 @@ fn menu_style(light: bool) -> impl Fn(&mut egui::Style) + Send + Sync + 'static 
         egui::containers::menu::menu_style(style);
         let l = look(light);
         let hover_fill = if light {
-            Color32::from_rgb(0xdc, 0xdc, 0xdc)
+            crate::theme::TEXT
         } else {
             Color32::from_rgb(0x55, 0x55, 0x58)
         };

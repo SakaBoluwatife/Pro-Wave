@@ -13,9 +13,9 @@ use crate::widgets::{stroke, BTN_BG, TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Shape, Stroke, Ui};
 
-const PANEL_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
+const PANEL_BG: Color32 = crate::theme::PANEL_BG;
 const ROW_H: f32 = 19.0;
-const SEL_BG: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
+const SEL_BG: Color32 = crate::theme::SELECTED;
 
 pub struct Category {
     pub name: &'static str,
@@ -444,7 +444,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     g.rect_filled(panel, 0.0, PANEL_BG);
     g.line_segment(
         [panel.right_top(), panel.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let v = &mut s.library;
     let left = panel.left();

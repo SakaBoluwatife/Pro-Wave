@@ -1258,6 +1258,46 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
     }
 }
 
+/// The text of a strip's settings file. The plugins' states must have been collected first.
+pub fn strip_to_text(t: &Track) -> Result<String, String> {
+    use base64::Engine as _;
+    let doc = prowave_project::StripDoc {
+        fx: t
+            .inserts
+            .iter()
+            .map(|s| prowave_project::InsertDoc {
+                kind: s.name().into(),
+                bypass: s.bypass,
+                params: s.params[..s.kind.params().len()].to_vec(),
+            })
+            .collect(),
+        plugins: t
+            .plugins
+            .iter()
+            .map(|i| {
+                let mut d = plugin_to_doc(i);
+                if let Some(state) = &i.state {
+                    d.state = base64::engine::general_purpose::STANDARD.encode(state.as_slice());
+                }
+                d
+            })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
+}
+
+/// Puts a strip's settings file on a track, in place of its effects and plugins.
+pub fn strip_from_text(t: &mut Track, text: &str) -> Result<(), String> {
+    let doc: prowave_project::StripDoc = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let track = prowave_project::TrackDoc {
+        fx: doc.fx,
+        ..Default::default()
+    };
+    t.inserts = inserts_from_doc(&track);
+    t.plugins = doc.plugins.iter().map(plugin_from_doc).collect();
+    Ok(())
+}
+
 /// Writes the plugins' settings into the document that goes in the file.
 fn add_plugin_states(p: &Project, doc: &mut ProjectDoc) {
     use base64::Engine as _;
@@ -1309,6 +1349,40 @@ pub fn open_project(
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_channel_strip_file_brings_back_effects_and_plugins_with_settings() {
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        p.tracks[a].inserts = crate::model::inserts_from_names(&["Channel EQ"]);
+        p.tracks[a].plugins.push(crate::model::PluginInsert {
+            row: 3,
+            uid: 77,
+            id: "x.y".into(),
+            name: "Y".into(),
+            vendor: String::new(),
+            path: "y.clap".into(),
+            bypass: true,
+            failed: None,
+            state: Some(std::sync::Arc::new(vec![1, 2, 3])),
+            params: std::sync::Arc::default(),
+        });
+        let text = strip_to_text(&p.tracks[a]).unwrap();
+        strip_from_text(&mut p.tracks[b], &text).unwrap();
+        assert_eq!(p.tracks[b].inserts.len(), p.tracks[a].inserts.len());
+        let got = &p.tracks[b].plugins[0];
+        assert_ne!(got.uid, 77, "a new instance");
+        assert_eq!((got.row, got.bypass, got.id.as_str()), (3, true, "x.y"));
+        assert_eq!(got.state.as_deref(), Some(&vec![1, 2, 3]));
+        let before = p.tracks[b].plugins.len();
+        assert!(strip_from_text(&mut p.tracks[b], "not json").is_err());
+        assert_eq!(
+            p.tracks[b].plugins.len(),
+            before,
+            "a bad file changes nothing"
+        );
+    }
 
     /// 0.5 s, mono, 16-bit, 44.1 kHz silence.
     pub(crate) fn write_wav(path: &Path) {

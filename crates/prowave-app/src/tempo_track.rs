@@ -18,10 +18,10 @@ const MIN_GAP: f64 = 0.25;
 
 pub const HEIGHT: f32 = 46.0;
 
-const LINE: Color32 = Color32::from_rgb(0x5f, 0xc8, 0x6a);
+const LINE: Color32 = crate::theme::GOOD;
 const FILL: Color32 = Color32::from_rgba_premultiplied(0x18, 0x34, 0x1b, 0x60);
-const BG: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-const HEADER_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const BG: Color32 = crate::theme::LANE;
+const HEADER_BG: Color32 = crate::theme::PANEL_BG;
 /// Margin above and below the slowest and fastest tempo, in BPM.
 const MARGIN: f32 = 8.0;
 /// Padding inside the lane, in points.
@@ -78,7 +78,7 @@ pub fn show(
     gh.rect_filled(header, 0.0, HEADER_BG);
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y - 7.0),

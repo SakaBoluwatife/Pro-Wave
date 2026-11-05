@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 const ROW_H: f32 = 20.0;
 const INDENT: f32 = 12.0;
-const PANEL_BG: Color32 = Color32::from_rgb(0x38, 0x38, 0x38);
-const SEL_BG: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
-const HOVER_BG: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
-const GREEN: Color32 = Color32::from_rgb(0x5c, 0xc8, 0x6a);
-const GOLD: Color32 = Color32::from_rgb(0xe6, 0xb4, 0x2c);
+const PANEL_BG: Color32 = crate::theme::PANEL_BG;
+const SEL_BG: Color32 = crate::theme::SELECTED;
+const HOVER_BG: Color32 = crate::theme::HOVERED;
+const GREEN: Color32 = crate::theme::GOOD;
+const GOLD: Color32 = crate::theme::SOLO;
 /// A folder with more entries than this shows only these.
 const MAX_ENTRIES: usize = 5000;
 /// A search stops at this many hits.
@@ -614,7 +614,7 @@ fn wave_panel(ui: &mut Ui, b: &mut SampleBrowser) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
     let playing = b.preview.playing.as_ref() == Some(&path);
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, Color32::from_gray(0x24));
+    g.rect_filled(rect, 2.0, crate::theme::BORDER);
     let mid = rect.center().y;
     let half = rect.height() * 0.5 - 4.0;
     let position = b.wave_position();
@@ -1122,7 +1122,7 @@ pub fn show(ui: &mut Ui, s: &mut UiState) {
     g.rect_filled(panel, 0.0, PANEL_BG);
     g.line_segment(
         [panel.right_top(), panel.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x22)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let ctx = ui.ctx().clone();
     let inner = panel.shrink2(vec2(6.0, 4.0));

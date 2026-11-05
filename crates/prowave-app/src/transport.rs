@@ -17,7 +17,7 @@ use egui::{
 
 const BAR_BG: Color32 = Color32::from_rgb(0x47, 0x47, 0x47);
 const SEG_BG: Color32 = Color32::from_rgb(0x56, 0x56, 0x56);
-const SEG_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const SEG_BORDER: Color32 = crate::theme::PANEL_BG;
 const SEG_ON: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
 const ICON: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb4);
 const ICON_ON: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
@@ -894,7 +894,7 @@ pub fn control_bar(
     g.rect_filled(bar, 0.0, BAR_BG);
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x24)),
+        Stroke::new(1.0, crate::theme::BORDER),
     );
     let cy = bar.center().y;
 

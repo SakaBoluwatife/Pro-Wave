@@ -5,10 +5,10 @@ use egui::{
     Ui,
 };
 
-pub const TEXT: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xdc);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0x96, 0x96, 0x96);
-pub const BTN_BG: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
-pub const BLUE: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xd8);
+pub const TEXT: Color32 = crate::theme::TEXT;
+pub const TEXT_DIM: Color32 = crate::theme::TEXT_DIM;
+pub const BTN_BG: Color32 = crate::theme::BUTTON;
+pub const BLUE: Color32 = crate::theme::ACCENT_BLUE;
 
 pub fn stroke(c: Color32) -> Stroke {
     Stroke::new(1.3, c)
@@ -189,7 +189,7 @@ pub fn slider_h(
     let cy = rect.center().y;
     let v = value.clamp(0.0, 1.0);
     let groove = Rect::from_min_max(pos2(rect.left(), cy - 2.0), pos2(rect.right(), cy + 2.0));
-    g.rect_filled(groove, 2.0, Color32::from_gray(0x24));
+    g.rect_filled(groove, 2.0, crate::theme::BORDER);
     let knob = pos2(rect.left() + 6.0 + (rect.width() - 12.0) * v, cy);
     let (fill, edge) = if enabled {
         (Color32::from_gray(0xc4), Color32::from_gray(0x70))
@@ -227,7 +227,7 @@ pub fn value_arc(g: &Painter, c: Pos2, r: f32, from: f32, to: f32) {
     };
     g.add(egui::Shape::line(
         arc(-1.0, 1.0),
-        Stroke::new(1.6, Color32::from_gray(0x24)),
+        Stroke::new(1.6, crate::theme::BORDER),
     ));
     if (to - from).abs() < 0.01 {
         // Centred: a small lit point says so.
