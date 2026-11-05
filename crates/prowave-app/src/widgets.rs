@@ -64,9 +64,12 @@ pub fn menu_title(
     let w = g.layout_no_wrap(label.into(), font.clone(), TEXT).size().x + 22.0;
     let r = Rect::from_min_size(pos2(left, cy - 10.0), vec2(w, 20.0));
     let resp = ui.interact(r, id, Sense::click());
-    if resp.hovered() {
-        g.rect_filled(r, 4.0, Color32::from_white_alpha(14));
-    }
+    let fill = if resp.hovered() {
+        crate::theme::BUTTON_HOVERED
+    } else {
+        crate::theme::BUTTON
+    };
+    g.rect_filled(r, 4.0, fill);
     g.text(
         pos2(r.left() + 6.0, cy),
         Align2::LEFT_CENTER,

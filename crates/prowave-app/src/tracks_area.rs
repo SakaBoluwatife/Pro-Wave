@@ -26,10 +26,10 @@ const NUM_W: f32 = 24.0;
 const INDENT_W: f32 = 14.0;
 
 const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
-const HEADER_BG: Color32 = Color32::from_rgb(0x41, 0x41, 0x41);
-const HEADER_SEL: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
-const LANE_BG: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2a);
-const LANE_SEL: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
+const HEADER_BG: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+const HEADER_SEL: Color32 = Color32::from_rgb(0x62, 0x62, 0x62);
+const LANE_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const LANE_SEL: Color32 = Color32::from_rgb(0x42, 0x42, 0x42);
 const RULER_BG: Color32 = crate::theme::PANEL_BG;
 const CYCLE: Color32 = Color32::from_rgb(0xd4, 0x9e, 0x2a);
 const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
@@ -2579,7 +2579,7 @@ fn folder_buttons(ui: &Ui, g: &Painter, p: &mut Project, i: usize, x: f32, y: f3
     }
 }
 
-const SLIDER_W: f32 = 58.0;
+const SLIDER_W: f32 = 96.0;
 const SLIDER_H: f32 = 14.0;
 
 /// Where 0 dB sits on a track header's volume slider (Logic puts unity about two thirds up).
@@ -2620,6 +2620,10 @@ fn header(
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
+    if selected {
+        let mark = Rect::from_min_size(hdr.min, vec2(3.0, hdr.height()));
+        g.rect_filled(mark, 0.0, crate::theme::ACCENT_BLUE);
+    }
     g.line_segment(
         [hdr.left_bottom(), hdr.right_bottom()],
         Stroke::new(1.0, Color32::from_gray(0x2a)),
@@ -2678,7 +2682,7 @@ fn header(
     } else {
         hdr.center().y - 9.0
     };
-    let name_right = if opts.level { 122.0 } else { 6.0 };
+    let name_right = if opts.level { 8.0 } else { 6.0 };
     let name_w = hdr.right() - name_right - name_x;
     let name_galley = g.layout_no_wrap(p.tracks[i].name.clone(), FontId::proportional(13.0), TEXT);
     let clip = g.with_clip_rect(
@@ -2767,10 +2771,15 @@ fn header(
     if !opts.level {
         return (resp, Vec::new());
     }
-    // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob.
+    // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob, on the buttons' row.
+    let level_y = if compact {
+        hdr.center().y
+    } else {
+        hdr.center().y + 10.0
+    };
     // Logic's slider: a dark pill with a grey thumb that stays inside it.
     let sl = Rect::from_min_size(
-        pos2(hdr.right() - 98.0, hdr.center().y - SLIDER_H / 2.0),
+        pos2(hdr.right() - 136.0, level_y - SLIDER_H / 2.0),
         vec2(SLIDER_W, SLIDER_H),
     );
     let travel = (sl.left() + SLIDER_H / 2.0, sl.right() - SLIDER_H / 2.0);
@@ -2824,7 +2833,7 @@ fn header(
         Stroke::new(1.0, Color32::from_rgb(98, 97, 97)),
     );
 
-    let kc = pos2(hdr.right() - 22.0, hdr.center().y);
+    let kc = pos2(hdr.right() - 22.0, level_y);
     let kresp = ui.interact(
         Rect::from_center_size(kc, vec2(22.0, 22.0)),
         id(("pan", i)),

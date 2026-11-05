@@ -1357,9 +1357,9 @@ mod tests {
     fn view_menu_checks_follow_the_panels() {
         let mut s = crate::UiState::new();
         let mut p = Project::demo();
-        assert!(checked("Show Library", &s) && checked("Show Mixer", &s));
+        assert!(!checked("Show Library", &s) && !checked("Show Mixer", &s));
         apply("Show Library", &mut p, &mut s);
-        assert!(!s.show_library && !checked("Show Library", &s));
+        assert!(s.show_library && checked("Show Library", &s));
         apply("Show Piano Roll", &mut p, &mut s);
         assert!(checked("Show Piano Roll", &s) && !checked("Show Mixer", &s));
         apply("Show Mixer", &mut p, &mut s);

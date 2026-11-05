@@ -3,15 +3,15 @@
 use egui::{Color32, CornerRadius, Stroke};
 
 // Surfaces, from the back of the window forwards.
-pub const BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3c);
-pub const LANE: Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-pub const GRID_BG: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
-pub const MIXER_BG: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-pub const PANEL_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-pub const TOOLBAR: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
-pub const STRIP: Color32 = Color32::from_rgb(0x3e, 0x3e, 0x3e);
-pub const HEADER: Color32 = Color32::from_rgb(0x42, 0x42, 0x42);
-pub const PANEL: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4c);
+pub const BG: Color32 = Color32::from_rgb(0x4e, 0x4e, 0x50);
+pub const LANE: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+pub const GRID_BG: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+pub const MIXER_BG: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
+pub const PANEL_BG: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+pub const TOOLBAR: Color32 = Color32::from_rgb(0x4c, 0x4c, 0x4c);
+pub const STRIP: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+pub const HEADER: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
+pub const PANEL: Color32 = Color32::from_rgb(0x56, 0x56, 0x58);
 pub const BORDER: Color32 = Color32::from_gray(0x24);
 
 // Text.
@@ -19,18 +19,18 @@ pub const TEXT: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xdc);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0x96, 0x96, 0x96);
 
 // Controls and their states.
-pub const BUTTON: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
-pub const BUTTON_HOVERED: Color32 = Color32::from_rgb(0x6a, 0x6a, 0x6c);
-pub const HOVERED: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
-pub const SELECTED: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
+pub const BUTTON: Color32 = Color32::from_rgb(0x6c, 0x6c, 0x6c);
+pub const BUTTON_HOVERED: Color32 = Color32::from_rgb(0x7a, 0x7a, 0x7c);
+pub const HOVERED: Color32 = Color32::from_rgb(0x5e, 0x5e, 0x5e);
+pub const SELECTED: Color32 = Color32::from_rgb(0x6a, 0x6a, 0x6a);
 pub const ACCENT_BLUE: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xd8);
 pub const DISABLED_ALPHA: f32 = 0.45;
 
 // Mixer strips.
-pub const STRIP_SELECTED: Color32 = Color32::from_rgb(0x4d, 0x4d, 0x4d);
-pub const SLOT_EMPTY: Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2c);
-pub const SLOT: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
-pub const SLOT_OFF: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4a);
+pub const STRIP_SELECTED: Color32 = Color32::from_rgb(0x60, 0x60, 0x60);
+pub const SLOT_EMPTY: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
+pub const SLOT: Color32 = Color32::from_rgb(0x6e, 0x6e, 0x6e);
+pub const SLOT_OFF: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
 pub const METER_OFF: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 
 // Meanings.

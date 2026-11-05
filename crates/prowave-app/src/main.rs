@@ -100,6 +100,8 @@ pub enum Bottom {
 pub struct UiState {
     pub show_mixer: bool,
     pub show_library: bool,
+    /// The control bar's display shows everything, not only bar, beat, tempo, signature and key.
+    pub lcd_full: bool,
     pub show_inspector: bool,
     /// List Editors (the Event list on the right).
     pub show_lists: bool,
@@ -205,8 +207,9 @@ pub struct UiState {
 impl UiState {
     fn new() -> Self {
         Self {
-            show_mixer: true,
-            show_library: true,
+            show_mixer: false,
+            show_library: false,
+            lcd_full: false,
             show_inspector: true,
             show_lists: false,
             lists: event_list::ListView::default(),
@@ -840,7 +843,7 @@ impl eframe::App for App {
         top_bar(ui, p, s);
         egui::Panel::top("control")
             .exact_size(58.0)
-            .frame(egui::Frame::new().fill(egui::Color32::from_gray(0x47)))
+            .frame(egui::Frame::new().fill(egui::Color32::from_gray(0x5a)))
             .show(ui, |ui| transport::control_bar(ui, p, s, master_peaks));
         if s.show_library {
             egui::Panel::left("library")
