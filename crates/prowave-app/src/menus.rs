@@ -138,6 +138,7 @@ const EDIT: &[&str] = &[
     "Bounce and Join",
     "-",
     "Snap to Zero Crossings",
+    "Strip Silence…",
 ];
 const TRACK: &[&str] = &[
     "New",
@@ -519,7 +520,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         "Show Score Editor" | "Score Editor" => true,
         "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
-        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" => selected_audio(p, s).is_some(),
+        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" | "Strip Silence…" => {
+            selected_audio(p, s).is_some()
+        }
         "Show Markers" | "Show Global Tracks" => true,
         "Record Enable" => p
             .tracks
@@ -730,6 +733,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Stem Splitter…" => {
             if let Some((t, r)) = selected_audio(p, s) {
                 crate::stem_splitter::open(p, s, t, r);
+            }
+        }
+        "Strip Silence…" => {
+            if let Some((t, r)) = selected_audio(p, s) {
+                crate::strip_silence::open(p, s, t, r);
             }
         }
         "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,

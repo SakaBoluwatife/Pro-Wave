@@ -228,6 +228,34 @@ impl AudioFile {
         Ok(out)
     }
 
+    /// The loudest sample of every `frames` frames of the file, in order, as a level meter would
+    /// read them. Decodes the whole file without holding it in memory: run off the UI thread.
+    pub fn levels(&self, frames: usize) -> Result<Vec<f32>, AudioError> {
+        let frames = frames.max(1);
+        let mut src = Source::open(&self.path)?;
+        let mut out = Vec::with_capacity((self.frames as usize / frames).saturating_add(1));
+        let (mut buf, mut peak, mut count) = (Vec::new(), 0f32, 0usize);
+        while src.next_stereo(&mut buf)? {
+            for f in buf.as_chunks::<2>().0 {
+                for sample in f {
+                    if sample.is_finite() {
+                        peak = peak.max(sample.abs());
+                    }
+                }
+                count += 1;
+                if count == frames {
+                    out.push(peak);
+                    (peak, count) = (0.0, 0);
+                }
+            }
+            buf.clear();
+        }
+        if count > 0 {
+            out.push(peak);
+        }
+        Ok(out)
+    }
+
     /// Min/max overview for waveform display. Decodes the whole file: run off the UI thread.
     /// Non-finite source samples are replaced with silence, as in streamed playback.
     pub fn peaks(&self, bins: usize) -> Result<Vec<(f32, f32)>, AudioError> {

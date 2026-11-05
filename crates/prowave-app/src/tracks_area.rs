@@ -1000,6 +1000,13 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
                 v.pending_menu = Some("Convert to New Sampler Track");
                 ui.close();
             }
+            if ui
+                .add_enabled(audio, egui::Button::new(tr("Strip Silence…")))
+                .clicked()
+            {
+                v.pending_menu = Some("Strip Silence…");
+                ui.close();
+            }
             if ui.button(tr("Move to Playhead")).clicked() {
                 v.pending_menu = Some("Move to Playhead");
                 ui.close();
@@ -1321,6 +1328,7 @@ enum CtxAction {
     FlexMode(usize, usize, prowave_engine::FlexMode),
     Flex(usize, usize, crate::flex_edit::Command),
     FlexRemove(usize, usize),
+    StripSilence(usize, usize),
     RepeatRegion,
     LocatorsByRegion,
     DeleteRegion,
@@ -1538,6 +1546,13 @@ fn region_items(
             tr("Reverse Region"),
             "",
             CtxAction::ToggleReverse(ti, ri),
+            picked,
+        );
+        pick(
+            ui,
+            tr("Strip Silence…"),
+            "",
+            CtxAction::StripSilence(ti, ri),
             picked,
         );
     }
@@ -1870,6 +1885,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         }
         CtxAction::Flex(t, r, command) => crate::flex_edit::start(p, s, t, r, command),
         CtxAction::FlexRemove(t, r) => s.flex.remove_later(t, r),
+        CtxAction::StripSilence(t, r) => crate::strip_silence::open(p, s, t, r),
         CtxAction::RepeatRegion => repeat_selected(p, v),
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
         CtxAction::DeleteRegion => delete_selected(p, v),
