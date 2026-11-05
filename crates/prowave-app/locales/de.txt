@@ -718,3 +718,4 @@ Copy B to A = B nach A kopieren
 Learn MIDI for Level = MIDI für Pegel lernen
 Learn MIDI for Pan = MIDI für Panorama lernen
 MIDI Assignments = MIDI-Zuweisungen
+Process Selection… = Auswahl verarbeiten …

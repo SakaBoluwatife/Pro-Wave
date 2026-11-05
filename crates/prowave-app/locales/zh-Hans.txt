@@ -718,3 +718,4 @@ Copy B to A = 将 B 复制到 A
 Learn MIDI for Level = 为电平学习 MIDI
 Learn MIDI for Pan = 为声像学习 MIDI
 MIDI Assignments = MIDI 分配
+Process Selection… = 处理所选内容…

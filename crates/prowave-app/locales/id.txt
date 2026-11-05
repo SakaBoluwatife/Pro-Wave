@@ -718,3 +718,4 @@ Copy B to A = Salin B ke A
 Learn MIDI for Level = Pelajari MIDI untuk Level
 Learn MIDI for Pan = Pelajari MIDI untuk Pan
 MIDI Assignments = Penetapan MIDI
+Process Selection… = Proses Pilihan…

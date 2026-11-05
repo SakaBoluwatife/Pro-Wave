@@ -7,7 +7,7 @@ use crate::model::{Control, Note, Project, Region, TrackKind};
 use crate::tracks_area::TracksView;
 
 /// Closer than this to a region's edge, in beats, is at its edge: nothing to cut there.
-const EDGE_BEATS: f64 = 1.0 / 256.0;
+pub(crate) const EDGE_BEATS: f64 = 1.0 / 256.0;
 /// Two audio regions join when the second carries on the first within this, in seconds.
 const JOIN_SECONDS: f32 = 0.005;
 

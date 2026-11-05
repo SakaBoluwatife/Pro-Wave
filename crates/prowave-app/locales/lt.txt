@@ -718,3 +718,4 @@ Copy B to A = Kopijuoti B į A
 Learn MIDI for Level = Mokyti MIDI lygiui
 Learn MIDI for Pan = Mokyti MIDI panoramai
 MIDI Assignments = MIDI priskyrimai
+Process Selection… = Apdoroti pasirinkimą…

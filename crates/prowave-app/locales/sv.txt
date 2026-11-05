@@ -718,3 +718,4 @@ Copy B to A = Kopiera B till A
 Learn MIDI for Level = Lär MIDI för nivå
 Learn MIDI for Pan = Lär MIDI för panorering
 MIDI Assignments = MIDI-tilldelningar
+Process Selection… = Bearbeta markering…

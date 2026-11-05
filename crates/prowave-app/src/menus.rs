@@ -89,6 +89,7 @@ const SUBMENUS: &[(&str, &[&str])] = &[
             "Project or Section…",
             "Regions in Place…",
             "Tracks in Place…",
+            "Process Selection…",
         ],
     ),
     ("Share", &["Song to File…", "Song to Mobile Device…"]),
@@ -508,6 +509,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "All Tracks as Audio Files…" => crate::bounce::project_end(p) > 0.0,
         "Regions in Place…" | "Bounce In Place" | "Bounce and Join" => {
             s.tracks.selected.is_some()
+        }
+        "Process Selection…" => {
+            crate::bounce::process_target(p, &s.tracks.all_selected()).is_ok()
         }
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => !p.tracks.is_empty(),
@@ -944,6 +948,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "All Tracks as Audio Files…" => s.bounce.dialog = Some(crate::bounce::Purpose::Stems),
         "Regions in Place…" | "Bounce In Place" => crate::bounce::bounce_selection(p, s, false),
         "Bounce and Join" => crate::bounce::bounce_selection(p, s, true),
+        "Process Selection…" => crate::bounce::open_process(p, s),
         "Show Track Header" => s.tracks.show_header = !s.tracks.show_header,
         "Show Ruler" => s.tracks.show_ruler = !s.tracks.show_ruler,
         "Show Colors" => s.tracks.show_colors = !s.tracks.show_colors,

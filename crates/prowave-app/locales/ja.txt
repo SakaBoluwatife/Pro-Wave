@@ -718,3 +718,4 @@ Copy B to A = B を A にコピー
 Learn MIDI for Level = レベルの MIDI を学習
 Learn MIDI for Pan = パンの MIDI を学習
 MIDI Assignments = MIDI 割り当て
+Process Selection… = 選択範囲を処理…

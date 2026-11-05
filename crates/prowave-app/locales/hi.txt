@@ -718,3 +718,4 @@ Copy B to A = B को A में कॉपी करें
 Learn MIDI for Level = लेवल के लिए MIDI सीखें
 Learn MIDI for Pan = पैन के लिए MIDI सीखें
 MIDI Assignments = MIDI असाइनमेंट
+Process Selection… = चयन प्रोसेस करें…

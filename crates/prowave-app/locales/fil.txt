@@ -718,3 +718,4 @@ Copy B to A = Kopyahin ang B sa A
 Learn MIDI for Level = Matuto ng MIDI para sa Level
 Learn MIDI for Pan = Matuto ng MIDI para sa Pan
 MIDI Assignments = Mga MIDI Assignment
+Process Selection… = Iproseso ang Pinili…
