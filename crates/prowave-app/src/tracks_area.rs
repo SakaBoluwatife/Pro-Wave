@@ -2861,7 +2861,7 @@ fn folder_buttons(ui: &Ui, g: &Painter, p: &mut Project, i: usize, x: f32, y: f3
     }
 }
 
-const SLIDER_W: f32 = 96.0;
+const SLIDER_W: f32 = 78.0;
 const SLIDER_H: f32 = 14.0;
 
 /// Where 0 dB sits on a track header's volume slider (Logic puts unity about two thirds up).
@@ -3153,10 +3153,10 @@ fn header(
         // Freeze: a snowflake of three strokes.
         let frost = Rect::from_center_size(
             pos2(
-                hdr.right() - if opts.level { 150.0 } else { 34.0 },
-                hdr.center().y + 10.0,
+                name_x + (if audio { 6.0 } else { 5.0 }) * 21.0 + 7.0,
+                hdr.center().y + 10.5,
             ),
-            vec2(16.0, 15.0),
+            vec2(14.0, 15.0),
         );
         let frozen = t.frozen.is_some();
         let hit = ui
@@ -3202,7 +3202,7 @@ fn header(
     };
     // Logic's slider: a dark pill with a grey thumb that stays inside it.
     let sl = Rect::from_min_size(
-        pos2(hdr.right() - 136.0, level_y - SLIDER_H / 2.0),
+        pos2(hdr.right() - 118.0, level_y - SLIDER_H / 2.0),
         vec2(SLIDER_W, SLIDER_H),
     );
     let travel = (sl.left() + SLIDER_H / 2.0, sl.right() - SLIDER_H / 2.0);
