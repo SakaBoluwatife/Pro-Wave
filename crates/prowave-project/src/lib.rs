@@ -111,6 +111,8 @@ pub struct SongPatternDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct RegionDoc {
+    /// The rows under More in the Region Inspector.
+    pub shape: RegionShape,
     /// The region's own automation.
     pub auto: Vec<RegionLaneDoc>,
     /// The Channel Rack pattern it is placed from; 0 for none.
@@ -357,6 +359,30 @@ pub struct InsertDoc {
     pub kind: String,
     pub bypass: bool,
     pub params: Vec<f32>,
+}
+
+/// The rows under More in the Region Inspector, all applied on playback. Each is 0 for no change.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct RegionShape {
+    /// Percent added to the spread of velocities around the middle: -100 to +100.
+    pub dynamics: i16,
+    /// Percent added to the length of the notes: -100 to +100.
+    pub gate: i16,
+    /// Notes stop at the end of the region.
+    pub clip_length: bool,
+    /// Left out of the Score editor.
+    pub hide_in_score: bool,
+    /// Percent of the way to the region's average velocity.
+    pub q_velocity: i16,
+    /// Percent of the way to a length on the quantize grid.
+    pub q_length: i16,
+    /// Notes quantized to one place are spread this many hundredths of a beat apart.
+    pub q_flam: i16,
+    /// Only notes this many hundredths of a beat from the grid are quantized; 0 for all.
+    pub q_range: i16,
+    /// Percent taken off the strength of the quantize.
+    pub q_soft: i16,
 }
 
 /// A lane of a region's own automation; a point's beat counts from the region's start.

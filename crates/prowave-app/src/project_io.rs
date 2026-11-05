@@ -241,6 +241,20 @@ fn sends_from_doc(t: &prowave_project::TrackDoc) -> Vec<SendSlot> {
     sends
 }
 
+/// The rows under More from a file, each inside its range.
+fn shape_from_doc(s: prowave_project::RegionShape) -> prowave_project::RegionShape {
+    prowave_project::RegionShape {
+        dynamics: s.dynamics.clamp(-100, 100),
+        gate: s.gate.clamp(-100, 100),
+        q_velocity: s.q_velocity.clamp(0, 100),
+        q_length: s.q_length.clamp(0, 100),
+        q_flam: s.q_flam.clamp(0, 100),
+        q_range: s.q_range.clamp(0, 100),
+        q_soft: s.q_soft.clamp(0, 100),
+        ..s
+    }
+}
+
 /// A region's lanes as the file keeps them. A plugin is kept by where it is.
 fn region_lanes_to_doc(t: &Track, r: &Region) -> Vec<prowave_project::RegionLaneDoc> {
     use crate::model::AutoTarget;
@@ -603,6 +617,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                                 .collect(),
                         }
                     }),
+                    shape: r.params.shape,
                     mute: r.params.mute,
                     quantize: r.params.quantize,
                     transpose: r.params.transpose,
@@ -849,6 +864,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                     pattern: 0,
                     pattern_len: 0.0,
                     pattern_color: None,
+                    shape: shape_from_doc(r.shape),
                     mute: r.mute,
                     quantize: r.quantize.filter(|q| q.is_finite() && *q > 0.0),
                     transpose: r.transpose,

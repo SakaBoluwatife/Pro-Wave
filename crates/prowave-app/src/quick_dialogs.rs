@@ -13,6 +13,8 @@ pub struct QuickDialogs {
     pub undo_history: bool,
     pub routing: bool,
     pub project_settings: bool,
+    /// The Text tool: the region and what has been typed.
+    pub rename_region: Option<(usize, usize, String)>,
     /// Track > Configure Track Header.
     pub track_header: bool,
     /// Track > Assign Track Icon: the track.
@@ -62,6 +64,11 @@ fn answer(ui: &mut egui::Ui, focus: &mut bool, edit: &egui::Response) -> (bool, 
 }
 
 impl QuickDialogs {
+    pub fn open_rename_region(&mut self, t: usize, r: usize, name: &str) {
+        self.rename_region = Some((t, r, name.to_string()));
+        self.focus = true;
+    }
+
     pub fn open_go_to(&mut self) {
         self.go_to = Some(String::new());
         self.focus = true;
@@ -259,6 +266,7 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    rename_region_window(ctx, p, s);
     track_header_window(ctx, s);
     icon_window(ctx, p, s);
     rename_project_window(ctx, s);
@@ -268,6 +276,33 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     history_window(ctx, s);
     project_settings_window(ctx, p, s);
     crate::routing_matrix::show(ctx, p, s);
+}
+
+/// The Text tool: a new name for a region.
+fn rename_region_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let d = &mut s.dialogs;
+    let Some((t, r, text)) = d.rename_region.as_mut() else {
+        return;
+    };
+    let mut result = (false, false);
+    let mut focus = std::mem::take(&mut d.focus);
+    egui::Modal::new(egui::Id::unique("rename_region")).show(ctx, |ui| {
+        ui.set_width(280.0);
+        ui.label("Region name:");
+        let edit = ui.add(egui::TextEdit::singleline(text));
+        result = answer(ui, &mut focus, &edit);
+    });
+    let (ok, close) = result;
+    if ok {
+        let name = text.trim();
+        let region = p.tracks.get_mut(*t).and_then(|x| x.regions.get_mut(*r));
+        if let (false, Some(region)) = (name.is_empty(), region) {
+            region.name = name.to_string();
+        }
+    }
+    if ok || close {
+        d.rename_region = None;
+    }
 }
 
 /// Track > Configure Track Header: what the track headers show.

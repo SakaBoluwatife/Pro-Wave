@@ -152,6 +152,8 @@ pub struct RegionParams {
     /// Its pattern's color, which it is drawn in. Not saved.
     pub pattern_color: Option<Color32>,
     pub mute: bool,
+    /// The rows under More in the Region Inspector.
+    pub shape: prowave_project::RegionShape,
     /// Playback quantize grid in beats (`None` = Off).
     pub quantize: Option<f32>,
     /// Semitones.
@@ -898,6 +900,9 @@ pub const MAX_BPM: f32 = 990.0;
 
 #[derive(Clone)]
 pub struct Project {
+    /// Mixer > Select Audio Channel Strips: strips that move together until another is clicked.
+    /// Not saved.
+    pub linked_strips: Vec<usize>,
     pub name: String,
     /// Tempo at the start of the song (the first point of the Tempo track).
     pub tempo: f32,
@@ -1177,6 +1182,7 @@ impl Project {
             selected_track: 0,
             master_vol: 0.8,
             groups: Vec::new(),
+            linked_strips: Vec::new(),
             song_rev: 0,
             tempo_ramp: false,
             groove_onsets: Default::default(),
@@ -1942,15 +1948,21 @@ impl Project {
     /// The other tracks of track `i`'s group, when the group has the attribute `attr` (a
     /// function of the group).
     pub fn group_mates(&self, i: usize, attr: impl Fn(&MixGroup) -> bool) -> Vec<usize> {
-        let Some(g) = self.tracks.get(i).and_then(|t| t.group) else {
-            return Vec::new();
+        let mut mates: Vec<usize> = match self.tracks.get(i).and_then(|t| t.group) {
+            Some(g) if self.groups.get(g).is_some_and(attr) => (0..self.tracks.len())
+                .filter(|j| *j != i && self.tracks[*j].group == Some(g))
+                .collect(),
+            _ => Vec::new(),
         };
-        if !self.groups.get(g).is_some_and(attr) {
-            return Vec::new();
+        // Strips selected together move together for as long as they stay selected.
+        if self.linked_strips.contains(&i) {
+            for &j in &self.linked_strips {
+                if j != i && j < self.tracks.len() && !mates.contains(&j) {
+                    mates.push(j);
+                }
+            }
         }
-        (0..self.tracks.len())
-            .filter(|j| *j != i && self.tracks[*j].group == Some(g))
-            .collect()
+        mates
     }
 
     /// Sets Mute on track `i` and on the tracks of its group, if the group has Mute.

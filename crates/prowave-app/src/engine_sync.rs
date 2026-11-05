@@ -292,27 +292,70 @@ fn mixes(p: &Project) -> Vec<Mix> {
 /// velocity limits) applied non-destructively, as Logic does on playback.
 pub(crate) fn region_notes(t: &Track, r: &Region, origin: f64, track: u16) -> Vec<NoteEvent> {
     let (rp, tp) = (r.params, t.params);
+    let shape = rp.shape;
+    let average_vel = if shape.q_velocity > 0 && !r.notes.is_empty() {
+        r.notes.iter().map(|n| f32::from(n.vel)).sum::<f32>() / r.notes.len() as f32
+    } else {
+        0.0
+    };
+    let mut flams: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
     r.notes
         .iter()
         .filter(|n| !n.muted)
         .filter_map(|n| {
-            let start = match rp.quantize {
-                Some(q) if q > 0.0 => (n.start / q).round() * q,
-                _ => n.start,
-            };
+            let (mut start, mut len) = (n.start, n.len);
+            if let Some(q) = rp.quantize.filter(|q| *q > 0.0) {
+                let target = (n.start / q).round() * q;
+                let range = f32::from(shape.q_range) / 100.0;
+                if shape.q_range == 0 || (target - n.start).abs() <= range {
+                    let strength = 1.0 - f32::from(shape.q_soft) / 100.0;
+                    start = n.start + (target - n.start) * strength;
+                }
+                if shape.q_length > 0 {
+                    let on_grid = ((n.len / q).round() * q).max(q);
+                    len += (on_grid - len) * f32::from(shape.q_length) / 100.0;
+                }
+                if shape.q_flam > 0 {
+                    let count = flams.entry((target / q).round() as i64).or_insert(0);
+                    start += *count as f32 * f32::from(shape.q_flam) / 100.0;
+                    *count += 1;
+                }
+            }
+            if shape.gate != 0 {
+                len = (len * (1.0 + f32::from(shape.gate) / 100.0)).max(1.0 / 64.0);
+            }
+            let mut own_vel = f32::from(n.vel);
+            if shape.q_velocity > 0 {
+                own_vel += (average_vel - own_vel) * f32::from(shape.q_velocity) / 100.0;
+            }
+            if shape.dynamics != 0 {
+                own_vel = 64.0 + (own_vel - 64.0) * (1.0 + f32::from(shape.dynamics) / 100.0);
+            }
             let pitch = n.pitch as i32 + rp.transpose as i32 + tp.transpose as i32;
-            let vel = (n.vel as i32 + rp.velocity as i32 + tp.velocity as i32).clamp(1, 127);
+            let vel =
+                (own_vel.round() as i32 + rp.velocity as i32 + tp.velocity as i32).clamp(1, 127);
             let in_keys = (tp.key_limit.0 as i32..=tp.key_limit.1 as i32).contains(&pitch);
             let in_vels = (tp.vel_limit.0 as i32..=tp.vel_limit.1 as i32).contains(&vel);
             (in_keys && in_vels && (0..=127).contains(&pitch)).then_some(NoteEvent {
                 start_beat: origin + start as f64,
-                end_beat: origin + (start + n.len) as f64,
+                end_beat: origin + (start + len) as f64,
                 pitch: pitch as u8,
                 vel: vel as u8,
                 track,
             })
         })
         .collect()
+}
+
+/// Clip Length: what of `notes` falls inside the region, cut at its end.
+fn clip_notes(mut notes: Vec<NoteEvent>, r: &Region, end: f64) -> Vec<NoteEvent> {
+    if r.params.shape.clip_length {
+        notes.retain(|n| n.start_beat < end);
+        for n in &mut notes {
+            n.end_beat = n.end_beat.min(end);
+        }
+    }
+    notes
 }
 
 /// Every unmuted region on an engine track, with its engine track number and start beat
@@ -390,7 +433,10 @@ fn song_notes(p: &Project) -> Vec<NoteEvent> {
                 .regions
                 .iter()
                 .filter(|r| !r.params.mute)
-                .flat_map(|r| region_notes(t, r, p.region_start_beats(r), track))
+                .flat_map(|r| {
+                    let notes = region_notes(t, r, p.region_start_beats(r), track);
+                    clip_notes(notes, r, p.region_end_beats(r))
+                })
                 .collect();
             if let Some(g) = groove
                 .as_ref()
@@ -1159,6 +1205,63 @@ mod tests {
         assert!(automation_unchanged(&p, &lanes));
         p.tracks[t].regions[0].start_bar += 1.0;
         assert!(!automation_unchanged(&p, &lanes), "a move is a change");
+    }
+
+    #[test]
+    fn the_rows_under_more_change_the_notes_as_they_play() {
+        use crate::model::{Note, TrackKind};
+        let mut p = Project::empty();
+        let i = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(i, 1.0);
+        let t = &mut p.tracks[i];
+        let note = |start: f32, pitch: u8, vel: u8| Note {
+            start,
+            len: 0.3,
+            pitch,
+            vel,
+            muted: false,
+        };
+        t.regions[0].notes = vec![note(0.1, 60, 40), note(0.1, 64, 100), note(0.9, 67, 100)];
+        t.regions[0].params.quantize = Some(1.0);
+        let play = |t: &Track| region_notes(t, &t.regions[0], 0.0, 0);
+        let plain = play(t);
+        assert!(plain[0].start_beat.abs() < 1e-6);
+        // Half strength: half way to the grid.
+        t.regions[0].params.shape.q_soft = 50;
+        assert!((play(t)[0].start_beat - 0.05).abs() < 1e-5);
+        t.regions[0].params.shape.q_soft = 0;
+        // Range: only what is near the grid moves.
+        t.regions[0].params.shape.q_range = 5;
+        assert!((play(t)[0].start_beat - 0.1).abs() < 1e-5);
+        t.regions[0].params.shape.q_range = 0;
+        // Flam: notes on one place are spread.
+        t.regions[0].params.shape.q_flam = 10;
+        let flam = play(t);
+        assert!((flam[1].start_beat - flam[0].start_beat - 0.1).abs() < 1e-5);
+        t.regions[0].params.shape.q_flam = 0;
+        // Length, gate, velocity and dynamics.
+        t.regions[0].params.shape.q_length = 100;
+        let n = play(t)[0];
+        assert!(
+            ((n.end_beat - n.start_beat) - 1.0).abs() < 1e-5,
+            "a whole step of the grid"
+        );
+        t.regions[0].params.shape.q_length = 0;
+        t.regions[0].params.shape.gate = -50;
+        let n = play(t)[0];
+        assert!(((n.end_beat - n.start_beat) - 0.15).abs() < 1e-5);
+        t.regions[0].params.shape.gate = 0;
+        t.regions[0].params.shape.q_velocity = 100;
+        assert_eq!(play(t)[0].vel, 80, "the average");
+        t.regions[0].params.shape.q_velocity = 0;
+        t.regions[0].params.shape.dynamics = 50;
+        assert_eq!(play(t)[1].vel, 118, "further from the middle");
+        t.regions[0].params.shape.dynamics = 0;
+        // Clip Length.
+        t.regions[0].params.shape.clip_length = true;
+        let clipped = clip_notes(play(t), &t.regions[0], 0.2);
+        assert_eq!(clipped.len(), 2);
+        assert!(clipped.iter().all(|n| n.end_beat <= 0.2));
     }
 
     #[test]
