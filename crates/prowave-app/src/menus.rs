@@ -827,6 +827,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             let n = crate::region_edit::quantize_selected(p, &s.tracks, grid);
             s.status = Some(format!("Quantized {n} regions"));
         }
+        "Make Groove Template" => {
+            if let Some((t, r)) = s.tracks.selected {
+                crate::groove_template::make(p, s, t, r);
+            }
+        }
         "Move to Playhead" => crate::region_edit::move_selected_to_playhead(p, &s.tracks),
         "Convert to New Sampler Track" => {
             let path = selected_audio(p, s)

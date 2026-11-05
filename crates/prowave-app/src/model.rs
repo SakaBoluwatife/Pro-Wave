@@ -970,6 +970,8 @@ pub struct Project {
     pub punch_end: f64,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
+    /// Groove templates, offered by Quantize (see `groove_template`).
+    pub grooves: Vec<prowave_project::GrooveDoc>,
 }
 
 /// Deterministic pseudo-random so demo content is stable across runs.
@@ -1172,6 +1174,7 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            grooves: Vec::new(),
             low_latency: false,
             punch: false,
             punch_start: 0.0,

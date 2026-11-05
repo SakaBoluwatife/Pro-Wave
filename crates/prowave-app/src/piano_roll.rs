@@ -287,6 +287,8 @@ pub struct PianoView {
     time_sel: Option<(f32, f32)>,
     /// Where that drag began.
     time_anchor: Option<f32>,
+    /// The groove template Quantize uses, in place of the grid.
+    groove: Option<usize>,
     tool: Tool,
     /// Pitch currently sounding because of the mouse (key press or note edit).
     held: Option<u8>,
@@ -331,6 +333,7 @@ impl Default for PianoView {
             lane_drag: None,
             time_sel: None,
             time_anchor: None,
+            groove: None,
             tools: crate::note_tools::ToolSettings::default(),
             tool: Tool::Draw,
             held: None,
@@ -522,6 +525,9 @@ struct Actions {
     delete_time: bool,
     insert_time: bool,
     loop_time: bool,
+    /// Make a groove template of this region, or delete the one in use.
+    make_groove: bool,
+    delete_groove: bool,
 }
 
 /// What an edit with no notes picked works on: the selection, or all the notes when nothing is
@@ -940,6 +946,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         delete_time: false,
         insert_time: false,
         loop_time: false,
+        make_groove: false,
+        delete_groove: false,
     };
     let mut snap = s.tracks.snap;
     toolbar(ui, bar, &mut s.piano, has_sel, &mut snap, &mut act);
@@ -991,6 +999,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let origin = p.region_start_beats(&p.tracks[ti].regions[ri]);
     // The bar and beat length where the region starts (the grid draws every bar on its own).
     let bpb = p.bar_len_at(origin);
+    let groove_offset = crate::groove_template::bar_offset(p, origin) as f32;
     let unit = p.beat_unit_at(origin);
     let (region_name, start_bar, len_beats) = {
         let r = &p.tracks[ti].regions[ri];
@@ -1801,13 +1810,36 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     );
     y += 18.0;
     let grid_r = Rect::from_min_size(pos2(ix, y), vec2(iw - 38.0, 20.0));
-    let gresp = popup_button(ui, &gi, grid_r, id("grid_popup"), tr(GRIDS[v.grid].0));
+    v.groove = v.groove.filter(|i| *i < p.grooves.len());
+    let grid_text = match v.groove {
+        Some(i) => format!("Groove: {}", p.grooves[i].name),
+        None => tr(GRIDS[v.grid].0).to_string(),
+    };
+    let gresp = popup_button(ui, &gi, grid_r, id("grid_popup"), &grid_text);
     egui::Popup::menu(&gresp).show(|ui| {
         for (i, (label, _)) in GRIDS.iter().enumerate() {
-            if ui.selectable_label(v.grid == i, tr(label)).clicked() {
+            let on = v.groove.is_none() && v.grid == i;
+            if ui.selectable_label(on, tr(label)).clicked() {
                 v.grid = i;
+                v.groove = None;
                 ui.close();
             }
+        }
+        ui.separator();
+        for (i, groove) in p.grooves.iter().enumerate() {
+            let text = format!("Groove: {}", groove.name);
+            if ui.selectable_label(v.groove == Some(i), text).clicked() {
+                v.groove = Some(i);
+                ui.close();
+            }
+        }
+        if ui.button("Make Groove from This Region").clicked() {
+            act.make_groove = true;
+            ui.close();
+        }
+        if v.groove.is_some() && ui.button("Delete This Groove").clicked() {
+            act.delete_groove = true;
+            ui.close();
         }
     });
     if small_q(
@@ -2025,7 +2057,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         v.dirty = true;
     }
     if act.quantize {
-        note_edit::quantize(notes, &targets, GRIDS[v.grid].1, v.strength, v.swing);
+        match v.groove.and_then(|i| p.grooves.get(i)) {
+            Some(groove) => {
+                crate::groove_template::quantize(notes, &targets, groove, groove_offset, v.strength)
+            }
+            None => note_edit::quantize(notes, &targets, GRIDS[v.grid].1, v.strength, v.swing),
+        }
         v.dirty = true;
     }
     if act.scale {
@@ -2064,6 +2101,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         v.dirty = true;
     }
 
+    if let (true, Some(i)) = (act.delete_groove, v.groove) {
+        p.grooves.remove(i);
+        v.groove = None;
+    }
     if let (true, Some((a, b))) = (act.loop_time, v.time_sel) {
         p.cycle_start = origin + f64::from(a);
         p.cycle_end = origin + f64::from(b);
@@ -2371,6 +2412,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     if v.dirty && !ui.input(|i| i.pointer.any_down()) {
         v.dirty = false;
         p.song_rev += 1;
+    }
+    if act.make_groove {
+        crate::groove_template::make(p, s, ti, ri);
     }
 }
 
@@ -2837,6 +2881,26 @@ mod tests {
         r.p.tracks[r.t].regions[0].controls = controls;
         let doc = crate::project_io::to_doc(&r.p).0;
         assert!(!doc.tracks[r.t].regions[0].controls.is_empty());
+    }
+
+    #[test]
+    fn quantize_uses_the_groove_picked_in_place_of_the_grid() {
+        let mut r = Rig::new();
+        let row = r.row(0);
+        r.add(0.5, row, 0.25);
+        r.p.grooves.push(prowave_project::GrooveDoc {
+            name: "Late".into(),
+            length: 4.0,
+            hits: vec![0.0, 0.6, 1.0],
+        });
+        r.settle();
+        r.s.piano.groove = Some(0);
+        r.with(Modifiers::COMMAND, |r| r.key(Key::Q));
+        assert!((r.notes()[0].start - 0.6).abs() < 1e-3, "{:?}", r.notes());
+        // Gone from the project, the grid is back.
+        r.p.grooves.clear();
+        r.settle();
+        assert_eq!(r.s.piano.groove, None);
     }
 
     #[test]

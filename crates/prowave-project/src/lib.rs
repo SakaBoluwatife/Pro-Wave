@@ -564,6 +564,19 @@ pub struct ProjectDoc {
     pub mtc_out: Option<String>,
     /// MIDI input port (by name) that Pro Wave chases MIDI Time Code from, if any.
     pub mtc_in: Option<String>,
+    /// Groove templates, offered by Quantize.
+    pub grooves: Vec<GrooveDoc>,
+}
+
+/// A groove template: the places of a region's hits, kept as a quantize grid.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct GrooveDoc {
+    pub name: String,
+    /// It repeats every this many quarter notes, counted from the start of a bar.
+    pub length: f32,
+    /// Quarter notes from the start of the template, in order.
+    pub hits: Vec<f32>,
 }
 
 /// A time-signature change: `num/den` from the start of the 1-based `bar` on.
@@ -626,6 +639,7 @@ impl Default for ProjectDoc {
             smpte_start: [1, 0, 0, 0],
             mtc_out: None,
             mtc_in: None,
+            grooves: Vec::new(),
         }
     }
 }
