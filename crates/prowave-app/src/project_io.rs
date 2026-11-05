@@ -744,6 +744,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         punch_start: p.punch_start,
         punch_end: p.punch_end,
         rec_replace: p.rec_replace,
+        snap_zero: p.snap_zero,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
         song_patterns: p
             .patterns
@@ -1124,6 +1125,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .collect();
     p.tempo_ramp = doc.tempo_ramp;
     p.rec_replace = doc.rec_replace;
+    p.snap_zero = doc.snap_zero;
     p.tidy_tempo();
     p.smpte_rate = smpte_rate_from_name(&doc.smpte_rate);
     p.smpte_start = valid_smpte_start(doc.smpte_start, p.smpte_rate);

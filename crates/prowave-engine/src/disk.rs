@@ -204,6 +204,30 @@ impl AudioFile {
         Ok(out)
     }
 
+    /// `frames` frames from frame `start` on as interleaved stereo, fewer at the end of the file.
+    /// Non-finite samples read as silence. For a look at a short stretch: a compressed file has to
+    /// be decoded from a packet boundary, so this is not for the audio thread.
+    pub fn read_stereo_at(&self, start: u64, frames: usize) -> Result<Vec<f32>, AudioError> {
+        let mut src = Source::open(&self.path)?;
+        let actual = src.seek(start)?;
+        let mut skip = (start.saturating_sub(actual) as usize).saturating_mul(2);
+        let wanted = frames.saturating_mul(2);
+        let mut out = Vec::with_capacity(wanted);
+        let mut buf = Vec::new();
+        while out.len() < wanted && src.next_stereo(&mut buf)? {
+            let dropped = skip.min(buf.len());
+            skip -= dropped;
+            out.extend(
+                buf[dropped..]
+                    .iter()
+                    .map(|s| if s.is_finite() { *s } else { 0.0 }),
+            );
+            buf.clear();
+        }
+        out.truncate(wanted);
+        Ok(out)
+    }
+
     /// Min/max overview for waveform display. Decodes the whole file: run off the UI thread.
     /// Non-finite source samples are replaced with silence, as in streamed playback.
     pub fn peaks(&self, bins: usize) -> Result<Vec<(f32, f32)>, AudioError> {

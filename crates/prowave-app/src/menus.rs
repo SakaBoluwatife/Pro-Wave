@@ -136,6 +136,8 @@ const EDIT: &[&str] = &[
     "Split at Playhead",
     "Join",
     "Bounce and Join",
+    "-",
+    "Snap to Zero Crossings",
 ];
 const TRACK: &[&str] = &[
     "New",
@@ -374,6 +376,7 @@ fn has_automation(p: &Project) -> bool {
 
 /// Entries that can show a check mark (see [`checked`]).
 pub(crate) const CHECKABLE: &[&str] = &[
+    "Snap to Zero Crossings",
     "Replace Mode",
     "Show Tempo Track",
     "Show Marker Track",
@@ -523,7 +526,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             .get(p.selected_track)
             .is_some_and(|t| t.kind.has_regions()),
         "Record Toggle" => p.playing,
-        "Record / Record Repeat" | "Replace Mode" => true,
+        "Record / Record Repeat" | "Replace Mode" | "Snap to Zero Crossings" => true,
         "New Take" => {
             s.rec.active()
                 || s.audio_rec.active()
@@ -641,6 +644,7 @@ fn region_starts(p: &Project) -> Vec<f64> {
 pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
     match label {
         "Replace Mode" => p.rec_replace,
+        "Snap to Zero Crossings" => p.snap_zero,
         "Show Piano Roll" => s.bottom == Bottom::PianoRoll,
         "Show Mixer" => s.show_mixer && s.bottom == Bottom::Mixer,
         "Show Library" => s.show_library,
@@ -753,6 +757,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Replace Mode" => p.rec_replace = !p.rec_replace,
+        "Snap to Zero Crossings" => p.snap_zero = !p.snap_zero,
         "Record Project Settings" => s.dialogs.project_settings = true,
         "Show Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);

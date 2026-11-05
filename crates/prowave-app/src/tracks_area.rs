@@ -1134,7 +1134,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
         rx = drag_menu(ui, &g, v, rx, cy);
     }
     if show.snap {
-        rx = snap_menu(ui, &g, v, rx, cy);
+        rx = snap_menu(ui, &g, v, &mut p.snap_zero, rx, cy);
     }
     if show.tools {
         tool_menus(ui, &g, v, rx, cy);
@@ -1208,7 +1208,7 @@ fn drag_menu(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) -> f32 
 }
 
 /// "Snap:" menu ending at `rx`; returns where the next item to its left ends.
-fn snap_menu(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) -> f32 {
+fn snap_menu(ui: &Ui, g: &Painter, v: &mut TracksView, zero: &mut bool, rx: f32, cy: f32) -> f32 {
     let snap_r = Rect::from_min_size(pos2(rx - 150.0, cy - 10.0), vec2(150.0, 20.0));
     let resp = popup_button(ui, g, snap_r, id(("popup", "snap")), v.snap.label());
     egui::Popup::menu(&resp).show(|ui| {
@@ -1217,6 +1217,10 @@ fn snap_menu(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) -> f32 
                 v.snap = m;
                 ui.close();
             }
+        }
+        ui.separator();
+        if ui.checkbox(zero, tr("Snap to Zero Crossings")).clicked() {
+            ui.close();
         }
     });
     let label = g.text(
@@ -3636,9 +3640,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         let at = snap_pos(beat_of(pt.x).max(0.0));
                         match &v.trim {
                             Some(TrimDrag::End) => {
+                                let at = crate::region_edit::zero_crossing_beat(p, ti, ri, at);
                                 let _ = crate::region_edit::trim_end(p, ti, ri, at);
                             }
                             Some(TrimDrag::Start(from)) => {
+                                let at = crate::region_edit::zero_crossing_beat(p, ti, ri, at);
                                 crate::region_edit::trim_start(p, ti, ri, from, at);
                             }
                             None => {
@@ -3978,7 +3984,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         use crate::region_edit as edit;
         let done = match tool {
             TrackTool::Glue => edit::join_with_next(p, t, r).map(|_| ()),
-            TrackTool::Scissors => edit::split(p, t, r, beat).map(|_| ()),
+            TrackTool::Scissors => {
+                let cut = edit::zero_crossing_beat(p, t, r, beat);
+                edit::split(p, t, r, cut).map(|_| ())
+            }
             TrackTool::Eraser => {
                 p.tracks[t].regions.remove(r);
                 p.song_rev += 1;

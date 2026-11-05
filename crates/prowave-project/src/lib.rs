@@ -555,6 +555,8 @@ pub struct ProjectDoc {
     pub punch_end: f64,
     /// A new recording takes away what it was recorded over.
     pub rec_replace: bool,
+    /// Cuts and trims of audio regions land where the waveform crosses zero.
+    pub snap_zero: bool,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
     /// The Channel Rack's patterns.
@@ -631,6 +633,7 @@ impl Default for ProjectDoc {
             punch_start: 0.0,
             punch_end: 0.0,
             rec_replace: false,
+            snap_zero: false,
             master_plugins: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),

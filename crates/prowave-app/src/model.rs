@@ -1009,6 +1009,8 @@ pub struct Project {
     pub punch_end: f64,
     /// A new recording takes away what it was recorded over, instead of making takes of it.
     pub rec_replace: bool,
+    /// Cuts and trims of audio regions land on the nearest place the waveform crosses zero.
+    pub snap_zero: bool,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
 }
@@ -1224,6 +1226,7 @@ impl Project {
             punch_start: 0.0,
             punch_end: 0.0,
             rec_replace: false,
+            snap_zero: false,
             sig: (4, 4),
             key: "Cmaj",
             tracks,
