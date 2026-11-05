@@ -1541,6 +1541,75 @@ mod tests {
         )
     }
 
+    /// Everything a key command can change, including what `state` leaves out.
+    fn key_state(p: &Project, s: &crate::UiState) -> String {
+        format!(
+            "{} {:?}",
+            state(p, s),
+            (
+                p.selected_track,
+                (p.cycle, p.metronome, p.count_in),
+                p.tracks.iter().filter(|t| t.mute).count(),
+                p.tracks.iter().filter(|t| t.solo).count(),
+                p.tracks.iter().map(|t| t.regions.len()).sum::<usize>(),
+                s.dialogs.track_header,
+                s.tracks.show_tempo,
+            )
+        )
+    }
+
+    fn press_key(key: Key, mods: Modifiers, p: &mut Project, s: &mut crate::UiState) {
+        use egui::{Event, RawInput};
+        let ctx = egui::Context::default();
+        let event = |pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: mods,
+        };
+        let input = RawInput {
+            events: vec![Event::ModifiersChanged(mods), event(true)],
+            ..RawInput::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| handle_keys(ui.ctx(), p, s));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn every_key_command_does_something_and_no_two_share_a_key() {
+        use crate::key_commands::{Action, COMMANDS};
+        let (mut silent, mut clash) = (Vec::new(), Vec::new());
+        for (n, c) in COMMANDS.iter().enumerate() {
+            let mods = (c.modifiers)();
+            if COMMANDS[..n]
+                .iter()
+                .any(|o| o.key == c.key && (o.modifiers)() == mods)
+            {
+                clash.push(format!("{:?} {mods:?}", c.key));
+            }
+            // A screenset that was never saved has nothing to call back.
+            if matches!(c.action, Action::RecallScreenset(_)) {
+                continue;
+            }
+            let (mut p, mut s) = (Project::demo(), crate::UiState::new());
+            s.tracks.selected = Some((0, 0));
+            // Copy fills the clipboard; Paste needs something in it.
+            if !matches!(c.action, Action::Edit(crate::tracks_area::EditCmd::Copy)) {
+                s.tracks.clipboard = vec![(0, p.tracks[0].regions[0].clone())];
+            }
+            // In the middle, so there is a track above and below.
+            p.selected_track = 1;
+            let before = key_state(&p, &s);
+            press_key(c.key, mods, &mut p, &mut s);
+            if before == key_state(&p, &s) {
+                silent.push(format!("{:?} {mods:?} {:?}", c.key, c.action));
+            }
+        }
+        assert!(clash.is_empty(), "shared keys: {clash:#?}");
+        assert!(silent.is_empty(), "keys that did nothing: {silent:#?}");
+    }
+
     #[test]
     fn view_menu_checks_follow_the_panels() {
         let mut s = crate::UiState::new();
