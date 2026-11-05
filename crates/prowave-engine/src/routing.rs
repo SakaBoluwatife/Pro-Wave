@@ -4,7 +4,7 @@
 //! Plain data, made on the UI thread and handed to the audio thread by [`crate::Command`]s.
 
 /// Sends in one channel strip.
-pub const MAX_SENDS: usize = 4;
+pub const MAX_SENDS: usize = 12;
 /// Buses a send can feed; an Aux track listens to one of them. As many as there can be tracks, so
 /// the number of tracks is the only limit.
 pub const MAX_BUSES: usize = 1024;
@@ -39,6 +39,8 @@ pub struct Route {
     /// The bus the strip plays into instead of Stereo Out (Logic: the Output slot); 0 is
     /// Stereo Out.
     pub output: u16,
+    /// For an Aux strip: its place in the running order. One that feeds another runs first.
+    pub rank: u16,
     pub sends: [SendSpec; MAX_SENDS],
 }
 
@@ -49,12 +51,12 @@ impl Route {
         if !ok(self.bus_in) {
             self.bus_in = 0;
         }
-        // An Aux strip runs after the strips that feed the buses, so it cannot feed one.
-        if !ok(self.output) || self.bus_in > 0 {
+        // A strip cannot feed the bus it listens to.
+        if !ok(self.output) || (self.bus_in > 0 && self.output == self.bus_in) {
             self.output = 0;
         }
         for s in self.sends.iter_mut() {
-            if !ok(s.bus) {
+            if !ok(s.bus) || (self.bus_in > 0 && s.bus == self.bus_in) {
                 s.bus = 0;
             }
             s.level = if s.level.is_finite() {
@@ -274,23 +276,22 @@ mod tests {
             l.points,
             [AutoPoint::new(1.0, -96.0), AutoPoint::new(2.0, 6.0)]
         );
+        let mut sends = [SendSpec::default(); MAX_SENDS];
+        sends[0] = SendSpec {
+            bus: MAX_BUSES as u16 + 1,
+            level: f32::NAN,
+            pre: true,
+        };
+        sends[1] = SendSpec {
+            bus: 3,
+            level: 5.0,
+            pre: false,
+        };
         let r = Route {
-            bus_in: 200,
+            bus_in: MAX_BUSES as u16 + 1,
             output: 0,
-            sends: [
-                SendSpec {
-                    bus: 9,
-                    level: f32::NAN,
-                    pre: true,
-                },
-                SendSpec {
-                    bus: 3,
-                    level: 5.0,
-                    pre: false,
-                },
-                SendSpec::default(),
-                SendSpec::default(),
-            ],
+            rank: 0,
+            sends,
         }
         .sanitized();
         assert_eq!((r.bus_in, r.sends[0].bus, r.sends[0].level), (0, 0, 0.0));

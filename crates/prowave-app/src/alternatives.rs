@@ -37,7 +37,8 @@ fn make_list(t: &mut Track) {
     }
 }
 
-/// The letter on the header's button.
+/// The letter of the version playing.
+#[cfg(test)]
 pub fn button_label(t: &Track) -> String {
     t.alternatives
         .get(t.active_alt)

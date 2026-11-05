@@ -101,18 +101,16 @@ fn route_of(p: &Project, i: usize) -> Route {
     let mut route = Route {
         bus_in: p.aux_bus_of(i),
         output: t.output,
+        rank: p.aux_rank(i),
         ..Route::default()
     };
-    // An Aux strip does not send (a loop through the buses would never end).
-    if t.kind != TrackKind::Aux {
-        for (slot, s) in route.sends.iter_mut().zip(&t.sends) {
-            if let Some(bus) = s.bus {
-                *slot = SendSpec {
-                    bus,
-                    level: s.level,
-                    pre: s.pre,
-                };
-            }
+    for (slot, s) in route.sends.iter_mut().zip(&t.sends) {
+        if let Some(bus) = s.bus {
+            *slot = SendSpec {
+                bus,
+                level: s.level,
+                pre: s.pre,
+            };
         }
     }
     route.sanitized()

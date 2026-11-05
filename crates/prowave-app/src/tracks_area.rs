@@ -1327,6 +1327,7 @@ enum CtxAction {
     ToggleRecord(usize),
     ToggleTrackAuto(usize),
     Alternative(usize, crate::alternatives::AltCmd),
+    RenameAlternative(usize),
     NewTrack(TrackKind),
     ZoomToFit,
     OpenPianoRoll,
@@ -1679,6 +1680,16 @@ fn alternative_items(
             ui.close();
         }
     }
+    if ui
+        .add_enabled(
+            active < names.len(),
+            egui::Button::new("Rename Alternative"),
+        )
+        .clicked()
+    {
+        *picked = Some(CtxAction::RenameAlternative(i));
+        ui.close();
+    }
     let delete = egui::Button::new("Delete Alternative");
     if ui.add_enabled(names.len() > 1, delete).clicked() {
         *picked = Some(CtxAction::Alternative(i, AltCmd::Delete));
@@ -1828,6 +1839,16 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::ToggleTrackAuto(t) => {
             if let Some(track) = p.tracks.get_mut(t) {
                 track.show_auto = !track.show_auto;
+            }
+        }
+        CtxAction::RenameAlternative(t) => {
+            let name = p
+                .tracks
+                .get(t)
+                .and_then(|x| x.alternatives.get(x.active_alt))
+                .map(|a| a.name.clone());
+            if let Some(name) = name {
+                s.dialogs.rename_alternative = Some((t, name));
             }
         }
         CtxAction::Alternative(t, cmd) => match crate::alternatives::run(p, t, cmd) {
@@ -2864,51 +2885,6 @@ fn slider_to_db(f: f32) -> f32 {
     }
 }
 
-/// The button that says which version of its regions track `t` plays, with the list of them.
-fn alternatives_button(
-    ui: &Ui,
-    g: &Painter,
-    t: &mut Track,
-    i: usize,
-    rect: Rect,
-    picked: &mut Option<CtxAction>,
-) {
-    let several = t.alternatives.len() > 1;
-    let resp = ui
-        .interact(rect, id(("alternatives", i)), Sense::click())
-        .on_hover_text("Track Alternatives: other versions of this track's regions");
-    g.rect_filled(
-        rect,
-        3.0,
-        if several {
-            Color32::from_rgb(0x8a, 0x6c, 0xc8)
-        } else {
-            header_button_bg(false)
-        },
-    );
-    g.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        crate::alternatives::button_label(t),
-        FontId::proportional(10.5),
-        Color32::from_gray(0xe8),
-    );
-    egui::Popup::menu(&resp)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(190.0);
-            let names: Vec<String> = t.alternatives.iter().map(|a| a.name.clone()).collect();
-            alternative_items(ui, i, &names, t.active_alt, picked);
-            if let Some(a) = t.alternatives.get_mut(t.active_alt) {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.add(egui::TextEdit::singleline(&mut a.name).char_limit(32));
-                });
-            }
-        });
-}
-
 /// The room the mode and parameter of the curve on a track take on the name's row.
 const LANE_POPUPS_W: f32 = 170.0;
 
@@ -2963,7 +2939,6 @@ fn header(
     peaks: (f32, f32),
     silenced: bool,
     opts: HeaderOpts,
-    picked: &mut Option<CtxAction>,
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
@@ -3141,10 +3116,6 @@ fn header(
             selected,
         ) {
             t.show_auto = !t.show_auto;
-        }
-        if t.kind.has_regions() {
-            bx += 21.0;
-            alternatives_button(ui, g, t, i, Rect::from_min_size(pos2(bx, by), size), picked);
         }
     }
 
@@ -4235,7 +4206,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
         let before = p.selected_track;
-        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts, &mut picked);
+        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;

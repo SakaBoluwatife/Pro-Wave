@@ -1429,6 +1429,9 @@ impl EngineCore {
                 0
             };
         }
+        // An Aux that feeds another runs before it. In place: this is the audio thread.
+        let routes = &self.routes;
+        self.aux.sort_unstable_by_key(|a| routes[*a as usize].rank);
     }
 
     /// Keeps what plugins are told of the song current: the position every frame, the rest, which
@@ -1571,7 +1574,7 @@ impl EngineCore {
             (xl, xr) = pdc.delay_before(xl, xr);
         }
         let (xl, xr) = (xl as f64, xr as f64);
-        if audible && route.bus_in == 0 {
+        if audible {
             for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
                 let g = send_gain(s.level) as f64;
                 self.add_to_bus(s.bus, xl * g, xr * g);
@@ -1582,11 +1585,9 @@ impl EngineCore {
             xr * self.track_gain_r[t] as f64,
         );
         if audible {
-            if route.bus_in == 0 {
-                for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
-                    let g = send_gain(s.level) as f64;
-                    self.add_to_bus(s.bus, yl * g, yr * g);
-                }
+            for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
+                let g = send_gain(s.level) as f64;
+                self.add_to_bus(s.bus, yl * g, yr * g);
             }
             let (ml, mr) = if self.pre_fader_meter {
                 (xl, xr)

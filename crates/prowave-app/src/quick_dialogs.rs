@@ -29,6 +29,8 @@ pub struct QuickDialogs {
     pub customize_toolbar: bool,
     /// Window > Plugin Manager.
     pub plugin_manager: bool,
+    /// A track's right-click menu > Track Alternatives > Rename: the track and what has been typed.
+    pub rename_alternative: Option<(usize, String)>,
     /// Mix > Edit Groups.
     pub groups: bool,
     /// Window > Screensets.
@@ -282,6 +284,7 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    rename_alternative_window(ctx, p, s);
     about_window(ctx, s);
     customize_toolbar_window(ctx, s);
     crate::screensets::window(ctx, p, s);
@@ -621,6 +624,36 @@ fn groups_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         p.delete_group(g);
     }
     s.dialogs.groups = open;
+}
+
+/// Renames the version a track is playing.
+fn rename_alternative_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let Some((track, mut text)) = s.dialogs.rename_alternative.take() else {
+        return;
+    };
+    let (mut ok, mut keep) = (false, true);
+    egui::Window::new("Rename Alternative")
+        .id(egui::Id::unique("rename_alternative"))
+        .resizable(false)
+        .show(ctx, |ui| {
+            let edit = ui.text_edit_singleline(&mut text);
+            let mut focus = false;
+            let (done, close) = answer(ui, &mut focus, &edit);
+            ok = done;
+            keep = !done && !close;
+        });
+    if ok {
+        let alt = p
+            .tracks
+            .get_mut(track)
+            .and_then(|t| t.alternatives.get_mut(t.active_alt));
+        if let Some(alt) = alt {
+            alt.name = text.trim().chars().take(32).collect();
+        }
+    }
+    if keep {
+        s.dialogs.rename_alternative = Some((track, text));
+    }
 }
 
 /// File > Project Management > Rename Project.

@@ -2102,6 +2102,69 @@ impl Project {
         Some(first)
     }
 
+    /// The buses track `i` plays into, by its output and sends.
+    fn buses_fed_by(&self, i: usize) -> impl Iterator<Item = u16> + '_ {
+        let t = &self.tracks[i];
+        t.sends
+            .iter()
+            .filter_map(|s| s.bus)
+            .chain((t.output > 0).then_some(t.output))
+    }
+
+    /// How many Auxes in a row feed track `i`: an Aux runs after those that feed it. A loop, which
+    /// the menus do not offer but an edited file could hold, stops counting.
+    pub fn aux_rank(&self, i: usize) -> u16 {
+        if self.aux_bus_of(i) == 0 {
+            return 0;
+        }
+        let auxes: Vec<usize> = (0..self.tracks.len())
+            .filter(|a| self.aux_bus_of(*a) > 0)
+            .collect();
+        let mut ranks = vec![0u16; self.tracks.len()];
+        for _ in 0..auxes.len() {
+            let mut changed = false;
+            for &from in &auxes {
+                for bus in self.buses_fed_by(from) {
+                    for &to in &auxes {
+                        if to != from
+                            && self.aux_bus_of(to) == bus
+                            && ranks[to] <= ranks[from]
+                            && usize::from(ranks[from]) < auxes.len()
+                        {
+                            ranks[to] = ranks[from] + 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        ranks[i]
+    }
+
+    /// Whether sending track `i` into `bus` would bring its own sound back to it.
+    pub fn bus_would_loop(&self, i: usize, bus: u16) -> bool {
+        let mut seen = Vec::new();
+        let mut waiting = vec![bus];
+        while let Some(b) = waiting.pop() {
+            if seen.contains(&b) {
+                continue;
+            }
+            seen.push(b);
+            for a in 0..self.tracks.len() {
+                if self.aux_bus_of(a) == b {
+                    if a == i {
+                        return true;
+                    }
+                    waiting.extend(self.buses_fed_by(a));
+                }
+            }
+        }
+        false
+    }
+
     /// The buses Aux strips listen to, with the Aux's name, in order.
     pub fn aux_buses(&self) -> Vec<(u16, String)> {
         (0..self.tracks.len())
@@ -2117,7 +2180,7 @@ impl Project {
     /// strip has no free send or there can be no more tracks.
     pub fn new_aux_for(&mut self, t: usize, as_send: bool) -> Option<usize> {
         let track = self.tracks.get(t)?;
-        if track.kind == TrackKind::Aux || (as_send && track.sends.len() >= MAX_SENDS) {
+        if as_send && track.sends.len() >= MAX_SENDS {
             return None;
         }
         // At the end, so no other Aux changes its number.

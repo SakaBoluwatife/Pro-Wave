@@ -41,7 +41,6 @@ const READ_GREEN: Color32 = crate::theme::GOOD;
 const MUTE_ON: Color32 = crate::theme::MUTE;
 const SOLO_ON: Color32 = crate::theme::SOLO;
 const OUT_PURPLE: Color32 = Color32::from_rgb(0x8a, 0x3f, 0xc8);
-const MASTER_PINK: Color32 = Color32::from_rgb(0xb0, 0x3c, 0x9a);
 
 /// Fader/meter scale marks in dB, top to bottom (Logic's channel strip scale).
 const SCALE: [f32; 11] = [
@@ -156,7 +155,6 @@ pub fn signal_path(p: &Project, t: usize) -> Vec<StripKey> {
     }
     let mut keys: Vec<StripKey> = path.into_iter().map(StripKey::Track).collect();
     keys.push(StripKey::StereoOut);
-    keys.push(StripKey::Master);
     keys
 }
 
@@ -242,7 +240,6 @@ pub enum ClipReset {
 pub enum StripKey {
     Track(usize),
     StereoOut,
-    Master,
 }
 
 fn id(ns: &'static str, key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
@@ -793,7 +790,7 @@ pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
             StripKey::Track(i) => p.tracks.get(*i).map_or(0, |t| {
                 crate::model::next_plugin_row(t.inserts.len(), &t.plugins)
             }),
-            StripKey::StereoOut | StripKey::Master => {
+            StripKey::StereoOut => {
                 crate::model::next_plugin_row(0, &p.master_plugins)
             }
         })
@@ -842,7 +839,8 @@ fn send_slots(
             }
         } else if k == sends.len() && sends.len() < MAX_SENDS {
             let resp = ui.interact(r, uid.with(("empty", k)), Sense::click());
-            slot(g, r, "", SLOT_EMPTY, TEXT);
+            let resp = resp.on_hover_text("Add a send");
+            slot(g, r, "+", SLOT_EMPTY, TEXT);
             let mut picked = None;
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(130.0);
@@ -2011,7 +2009,6 @@ pub fn channel_strip(
             )
         }
         StripKey::StereoOut => (tr("Stereo Out").to_string(), OUT_PURPLE, vec![], None, None),
-        StripKey::Master => (tr("Master").to_string(), MASTER_PINK, vec![], None, None),
     };
     let beat = p.position_beats;
     let eq_params = match key {
@@ -2144,10 +2141,10 @@ pub fn channel_strip(
             }
         }
         match key {
-            // An Aux strip takes its signal from a bus: it has no sends of its own.
-            StripKey::Track(i) if p.tracks[i].kind != TrackKind::Aux => {
+            StripKey::Track(i) => {
                 let area = row(r.sends, 16.0);
-                let buses = p.aux_buses();
+                let mut buses = p.aux_buses();
+                buses.retain(|(bus, _)| !p.bus_would_loop(i, *bus));
                 let mut new_aux = false;
                 send_slots(
                     ui,
@@ -2166,7 +2163,6 @@ pub fn channel_strip(
                 }
             }
             StripKey::StereoOut => slot(g, row(r.sends, 16.0), "", SLOT_EMPTY, TEXT),
-            _ => {}
         }
         if let StripKey::Track(_) = key {
             let out = if name_style == NameStyle::Plain {
@@ -2187,7 +2183,7 @@ pub fn channel_strip(
                 group_slot(ui, g, row(r.group, 16.0), p, i, id(ns, (key, "vca")));
             }
         }
-        if matches!(key, StripKey::StereoOut | StripKey::Master) {
+        if key == StripKey::StereoOut {
             let rr = row(r.automation, 16.0);
             slot(
                 g,
@@ -2263,7 +2259,6 @@ pub fn channel_strip(
             None => crate::automation::shown_value(&p.tracks[i], AutoTarget::Volume, beat),
         },
         StripKey::StereoOut => lin_to_db(p.master_vol).max(-60.0),
-        StripKey::Master => 0.0,
     };
     let peaks = match key {
         StripKey::Track(i) => meters.tracks.get(i).copied().unwrap_or((0.0, 0.0)),
@@ -2319,7 +2314,6 @@ pub fn channel_strip(
             send_bus.is_some() || crate::automation::editable(&p.tracks[i], AutoTarget::Volume)
         }
         StripKey::StereoOut => true,
-        StripKey::Master => false,
     };
     let moved = fader_and_meter(
         ui,
@@ -2351,7 +2345,6 @@ pub fn channel_strip(
                 }
             },
             StripKey::StereoOut => p.master_vol = 10f32.powf(db / 20.0).min(2.0),
-            StripKey::Master => {}
         }
     }
     if let (true, StripKey::Track(i), None) = (moved.stopped, key, send_bus) {
@@ -2525,9 +2518,6 @@ fn output_slot(
         trf("Bus {}", &[&current])
     };
     slot(g, r, &text, SLOT_GRAY, TEXT);
-    if p.tracks[i].kind == TrackKind::Aux {
-        return;
-    }
     let resp = ui.interact(r, id, Sense::click());
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(150.0);
@@ -2543,7 +2533,8 @@ fn output_slot(
             ui.close();
         }
         ui.separator();
-        let buses = p.aux_buses();
+        let mut buses = p.aux_buses();
+        buses.retain(|(bus, _)| !p.bus_would_loop(i, *bus));
         egui::ScrollArea::vertical()
             .max_height(300.0)
             .show(ui, |ui| {
@@ -3065,9 +3056,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     if filters[5] {
         keys.push(StripKey::StereoOut);
     }
-    if filters[6] && v.mode != MixerMode::Single {
-        keys.push(StripKey::Master);
-    }
     if v.signal_flow && !p.tracks.is_empty() {
         keys = signal_path(p, p.selected_track.min(p.tracks.len() - 1));
     }
@@ -3213,7 +3201,6 @@ mod tests {
                 StripKey::Track(first),
                 StripKey::Track(second),
                 StripKey::StereoOut,
-                StripKey::Master,
             ]
         );
         assert!(!path.contains(&StripKey::Track(other)));
@@ -3288,7 +3275,7 @@ mod tests {
     fn fader_at(p: &Project, db: f32) -> egui::Pos2 {
         let keys: Vec<StripKey> = (0..p.tracks.len())
             .map(StripKey::Track)
-            .chain([StripKey::StereoOut, StripKey::Master])
+            .chain([StripKey::StereoOut])
             .collect();
         let r = rows(TOOLBAR_H, fx_rows_for(p, &keys), send_rows_for(p, &keys));
         let strip_bottom = 700.0 - 2.0;
