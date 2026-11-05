@@ -40,6 +40,14 @@ After the multi-core work, in one run with a compile going on the same machine, 
 - **Stage 9, look:** `theme.rs` names the shared colours, states, spacing and type, and the screens' panel, slot, accent and status colours now come from it. Library, Browser, Notes, Lists and the bottom panel can be dragged wider or taller, and the mixer starts taller, so faders have more room.
 - **Stage 10, Windows:** sample rate in Settings.
 
+## Notes from the owner's testing, 2026-11-05
+
+- **Stem Splitter:** bundled, CPU helper only for now, to optimize later. The owner tests it; no split has finished on this machine yet. The model's licence is unresolved: see `dist/windows/stems-README.md`.
+- **Recording:** the owner reports left-only, distorted-sounding takes with Input 1 on an Audient iD4. Their saved input was WASAPI (`Analogue 1/2`) while output was the Audient ASIO driver. A test shows a mono input reads back the same on both sides. Not solved; the owner has tried ASIO input and the result is not in yet.
+- **Drivers:** the owner wants WASAPI, ASIO and Audient's own driver available. Audient's driver is the entry `Audient USB Audio ASIO Driver`, among the ASIO drivers.
+- **Look:** Logic's layout and feel with our own artwork, with frosted plates on floating things. Next: stop button, Ctrl+K keyboard icon.
+- **Order after this:** plugin process isolation, then the licence review before any release. Installer: Inno Setup.
+
 ## Remaining and known issues
 
 - **Automation:** on a CLAP plugin, Touch lets go a beat after the last move, not at the mouse release: CLAP's gesture events are not read yet. CLAP windows are expected to follow lanes by themselves; not tried.
