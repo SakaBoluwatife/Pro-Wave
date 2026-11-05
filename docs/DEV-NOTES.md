@@ -40,6 +40,33 @@ After the multi-core work, in one run with a compile going on the same machine, 
 - **Stage 9, look:** `theme.rs` names the shared colours, states, spacing and type, and the screens' panel, slot, accent and status colours now come from it. Library, Browser, Notes, Lists and the bottom panel can be dragged wider or taller, and the mixer starts taller, so faders have more room.
 - **Stage 10, Windows:** sample rate in Settings.
 
+## Greyed menus
+
+**Focus for now, from the owner:** mixing and beat making.
+
+Built: window commands, Close, Score, Step Sequencer and Smart Tempo views, global track toggles, Show Track Header, Ruler, Colors and Grid, Configure Track Header, Assign Track Icon, Record Enable and Toggle, automation show, create, delete and hide, region automation with Convert Automation, Group and Edit Groups, Import Audio File and Other Projects, Rename Project, Consolidate, Clean Up, Save as Template, Tracks in Place, the Functions menu, Paste Replace, Note Colors, Pre-Fader Metering, all Tracks-area tools and a Ctrl tool, Signal Flow, Select Audio Channel Strips, Flex Mode and the rows under More in the Inspector, Freeze, Create Mastering Track, Show Master Track, Plugin Manager.
+
+Choices made:
+
+- **Region automation** is merged over the track's lane when lanes go to the engine, so the audio thread does nothing new. Writing with Touch, Latch or Write still goes to the track's lane; a region's lane wins over its stretch.
+- **Freeze** renders the strip before its fader and lets its plugins and effects go. Fader, pan and sends stay live. It is not saved: a project opens with its tracks live. Regions can still be edited while frozen and have no effect until it thaws.
+- **Create Mastering Track** is an Aux every strip going to Stereo Out now goes through. **Show Master Track** opens its automation.
+- **Consolidate** saves: a saved project already holds a copy of every audio file it uses. **Clean Up** offers to delete freeze files no track here plays.
+- **Q-Velocity** moves notes towards the region's average velocity, as there are no groove templates to take it from.
+- **Configure Track Header** choices and **Select Audio Channel Strips** last for the run; they are not saved.
+
+### On hold
+
+Apple's, with no Windows alternative: Song to Mobile Device, Open in Sound Library Manager. By the owner: Movie, Video. Nothing behind them: Session Player, Performers, Tuning. They stay greyed. `docs/LOGIC-WIREFRAME.md` section 16 has the rest of what is waiting.
+
+### Windows alternatives added
+
+- **Show in File Manager** opens File Explorer.
+
+### Stem Splitter
+
+Not in this branch yet. Two versions were made at once, and the owner chooses which to keep. Both use demucs-rs. No explicit licence was found for the model weights: settle that before shipping them to others.
+
 ## Remaining and known issues
 
 - **Automation:** on a CLAP plugin, Touch lets go a beat after the last move, not at the mouse release: CLAP's gesture events are not read yet. CLAP windows are expected to follow lanes by themselves; not tried.
@@ -48,6 +75,7 @@ After the multi-core work, in one run with a compile going on the same machine, 
 - **ASIO control panel:** neither cpal nor `asio-sys` offers it. Needs a small binding of its own.
 - **Plugin isolation:** not built. Plugins run inside the program, unsandboxed. A crash on load is blocked until Rescan; a crash while playing ends the program.
 - **Not built:** Tuner, Step Editor controller lanes, Live Loops, dockable panels, independent input and output devices, WAV past 4 GB (RF64). The Inspector panel stays a fixed width because its strips are. Smart Control knob choices are not saved in the project. About 300 one-off colours remain in the screens.
-- **Tests that use the wall clock** (`capture`, flex `huge_edits`) fail when the machine sleeps during the run. Rerun them awake.
+- **Tests that use the wall clock** (`capture`, `disk`, flex `huge_edits`) fail when the machine sleeps or is very busy during the run. Rerun them alone. **Bug, not fixed yet:** in `capture.rs` the writer thread can handle Stop without reading the queue again, so audio pushed after its last read is dropped with no loss flagged. `capture::tests::a_recording_opens_as_an_audio_file_of_the_right_length` shows it under load (24,064 of 48,000 frames). In normal use it should be only the very end of a take; how much has not been measured.
+- **Not built:** Create New Output Channel Strip: the engine mixes to one stereo output.
 - **Not run:** the installer (Inno Setup is not installed here), long playback and recording sessions, multi-monitor.
 - **Not verified by ear or by hand:** all of the above, including every window added in this pass.

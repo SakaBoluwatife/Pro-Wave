@@ -528,6 +528,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Create Track Automation"
         | "Group" => !p.tracks.is_empty(),
         "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
         "Create Mastering Track" | "Plugin Manager" => true,
         "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
@@ -762,6 +763,9 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Plugin Manager" => s.dialogs.plugin_manager = true,
+        "Other Projects…" => s.file_task = Some(FileTask::ImportProject),
+        "Consolidate…" => s.file_task = Some(FileTask::Consolidate),
+        "Clean Up…" => s.dialogs.clean_up = Some(crate::bounce::unused_freeze_files(p)),
         "Hide All Automation" => {
             s.mixer.auto_editor.track = None;
             s.mixer.auto_editor.region = None;
@@ -1393,6 +1397,7 @@ mod tests {
                     (
                         s.dialogs.groups,
                         s.dialogs.plugin_manager,
+                        s.dialogs.clean_up.is_some(),
                         s.dialogs.track_header,
                         s.dialogs.icon,
                         s.mixer.pre_fader,

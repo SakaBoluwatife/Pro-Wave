@@ -2975,6 +2975,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tracks_come_from_another_project_with_their_regions_and_no_routing() {
+        let mut other = Project::empty();
+        let a = other.add_track(TrackKind::Instrument);
+        other.add_midi_region(a, 2.0);
+        other.tracks[a].output = 3;
+        other.tracks[a].group = Some(0);
+        let skip = other.add_track(TrackKind::Audio);
+        other.tracks[skip].name = "Not this".to_string();
+        let mut picks = vec![false; other.tracks.len()];
+        picks[a] = true;
+        let mut p = Project::empty();
+        let before = p.tracks.len();
+        assert_eq!(p.import_tracks(&other, &picks), 1);
+        let got = &p.tracks[before];
+        assert_eq!(got.regions.len(), 1);
+        assert_eq!((got.output, got.group), (0, None));
+        assert!(p.tracks.iter().all(|t| t.name != "Not this"));
+    }
+
     fn mixer_project() -> Project {
         let mut p = Project::empty();
         p.add_track(TrackKind::Aux);

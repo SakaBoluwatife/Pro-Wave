@@ -19,6 +19,10 @@ pub struct QuickDialogs {
     pub track_header: bool,
     /// Track > Assign Track Icon: the track.
     pub icon: Option<usize>,
+    /// File > Import > Other Projects: the project opened, and which of its tracks to bring.
+    pub import_project: Option<(Box<Project>, Vec<bool>)>,
+    /// File > Clean Up: the files it found to delete.
+    pub clean_up: Option<Vec<std::path::PathBuf>>,
     /// Window > Plugin Manager.
     pub plugin_manager: bool,
     /// Mix > Edit Groups.
@@ -268,6 +272,8 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    import_project_window(ctx, p, s);
+    clean_up_window(ctx, s);
     plugin_manager_window(ctx, s);
     rename_region_window(ctx, p, s);
     track_header_window(ctx, s);
@@ -305,6 +311,87 @@ fn rename_region_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
     if ok || close {
         d.rename_region = None;
+    }
+}
+
+/// File > Import > Other Projects: which tracks to bring.
+fn import_project_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let Some((from, picks)) = s.dialogs.import_project.as_mut() else {
+        return;
+    };
+    let (mut import, mut open) = (false, true);
+    egui::Window::new(format!("Import from {}", from.name))
+        .id(egui::Id::unique("import_project"))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for (t, on) in from.tracks.iter().zip(picks.iter_mut()) {
+                        let movable = !matches!(
+                            t.kind,
+                            crate::model::TrackKind::Folder | crate::model::TrackKind::Vca
+                        );
+                        ui.add_enabled(movable, egui::Checkbox::new(on, t.name.as_str()));
+                    }
+                });
+            ui.label("They come to Stereo Out, with no sends or groups, at the bars they were on.");
+            import = ui.button("Import").clicked();
+        });
+    let mut message = None;
+    if import {
+        let n = p.import_tracks(from, picks);
+        message = Some(format!("Imported {n} tracks"));
+    }
+    if import || !open {
+        s.dialogs.import_project = None;
+    }
+    if message.is_some() {
+        s.status = message;
+    }
+}
+
+/// File > Clean Up: says what it found and deletes it when asked.
+fn clean_up_window(ctx: &egui::Context, s: &mut UiState) {
+    let Some(files) = s.dialogs.clean_up.as_ref() else {
+        return;
+    };
+    let bytes: u64 = files
+        .iter()
+        .filter_map(|f| std::fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum();
+    let (mut delete, mut open) = (false, true);
+    egui::Window::new("Clean Up")
+        .id(egui::Id::unique("clean_up"))
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if files.is_empty() {
+                ui.label("Nothing to clean up.");
+                return;
+            }
+            ui.label(format!(
+                "{} freeze files no track here is playing, {} MB.",
+                files.len(),
+                bytes / 1_000_000
+            ));
+            ui.label("A project open in another copy of Pro Wave could be using one.");
+            delete = ui.button("Delete Them").clicked();
+        });
+    if delete {
+        let failed = files
+            .iter()
+            .filter(|f| std::fs::remove_file(f).is_err())
+            .count();
+        s.status = Some(if failed == 0 {
+            "Cleaned up".to_string()
+        } else {
+            format!("{failed} files could not be deleted")
+        });
+    }
+    if delete || !open {
+        s.dialogs.clean_up = None;
     }
 }
 

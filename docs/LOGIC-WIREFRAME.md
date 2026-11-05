@@ -49,15 +49,15 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Feature | Status | Windows note |
 |---|---|---|
 | New/Open/Save `.prowave` (zip) | HAVE | |
-| Save as Template, Close | GREY | |
+| Save as Template, Close | HAVE | Your templates show under New from Template |
 | Alternatives, Backups, Clean Up, Consolidate | TODO | Alternatives = named snapshots of the arrangement |
 | Import audio (drag in), MIDI files | HAVE | The File > Import > Audio File entry is GREY |
-| Import other projects | GREY | |
+| Import other projects | HAVE | Chosen tracks with their regions, effects and plugins |
 | Export MIDI selection | HAVE | |
 | Bounce project or section, track, all tracks (stems) | HAVE | Through a second engine faster than real time: WAV, FLAC, MP3 320. Plugins, automation, delay compensation, tails |
 | Bounce regions in place, Bounce and Join | HAVE | Tracks in Place is GREY |
 | Export MusicXML, AAF | TODO | Low priority |
-| Show in File Manager | GREY | Becomes "Show in Explorer" |
+| Show in File Manager | HAVE | Opens File Explorer on the project |
 | Share to services | OUT | |
 | Page Setup, Print | GREY | Low priority |
 
@@ -71,9 +71,9 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Folder / Summing stacks | HAVE | |
 | Delete with the key, right-click menus | HAVE | The last track cannot be deleted yet |
 | Track rename, color | HAVE | Track menu |
-| Track icon, header config | GREY | |
+| Track icon, header config | HAVE | Assign Track Icon is saved; Configure Track Header is for this run |
 | VCA | HAVE | |
-| Freeze | GREY | The bounce engine makes this possible |
+| Freeze | HAVE | Right-click a track, or the Inspector. Not saved: a project opens with its tracks live |
 | Track alternatives (playlists) | TODO | |
 | Groove track | PART | MIDI followers only |
 | Global tracks (Marker, Tempo, Signature) | HAVE | Chord, Arrangement, Movie GREY or OUT |
@@ -142,7 +142,7 @@ HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 | Plugin parameter automation | PART | Drawn lanes play, in bounces too. Writing from the plugin window, and on-screen knobs following, TODO |
 | Metering (peak) | HAVE | LUFS, true peak, pre-fader TODO |
 | Channel strip settings save/load | HAVE | Setting menu: effects and plugins with their settings, as `.pwstrip` files |
-| Signal flow view | GREY | |
+| Signal flow view | HAVE | Mixer View menu |
 
 ## 9. Tempo, time, sync
 
@@ -172,7 +172,7 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 | Blocked after crashing on load | HAVE | Until Rescan |
 | Crash isolation (out-of-process) | TODO | The engine only sees a trait, so a bridge can replace an instance |
 | Presets in the Browser | TODO | |
-| Plugin Manager window | GREY | The Plugins tab does most of it |
+| Plugin Manager window | HAVE | What was found, what failed, Rescan |
 | VST2 | OUT unless asked | |
 
 ## 12. Settings, key commands, control surfaces
@@ -212,15 +212,12 @@ CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows 
 
 ## 16. Menu entries still greyed (checked 2026-11-05)
 
-- **File:** Close, Save as Template, Alternatives, Clean Up, Consolidate, Rename Project, Project Settings (Tuning), Page Setup, Print, Movie, Import Audio File, Import Other Projects, Score as MusicXML, Tracks in Place, Share, Show in File Manager, Open in Sound Library Manager
-- **Edit:** Paste Replace
-- **Track:** Show Master / Chord / Arrangement Track, Assign Track Icon, Configure Track Header
-- **Record:** Record Repeat, Record Toggle, Record Enable, New Take, Delete Take, Record Project Settings
-- **Mix:** Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering, Create Mastering Track, Stem Splitter
-- **View:** the automation entries, Advanced Tools, Score Editor, Step Sequencer, Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global Tracks, Colors, Markers, Grid, Smart Tempo, Full Screen
-- **Window:** Minimize, Zoom, Score Editor, Step Sequencer, Smart Tempo, Plugin Manager, Video, Bring All to Front
-- **Help:** Key Commands, About Pro Wave
-- **Tracks area:** Functions (Folder, Quantize, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks, Configure Track Header)
-- **Piano Roll:** Note Colors
-- **Mixer:** Select Audio Channel Strips, Create New Output Channel Strip, Show Signal Flow
-- **Inspector:** Channel, Freeze Mode, Flex Mode, the rows under More
+For now the work is on mixing and beat making, so these wait. Kept in the menus, greyed.
+
+- **On hold, Apple's with no Windows alternative:** Song to Mobile Device, Open in Sound Library Manager
+- **On hold by the owner:** Movie, Show Movie, Video (no movie support for now)
+- **On hold, nothing behind them:** Session Player, Performers, Project Settings (Tuning: plugins have no general way to follow it)
+- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools, Show Flex Editor, Customize Toolbar, Logic-style Key Commands (the editor is in Settings), About Pro Wave
+- **Mixer:** Create New Output Channel Strip (the engine mixes to one stereo output; a second needs engine work)
+- **Inspector:** Q-Reference, MIDI In Port, MIDI In Channel, MIDI Out Channel
+- **Mix:** Stem Splitter (two versions were made at once; the owner chooses which to keep)

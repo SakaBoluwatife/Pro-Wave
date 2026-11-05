@@ -660,6 +660,34 @@ pub fn place(
     }
 }
 
+/// The files of `files` that hold a freeze and that no track in `p` is playing.
+fn unused_among(p: &Project, files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let in_use: Vec<&Path> = p
+        .tracks
+        .iter()
+        .filter_map(|t| t.frozen.as_ref()?.audio.as_ref())
+        .map(|a| a.file.path.as_path())
+        .collect();
+    files
+        .into_iter()
+        .filter(|f| {
+            let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name.contains(" freeze ") && name.ends_with(".wav") && !in_use.contains(&f.as_path())
+        })
+        .collect()
+}
+
+/// File > Clean Up: the freeze files left behind. They can be made again by freezing again.
+pub fn unused_freeze_files(p: &Project) -> Vec<PathBuf> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let files = std::fs::read_dir(bounce_dir())
+        .map(|dir| dir.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    unused_among(p, files)
+}
+
 /// Whether a track can be frozen: it has something to make sound with, and regions to play.
 pub fn can_freeze(t: &crate::model::Track) -> bool {
     matches!(
@@ -1107,6 +1135,20 @@ mod tests {
     use super::*;
     use crate::model::Note;
     use prowave_engine::AudioFile;
+
+    #[test]
+    fn clean_up_takes_only_freeze_files_nothing_plays() {
+        let p = Project::empty();
+        let found = unused_among(
+            &p,
+            vec![
+                PathBuf::from("Bass freeze 123.wav"),
+                PathBuf::from("Bass bounce 123.wav"),
+                PathBuf::from("Bass freeze 123.txt"),
+            ],
+        );
+        assert_eq!(found, [PathBuf::from("Bass freeze 123.wav")]);
+    }
 
     const RATE: u32 = 48_000;
 

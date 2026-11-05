@@ -1954,6 +1954,33 @@ impl Project {
         }
     }
 
+    /// File > Import > Other Projects: copies of the chosen tracks of another project, with their
+    /// regions, effects and plugins. Its buses and groups mean nothing here, so they go to Stereo
+    /// Out with no sends. How many came.
+    pub fn import_tracks(&mut self, from: &Project, picks: &[bool]) -> usize {
+        let mut count = 0;
+        for (t, _) in from.tracks.iter().zip(picks).filter(|(_, on)| **on) {
+            if self.tracks.len() >= prowave_engine::MAX_TRACKS
+                || matches!(t.kind, TrackKind::Folder | TrackKind::Vca)
+            {
+                continue;
+            }
+            let mut copy = t.clone();
+            copy.output = 0;
+            copy.sends.clear();
+            copy.group = None;
+            copy.vca = None;
+            copy.indent = 0;
+            copy.frozen = None;
+            self.tracks.push(copy);
+            count += 1;
+        }
+        if count > 0 {
+            self.song_rev += 1;
+        }
+        count
+    }
+
     /// The Aux that Create Mastering Track made, if it is still there.
     pub fn mastering_track(&self) -> Option<usize> {
         self.tracks

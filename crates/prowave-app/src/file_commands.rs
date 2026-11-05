@@ -70,6 +70,8 @@ impl FileCmd {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileTask {
     ImportAudio,
+    ImportProject,
+    Consolidate,
     Reveal,
     SaveTemplate,
     Rename(String),
@@ -302,6 +304,28 @@ impl App {
                     if let Err(e) = crate::import::import_audio(&mut self.project, &file, ctx) {
                         self.ui.status = Some(format!("{}: {e}", file.display()));
                     }
+                }
+            }
+            FileTask::ImportProject => {
+                let Some(file) = dialog().set_title("Import from Project").pick_file() else {
+                    return;
+                };
+                match project_io::open_project(&file, ctx) {
+                    Ok((project, _)) => {
+                        let picks = vec![true; project.tracks.len()];
+                        self.ui.dialogs.import_project = Some((Box::new(project), picks));
+                    }
+                    Err(e) => {
+                        self.ui.status = Some(format!("cannot open {}: {e}", file.display()));
+                    }
+                }
+            }
+            // A saved project holds its own copy of every audio file it uses.
+            FileTask::Consolidate => {
+                if self.save() {
+                    let n = project_io::doc_for_saving(&self.project).1.len();
+                    self.ui.status =
+                        Some(format!("{n} audio files are now inside the project file"));
                 }
             }
             FileTask::Reveal => match &self.path {
