@@ -82,11 +82,39 @@ pub fn tick(p: &mut Project) {
             AutoMode::Touch | AutoMode::Latch => t.auto.held,
             AutoMode::Off | AutoMode::Read => None,
         };
-        if let Some(target) = target {
+        // A plugin's moves are written as they come: see `plugin_moved`.
+        if matches!(t.auto.held, Some(AutoTarget::Plugin { .. }))
+            && t.auto.mode == AutoMode::Touch
+            && beat > t.auto.plugin_touch_until
+        {
+            t.auto.held = None;
+            t.auto.end_pass();
+        }
+        if let Some(target) = target.filter(|t| !matches!(t, AutoTarget::Plugin { .. })) {
             let value = current(t, target);
             t.auto.write(target, beat, value, false);
         }
     }
+}
+
+/// How long after a move in a plugin's window Touch keeps writing, in beats.
+const PLUGIN_TOUCH_BEATS: f64 = 1.0;
+
+/// The user moved a parameter in a plugin's window. While playing, and with the strip recording,
+/// it goes in the parameter's lane. Whether Touch still holds is worked out in [`tick`].
+pub fn plugin_moved(t: &mut Track, target: AutoTarget, value: f32, beat: f64, playing: bool) {
+    if !playing {
+        return;
+    }
+    match t.auto.mode {
+        AutoMode::Off | AutoMode::Read => return,
+        AutoMode::Touch | AutoMode::Latch => {
+            t.auto.held = Some(target);
+            t.auto.plugin_touch_until = beat + PLUGIN_TOUCH_BEATS;
+        }
+        AutoMode::Write => t.auto.shown = target,
+    }
+    t.auto.write(target, beat, value, false);
 }
 
 /// Whether the user can move the control: not while the strip plays its lane in Read mode.
@@ -646,6 +674,33 @@ mod tests {
         let mut p = Project::empty();
         p.tracks[0].auto.mode = AutoMode::Touch;
         p
+    }
+
+    #[test]
+    fn moves_in_a_plugin_window_are_written_when_the_strip_records() {
+        let mut p = crate::model::Project::empty();
+        let t = &mut p.tracks[0];
+        let target = AutoTarget::Plugin { uid: 5, param: 9 };
+        t.auto.mode = AutoMode::Read;
+        plugin_moved(t, target, 0.5, 1.0, true);
+        assert!(t.auto.lane(target).is_empty(), "Read only plays it");
+        t.auto.mode = AutoMode::Touch;
+        plugin_moved(t, target, 0.5, 1.0, false);
+        assert!(t.auto.lane(target).is_empty(), "not while stopped");
+        plugin_moved(t, target, 0.5, 1.0, true);
+        plugin_moved(t, target, 0.8, 1.5, true);
+        assert_eq!(t.auto.lane(target).len(), 2);
+        assert_eq!(t.auto.held, Some(target));
+        // Let go: after a while the lane plays again.
+        p.playing = true;
+        p.position_beats = 10.0;
+        tick(&mut p);
+        assert_eq!(p.tracks[0].auto.held, None);
+        assert_eq!(
+            p.tracks[0].auto.lane(target).len(),
+            2,
+            "tick writes nothing of its own"
+        );
     }
 
     #[test]

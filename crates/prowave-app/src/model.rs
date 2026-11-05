@@ -317,6 +317,8 @@ pub struct Automation {
     pub held: Option<AutoTarget>,
     /// The lane the Automation editor shows, and Write mode writes. Not saved.
     pub shown: AutoTarget,
+    /// Touch on a plugin: the beat it lets go at, if no move comes before. Not saved.
+    pub plugin_touch_until: f64,
     /// The beat and value last written in this pass, so the next write replaces what lies
     /// between. Not saved.
     pub last: Option<(f64, f32)>,

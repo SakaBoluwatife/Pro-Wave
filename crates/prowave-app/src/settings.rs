@@ -10,6 +10,7 @@ use std::sync::mpsc::{channel, Receiver};
 const AUDIO_FILE: &str = "audio-setup";
 const TYPING_OFF_FILE: &str = "typing-off";
 const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+const RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 
 /// Which driver, device and buffer size to play through. Empty means the usual choice.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -17,12 +18,14 @@ pub struct AudioSetup {
     pub system: String,
     pub device: String,
     pub buffer: Option<u32>,
+    pub rate: Option<u32>,
 }
 
 impl AudioSetup {
     fn to_text(&self) -> String {
         let buffer = self.buffer.map_or(String::new(), |b| b.to_string());
-        format!("{}\n{}\n{buffer}\n", self.system, self.device)
+        let rate = self.rate.map_or(String::new(), |r| r.to_string());
+        format!("{}\n{}\n{buffer}\n{rate}\n", self.system, self.device)
     }
 
     fn from_text(text: &str) -> Self {
@@ -30,10 +33,12 @@ impl AudioSetup {
         let mut next = || lines.next().unwrap_or("").trim().to_string();
         let (system, device) = (next(), next());
         let buffer = next().parse().ok().filter(|b| BUFFERS.contains(b));
+        let rate = next().parse().ok().filter(|r| RATES.contains(r));
         Self {
             system,
             device,
             buffer,
+            rate,
         }
     }
 
@@ -203,6 +208,22 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
                 });
             ui.end_row();
 
+            ui.label("Sample rate");
+            let shown = v
+                .setup
+                .rate
+                .map_or("The driver's default".to_string(), |r| format!("{r} Hz"));
+            egui::ComboBox::from_id_salt(egui::Id::unique("settings_rate"))
+                .width(280.0)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut v.setup.rate, None, "The driver's default");
+                    for r in RATES {
+                        ui.selectable_value(&mut v.setup.rate, Some(r), format!("{r} Hz"));
+                    }
+                });
+            ui.end_row();
+
             ui.label("Buffer size");
             let shown = v
                 .setup
@@ -352,6 +373,7 @@ mod tests {
             system: "ASIO".to_string(),
             device: "Audient USB Audio ASIO Driver".to_string(),
             buffer: Some(128),
+            rate: Some(96_000),
         };
         assert_eq!(AudioSetup::from_text(&setup.to_text()), setup);
         assert_eq!(AudioSetup::from_text(""), AudioSetup::default());

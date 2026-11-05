@@ -9,6 +9,7 @@ use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
 use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent};
 use clack_host::events::event_types::{TransportEvent, TransportFlags};
+use clack_host::events::spaces::CoreEventSpace;
 use clack_host::events::{EventFlags, Match};
 use clack_host::prelude::*;
 use clack_host::utils::{BeatTime, SecondsTime};
@@ -186,6 +187,8 @@ pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, Error> {
 /// The UI-thread half of a loaded plugin. It must outlive the processor [`load_clap`] returned
 /// and stay on the UI thread, where CLAP wants it. Call [`LoadedClap::tick`] once a frame.
 pub struct LoadedClap {
+    /// What the plugin's window moved.
+    moved: rtrb::Consumer<(u32, f64)>,
     params: Vec<crate::PluginParam>,
     instance: PluginInstance<Handlers>,
     callback: Arc<AtomicBool>,
@@ -415,6 +418,14 @@ impl crate::LoadedPlugin for LoadedClap {
         self.params.clone()
     }
 
+    fn take_edits(&mut self) -> Vec<(u32, f64)> {
+        let mut out = Vec::new();
+        while let Ok(edit) = self.moved.pop() {
+            out.push(edit);
+        }
+        out
+    }
+
     fn latency_samples(&self) -> usize {
         LoadedClap::latency_samples(self)
     }
@@ -545,8 +556,11 @@ pub fn load_clap(
     let mut processor =
         ClapProcessor::new(stopped.into(), &inputs, &outputs, latency, released.clone());
     processor.ranges = ranges;
+    let (moved_in, moved) = rtrb::RingBuffer::new(PENDING_PARAMS);
+    processor.moved = Some(moved_in);
     Ok((
         LoadedClap {
+            moved,
             params,
             instance,
             callback,
@@ -733,6 +747,8 @@ struct ClapProcessor {
     ranges: Vec<(u32, f64, f64)>,
     /// Moves waiting for the next block. Past its capacity they wait for the next value.
     pending: Vec<(u32, f64)>,
+    /// What the plugin's window moved, as positions 0..=1, for automation. Lost if nobody reads.
+    moved: Option<rtrb::Producer<(u32, f64)>>,
 }
 
 impl Drop for ClapProcessor {
@@ -752,6 +768,7 @@ impl ClapProcessor {
         Self {
             ranges: Vec::new(),
             pending: Vec::with_capacity(PENDING_PARAMS),
+            moved: None,
             processor,
             input: PortBuffers::new(inputs),
             output: PortBuffers::new(outputs),
@@ -833,6 +850,22 @@ impl PluginProcessor for ClapProcessor {
             }
             Err(_) => false,
         };
+        if let Some(moved) = self.moved.as_mut() {
+            for event in self.events_out.iter() {
+                let Some(CoreEventSpace::ParamValue(param)) = event.as_core_event() else {
+                    continue;
+                };
+                let Some(id) = param.param_id() else {
+                    continue;
+                };
+                let id = id.get();
+                if let Ok(at) = self.ranges.binary_search_by_key(&id, |r| r.0) {
+                    let (_, min, max) = self.ranges[at];
+                    let position = (param.value() - min) / (max - min).max(1e-9);
+                    let _ = moved.push((id, position.clamp(0.0, 1.0)));
+                }
+            }
+        }
         if ok {
             read_main_output(&self.output.ports, output);
         } else {

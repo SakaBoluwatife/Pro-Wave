@@ -47,6 +47,7 @@ mod pattern;
 mod perf;
 mod piano_roll;
 mod plugin_guard;
+mod plugin_presets;
 mod plugin_rack;
 mod plugin_scan;
 mod project_io;
@@ -630,8 +631,12 @@ impl App {
         self.ui.mastering.tap = None;
         // The old one lets go of the device before the new one asks for it.
         self.sync = None;
-        let chosen =
-            prowave_engine::Engine::start_chosen(&setup.system, &setup.device, setup.buffer);
+        let chosen = prowave_engine::Engine::start_chosen(
+            &setup.system,
+            &setup.device,
+            setup.buffer,
+            setup.rate,
+        );
         let (started, failed) = match chosen {
             Ok(engine) => (Ok(engine), None),
             Err(e) => (prowave_engine::Engine::start(), Some(e)),
@@ -733,6 +738,11 @@ impl eframe::App for App {
         self.project.refresh_generated();
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            if let Some(cmd) = self.ui.mixer.preset_cmd.take() {
+                if let Err(e) = sync.run_preset(&cmd) {
+                    self.ui.status = Some(e);
+                }
+            }
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
                 sync.open_plugin_editor(uid, &name, main_window_handle(frame));
             }
@@ -1268,12 +1278,16 @@ fn main() -> eframe::Result {
             let mut midi_out = None;
             // What was chosen in Settings, or the usual device if that will not start.
             let setup = settings::AudioSetup::load();
-            let started =
-                prowave_engine::Engine::start_chosen(&setup.system, &setup.device, setup.buffer)
-                    .or_else(|e| {
-                        tracing::warn!("the audio setup did not start: {e}");
-                        prowave_engine::Engine::start()
-                    });
+            let started = prowave_engine::Engine::start_chosen(
+                &setup.system,
+                &setup.device,
+                setup.buffer,
+                setup.rate,
+            )
+            .or_else(|e| {
+                tracing::warn!("the audio setup did not start: {e}");
+                prowave_engine::Engine::start()
+            });
             let sync = match started {
                 Ok(e) => {
                     let mut sync = engine_sync::EngineSync::new(e, &project);

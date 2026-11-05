@@ -836,6 +836,15 @@ impl EngineSync {
                 .sum::<usize>()
     }
 
+    /// Saves or loads a plugin preset.
+    pub fn run_preset(&mut self, cmd: &crate::plugin_presets::PresetCmd) -> Result<(), String> {
+        use crate::plugin_presets::PresetCmd;
+        match cmd {
+            PresetCmd::Save { uid, file } => self.rack.save_preset(*uid, file),
+            PresetCmd::Load { uid, file } => self.rack.load_preset(*uid, file),
+        }
+    }
+
     /// Runs what the plugins asked for on this thread, with no other change.
     pub fn tick_plugins(&mut self) {
         self.rack.tick();

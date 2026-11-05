@@ -239,6 +239,60 @@ pub struct Rack {
 
 impl Rack {
     /// The delay of the plugin with this uid in its slot, 0 when it is not running.
+    /// Writes what was moved in plugins' windows into their lanes, and shows in their windows what
+    /// their lanes are doing. Once a frame.
+    fn follow_lanes(&mut self, p: &mut Project) {
+        let (beat, playing) = (p.position_beats, p.playing);
+        for t in &mut p.tracks {
+            let uids: Vec<u64> = t.hosted().map(|i| i.uid).collect();
+            for uid in uids {
+                let Some(live) = self.live.get_mut(&uid) else {
+                    continue;
+                };
+                for (param, value) in live.loaded.take_edits() {
+                    let target = crate::model::AutoTarget::Plugin { uid, param };
+                    crate::automation::plugin_moved(t, target, value as f32, beat, playing);
+                }
+            }
+            if !playing {
+                continue;
+            }
+            for lane in &t.auto.plugin_lanes {
+                let target = crate::model::AutoTarget::Plugin {
+                    uid: lane.uid,
+                    param: lane.param,
+                };
+                if !t.auto.follows(target) {
+                    continue;
+                }
+                let value = prowave_engine::lane_value(&lane.points, beat);
+                if let (Some(value), Some(live)) = (value, self.live.get_mut(&lane.uid)) {
+                    live.loaded.show_param(lane.param, f64::from(value));
+                }
+            }
+        }
+    }
+
+    /// Writes plugin `uid`'s state to a preset file.
+    pub fn save_preset(&mut self, uid: u64, file: &std::path::Path) -> Result<(), String> {
+        let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
+        let state = live
+            .loaded
+            .save_state()
+            .map_err(|e| e.to_string())?
+            .ok_or("This plugin keeps no state to save")?;
+        std::fs::write(file, state).map_err(|e| e.to_string())
+    }
+
+    /// Puts a preset file's state into plugin `uid`.
+    pub fn load_preset(&mut self, uid: u64, file: &std::path::Path) -> Result<(), String> {
+        let state = std::fs::read(file).map_err(|e| e.to_string())?;
+        let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
+        live.loaded.load_state(&state).map_err(|e| e.to_string())?;
+        self.touched = true;
+        Ok(())
+    }
+
     /// Tells the engine to run plugins on several cores, the first time there are any.
     fn start_rounds(&mut self, engine: &mut Engine) {
         if self.rounds_sent {
@@ -378,6 +432,7 @@ impl Rack {
         engine: &mut Engine,
         message: &mut Option<String>,
     ) -> bool {
+        self.follow_lanes(p);
         let mut closed = Vec::new();
         for live in self.live.values_mut() {
             live.loaded.tick();

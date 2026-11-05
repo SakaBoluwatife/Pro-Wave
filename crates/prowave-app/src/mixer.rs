@@ -77,6 +77,8 @@ pub struct MixerView {
     pub fx_scroll: f32,
     /// The plugins on this computer, for the slots' menus.
     pub installed: std::sync::Arc<Vec<PluginInfo>>,
+    /// A preset to save or load (`App` carries it out).
+    pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     /// What went wrong putting one on, for the status line.
     pub message: Option<String>,
     pub mode: MixerMode,
@@ -119,6 +121,7 @@ impl Default for MixerView {
         Self {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
+            preset_cmd: None,
             message: None,
             mode: MixerMode::Tracks,
             filters: [true; 8],
@@ -991,6 +994,11 @@ fn insert_slot(
     let rows = crate::model::plugin_rows(count, &p.tracks[i].plugins);
     if let Some(j) = rows.iter().position(|row| *row == k) {
         plugin_slot(ui, g, r, p, v, Home::Track(i), j, uid, inactive);
+        slot_drop(ui, g, r, p, Home::Track(i), k);
+        return;
+    }
+    slot_drop(ui, g, r, p, Home::Track(i), k);
+    if i >= p.tracks.len() {
         return;
     }
     // The slots end at a plus. Gaps left above it can be filled too.
@@ -1108,8 +1116,97 @@ fn insert_slot(
     }
 }
 
-/// Whose effects a plugin slot shows.
+/// The Presets entries of a plugin slot's menu.
+fn preset_items(
+    ui: &mut Ui,
+    uid: u64,
+    id: &str,
+    name: &str,
+    cmd: &mut Option<crate::plugin_presets::PresetCmd>,
+) {
+    use crate::plugin_presets::{ask_where, list, PresetCmd};
+    ui.menu_button("Presets", |ui| {
+        if ui.button("Save Preset…").clicked() {
+            if let Some(file) = ask_where(id, name) {
+                *cmd = Some(PresetCmd::Save { uid, file });
+            }
+            ui.close();
+        }
+        let presets = list(id);
+        if !presets.is_empty() {
+            ui.separator();
+        }
+        for (name, file) in presets {
+            if ui.button(name).clicked() {
+                *cmd = Some(PresetCmd::Load { uid, file });
+                ui.close();
+            }
+        }
+    });
+}
+
+/// A plugin being dragged to another slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlotDrag {
+    home: Home,
+    index: usize,
+}
+
+/// Moves a plugin to insert row `row` of `to`, which may be another strip. The instance goes with it,
+/// found by its uid, and the sound follows the new order.
+fn move_plugin(p: &mut Project, from: SlotDrag, to: Home, row: usize) {
+    let first_from = from.home.first_row(p);
+    crate::model::settle_plugin_rows(first_from, from.home.plugins(p));
+    let list = from.home.plugins(p);
+    if from.index >= list.len() {
+        return;
+    }
+    let plugin = list.remove(from.index);
+    let first = to.first_row(p);
+    let row = row.max(first);
+    let target = to.plugins(p);
+    crate::model::settle_plugin_rows(first, target);
+    let free = !target.iter().any(|x| usize::from(x.row) == row);
+    if free {
+        crate::model::place_plugin_in_row(first, target, plugin, row);
+    } else {
+        // On a plugin: it goes before that one, which moves down as far as it must.
+        let at = target.partition_point(|x| usize::from(x.row) < row);
+        target.insert(at, plugin);
+        target[at].row = row.min(usize::from(u8::MAX)) as u8;
+        for later in at + 1..target.len() {
+            let before = target[later - 1].row;
+            if target[later].row <= before {
+                target[later].row = before.saturating_add(1);
+            }
+        }
+    }
+    p.selected_track = match to {
+        Home::Track(i) => i,
+        Home::Master => p.selected_track,
+    };
+}
+
+/// A plugin let go on slot `r`, row `k` of `home`.
+fn slot_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, home: Home, k: usize) {
+    let Some(drag) = egui::DragAndDrop::payload::<SlotDrag>(ui.ctx()) else {
+        return;
+    };
+    let over = ui
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|at| r.contains(at));
+    if !over {
+        return;
+    }
+    g.rect_stroke(r, 2.0, Stroke::new(1.5, BLUE), egui::StrokeKind::Outside);
+    if ui.input(|i| i.pointer.any_released()) {
+        egui::DragAndDrop::clear_payload(ui.ctx());
+        move_plugin(p, *drag, home, k);
+    }
+}
+
+/// Whose effects a plugin slot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Home {
     Track(usize),
     /// The output.
@@ -1146,8 +1243,10 @@ fn master_slot(
     let rows = crate::model::plugin_rows(0, &p.master_plugins);
     if let Some(j) = rows.iter().position(|row| *row == k) {
         plugin_slot(ui, g, r, p, v, Home::Master, j, uid, false);
+        slot_drop(ui, g, r, p, Home::Master, k);
         return;
     }
+    slot_drop(ui, g, r, p, Home::Master, k);
     let next = rows.last().map_or(0, |row| row + 1);
     let full = p.master_plugins.len() >= prowave_engine::MAX_INSERTS;
     if k > next {
@@ -1275,7 +1374,8 @@ fn plugin_slot(
     uid: egui::Id,
     inactive: bool,
 ) {
-    let plugin = &home.plugins(p)[j];
+    let plugin = home.plugins(p)[j].clone();
+    let plugin = &plugin;
     let (plugin_uid, name, loaded) = (plugin.uid, plugin.name.clone(), plugin.failed.is_none());
     let off = inactive || plugin.bypass || plugin.failed.is_some();
     let bypass = plugin.bypass;
@@ -1292,16 +1392,19 @@ fn plugin_slot(
         Some(why) => format!("{}: {why}", plugin.name),
         None => format!("{} ({})", plugin.name, plugin.vendor),
     };
-    let hover = format!("{hover}\nClick to open. Right-click for more.");
+    let hover = format!("{hover}\nClick to open. Drag to move it. Right-click for more.");
     let count = home.plugins(p).len();
+    let plugin_id = plugin.id.clone();
     let resp = ui
-        .interact(r, uid, Sense::click())
+        .interact(r, uid, Sense::click_and_drag())
         .on_hover_text_at_pointer(hover);
+    resp.dnd_set_drag_payload(SlotDrag { home, index: j });
     let mut moved = None;
     let mut remove = delete_pressed(ui, &resp);
     let mut flip_bypass = slot_bypass_button(ui, g, r, uid, bypass, text_color);
     remove |= slot_remove_button(ui, g, r, uid, text_color);
     let mut open = loaded && resp.clicked();
+    let mut preset = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1326,6 +1429,7 @@ fn plugin_slot(
                 ui.close();
             }
         });
+        preset_items(ui, plugin_uid, &plugin_id, &name, &mut preset);
         ui.separator();
         if ui.button(tr("Remove")).clicked() {
             remove = true;
@@ -1333,6 +1437,9 @@ fn plugin_slot(
         }
     };
     slot_menu(&resp, false).show(&mut items);
+    if preset.is_some() {
+        v.preset_cmd = preset;
+    }
     if open {
         v.open_plugin = Some((plugin_uid, name));
     }
@@ -2826,6 +2933,62 @@ mod tests {
         // A tall one shows them all.
         let r = rows_fit(top, 2000.0, 32, 1, 5.0);
         assert_eq!((r.fx_first, r.fx_rows), (0, 32));
+    }
+
+    #[test]
+    fn a_plugin_dragged_to_another_slot_goes_there_with_its_instance() {
+        use crate::model::plugin_rows;
+        let info = |name: &str| prowave_host::PluginInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            vendor: String::new(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: format!("{name}.clap").into(),
+            is_instrument: false,
+        };
+        let mut p = mixer_project();
+        p.tracks[0].inserts.clear();
+        p.tracks[1].inserts.clear();
+        for (row, name) in [(0, "A"), (1, "B"), (2, "C")] {
+            crate::plugin_rack::add_effect_in_row(&mut p, 0, &info(name), row).unwrap();
+        }
+        let uid = p.tracks[0].plugins[0].uid;
+        let names = |p: &Project, t: usize| -> Vec<String> {
+            p.tracks[t].plugins.iter().map(|x| x.name.clone()).collect()
+        };
+        // To an empty slot further down: it comes last.
+        let from = SlotDrag {
+            home: Home::Track(0),
+            index: 0,
+        };
+        move_plugin(&mut p, from, Home::Track(0), 5);
+        assert_eq!(names(&p, 0), ["B", "C", "A"]);
+        assert_eq!(plugin_rows(0, &p.tracks[0].plugins), [1, 2, 5]);
+        assert_eq!(p.tracks[0].plugins[2].uid, uid, "the same instance");
+        // Onto another plugin: it goes before it, and that one moves down.
+        let from = SlotDrag {
+            home: Home::Track(0),
+            index: 2,
+        };
+        move_plugin(&mut p, from, Home::Track(0), 1);
+        assert_eq!(names(&p, 0), ["A", "B", "C"]);
+        assert_eq!(plugin_rows(0, &p.tracks[0].plugins), [1, 2, 3]);
+        // To another strip, and to the output.
+        let from = SlotDrag {
+            home: Home::Track(0),
+            index: 0,
+        };
+        move_plugin(&mut p, from, Home::Track(1), 0);
+        assert_eq!(names(&p, 0), ["B", "C"]);
+        assert_eq!(names(&p, 1), ["A"]);
+        let from = SlotDrag {
+            home: Home::Track(1),
+            index: 0,
+        };
+        move_plugin(&mut p, from, Home::Master, 2);
+        assert_eq!(p.master_plugins[0].uid, uid);
+        assert!(p.tracks[1].plugins.is_empty());
     }
 
     #[test]

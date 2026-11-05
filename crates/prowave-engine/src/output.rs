@@ -359,22 +359,36 @@ impl Engine {
         system: &str,
         device: &str,
         buffer_frames: Option<u32>,
+        sample_rate: Option<u32>,
     ) -> Result<Self, EngineError> {
-        if system.is_empty() {
+        if system.is_empty() && sample_rate.is_none() {
             return Self::start_with(buffer_frames);
         }
-        let host = Self::host_named(system)
-            .ok_or_else(|| EngineError::Backend(format!("{system} is not available")))?;
-        if device.is_empty() {
-            return Self::start_on_host(&host, buffer_frames);
+        let host = if system.is_empty() {
+            cpal::default_host()
+        } else {
+            Self::host_named(system)
+                .ok_or_else(|| EngineError::Backend(format!("{system} is not available")))?
+        };
+        let found = if device.is_empty() {
+            host.default_output_device()
+                .ok_or(EngineError::NoOutputDevice)?
+        } else {
+            host.output_devices()
+                .map_err(|e| EngineError::Backend(e.to_string()))?
+                .find(|d| Self::device_label(d) == device)
+                .ok_or_else(|| EngineError::Backend(format!("{device} was not found")))?
+        };
+        match sample_rate {
+            Some(rate) => match Self::start_device(&found, buffer_frames, Some(rate)) {
+                Err(e) if buffer_frames.is_some() => {
+                    tracing::warn!("buffer size refused ({e}); using the default");
+                    Self::start_device(&found, None, Some(rate))
+                }
+                other => other,
+            },
+            None => Self::start_on(&found, buffer_frames),
         }
-        let mut devices = host
-            .output_devices()
-            .map_err(|e| EngineError::Backend(e.to_string()))?;
-        let found = devices
-            .find(|d| Self::device_label(d) == device)
-            .ok_or_else(|| EngineError::Backend(format!("{device} was not found")))?;
-        Self::start_on(&found, buffer_frames)
     }
 
     /// Starts on the ASIO host (Windows builds with the `asio` feature only).
@@ -461,10 +475,10 @@ impl Engine {
 
     /// Starts on `device`. If the requested buffer size is refused, retries with its default.
     fn start_on(device: &cpal::Device, buffer_frames: Option<u32>) -> Result<Self, EngineError> {
-        match Self::start_device(device, buffer_frames) {
+        match Self::start_device(device, buffer_frames, None) {
             Err(e) if buffer_frames.is_some() => {
                 tracing::warn!("buffer size {buffer_frames:?} refused ({e}); using the default");
-                Self::start_device(device, None)
+                Self::start_device(device, None, None)
             }
             other => other,
         }
@@ -473,11 +487,20 @@ impl Engine {
     fn start_device(
         device: &cpal::Device,
         buffer_frames: Option<u32>,
+        sample_rate: Option<u32>,
     ) -> Result<Self, EngineError> {
         let device_name = Self::device_label(device);
-        let supported = device
-            .default_output_config()
-            .map_err(|e| EngineError::Backend(e.to_string()))?;
+        let supported = match sample_rate {
+            Some(rate) => device
+                .supported_output_configs()
+                .map_err(|e| EngineError::Backend(e.to_string()))?
+                .find(|c| (c.min_sample_rate()..=c.max_sample_rate()).contains(&rate))
+                .map(|c| c.with_sample_rate(rate))
+                .ok_or_else(|| EngineError::Backend(format!("{rate} Hz is not available here")))?,
+            None => device
+                .default_output_config()
+                .map_err(|e| EngineError::Backend(e.to_string()))?,
+        };
         let format = supported.sample_format();
         let range = match supported.buffer_size() {
             SupportedBufferSize::Range { min, max } => Some((*min, *max)),
@@ -654,7 +677,7 @@ mod chosen_device_tests {
             let devices = Engine::audio_devices(&system);
             println!("{system}: {devices:?}");
             for device in devices {
-                match Engine::start_chosen(&system, &device, None) {
+                match Engine::start_chosen(&system, &device, None, None) {
                     Ok(engine) => println!(
                         "  started {device}: {} at {} Hz",
                         engine.device_name(),
@@ -664,6 +687,6 @@ mod chosen_device_tests {
                 }
             }
         }
-        assert!(Engine::start_chosen("no such system", "", None).is_err());
+        assert!(Engine::start_chosen("no such system", "", None, None).is_err());
     }
 }

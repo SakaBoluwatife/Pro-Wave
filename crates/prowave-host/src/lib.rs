@@ -93,6 +93,15 @@ pub trait LoadedPlugin {
         Vec::new()
     }
 
+    /// What the user moved in the plugin's window since last asked: parameter and position 0..=1.
+    fn take_edits(&mut self) -> Vec<(u32, f64)> {
+        Vec::new()
+    }
+
+    /// Shows a parameter's position in the plugin's window, as an automation lane moves it. Formats
+    /// whose window follows the audio half by itself need nothing here.
+    fn show_param(&mut self, _id: u32, _value: f64) {}
+
     /// The delay the plugin reported when it was activated, in samples.
     fn latency_samples(&self) -> usize;
     /// Whether the audio half is gone. Keep this half until it is.
