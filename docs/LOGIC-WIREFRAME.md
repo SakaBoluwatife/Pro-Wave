@@ -70,7 +70,8 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Drummer track | HAVE (generated notes) | Stock kit goes with Task 3; needs a user plugin then |
 | Folder / Summing stacks | HAVE | |
 | Delete with the key, right-click menus | HAVE | The last track cannot be deleted yet |
-| Track rename, color, icon, header config | GREY | Quick wins |
+| Track rename, color | HAVE | Track menu |
+| Track icon, header config | GREY | |
 | VCA | HAVE | |
 | Freeze | GREY | The bounce engine makes this possible |
 | Track alternatives (playlists) | TODO | |
@@ -84,10 +85,11 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | MIDI and audio recording | HAVE | Keyboard, MIDI ports and laptop keys |
 | Record enable, input monitor | HAVE | |
 | Capture Recording, count-in, metronome | HAVE | Metronome is a built-in click |
-| Punch in/out, replace mode, Record Repeat | GREY | |
+| Autopunch | HAVE | One punch a pass; recording stops at the punch out. Locators come from the selection or Cycle |
+| Replace mode, Record Repeat | GREY | |
 | MIDI take folders, swipe comping | HAVE | |
-| Audio take folders, swipe comping | TODO | Needs takes of audio in the clip model |
-| Low latency mode | TODO | Button does nothing |
+| Audio take folders, swipe comping | HAVE | From Cycle recording. Recording over an existing region makes no folder yet |
+| Low latency mode | HAVE | Transport button and menu |
 
 ## 5. Audio editing (chapters: loops/media, Audio Track Editor, Flex)
 
@@ -149,7 +151,7 @@ HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 | Tempo map, signatures, Cycle | HAVE | Cycle takes the selection when turned on |
 | Smart Tempo | HAVE | |
 | MTC out/in, SMPTE | HAVE | |
-| Go to Position | GREY | |
+| Go to Position | HAVE | Navigate menu |
 | Tuning (Scala .tun) | TODO | |
 | Video track | OUT for now | |
 
@@ -179,9 +181,9 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 |---|---|---|
 | Settings window (Ctrl+,) | HAVE | Audio, Keyboard, Plugins, General |
 | Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. All five outputs of the dev PC start. Sample rate and the driver's panel TODO |
-| Project Settings entries | HAVE | One window; General, Tuning and the like as far as they apply |
+| Project Settings entries | HAVE | General, Synchronization, Metronome, Recording, Audio and MIDI. Tuning is GREY |
 | MIDI ports | HAVE | All ports, automatically |
-| Key commands | PART | Logic's, moved to Ctrl and Alt (`key_commands.rs`); remap window TODO |
+| Key commands | HAVE | Logic's, moved to Ctrl and Alt (`key_commands.rs`), with an editor to remap them |
 | MIDI learn, controller assignments | TODO | |
 | Mackie / HUI support | TODO | |
 | Remote control from phone/web | TODO | ROADMAP suggests WebSocket |
@@ -208,17 +210,17 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 
 CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows only (`editor_window.rs`, `vst3_plugin.rs`). Mac needs a Cocoa window, signing and notarization; Linux an X11 one. The name "Pro Wave" and the UI can change later: the audio engine only talks to the UI through commands, but colours are written into each screen and need moving into one theme first.
 
-## 16. Menu entries still greyed (checked 2026-11-04)
+## 16. Menu entries still greyed (checked 2026-11-05)
 
-- **File:** Close, Save as Template, Alternatives, Clean Up, Consolidate, Rename Project, Project Settings (General, Synchronization, Metronome, Recording, Tuning, Audio, MIDI), Page Setup, Print, Movie, Import Audio File, Import Other Projects, Score as MusicXML, Tracks in Place, Share, Show in File Manager, Open in Sound Library Manager
+- **File:** Close, Save as Template, Alternatives, Clean Up, Consolidate, Rename Project, Project Settings (Tuning), Page Setup, Print, Movie, Import Audio File, Import Other Projects, Score as MusicXML, Tracks in Place, Share, Show in File Manager, Open in Sound Library Manager
 - **Edit:** Paste Replace
-- **Track:** Rename Track, Show Master / Chord / Arrangement Track, Assign Track Color / Icon, Configure Track Header
+- **Track:** Show Master / Chord / Arrangement Track, Assign Track Icon, Configure Track Header
 - **Record:** Record Repeat, Record Toggle, Record Enable, New Take, Delete Take, Record Project Settings
-- **Mix:** Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering, Mastering, Create Mastering Track, Stem Splitter
+- **Mix:** Show / Create / Convert / Delete Automation, Group, Edit Groups, Pre-Fader Metering, Create Mastering Track, Stem Splitter
 - **View:** the automation entries, Advanced Tools, Score Editor, Step Sequencer, Session Player, Flex Editor, Performers, Movie, Customize Toolbar, Track Header, Ruler, Global Tracks, Colors, Markers, Grid, Smart Tempo, Full Screen
 - **Window:** Minimize, Zoom, Score Editor, Step Sequencer, Smart Tempo, Plugin Manager, Video, Bring All to Front
 - **Help:** Key Commands, About Pro Wave
-- **Tracks area:** Functions (Folder, Quantize, Bounce in Place, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks, Configure Track Header)
+- **Tracks area:** Functions (Folder, Quantize, Convert to New Sampler Track, Move to Playhead), View (Show Global Tracks, Configure Track Header)
 - **Piano Roll:** Note Colors
 - **Mixer:** Select Audio Channel Strips, Create New Output Channel Strip, Show Signal Flow
 - **Inspector:** Channel, Freeze Mode, Flex Mode, the rows under More
