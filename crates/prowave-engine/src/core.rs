@@ -861,8 +861,11 @@ pub struct EngineCore {
     side_source: Vec<bool>,
     touched: Vec<bool>,
     dirty: Vec<u16>,
-    bus_l: [f64; MAX_BUSES],
-    bus_r: [f64; MAX_BUSES],
+    bus_l: Vec<f64>,
+    bus_r: Vec<f64>,
+    /// The buses that hold sound this frame, so that only those are cleared after it.
+    bus_used: Vec<u16>,
+    bus_marked: Vec<bool>,
     automation: Vec<AutoLane>,
     /// The value the automation gives each strip right now (None: its fader or knob rules).
     auto_vol: Vec<Option<f32>>,
@@ -1011,8 +1014,10 @@ impl EngineCore {
             side_source: vec![false; MAX_TRACKS],
             touched: vec![false; MAX_TRACKS],
             dirty: Vec::with_capacity(MAX_TRACKS),
-            bus_l: [0.0; MAX_BUSES],
-            bus_r: [0.0; MAX_BUSES],
+            bus_l: vec![0.0; MAX_BUSES],
+            bus_r: vec![0.0; MAX_BUSES],
+            bus_used: Vec::with_capacity(MAX_BUSES),
+            bus_marked: vec![false; MAX_BUSES],
             auto_any: false,
             automation: Vec::new(),
             auto_vol: vec![None; MAX_TRACKS],
@@ -1499,6 +1504,18 @@ impl EngineCore {
         }
     }
 
+    /// Adds to bus `bus` (from 1). Each bus goes in the list once, and the list has room for all.
+    #[inline]
+    fn add_to_bus(&mut self, bus: u16, l: f64, r: f64) {
+        let b = bus as usize - 1;
+        self.bus_l[b] += l;
+        self.bus_r[b] += r;
+        if !self.bus_marked[b] {
+            self.bus_marked[b] = true;
+            self.bus_used.push(b as u16);
+        }
+    }
+
     /// Runs one strip: effects, delay compensation, pre-fader sends, fader and pan,
     /// post-fader sends, and into the mix.
     #[inline]
@@ -1557,8 +1574,7 @@ impl EngineCore {
         if audible && route.bus_in == 0 {
             for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
                 let g = send_gain(s.level) as f64;
-                self.bus_l[s.bus as usize - 1] += xl * g;
-                self.bus_r[s.bus as usize - 1] += xr * g;
+                self.add_to_bus(s.bus, xl * g, xr * g);
             }
         }
         let (yl, yr) = (
@@ -1569,8 +1585,7 @@ impl EngineCore {
             if route.bus_in == 0 {
                 for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
                     let g = send_gain(s.level) as f64;
-                    self.bus_l[s.bus as usize - 1] += yl * g;
-                    self.bus_r[s.bus as usize - 1] += yr * g;
+                    self.add_to_bus(s.bus, yl * g, yr * g);
                 }
             }
             let (ml, mr) = if self.pre_fader_meter {
@@ -1592,8 +1607,7 @@ impl EngineCore {
         };
         if audible {
             if route.output > 0 {
-                self.bus_l[route.output as usize - 1] += yl;
-                self.bus_r[route.output as usize - 1] += yr;
+                self.add_to_bus(route.output, yl, yr);
             } else {
                 out.0 += yl;
                 out.1 += yr;
@@ -1681,10 +1695,14 @@ impl EngineCore {
         for k in 0..self.aux.len() {
             self.run_strip(self.aux[k] as usize, &mut out);
         }
-        if !self.aux.is_empty() || !self.complex.is_empty() {
-            self.bus_l = [0.0; MAX_BUSES];
-            self.bus_r = [0.0; MAX_BUSES];
+        // Only what was used: clearing every bus for every sample would cost more than the mix.
+        for k in 0..self.bus_used.len() {
+            let b = self.bus_used[k] as usize;
+            self.bus_l[b] = 0.0;
+            self.bus_r[b] = 0.0;
+            self.bus_marked[b] = false;
         }
+        self.bus_used.clear();
         out
     }
 

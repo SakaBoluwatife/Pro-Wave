@@ -5,17 +5,15 @@ use crate::model::{Project, SendSlot, TrackKind, MAX_SENDS};
 use crate::UiState;
 use egui::{vec2, Color32, Sense};
 
-const BUSES: u8 = 8;
-
 /// Whether track `t` sends to `bus`.
-pub fn sends_to(p: &Project, t: usize, bus: u8) -> bool {
+pub fn sends_to(p: &Project, t: usize, bus: u16) -> bool {
     p.tracks
         .get(t)
         .is_some_and(|x| x.sends.iter().any(|s| s.bus == Some(bus)))
 }
 
 /// Starts or stops a send. The slots are full at [`MAX_SENDS`]: false then.
-pub fn toggle_send(p: &mut Project, t: usize, bus: u8) -> bool {
+pub fn toggle_send(p: &mut Project, t: usize, bus: u16) -> bool {
     let Some(track) = p.tracks.get_mut(t) else {
         return false;
     };
@@ -36,7 +34,7 @@ pub fn toggle_send(p: &mut Project, t: usize, bus: u8) -> bool {
 }
 
 /// Sends the strip's output to `bus`, or back to Stereo Out if it was there already.
-pub fn toggle_output(p: &mut Project, t: usize, bus: u8) {
+pub fn toggle_output(p: &mut Project, t: usize, bus: u16) {
     if let Some(track) = p.tracks.get_mut(t) {
         track.output = if track.output == bus { 0 } else { bus };
         p.song_rev += 1;
@@ -50,6 +48,8 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
     let mut open = true;
     let mut message = None;
+    // A column for each Aux, and at least the first eight.
+    let buses = (p.aux_buses().len() as u16).max(8);
     egui::Window::new("Routing Matrix")
         .id(egui::Id::unique("routing_matrix"))
         .open(&mut open)
@@ -62,7 +62,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     .spacing(vec2(3.0, 3.0))
                     .show(ui, |ui| {
                         ui.label("");
-                        for bus in 1..=BUSES {
+                        for bus in 1..=buses {
                             ui.label(format!("Bus {bus}"));
                         }
                         ui.end_row();
@@ -73,7 +73,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                             }
                             ui.label(p.tracks[t].name.clone());
                             let listens = p.aux_bus_of(t);
-                            for bus in 1..=BUSES {
+                            for bus in 1..=buses {
                                 let (rect, resp) =
                                     ui.allocate_exact_size(vec2(44.0, 20.0), Sense::click());
                                 let out = p.tracks[t].output == bus;
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(p.tracks[t].output, 3);
         toggle_output(&mut p, t, 3);
         assert_eq!(p.tracks[t].output, 0, "back to Stereo Out");
-        for bus in 1..=MAX_SENDS as u8 {
+        for bus in 1..=MAX_SENDS as u16 {
             assert!(toggle_send(&mut p, t, bus));
         }
         assert!(!toggle_send(&mut p, t, 8), "no free slot");

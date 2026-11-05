@@ -114,7 +114,9 @@ pub struct MixerView {
     /// The Automation editor window.
     pub auto_editor: crate::automation::AutoEditor,
     /// Sends on Faders: the bus whose send levels the faders set.
-    pub sends_on_faders: Option<u8>,
+    pub sends_on_faders: Option<u16>,
+    /// A strip asked for a new Aux: its place, and whether as a send rather than its output.
+    pub new_aux: Option<(usize, bool)>,
     /// Edit > Copy Channel Strip.
     pub copied: Option<CopiedStrip>,
     /// The audio input device that the Input slots choose from.
@@ -209,6 +211,7 @@ impl Default for MixerView {
             strip_request: None,
             auto_editor: Default::default(),
             sends_on_faders: None,
+            new_aux: None,
             copied: None,
             inputs: crate::audio_rec::InputChoice::default(),
         }
@@ -824,6 +827,8 @@ fn send_slots(
     sends: &mut Vec<SendSlot>,
     uid: egui::Id,
     inactive: bool,
+    buses: &[(u16, String)],
+    new_aux: &mut bool,
 ) {
     let mut remove = None;
     for k in 0..rows {
@@ -832,7 +837,7 @@ fn send_slots(
             vec2(area.width(), 16.0),
         );
         if k < sends.len() {
-            if !send_slot(ui, g, r, &mut sends[k], uid.with(k), inactive) {
+            if !send_slot(ui, g, r, &mut sends[k], uid.with(k), inactive, buses) {
                 remove = Some(k);
             }
         } else if k == sends.len() && sends.len() < MAX_SENDS {
@@ -840,13 +845,22 @@ fn send_slots(
             slot(g, r, "", SLOT_EMPTY, TEXT);
             let mut picked = None;
             egui::Popup::menu(&resp).show(|ui| {
-                ui.set_min_width(110.0);
-                for b in 1..=8u8 {
-                    if ui.button(trf("Bus {}", &[&b])).clicked() {
-                        picked = Some(b);
-                        ui.close();
-                    }
+                ui.set_min_width(130.0);
+                if ui.button("New Aux").clicked() {
+                    *new_aux = true;
+                    ui.close();
                 }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (b, name) in buses {
+                            if ui.button(format!("Bus {b}: {name}")).clicked() {
+                                picked = Some(*b);
+                                ui.close();
+                            }
+                        }
+                    });
             });
             if let Some(bus) = picked {
                 sends.push(SendSlot {
@@ -873,6 +887,7 @@ fn send_slot(
     send: &mut crate::model::SendSlot,
     uid: egui::Id,
     inactive: bool,
+    buses: &[(u16, String)],
 ) -> bool {
     let Some(bus) = send.bus else {
         return false;
@@ -896,15 +911,19 @@ fn send_slot(
     }
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(130.0);
-        for b in 1..=8u8 {
-            if ui
-                .selectable_label(send.bus == Some(b), trf("Bus {}", &[&b]))
-                .clicked()
-            {
-                send.bus = Some(b);
-                ui.close();
-            }
-        }
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for (b, name) in buses {
+                    if ui
+                        .selectable_label(send.bus == Some(*b), format!("Bus {b}: {name}"))
+                        .clicked()
+                    {
+                        send.bus = Some(*b);
+                        ui.close();
+                    }
+                }
+            });
         ui.separator();
         if ui.selectable_label(send.pre, tr("Pre Fader")).clicked() {
             send.pre = !send.pre;
@@ -2128,6 +2147,8 @@ pub fn channel_strip(
             // An Aux strip takes its signal from a bus: it has no sends of its own.
             StripKey::Track(i) if p.tracks[i].kind != TrackKind::Aux => {
                 let area = row(r.sends, 16.0);
+                let buses = p.aux_buses();
+                let mut new_aux = false;
                 send_slots(
                     ui,
                     g,
@@ -2137,7 +2158,12 @@ pub fn channel_strip(
                     &mut p.tracks[i].sends,
                     id(ns, (key, "send")),
                     inactive,
+                    &buses,
+                    &mut new_aux,
                 );
+                if new_aux {
+                    v.new_aux = Some((i, true));
+                }
             }
             StripKey::StereoOut => slot(g, row(r.sends, 16.0), "", SLOT_EMPTY, TEXT),
             _ => {}
@@ -2224,7 +2250,7 @@ pub fn channel_strip(
         }
         _ => None,
     };
-    let send_db = |sends: &[SendSlot], bus: u8| {
+    let send_db = |sends: &[SendSlot], bus: u16| {
         let level = sends
             .iter()
             .find(|s| s.bus == Some(bus))
@@ -2403,7 +2429,7 @@ pub fn channel_strip(
 
 /// Sets the send to `bus` from a fader position in dB (a new send is made when needed, and
 /// one turned right down is taken away).
-fn set_send_level(sends: &mut Vec<SendSlot>, bus: u8, db: f32) {
+fn set_send_level(sends: &mut Vec<SendSlot>, bus: u16, db: f32) {
     let level = if db <= -59.5 {
         0.0
     } else {
@@ -2504,7 +2530,7 @@ fn output_slot(
     }
     let resp = ui.interact(r, id, Sense::click());
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(120.0);
+        ui.set_min_width(150.0);
         if ui
             .selectable_label(current == 0, tr("Stereo Out"))
             .clicked()
@@ -2512,15 +2538,25 @@ fn output_slot(
             p.tracks[i].output = 0;
             ui.close();
         }
-        for bus in 1..=prowave_engine::MAX_BUSES as u8 {
-            if ui
-                .selectable_label(current == bus, trf("Bus {}", &[&bus]))
-                .clicked()
-            {
-                p.tracks[i].output = bus;
-                ui.close();
-            }
+        if ui.button("New Aux").clicked() {
+            p.new_aux_for(i, false);
+            ui.close();
         }
+        ui.separator();
+        let buses = p.aux_buses();
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for (bus, name) in &buses {
+                    if ui
+                        .selectable_label(current == *bus, format!("Bus {bus}: {name}"))
+                        .clicked()
+                    {
+                        p.tracks[i].output = *bus;
+                        ui.close();
+                    }
+                }
+            });
     });
 }
 
@@ -2858,7 +2894,8 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
     }
 
     if fit.show_sends {
-        draw_sends_on_faders(ui, &g, menus_end, cy, &mut v.sends_on_faders);
+        let buses = p.aux_buses();
+        draw_sends_on_faders(ui, &g, menus_end, cy, &buses, &mut v.sends_on_faders);
     }
     let left = fit.modes_left;
 
@@ -2933,7 +2970,14 @@ fn fit_toolbar(menus_end: f32, center: f32, right_end: f32, filters_w: f32) -> T
     }
 }
 
-fn draw_sends_on_faders(ui: &Ui, g: &egui::Painter, x: f32, cy: f32, bus: &mut Option<u8>) {
+fn draw_sends_on_faders(
+    ui: &Ui,
+    g: &egui::Painter,
+    x: f32,
+    cy: f32,
+    buses: &[(u16, String)],
+    bus: &mut Option<u16>,
+) {
     const NS: &str = "mixer_toolbar";
     // Sends on Faders: the faders set the sends to a bus.
     g.text(
@@ -2964,12 +3008,12 @@ fn draw_sends_on_faders(ui: &Ui, g: &egui::Painter, x: f32, cy: f32, bus: &mut O
             *bus = None;
             ui.close();
         }
-        for b in 1..=8u8 {
+        for (b, name) in buses {
             if ui
-                .selectable_label(*bus == Some(b), trf("Bus {}", &[&b]))
+                .selectable_label(*bus == Some(*b), format!("Bus {b}: {name}"))
                 .clicked()
             {
-                *bus = Some(b);
+                *bus = Some(*b);
                 ui.close();
             }
         }

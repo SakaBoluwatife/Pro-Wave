@@ -283,7 +283,7 @@ pub struct TrackDoc {
     pub velocity: i8,
     pub key_limit: (u8, u8),
     pub vel_limit: (u8, u8),
-    pub send_bus: Option<u8>,
+    pub send_bus: Option<u16>,
     pub send_level: f32,
     pub send_pre: bool,
     /// The effects of the channel strip, first to last (`inserts` has their names for older
@@ -328,7 +328,7 @@ pub struct TrackDoc {
     pub input: u16,
     pub input_stereo: bool,
     /// The bus the track plays into; 0 is Stereo Out.
-    pub output: u8,
+    pub output: u16,
     /// MIDI FX, first to last.
     pub midi_fx: Vec<MidiFxDoc>,
     /// The Groove Track, and the tracks that follow it.
@@ -490,7 +490,7 @@ impl Default for GroupDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct SendDoc {
-    pub bus: u8,
+    pub bus: u16,
     pub level: f32,
     pub pre: bool,
 }

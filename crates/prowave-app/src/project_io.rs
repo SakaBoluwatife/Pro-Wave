@@ -208,7 +208,11 @@ fn inserts_from_doc(t: &prowave_project::TrackDoc) -> Vec<crate::model::Insert> 
 
 /// The sends of a track in a file: the list, else (older files) the single send.
 fn sends_from_doc(t: &prowave_project::TrackDoc) -> Vec<SendSlot> {
-    let valid = |bus: u8| (1..=8).contains(&bus).then_some(bus);
+    let valid = |bus: u16| {
+        (1..=prowave_engine::MAX_BUSES as u16)
+            .contains(&bus)
+            .then_some(bus)
+    };
     let mut sends: Vec<SendSlot> = t
         .sends
         .iter()
@@ -2441,7 +2445,7 @@ pub(crate) mod tests {
             }));
         doc.tracks[1].sends = (0..30)
             .map(|k| prowave_project::SendDoc {
-                bus: k as u8,
+                bus: if k % 2 == 0 { 2000 } else { k },
                 level: 9.0,
                 pre: false,
             })
@@ -2481,10 +2485,9 @@ pub(crate) mod tests {
             assert!((info.min..=info.max).contains(v), "{v}");
         }
         assert!(t.sends.len() <= crate::model::MAX_SENDS);
-        assert!(t
-            .sends
-            .iter()
-            .all(|s| s.bus.is_some_and(|b| (1..=8).contains(&b))));
+        assert!(t.sends.iter().all(|s| s
+            .bus
+            .is_some_and(|b| (1..=prowave_engine::MAX_BUSES as u16).contains(&b))));
         assert!(t.sends.iter().all(|s| s.level <= 1.0));
         assert_eq!(t.auto.mode, AutoMode::default());
         assert_eq!(

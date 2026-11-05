@@ -5,14 +5,15 @@
 
 /// Sends in one channel strip.
 pub const MAX_SENDS: usize = 4;
-/// Buses a send can feed (Logic's Bus 1..8); an Aux track listens to one of them.
-pub const MAX_BUSES: usize = 8;
+/// Buses a send can feed; an Aux track listens to one of them. As many as there can be tracks, so
+/// the number of tracks is the only limit.
+pub const MAX_BUSES: usize = 1024;
 
 /// One send of a channel strip.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SendSpec {
     /// Bus number 1..=[`MAX_BUSES`]; 0 is an empty slot.
-    pub bus: u8,
+    pub bus: u16,
     /// 0..=1, the knob position (see [`send_gain`]).
     pub level: f32,
     /// Taken before the fader and pan (the eye in Logic) instead of after.
@@ -34,17 +35,17 @@ pub fn send_gain(level: f32) -> f32 {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Route {
     /// The bus an Aux strip takes as its input (1..=[`MAX_BUSES`]); 0 for every other strip.
-    pub bus_in: u8,
+    pub bus_in: u16,
     /// The bus the strip plays into instead of Stereo Out (Logic: the Output slot); 0 is
     /// Stereo Out.
-    pub output: u8,
+    pub output: u16,
     pub sends: [SendSpec; MAX_SENDS],
 }
 
 impl Route {
     /// The same route with every bus number put into range.
     pub fn sanitized(mut self) -> Self {
-        let ok = |b: u8| b as usize <= MAX_BUSES;
+        let ok = |b: u16| b as usize <= MAX_BUSES;
         if !ok(self.bus_in) {
             self.bus_in = 0;
         }

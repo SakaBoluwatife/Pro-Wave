@@ -230,8 +230,8 @@ impl RegionParams {
 /// strip's signal to the bus; the Aux strip that listens to the bus plays it.
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub struct SendSlot {
-    /// Bus number 1..=8, or `None` for an empty slot.
-    pub bus: Option<u8>,
+    /// Bus number from 1, or `None` for an empty slot.
+    pub bus: Option<u16>,
     /// 0..=1 send level (the knob; see `prowave_engine::send_gain`).
     pub level: f32,
     /// Pre-fader send (shown with the "eye" icon).
@@ -827,7 +827,7 @@ pub struct Track {
     /// The input an audio track records.
     pub input: prowave_engine::InputSource,
     /// The bus the strip plays into; 0 is Stereo Out (the mixer's Output slot).
-    pub output: u8,
+    pub output: u16,
     pub volume_db: f32,
     pub pan: f32,
     pub inserts: Vec<Insert>,
@@ -1270,7 +1270,7 @@ impl Project {
         let mut tracks = tracks;
         for (t, bus) in tracks
             .iter_mut()
-            .zip([Some(1u8), Some(3), Some(3), Some(3)])
+            .zip([Some(1u16), Some(3), Some(3), Some(3)])
         {
             t.sends = vec![SendSlot {
                 bus,
@@ -2006,7 +2006,7 @@ impl Project {
         let at = order.len();
         order.extend(&moving);
         order.extend((to..self.tracks.len()).filter(stay));
-        let old_bus: Vec<u8> = (0..self.tracks.len()).map(|i| self.aux_bus_of(i)).collect();
+        let old_bus: Vec<u16> = (0..self.tracks.len()).map(|i| self.aux_bus_of(i)).collect();
         let mut new_place = vec![0; order.len()];
         for (new, &old) in order.iter().enumerate() {
             new_place[old] = new;
@@ -2042,10 +2042,7 @@ impl Project {
             .copied()
             .unwrap_or(self.selected_track);
         // Who hears which bus now: a bus keeps its Aux, under the number of the Aux's new place.
-        let mut bus_map = [0u8; 256];
-        for (i, slot) in bus_map.iter_mut().enumerate() {
-            *slot = i as u8;
-        }
+        let mut bus_map: Vec<u16> = (0..=prowave_engine::MAX_BUSES as u16).collect();
         for (new, &old) in order.iter().enumerate() {
             let (was, now) = (old_bus[old], self.aux_bus_of(new));
             if was > 0 && now > 0 {
@@ -2103,6 +2100,45 @@ impl Project {
         self.normalize_nesting();
         self.song_rev += 1;
         Some(first)
+    }
+
+    /// The buses Aux strips listen to, with the Aux's name, in order.
+    pub fn aux_buses(&self) -> Vec<(u16, String)> {
+        (0..self.tracks.len())
+            .filter_map(|i| {
+                let bus = self.aux_bus_of(i);
+                (bus > 0).then(|| (bus, self.tracks[i].name.clone()))
+            })
+            .collect()
+    }
+
+    /// Makes a new Aux for track `t`: as its output, so its whole sound goes through the Aux (a
+    /// group), or as a send, so a copy of it does (an effect). The Aux's place, or `None` when the
+    /// strip has no free send or there can be no more tracks.
+    pub fn new_aux_for(&mut self, t: usize, as_send: bool) -> Option<usize> {
+        let track = self.tracks.get(t)?;
+        if track.kind == TrackKind::Aux || (as_send && track.sends.len() >= MAX_SENDS) {
+            return None;
+        }
+        // At the end, so no other Aux changes its number.
+        let aux = self.add_track(TrackKind::Aux);
+        let bus = self.aux_bus_of(aux);
+        if bus == 0 {
+            self.delete_track(aux);
+            return None;
+        }
+        if as_send {
+            self.tracks[t].sends.push(SendSlot {
+                bus: Some(bus),
+                level: 0.71,
+                pre: false,
+            });
+        } else {
+            self.tracks[t].output = bus;
+        }
+        self.selected_track = t;
+        self.song_rev += 1;
+        Some(aux)
     }
 
     /// A stack whose tracks all go through one Aux, which is first inside it: one fader for the
@@ -2377,7 +2413,7 @@ impl Project {
 
     /// The bus an Aux strip listens to: Aux 1 takes Bus 1, the next Aux Bus 2, and so on up to
     /// Bus 8. 0 for any other strip, and for an Aux strip past the eighth.
-    pub fn aux_bus_of(&self, i: usize) -> u8 {
+    pub fn aux_bus_of(&self, i: usize) -> u16 {
         match self.tracks.get(i) {
             Some(t) if t.kind == TrackKind::Aux => {
                 let n = self.tracks[..=i]
@@ -2385,7 +2421,7 @@ impl Project {
                     .filter(|t| t.kind == TrackKind::Aux)
                     .count();
                 if n <= prowave_engine::MAX_BUSES {
-                    n as u8
+                    n as u16
                 } else {
                     0
                 }

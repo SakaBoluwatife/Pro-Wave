@@ -1454,6 +1454,9 @@ mod tests {
             failed: None,
             state: None,
             params: std::sync::Arc::default(),
+            sidechain: None,
+            side_offered: false,
+            smart_knobs: None,
         });
         let c = song_controls(&p);
         assert_eq!(c.len(), 3);
