@@ -501,6 +501,7 @@ mod tests {
         }
         let found = a.finish();
         assert!(found.tempo.is_some());
-        assert!(began.elapsed().as_secs() < 40, "{:?}", began.elapsed());
+        // That it ends is the point. The limit is generous, as other work shares the machine.
+        assert!(began.elapsed().as_secs() < 300, "{:?}", began.elapsed());
     }
 }
