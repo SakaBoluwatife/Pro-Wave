@@ -719,3 +719,6 @@ Learn MIDI for Level = Mokyti MIDI lygiui
 Learn MIDI for Pan = Mokyti MIDI panoramai
 MIDI Assignments = MIDI priskyrimai
 Process Selection… = Apdoroti pasirinkimą…
+Replace Mode = Keitimo režimas
+Snap to Zero Crossings = Pritraukti prie nulio kirtimų
+Strip Silence… = Pašalinti tylą…

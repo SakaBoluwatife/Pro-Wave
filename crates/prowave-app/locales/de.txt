@@ -719,3 +719,6 @@ Learn MIDI for Level = MIDI für Pegel lernen
 Learn MIDI for Pan = MIDI für Panorama lernen
 MIDI Assignments = MIDI-Zuweisungen
 Process Selection… = Auswahl verarbeiten …
+Replace Mode = Ersetzen-Modus
+Snap to Zero Crossings = An Nulldurchgängen ausrichten
+Strip Silence… = Stille entfernen…

@@ -73,6 +73,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::Comma, none, Action::BarBack),
     cmd(Key::Period, none, Action::BarForward),
     // Tracks.
+    cmd(Key::A, none, Action::Menu("Show Track Automation")),
     cmd(Key::M, none, Action::MuteTrack),
     cmd(Key::S, none, Action::SoloTrack),
     cmd(Key::ArrowUp, none, Action::PreviousTrack),

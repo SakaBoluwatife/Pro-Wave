@@ -719,3 +719,6 @@ Learn MIDI for Level = Matuto ng MIDI para sa Level
 Learn MIDI for Pan = Matuto ng MIDI para sa Pan
 MIDI Assignments = Mga MIDI Assignment
 Process Selection… = Iproseso ang Pinili…
+Replace Mode = Replace Mode
+Snap to Zero Crossings = I-snap sa Zero Crossings
+Strip Silence… = Alisin ang Katahimikan…

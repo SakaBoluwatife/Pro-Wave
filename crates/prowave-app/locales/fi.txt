@@ -719,3 +719,6 @@ Learn MIDI for Level = Opeta MIDI tasolle
 Learn MIDI for Pan = Opeta MIDI panoroinnille
 MIDI Assignments = MIDI-määritykset
 Process Selection… = Käsittele valinta…
+Replace Mode = Korvaustila
+Snap to Zero Crossings = Kohdista nollakohtiin
+Strip Silence… = Poista hiljaisuus…

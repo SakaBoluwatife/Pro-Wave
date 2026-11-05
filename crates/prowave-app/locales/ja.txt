@@ -719,3 +719,6 @@ Learn MIDI for Level = レベルの MIDI を学習
 Learn MIDI for Pan = パンの MIDI を学習
 MIDI Assignments = MIDI 割り当て
 Process Selection… = 選択範囲を処理…
+Replace Mode = 置き換えモード
+Snap to Zero Crossings = ゼロクロスにスナップ
+Strip Silence… = 無音部分を削除…

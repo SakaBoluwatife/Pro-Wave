@@ -66,6 +66,14 @@ pub struct TakeDoc {
     /// A pass of an audio recording: where the region's start falls in its file, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_offset: Option<f32>,
+    /// A take from another recording: its own file, in the archive (`media/…`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
+    /// What of its file it may play, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<[f32; 2]>,
+    /// Its own gain in dB, on top of the folder's.
+    pub gain_db: f32,
 }
 
 /// A stretch of a take folder that plays one take.
@@ -290,6 +298,10 @@ pub struct TrackDoc {
     /// Automation: "Off", "Read", "Touch", "Latch" or "Write", and the points (beat, value)
     /// of the fader (dB) and pan lanes.
     pub auto_mode: String,
+    /// The curve of its automation is drawn on the track in the Tracks area.
+    pub show_auto: bool,
+    /// Which lane that is: empty for the fader, `pan`, `fx:slot:param`, `plugin:slot:param`.
+    pub auto_lane: String,
     /// Points as [beat, value, curve].
     pub auto_volume: Vec<[f64; 3]>,
     pub auto_pan: Vec<[f64; 3]>,
@@ -322,6 +334,17 @@ pub struct TrackDoc {
     /// The Groove Track, and the tracks that follow it.
     pub groove: bool,
     pub follow_groove: bool,
+    pub regions: Vec<RegionDoc>,
+    /// Other versions of the regions. The one at `active_alternative` has its regions in `regions`.
+    pub alternatives: Vec<AlternativeDoc>,
+    pub active_alternative: usize,
+}
+
+/// One version of a track's regions.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct AlternativeDoc {
+    pub name: String,
     pub regions: Vec<RegionDoc>,
 }
 
@@ -498,6 +521,10 @@ impl Default for MidiFxDoc {
 impl Default for TrackDoc {
     fn default() -> Self {
         Self {
+            alternatives: Vec::new(),
+            active_alternative: 0,
+            show_auto: false,
+            auto_lane: String::new(),
             channel: 0,
             name: String::new(),
             kind: TrackKindDoc::Instrument,
@@ -550,6 +577,10 @@ pub struct ProjectDoc {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// A new recording takes away what it was recorded over.
+    pub rec_replace: bool,
+    /// Cuts and trims of audio regions land where the waveform crosses zero.
+    pub snap_zero: bool,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
     /// Hardware controls assigned with MIDI learn.
@@ -581,6 +612,10 @@ pub struct ProjectDoc {
     pub tempo_ramp: bool,
     /// Marker track.
     pub markers: Vec<MarkerDoc>,
+    /// Arrangement track.
+    pub sections: Vec<SectionDoc>,
+    /// Chord track.
+    pub chords: Vec<ChordDoc>,
     /// Signature track: time-signature changes after bar 1 (`sig` is the first bar's).
     pub sig_changes: Vec<SigChangeDoc>,
     /// SMPTE frame rate: "24", "25", "29.97" (non-drop), "29.97df" (drop frame) or "30".
@@ -611,6 +646,24 @@ pub struct MarkerDoc {
     pub color: [u8; 3],
 }
 
+/// A section of the song on the Arrangement track, from `beat` for `len` quarter notes.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct SectionDoc {
+    pub beat: f64,
+    pub len: f64,
+    pub name: String,
+    pub color: [u8; 3],
+}
+
+/// A chord on the Chord track, from `beat` until the next.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct ChordDoc {
+    pub beat: f64,
+    pub name: String,
+}
+
 /// A tempo change: `bpm` from `beat` (quarter notes from the start) on.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(default)]
@@ -628,6 +681,8 @@ impl Default for ProjectDoc {
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,
+            rec_replace: false,
+            snap_zero: false,
             master_plugins: Vec::new(),
             midi_map: Vec::new(),
             format_version: FORMAT_VERSION,
@@ -649,6 +704,8 @@ impl Default for ProjectDoc {
             tempo_changes: Vec::new(),
             tempo_ramp: false,
             markers: Vec::new(),
+            sections: Vec::new(),
+            chords: Vec::new(),
             sig_changes: Vec::new(),
             smpte_rate: "25".into(),
             smpte_start: [1, 0, 0, 0],

@@ -5,6 +5,8 @@
 #[global_allocator]
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod alternatives;
+mod arrangement_track;
 mod audio_encode;
 mod audio_rec;
 mod automation;
@@ -12,6 +14,7 @@ mod autosave;
 mod bench;
 mod bounce;
 mod channel_rack;
+mod chord_track;
 mod engine_sync;
 mod event_list;
 mod file_browser;
@@ -73,6 +76,7 @@ mod song_pattern;
 mod start_screen;
 mod stem_splitter;
 mod step_editor;
+mod strip_silence;
 mod sync_menu;
 mod takes;
 mod tempo_track;
@@ -114,6 +118,9 @@ pub struct UiState {
     pub audio_rec: audio_rec::AudioRecorder,
     /// Capture Recording was asked for.
     pub capture_cmd: bool,
+    /// Record Repeat or New Take was picked, and how far going back to record again has got.
+    pub rec_cmd: Option<takes::RecCmd>,
+    pub rec_restart: Option<takes::Restart>,
     pub show_quick_help: bool,
     pub show_toolbar: bool,
     /// The entries of the Toolbar, in order.
@@ -173,6 +180,7 @@ pub struct UiState {
     pub smart: smart_controls::SmartControls,
     pub midi_learn: midi_learn::MidiLearn,
     pub stems: stem_splitter::StemSplitter,
+    pub strip_silence: strip_silence::StripSilence,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
     pub undo_labels: Vec<String>,
@@ -222,6 +230,8 @@ impl UiState {
             rec: recorder::Recorder::default(),
             audio_rec: audio_rec::AudioRecorder::default(),
             capture_cmd: false,
+            rec_cmd: None,
+            rec_restart: None,
             show_quick_help: false,
             show_toolbar: false,
             toolbar: side_panes::load_toolbar(),
@@ -263,6 +273,7 @@ impl UiState {
             smart: smart_controls::SmartControls::default(),
             midi_learn: midi_learn::MidiLearn::default(),
             stems: stem_splitter::StemSplitter::default(),
+            strip_silence: strip_silence::StripSilence::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
@@ -770,6 +781,7 @@ impl eframe::App for App {
         self.follow_time_code(&ctx);
         // Pattern and Drummer regions follow their length and the bars under them.
         self.project.refresh_generated();
+        takes::record_commands(&mut self.project, &mut self.ui);
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
             sync.set_pre_fader(self.ui.mixer.pre_fader);
@@ -941,6 +953,7 @@ impl eframe::App for App {
         smart_controls::show(&ctx, p, s);
         midi_learn::show(&ctx, p, s);
         stem_splitter::show(&ctx, p, s);
+        strip_silence::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);

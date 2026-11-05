@@ -55,6 +55,29 @@ pub struct Take {
     /// for this take. Below 0 when the recording began after the start of the cycle. All the takes
     /// of a folder are windows into the one file that was recorded.
     pub audio_offset: Option<f32>,
+    /// A take that came from another recording: its own file. `None` is the region's.
+    pub file: Option<TakeFile>,
+    /// What of its file it may play, in seconds (a region that was trimmed before it became a take
+    /// keeps hiding the rest). `None` is the whole file.
+    pub window: Option<(f32, f32)>,
+    /// The gain it had as a region, in dB, on top of the folder's.
+    pub gain_db: f32,
+}
+
+/// The file of a take, with its waveform. Two are the same when they read the same file.
+#[derive(Clone)]
+pub struct TakeFile(pub AudioRegion);
+
+impl PartialEq for TakeFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.file.path == other.0.file.path
+    }
+}
+
+impl std::fmt::Debug for TakeFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TakeFile({})", self.0.file.path.display())
+    }
 }
 
 /// A stretch of a take folder (beats from the region start) that plays this take.
@@ -842,6 +865,19 @@ pub struct Track {
     pub midi_channel: u8,
     /// MIDI FX: effects that change the notes the track plays (see `midi_fx.rs`).
     pub midi_fx: Vec<crate::midi_fx::FxSlot>,
+    /// The curve of its automation (the lane `auto.shown`) is drawn on the track in the Tracks area.
+    pub show_auto: bool,
+    /// Other versions of the regions (see `alternatives.rs`). Empty until a second one is made. The
+    /// one at `active_alt` has its regions in `regions`, and none here.
+    pub alternatives: Vec<TrackAlternative>,
+    pub active_alt: usize,
+}
+
+/// One version of a track's regions.
+#[derive(Clone)]
+pub struct TrackAlternative {
+    pub name: String,
+    pub regions: Vec<Region>,
 }
 
 impl Track {
@@ -902,6 +938,9 @@ impl Track {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         }
     }
 }
@@ -923,6 +962,23 @@ pub struct Marker {
     pub beat: f64,
     pub name: String,
     pub color: Color32,
+}
+
+/// A named section of the song on the Arrangement track, from `beat` for `len` beats. Moving one
+/// takes everything in it along: see `arrangement_track.rs`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Section {
+    pub beat: f64,
+    pub len: f64,
+    pub name: String,
+    pub color: Color32,
+}
+
+/// A chord on the Chord track, from `beat` until the next. Only a name: it makes no sound.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ChordMark {
+    pub beat: f64,
+    pub name: String,
 }
 
 /// Colours offered for markers, in the order new markers take them.
@@ -959,6 +1015,10 @@ pub struct Project {
     pub tempo_changes: Vec<TempoPoint>,
     /// Marker track, sorted by beat (see [`Project::tidy_markers`]).
     pub markers: Vec<Marker>,
+    /// Arrangement track, sorted by beat, not overlapping (see `arrangement_track::tidy`).
+    pub sections: Vec<Section>,
+    /// Chord track, sorted by beat.
+    pub chords: Vec<ChordMark>,
     /// Time signature of the first bar. Later changes are in `sig_changes`.
     pub sig: (u8, u8),
     /// Signature track: signature changes after bar 1, sorted by bar (see
@@ -1003,6 +1063,10 @@ pub struct Project {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// A new recording takes away what it was recorded over, instead of making takes of it.
+    pub rec_replace: bool,
+    /// Cuts and trims of audio regions land on the nearest place the waveform crosses zero.
+    pub snap_zero: bool,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
     /// Hardware controls assigned with MIDI learn.
@@ -1070,6 +1134,9 @@ impl Project {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         }];
         p.position_beats = 0.0;
         p.cycle = false;
@@ -1136,6 +1203,9 @@ impl Project {
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
+            show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         };
         let tracks = vec![
             mk(
@@ -1214,6 +1284,10 @@ impl Project {
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,
+            rec_replace: false,
+            sections: Vec::new(),
+            chords: Vec::new(),
+            snap_zero: false,
             sig: (4, 4),
             key: "Cmaj",
             tracks,

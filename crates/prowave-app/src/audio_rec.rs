@@ -176,7 +176,9 @@ fn is_open(p: &Project, t: usize, r: usize) -> bool {
         .is_some_and(|region| region.name.starts_with('*'))
 }
 
-/// Turns the red region into the finished audio region: its length is the file's.
+/// Turns the red region into the finished audio region: its length is the file's. Recorded over
+/// another audio region it makes a take folder with it, or in replace mode takes its place. Returns
+/// the region's number afterwards.
 fn apply_take(
     p: &mut Project,
     t: usize,
@@ -185,7 +187,7 @@ fn apply_take(
     cycle: Option<(f64, f64)>,
     file: AudioFile,
     ctx: &egui::Context,
-) {
+) -> usize {
     let map = p.tempo_map();
     let name = p.tracks[t].name.clone();
     // Round the Cycle more than once: a take folder, with a take for each pass.
@@ -225,11 +227,31 @@ fn apply_take(
         region.audio = Some(crate::import::audio_region(file, ctx));
     }
     p.song_rev += 1;
+    crate::takes::settle_recording(p, t, r, true)
 }
 
 impl AudioRecorder {
     pub fn active(&self) -> bool {
         !self.takes.is_empty()
+    }
+
+    /// Where the song was when the recording in progress began.
+    pub fn began_at(&self) -> Option<f64> {
+        self.takes.first().map(|t| t.start)
+    }
+
+    /// Record Repeat: the recordings in progress are thrown away, regions and files.
+    pub fn discard(&mut self, p: &mut Project) {
+        for take in std::mem::take(&mut self.takes) {
+            if let Some(capture) = self.capture.as_mut() {
+                let _ = capture.stop(take.id);
+            }
+            if is_open(p, take.track, take.region) {
+                p.tracks[take.track].regions.remove(take.region);
+                p.song_rev += 1;
+            }
+            let _ = std::fs::remove_file(&take.path);
+        }
     }
 
     /// The regions being recorded now (drawn red).
@@ -422,7 +444,7 @@ impl AudioRecorder {
             };
             match (open, file) {
                 (true, Ok(file)) => {
-                    apply_take(
+                    let region = apply_take(
                         p,
                         take.track,
                         take.region,
@@ -431,7 +453,7 @@ impl AudioRecorder {
                         file,
                         ctx,
                     );
-                    kept = Some((take.track, take.region));
+                    kept = Some((take.track, region));
                     if let Ok(d) = &done {
                         if d.lost {
                             warning = Some(tr("Part of the recording was lost").to_string());
@@ -618,6 +640,72 @@ mod tests {
         assert!(region.audio.is_some());
         assert!(!is_open(&p, 0, 0), "no longer being recorded");
         assert_eq!(p.song_rev, rev + 1, "the engine hears about it");
+    }
+
+    /// An audio region of the file at `path` on track 0, as a recording would leave it.
+    fn recorded(p: &mut Project, path: &std::path::Path, start_bar: f32) -> usize {
+        p.tracks[0].regions.push(Region {
+            name: "*Vox".into(),
+            start_bar,
+            len_bars: 0.01,
+            notes: Vec::new(),
+            controls: Vec::new(),
+            folder: None,
+            auto: Vec::new(),
+            generated: None,
+            audio: None,
+            params: RegionParams::default(),
+        });
+        let r = p.tracks[0].regions.len() - 1;
+        let file = AudioFile::open(path).unwrap();
+        let start = p.bar_to_beats(f64::from(start_bar) - 1.0);
+        apply_take(p, 0, r, start, None, file, &egui::Context::default())
+    }
+
+    #[test]
+    fn recording_over_an_audio_region_makes_takes_and_replace_mode_takes_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+        // At 120 BPM two seconds are a bar of 4/4.
+        prowave_engine::write_wav(&a, &vec![0.1; 48_000 * 2 * 8], 48_000).unwrap();
+        prowave_engine::write_wav(&b, &vec![0.2; 48_000 * 2 * 2], 48_000).unwrap();
+        let mut p = project(&[TrackKind::Audio]);
+        p.tempo = 120.0;
+        p.tracks[0].name = "Vox".into();
+        recorded(&mut p, &a, 1.0);
+        assert_eq!(p.tracks[0].regions[0].len_bars, 4.0);
+        p.tracks[0].regions[0].params.gain_db = -6.0;
+        let r = recorded(&mut p, &b, 2.0);
+        assert_eq!(p.tracks[0].regions.len(), 1, "they are one folder now");
+        let region = &p.tracks[0].regions[r];
+        assert_eq!((region.start_bar, region.len_bars), (1.0, 4.0));
+        let folder = region.folder.as_ref().unwrap();
+        assert_eq!(folder.takes.len(), 2);
+        assert_eq!(folder.takes[0].gain_db, -6.0, "the old take keeps its gain");
+        assert_eq!(
+            folder.comp.iter().map(|s| s.take).collect::<Vec<_>>(),
+            [0, 1, 0],
+            "the new take plays where it was recorded"
+        );
+        // Over the folder: one more take.
+        let r = recorded(&mut p, &b, 3.0);
+        let folder = p.tracks[0].regions[r].folder.as_ref().unwrap();
+        assert_eq!(folder.takes.len(), 3);
+
+        let mut p = project(&[TrackKind::Audio]);
+        p.tempo = 120.0;
+        p.tracks[0].name = "Vox".into();
+        recorded(&mut p, &a, 1.0);
+        p.rec_replace = true;
+        recorded(&mut p, &b, 2.0);
+        let mut bars: Vec<(f32, f32)> = p.tracks[0]
+            .regions
+            .iter()
+            .map(|r| (r.start_bar, r.len_bars))
+            .collect();
+        bars.sort_by(|x, y| x.0.total_cmp(&y.0));
+        assert_eq!(bars, [(1.0, 1.0), (2.0, 1.0), (3.0, 2.0)]);
+        assert!(p.tracks[0].regions.iter().all(|r| r.folder.is_none()));
     }
 
     #[test]

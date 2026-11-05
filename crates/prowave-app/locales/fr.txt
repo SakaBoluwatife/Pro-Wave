@@ -719,3 +719,6 @@ Learn MIDI for Level = Apprendre MIDI pour le niveau
 Learn MIDI for Pan = Apprendre MIDI pour le panoramique
 MIDI Assignments = Affectations MIDI
 Process Selection… = Traiter la sélection…
+Replace Mode = Mode Remplacer
+Snap to Zero Crossings = Caler sur les passages à zéro
+Strip Silence… = Supprimer les silences…

@@ -137,6 +137,9 @@ const EDIT: &[&str] = &[
     "Split at Playhead",
     "Join",
     "Bounce and Join",
+    "-",
+    "Snap to Zero Crossings",
+    "Strip Silence…",
 ];
 const TRACK: &[&str] = &[
     "New",
@@ -187,6 +190,7 @@ const RECORD: &[&str] = &[
     "Record / Record Repeat",
     "Record Toggle",
     "Autopunch",
+    "Replace Mode",
     "Record Enable",
     "-",
     "Capture Recording",
@@ -374,6 +378,10 @@ fn has_automation(p: &Project) -> bool {
 
 /// Entries that can show a check mark (see [`checked`]).
 pub(crate) const CHECKABLE: &[&str] = &[
+    "Show Chord Track",
+    "Show Arrangement Track",
+    "Snap to Zero Crossings",
+    "Replace Mode",
     "Show Tempo Track",
     "Show Marker Track",
     "Show Signature Track",
@@ -518,20 +526,41 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         "Show Score Editor" | "Score Editor" => true,
         "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
-        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" => selected_audio(p, s).is_some(),
+        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" | "Strip Silence…" => {
+            selected_audio(p, s).is_some()
+        }
         "Show Markers" | "Show Global Tracks" => true,
         "Record Enable" => p
             .tracks
             .get(p.selected_track)
             .is_some_and(|t| t.kind.has_regions()),
         "Record Toggle" => p.playing,
+        "Record / Record Repeat" | "Replace Mode" | "Snap to Zero Crossings" => true,
+        "New Take" => {
+            s.rec.active()
+                || s.audio_rec.active()
+                || s.tracks.selected.is_some_and(|(t, r)| {
+                    p.tracks
+                        .get(t)
+                        .and_then(|x| x.regions.get(r))
+                        .is_some_and(|x| x.generated.is_none() && x.params.pattern == 0)
+                })
+        }
+        "Delete Take" => s.tracks.selected.is_some_and(|(t, r)| {
+            p.tracks
+                .get(t)
+                .and_then(|x| x.regions.get(r))
+                .is_some_and(|x| x.folder.is_some())
+        }),
         "Record Project Settings" => true,
         "Show Automation"
         | "Show Track Automation"
         | "Create Automation"
         | "Create Track Automation"
         | "Group" => !p.tracks.is_empty(),
-        "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Hide All Automation" => {
+            s.mixer.auto_editor.track.is_some() || p.tracks.iter().any(|t| t.show_auto)
+        }
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
         "Create Mastering Track" | "Plugin Manager" => true,
         "Logic-style Key Commands…" | "About Pro Wave" | "Customize Toolbar…" => true,
@@ -596,6 +625,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Tempo Track"
         | "Show Marker Track"
         | "Show Signature Track"
+        | "Show Chord Track"
+        | "Show Arrangement Track"
         | "MIDI File…"
         | "MIDI FX…"
         | "Selection as MIDI File…"
@@ -622,8 +653,10 @@ fn region_starts(p: &Project) -> Vec<f64> {
 }
 
 /// Whether `label` shows a check mark (what it shows is visible).
-pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
+pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
     match label {
+        "Replace Mode" => p.rec_replace,
+        "Snap to Zero Crossings" => p.snap_zero,
         "Show Piano Roll" => s.bottom == Bottom::PianoRoll,
         "Show Mixer" => s.show_mixer && s.bottom == Bottom::Mixer,
         "Show Library" => s.show_library,
@@ -639,9 +672,15 @@ pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
         "Show Tempo Track" => s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures,
+        "Show Chord Track" => s.tracks.show_chords,
+        "Show Arrangement Track" => s.tracks.show_arrangement,
         "Show Markers" => s.tracks.show_markers,
         "Show Global Tracks" => {
-            s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures
+            s.tracks.show_tempo
+                && s.tracks.show_markers
+                && s.tracks.show_signatures
+                && s.tracks.show_chords
+                && s.tracks.show_arrangement
         }
         _ if Lang::from_native_name(label).is_some() => {
             Lang::from_native_name(label) == Some(i18n::current())
@@ -711,12 +750,23 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 crate::stem_splitter::open(p, s, t, r);
             }
         }
+        "Strip Silence…" => {
+            if let Some((t, r)) = selected_audio(p, s) {
+                crate::strip_silence::open(p, s, t, r);
+            }
+        }
         "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,
         "Show Global Tracks" => {
-            let on = !(s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures);
+            let on = !(s.tracks.show_tempo
+                && s.tracks.show_markers
+                && s.tracks.show_signatures
+                && s.tracks.show_chords
+                && s.tracks.show_arrangement);
             s.tracks.show_tempo = on;
             s.tracks.show_markers = on;
             s.tracks.show_signatures = on;
+            s.tracks.show_chords = on;
+            s.tracks.show_arrangement = on;
         }
         "Record Enable" => {
             if let Some(t) = p.tracks.get_mut(p.selected_track) {
@@ -724,10 +774,28 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Record Toggle" => p.recording = !p.recording,
+        "Record / Record Repeat" => s.rec_cmd = Some(crate::takes::RecCmd::Repeat),
+        "New Take" => s.rec_cmd = Some(crate::takes::RecCmd::NewTake),
+        "Delete Take" => {
+            if let Some((t, r)) = s.tracks.selected {
+                if let Some(take) = crate::takes::take_at_playhead(p, t, r) {
+                    let left = crate::takes::delete_take(p, t, r, take);
+                    s.tracks
+                        .select_many(left.into_iter().map(|r| (t, r)).collect());
+                }
+            }
+        }
+        "Replace Mode" => p.rec_replace = !p.rec_replace,
+        "Snap to Zero Crossings" => p.snap_zero = !p.snap_zero,
         "Record Project Settings" => s.dialogs.project_settings = true,
-        "Show Automation" | "Show Track Automation" => {
+        "Show Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);
             s.mixer.auto_editor.region = None;
+        }
+        "Show Track Automation" => {
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                t.show_auto = !t.show_auto;
+            }
         }
         "Show Region Automation" => {
             if let Some((t, r)) = s.tracks.selected {
@@ -785,6 +853,9 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Hide All Automation" => {
             s.mixer.auto_editor.track = None;
             s.mixer.auto_editor.region = None;
+            for t in &mut p.tracks {
+                t.show_auto = false;
+            }
         }
         "Create Automation" | "Create Track Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);
@@ -891,6 +962,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Tempo Track" => s.tracks.show_tempo = !s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers = !s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures = !s.tracks.show_signatures,
+        "Show Chord Track" => s.tracks.show_chords = !s.tracks.show_chords,
+        "Show Arrangement Track" => s.tracks.show_arrangement = !s.tracks.show_arrangement,
         // Logic: Create Marker puts it at the playhead, rounded to the nearest bar.
         "Create Marker" => {
             let bar = p.beats_to_bar(p.position_beats).round();
@@ -1225,7 +1298,7 @@ fn entries(ui: &mut egui::Ui, items: &[&str], p: &mut Project, s: &mut crate::Ui
             continue;
         }
         let key = shortcut(it).map(|k| ui.ctx().format_shortcut(&k));
-        let (on, check) = (enabled(it, p, s), checked(it, s));
+        let (on, check) = (enabled(it, p, s), checked(it, p, s));
         if row(ui, tr(it), on, check, key, false, look).clicked() {
             apply(it, p, s);
             ui.close();
@@ -1380,7 +1453,7 @@ mod tests {
                     !s.tracks.clipboard.is_empty()
                 ),
                 (
-                    s.capture_cmd,
+                    (s.capture_cmd, s.rec_cmd),
                     s.show_quick_help,
                     s.show_toolbar,
                     s.show_notes,
@@ -1446,13 +1519,19 @@ mod tests {
     fn view_menu_checks_follow_the_panels() {
         let mut s = crate::UiState::new();
         let mut p = Project::demo();
-        assert!(!checked("Show Library", &s) && !checked("Show Mixer", &s));
+        assert!(
+            !checked("Show Library", &Project::demo(), &s)
+                && !checked("Show Mixer", &Project::demo(), &s)
+        );
         apply("Show Library", &mut p, &mut s);
-        assert!(s.show_library && checked("Show Library", &s));
+        assert!(s.show_library && checked("Show Library", &Project::demo(), &s));
         apply("Show Piano Roll", &mut p, &mut s);
-        assert!(checked("Show Piano Roll", &s) && !checked("Show Mixer", &s));
+        assert!(
+            checked("Show Piano Roll", &Project::demo(), &s)
+                && !checked("Show Mixer", &Project::demo(), &s)
+        );
         apply("Show Mixer", &mut p, &mut s);
-        assert!(checked("Show Mixer", &s));
+        assert!(checked("Show Mixer", &Project::demo(), &s));
     }
 
     #[test]
@@ -1631,15 +1710,18 @@ mod tests {
 
         let (mut p, mut s) = (Project::demo(), crate::UiState::new());
         assert!(
-            checked("English (Default)", &s),
+            checked("English (Default)", &Project::demo(), &s),
             "English until another is picked"
         );
         apply("Deutsch", &mut p, &mut s);
         assert_eq!(i18n::current(), Lang::De);
         assert_eq!(i18n::chosen(), Some(Lang::De), "saved for the next start");
-        assert!(checked("Deutsch", &s) && !checked("English (Default)", &s));
+        assert!(
+            checked("Deutsch", &Project::demo(), &s)
+                && !checked("English (Default)", &Project::demo(), &s)
+        );
         assert_eq!(tr("Language"), "Sprache", "the menus switch at once");
         apply("English (Default)", &mut p, &mut s);
-        assert!(checked("English (Default)", &s));
+        assert!(checked("English (Default)", &Project::demo(), &s));
     }
 }

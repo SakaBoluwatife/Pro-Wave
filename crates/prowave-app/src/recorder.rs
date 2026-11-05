@@ -56,6 +56,10 @@ pub struct Recorder {
     played: Vec<(f64, LiveNote)>,
     /// The transport was running at the last frame.
     was_playing: bool,
+    /// Where the song was when this recording began (inside the Cycle, not its start).
+    began_at: f64,
+    /// Record > New Take: what this recording is played over becomes a take folder with it.
+    pub as_take: bool,
 }
 
 impl Recorder {
@@ -67,6 +71,25 @@ impl Recorder {
     pub fn active(&self) -> bool {
         self.target.is_some()
     }
+
+    /// Where the song was when the recording in progress began.
+    pub fn began_at(&self) -> Option<f64> {
+        self.target.map(|_| self.began_at)
+    }
+}
+
+/// Record Repeat: the recording in progress is thrown away.
+pub fn discard(rec: &mut Recorder, p: &mut Project) {
+    let Some((t, r)) = rec.target.take() else {
+        return;
+    };
+    if is_recording_region(p, t, r) {
+        p.tracks[t].regions.remove(r);
+        p.song_rev += 1;
+    }
+    rec.open.clear();
+    rec.takes.clear();
+    rec.cycle_len = None;
 }
 
 /// Notes kept for Capture Recording.
@@ -250,6 +273,8 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         pedal: rec.pedal,
         cycle_len: cycle,
         last_pos: p.position_beats,
+        began_at: p.position_beats,
+        as_take: rec.as_take,
         ..Recorder::default()
     };
     p.selected_track = t;
@@ -275,7 +300,7 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
             rec.takes.push(Take {
                 notes: std::mem::take(&mut region.notes),
                 controls: std::mem::take(&mut region.controls),
-                audio_offset: None,
+                ..Take::default()
             });
             region.controls.push(Control {
                 start: 0.0,
@@ -363,7 +388,7 @@ fn finish(rec: &mut Recorder, p: &mut Project) -> Outcome {
         takes.push(Take {
             notes: std::mem::take(&mut region.notes),
             controls: std::mem::take(&mut region.controls),
-            audio_offset: None,
+            ..Take::default()
         });
         takes.retain(|t| !t.notes.is_empty());
         region.len_bars = bars_between_len;
@@ -385,6 +410,7 @@ fn finish(rec: &mut Recorder, p: &mut Project) -> Outcome {
             }
         }
         p.song_rev += 1;
+        let r = crate::takes::settle_recording(p, t, r, rec.as_take);
         return Outcome::Finished(Some((t, r)));
     }
     if region.notes.is_empty() {
@@ -403,6 +429,7 @@ fn finish(rec: &mut Recorder, p: &mut Project) -> Outcome {
     region.len_bars = end_bars.ceil().max(1.0);
     region.name = region.name.trim_start_matches('*').to_string();
     p.song_rev += 1;
+    let r = crate::takes::settle_recording(p, t, r, rec.as_take);
     Outcome::Finished(Some((t, r)))
 }
 
@@ -491,6 +518,99 @@ mod tests {
         update(&mut rec, &mut p, &[]);
         let n = &p.tracks[0].regions[0].notes[0];
         assert_eq!((n.start, n.len), (1.0, 2.0));
+    }
+
+    #[test]
+    fn record_repeat_throws_the_recording_away_and_says_where_it_began() {
+        let mut p = project();
+        let mut rec = Recorder::default();
+        p.recording = true;
+        p.playing = true;
+        p.position_beats = 6.0;
+        update(&mut rec, &mut p, &[]);
+        p.position_beats = 7.0;
+        update(&mut rec, &mut p, &[on(60)]);
+        assert_eq!(rec.began_at(), Some(6.0));
+        discard(&mut rec, &mut p);
+        assert!(p.tracks[0].regions.is_empty());
+        assert!(!rec.active());
+        assert_eq!(rec.began_at(), None);
+    }
+
+    #[test]
+    fn replace_mode_takes_away_what_a_recording_covers() {
+        let mut p = project();
+        let old = p.add_midi_region(0, 1.0).unwrap_or(0);
+        p.tracks[0].regions[old].len_bars = 4.0;
+        p.tracks[0].regions[old].notes = vec![Note {
+            start: 0.5,
+            len: 0.5,
+            pitch: 40,
+            vel: 90,
+            muted: false,
+        }];
+        p.rec_replace = true;
+        let mut rec = Recorder::default();
+        p.recording = true;
+        p.playing = true;
+        p.position_beats = 4.0;
+        update(&mut rec, &mut p, &[]);
+        p.position_beats = 5.0;
+        update(&mut rec, &mut p, &[on(60)]);
+        p.position_beats = 6.0;
+        update(&mut rec, &mut p, &[off(60)]);
+        p.playing = false;
+        update(&mut rec, &mut p, &[]);
+        let mut bars: Vec<(f32, f32)> = p.tracks[0]
+            .regions
+            .iter()
+            .map(|r| (r.start_bar, r.len_bars))
+            .collect();
+        bars.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Bar 1 stays, the new bar 2 took over, bars 3 and 4 stay.
+        assert_eq!(bars, [(1.0, 1.0), (2.0, 1.0), (3.0, 2.0)]);
+        assert_eq!(p.tracks[0].regions[0].notes.len(), 1, "the old note stays");
+    }
+
+    #[test]
+    fn new_take_makes_a_folder_of_midi_recorded_over_a_region() {
+        let mut p = project();
+        let old = p.add_midi_region(0, 1.0).unwrap_or(0);
+        p.tracks[0].regions[old].len_bars = 2.0;
+        p.tracks[0].regions[old].notes = vec![Note {
+            start: 6.0,
+            len: 0.5,
+            pitch: 40,
+            vel: 90,
+            muted: false,
+        }];
+        let mut rec = Recorder {
+            as_take: true,
+            ..Recorder::default()
+        };
+        p.recording = true;
+        p.playing = true;
+        p.position_beats = 0.0;
+        update(&mut rec, &mut p, &[]);
+        p.position_beats = 1.0;
+        update(&mut rec, &mut p, &[on(60)]);
+        p.position_beats = 2.0;
+        update(&mut rec, &mut p, &[off(60)]);
+        p.playing = false;
+        let Outcome::Finished(Some((t, r))) = update(&mut rec, &mut p, &[]) else {
+            panic!("it is kept");
+        };
+        let region = &p.tracks[t].regions[r];
+        assert_eq!(p.tracks[t].regions.len(), 1);
+        let folder = region.folder.as_ref().expect("a folder");
+        assert_eq!(folder.takes.len(), 2);
+        assert_eq!(folder.takes[0].notes[0].pitch, 40);
+        assert_eq!(folder.takes[1].notes[0].pitch, 60);
+        // The new take plays where it was recorded, and the old one on after it.
+        assert_eq!(
+            region.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+            [60, 40]
+        );
     }
 
     #[test]

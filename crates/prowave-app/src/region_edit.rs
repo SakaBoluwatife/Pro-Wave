@@ -24,7 +24,7 @@ fn seconds_between(p: &Project, from: f64, to: f64) -> f32 {
 }
 
 /// How much of its file an audio region plays, from its `source_start`, in seconds.
-fn played_seconds(region: &Region) -> f32 {
+pub(crate) fn played_seconds(region: &Region) -> f32 {
     let Some(a) = region.audio.as_ref() else {
         return 0.0;
     };
@@ -34,6 +34,72 @@ fn played_seconds(region: &Region) -> f32 {
     } else {
         rest
     }
+}
+
+/// How far from a cut to look for a zero crossing, each way, in seconds. A wave below 25 Hz may have
+/// none this close, and then the cut stays where it was asked.
+const ZERO_SEARCH_SECONDS: f64 = 0.02;
+
+/// The frame nearest to frame `at` of `stereo` (interleaved) where the sound of both channels
+/// together crosses or touches zero.
+pub fn nearest_zero_crossing(stereo: &[f32], at: usize) -> Option<usize> {
+    let frames = stereo.len() / 2;
+    let value = |k: usize| (stereo[k * 2] + stereo[k * 2 + 1]) * 0.5;
+    let crosses = |k: usize| {
+        k < frames && (value(k) == 0.0 || (k > 0 && (value(k - 1) < 0.0) != (value(k) < 0.0)))
+    };
+    (0..frames.max(at + 1)).find_map(|d| {
+        if crosses(at + d) {
+            Some(at + d)
+        } else if d <= at && crosses(at - d) {
+            Some(at - d)
+        } else {
+            None
+        }
+    })
+}
+
+/// Where a cut or trim of audio region `r` of track `t` at `beat` should land: with Snap to Zero
+/// Crossings on, the nearest zero crossing of what plays there. A region that is not plain audio,
+/// or a file that cannot be read, leaves `beat` as it is.
+pub fn zero_crossing_beat(p: &Project, t: usize, r: usize, beat: f64) -> f64 {
+    if !p.snap_zero {
+        return beat;
+    }
+    let Ok(region) = region_at(p, t, r) else {
+        return beat;
+    };
+    let Some(audio) = region.audio.as_ref().filter(|_| region.folder.is_none()) else {
+        return beat;
+    };
+    let map = p.tempo_map();
+    let start = map.seconds_at(p.region_start_beats(region));
+    let into = map.seconds_at(beat) - start;
+    let first = f64::from(region.params.source_start);
+    let last = first + f64::from(played_seconds(region));
+    let reverse = region.params.reverse;
+    let in_file = if reverse { last - into } else { first + into };
+    let rate = f64::from(audio.file.sample_rate.max(1));
+    let reach = (ZERO_SEARCH_SECONDS * rate) as i64;
+    let frame = (in_file * rate).round() as i64;
+    let from = (frame - reach).max(0);
+    let Ok(stereo) = audio
+        .file
+        .read_stereo_at(from as u64, (frame + reach - from).max(0) as usize)
+    else {
+        return beat;
+    };
+    let center = (frame - from).max(0) as usize;
+    let Some(found) = nearest_zero_crossing(&stereo, center) else {
+        return beat;
+    };
+    let in_file = (from + found as i64) as f64 / rate;
+    let into = if reverse {
+        last - in_file
+    } else {
+        in_file - first
+    };
+    map.beat_at(start + into)
 }
 
 /// Cuts region `r` of track `t` in two at `beat`. Returns the number of the second part.
@@ -324,14 +390,25 @@ fn clear_range(p: &mut Project, t: usize, from: f64, to: f64) -> Result<(), Stri
             p.region_end_beats(r),
         )
     };
+    let mut result = Ok(());
     for edge in [from, to] {
-        let across = p.tracks[t].regions.iter().position(|r| {
+        // Regions can overlap, so there can be several across an edge.
+        while let Some(r) = p.tracks[t].regions.iter().position(|r| {
             let (a, b) = span(p, r);
-            a + NEAR < edge && edge < b - NEAR
-        });
-        if let Some(r) = across {
-            split(p, t, r, edge)?;
+            r.folder.is_none() && a + EDGE_BEATS < edge && edge < b - EDGE_BEATS
+        }) {
+            if let Err(e) = split(p, t, r, edge) {
+                result = Err(e);
+                break;
+            }
         }
+    }
+    let folder_across = p.tracks[t].regions.iter().any(|r| {
+        let (a, b) = span(p, r);
+        r.folder.is_some() && [from, to].iter().any(|e| a + NEAR < *e && *e < b - NEAR)
+    });
+    if folder_across {
+        result = Err("A take folder stays as it is: pick a take first".to_string());
     }
     let inside: Vec<bool> = p.tracks[t]
         .regions
@@ -345,7 +422,19 @@ fn clear_range(p: &mut Project, t: usize, from: f64, to: f64) -> Result<(), Stri
     p.tracks[t]
         .regions
         .retain(|_| !flags.next().unwrap_or(false));
-    Ok(())
+    result
+}
+
+/// Takes away what lies under region `r` of track `t` (replace mode). Returns the region's number
+/// afterwards, and why something had to stay if something did.
+pub fn replace_under(p: &mut Project, t: usize, r: usize) -> (usize, Result<(), String>) {
+    let kept = p.tracks[t].regions.remove(r);
+    let from = p.bar_to_beats(f64::from(kept.start_bar) - 1.0);
+    let to = p.region_end_beats(&kept);
+    let done = clear_range(p, t, from, to);
+    p.tracks[t].regions.push(kept);
+    p.song_rev += 1;
+    (p.tracks[t].regions.len() - 1, done)
 }
 
 /// Edit > Paste Replace: pastes at the playhead and takes away what was under the pasted regions.
@@ -578,7 +667,8 @@ pub fn split_at_playhead(p: &mut Project, v: &mut TracksView) -> Result<(), Stri
     let beat = p.position_beats;
     let mut rights = Vec::with_capacity(targets.len());
     for (t, r) in targets {
-        rights.push((t, split(p, t, r, beat)?));
+        let cut = zero_crossing_beat(p, t, r, beat);
+        rights.push((t, split(p, t, r, cut)?));
     }
     v.select_many(rights);
     Ok(())
@@ -702,6 +792,96 @@ mod tests {
         crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).unwrap();
         let t = p.tracks.len() - 1;
         (p, t, dir, wav)
+    }
+
+    /// `seconds` of a 100 Hz sine, whose zero crossings are every 5 ms, on an audio track at bar 1.
+    fn sine_project(seconds: f64) -> (Project, usize, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("sine.wav");
+        let frames = (seconds * 48_000.0) as usize;
+        let stereo: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let v = (i as f32 / 48_000.0 * 100.0 * std::f32::consts::TAU).sin();
+                [v * 0.5, v * 0.5]
+            })
+            .collect();
+        prowave_engine::write_wav(&wav, &stereo, 48_000).unwrap();
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        let ctx = egui::Context::default();
+        crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).unwrap();
+        let t = p.tracks.len() - 1;
+        (p, t, dir)
+    }
+
+    /// How far `seconds` into a 100 Hz wave is from its nearest zero crossing, in seconds.
+    fn off_zero(seconds: f64) -> f64 {
+        let step = 0.005;
+        (seconds - (seconds / step).round() * step).abs()
+    }
+
+    #[test]
+    fn the_nearest_zero_crossing_is_found_either_way_or_not_at_all() {
+        let at = |v: &[f32]| -> Vec<f32> { v.iter().flat_map(|x| [*x, *x]).collect() };
+        assert_eq!(
+            nearest_zero_crossing(&at(&[0.5, 0.4, -0.1, -0.2, -0.3, -0.4, -0.5]), 3),
+            Some(2)
+        );
+        assert_eq!(
+            nearest_zero_crossing(&at(&[0.5, 0.4, 0.3, 0.2, 0.1, -0.1, -0.2]), 3),
+            Some(5)
+        );
+        assert_eq!(nearest_zero_crossing(&at(&[0.5, 0.5, 0.5]), 1), None);
+        assert_eq!(nearest_zero_crossing(&at(&[0.5, 0.0, 0.5]), 2), Some(1));
+        assert_eq!(nearest_zero_crossing(&[], 0), None);
+    }
+
+    #[test]
+    fn with_the_option_on_cuts_and_trims_land_on_zero_crossings() {
+        let (mut p, t, _dir) = sine_project(8.0);
+        // Off: exactly where it was asked, 1.0012 seconds in.
+        let beat = 2.0024;
+        assert_eq!(zero_crossing_beat(&p, t, 0, beat), beat);
+        p.snap_zero = true;
+        let cut = zero_crossing_beat(&p, t, 0, beat);
+        assert_ne!(cut, beat);
+        assert!(off_zero(cut / 2.0) < 1e-4, "{cut}");
+        assert!((cut - beat).abs() < 0.01, "it stays close");
+
+        let right = split(&mut p, t, 0, cut).unwrap();
+        let (a, b) = (&p.tracks[t].regions[0], &p.tracks[t].regions[right]);
+        assert!(off_zero(f64::from(b.params.source_start)) < 1e-4);
+        assert!(off_zero(f64::from(a.params.source_len)) < 1e-4);
+
+        // The end of what is left, and the start of what follows.
+        let end = zero_crossing_beat(&p, t, 0, 1.0024);
+        trim_end(&mut p, t, 0, end).unwrap();
+        assert!(off_zero(f64::from(p.tracks[t].regions[0].params.source_len)) < 1e-4);
+        let from = TrimStart::of(&p, t, right).unwrap();
+        let start = zero_crossing_beat(&p, t, right, 3.0024);
+        trim_start(&mut p, t, right, &from, start);
+        assert!(off_zero(f64::from(p.tracks[t].regions[right].params.source_start)) < 1e-3);
+
+        // Split at the playhead goes through it too, and MIDI is left alone.
+        p.position_beats = 6.0024;
+        p.selected_track = t;
+        let mut v = TracksView::default();
+        v.select_only((t, right));
+        split_at_playhead(&mut p, &mut v).unwrap();
+        let last = p.tracks[t].regions.last().unwrap();
+        assert!(off_zero(f64::from(last.params.source_start)) < 1e-3);
+        let (mut p, keys) = midi_project();
+        p.snap_zero = true;
+        assert_eq!(zero_crossing_beat(&p, keys, 0, 2.0024), 2.0024);
+    }
+
+    #[test]
+    fn a_reversed_region_finds_the_crossing_of_what_plays_there() {
+        let (mut p, t, _dir) = sine_project(4.0);
+        p.tracks[t].regions[0].params.reverse = true;
+        p.snap_zero = true;
+        let cut = zero_crossing_beat(&p, t, 0, 2.0024);
+        assert!(off_zero(4.0 - cut / 2.0) < 1e-4, "{cut}");
     }
 
     #[test]

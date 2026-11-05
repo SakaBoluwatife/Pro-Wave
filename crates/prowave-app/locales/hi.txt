@@ -719,3 +719,6 @@ Learn MIDI for Level = लेवल के लिए MIDI सीखें
 Learn MIDI for Pan = पैन के लिए MIDI सीखें
 MIDI Assignments = MIDI असाइनमेंट
 Process Selection… = चयन प्रोसेस करें…
+Replace Mode = रिप्लेस मोड
+Snap to Zero Crossings = ज़ीरो क्रॉसिंग पर स्नैप करें
+Strip Silence… = साइलेंस हटाएँ…

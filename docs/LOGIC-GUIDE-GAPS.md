@@ -70,11 +70,8 @@ Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie 
 7. Everything else in the lists above.
 
 ## Pro Tools guide: what to note
-
 From the chapter list of the Pro Tools Reference Guide 2023.3 (1,565 pages) and a search of the code by keyword. A word not found in the code does not prove a feature is missing, so check each one before building it. Our own wording.
-
 Not found, and useful for editing and mixing:
-
 - **Tab to transient:** move the cursor to the next hit in an audio clip.
 - **Nudge:** move clips or their edges by a set amount from the keyboard.
 - **Scrub:** drag over audio to hear it.
@@ -83,15 +80,18 @@ Not found, and useful for editing and mixing:
 - **Commit:** print a track through its plugins to a new track and keep the original. Freeze exists; this goes one step further.
 - **Bus interrogation:** select a bus and see what feeds it.
 - **Monitor controls:** mono sum and dim on the output, for checking a mix.
-
 Already on the list above under another name: playlists (track alternatives), AudioSuite (selection-based processing), memory locations (markers and screensets), Elastic Audio (Flex).
-
 Skip: Beat Detective (the owner's choice), Satellite, video, field recorders, machine control, HEAT, Track Collaboration, DSP mode, Avid Link.
-
 ## Spatial audio, for later
-
 The owner wants Atmos left open. `libspatialaudio` (https://github.com/videolan/libspatialaudio) is a candidate: C++, ambisonics to 3rd order, objects, speaker layouts, binaural over headphones, and ADM rendering. LGPLv2.1 or later, or a commercial licence.
-
 - **What it is not:** its page does not mention Dolby Atmos or say it reads or authors Atmos files. Calling a feature Atmos, and working with Dolby's formats, may need Dolby's own terms. Check before using the name.
 - **What it needs here:** the mix is stereo throughout, so strips, buses, panners and meters must first carry more channels. That is the large part, whichever library renders it.
 - **If adopted:** read its licence file first, and keep the rendering outside the audio thread's allocations.
+6. Everything else in the lists above.
+## Built since this comparison (compiled, not yet tried by hand)
+- Automation curves on the track: A button, A key, points, groups, snap.
+- Record Repeat, Replace Mode, New Take, Delete Take, takes when recording over an audio region.
+- Track alternatives, from a button on the track header.
+- Snap to Zero Crossings, in the Snap and Edit menus.
+- Strip Silence, in the Edit and Functions menus and on the region.
+- Chord track and Arrangement track: drag a section to move it, with Ctrl to copy it.
