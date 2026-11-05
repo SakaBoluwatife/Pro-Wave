@@ -494,6 +494,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Media Browser"
         | "Show Piano Roll"
         | "Show Channel Rack"
+        | "Show Smart Controls"
         | "Show Mixer"
         | "Show Library"
         | "Show Inspector"
@@ -535,6 +536,7 @@ pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
         "Show Mixer" => s.show_mixer && s.bottom == Bottom::Mixer,
         "Show Library" => s.show_library,
         "Show Channel Rack" => s.rack.open,
+        "Show Smart Controls" => s.smart.open,
         "Show Inspector" => s.show_inspector,
         "Show List Editors" => s.show_lists,
         "Show Quick Help" => s.show_quick_help,
@@ -573,6 +575,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Show Library" => s.show_library = !s.show_library,
         "Show Channel Rack" => s.rack.open = !s.rack.open,
+        "Show Smart Controls" => s.smart.open = !s.smart.open,
         "Mastering" => s.mastering.open = !s.mastering.open,
         "Autopunch" => {
             p.punch = !p.punch;
@@ -1108,6 +1111,7 @@ mod tests {
                         s.dialogs.color,
                         s.dialogs.undo_history,
                         s.dialogs.routing,
+                        s.smart.open,
                         s.dialogs.project_settings,
                         p.punch,
                     ),

@@ -277,6 +277,26 @@ impl Rack {
         }
     }
 
+    /// Moves a parameter from a Smart Control. False when the engine could not take it now.
+    pub fn smart_move(&mut self, uid: u64, param: u32, value: f64, engine: &mut Engine) -> bool {
+        let Some(live) = self.live.get_mut(&uid) else {
+            return true;
+        };
+        live.loaded.show_param(param, value);
+        self.touched = true;
+        engine.send(Command::SetPluginParam {
+            track: live.place.0,
+            slot: live.place.1,
+            param,
+            value,
+        })
+    }
+
+    /// Where a parameter of a running plugin is now.
+    pub fn param_value(&mut self, uid: u64, param: u32) -> Option<f64> {
+        self.live.get_mut(&uid)?.loaded.param_value(param)
+    }
+
     /// Writes plugin `uid`'s state to a preset file.
     pub fn save_preset(&mut self, uid: u64, file: &std::path::Path) -> Result<(), String> {
         let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;

@@ -481,6 +481,13 @@ pub enum Command {
         slot: u8,
         plugin: Option<Box<PluginSlot>>,
     },
+    /// Moves a parameter of the hosted plugin of a slot, as a position 0..=1 along its range.
+    SetPluginParam {
+        track: u16,
+        slot: u8,
+        param: u32,
+        value: f64,
+    },
     /// Low Latency mode: takes the hosted plugin of a slot out of the way, or brings it back.
     SetPluginLowLatency {
         track: u16,
@@ -1780,6 +1787,16 @@ impl EngineCore {
                         let _ = self.trash.push(Garbage::Plugin(old));
                     }
                     self.sort_strips();
+                }
+                Command::SetPluginParam {
+                    track,
+                    slot,
+                    param,
+                    value,
+                } => {
+                    if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
+                        plugin.set_param(param, value);
+                    }
                 }
                 Command::SetPluginLowLatency { track, slot, on } => {
                     if let Some(Some(plugin)) = self.plugin_place((track, slot)) {

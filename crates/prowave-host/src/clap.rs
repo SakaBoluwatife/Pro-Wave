@@ -187,6 +187,8 @@ pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, Error> {
 /// The UI-thread half of a loaded plugin. It must outlive the processor [`load_clap`] returned
 /// and stay on the UI thread, where CLAP wants it. Call [`LoadedClap::tick`] once a frame.
 pub struct LoadedClap {
+    /// Each parameter's id and range, by id.
+    ranges: Vec<(u32, f64, f64)>,
     /// What the plugin's window moved.
     moved: rtrb::Consumer<(u32, f64)>,
     params: Vec<crate::PluginParam>,
@@ -418,6 +420,17 @@ impl crate::LoadedPlugin for LoadedClap {
         self.params.clone()
     }
 
+    fn param_value(&mut self, id: u32) -> Option<f64> {
+        let at = self.ranges.binary_search_by_key(&id, |r| r.0).ok()?;
+        let (_, min, max) = self.ranges[at];
+        let ext = self
+            .instance
+            .plugin_shared_handle()
+            .get_extension::<PluginParams>()?;
+        let value = ext.get_value(&self.instance.plugin_handle(), ClapId::new(id))?;
+        Some(((value - min) / (max - min).max(1e-9)).clamp(0.0, 1.0))
+    }
+
     fn take_edits(&mut self) -> Vec<(u32, f64)> {
         let mut out = Vec::new();
         while let Ok(edit) = self.moved.pop() {
@@ -555,11 +568,12 @@ pub fn load_clap(
     ranges.sort_by_key(|r| r.0);
     let mut processor =
         ClapProcessor::new(stopped.into(), &inputs, &outputs, latency, released.clone());
-    processor.ranges = ranges;
+    processor.ranges = ranges.clone();
     let (moved_in, moved) = rtrb::RingBuffer::new(PENDING_PARAMS);
     processor.moved = Some(moved_in);
     Ok((
         LoadedClap {
+            ranges,
             moved,
             params,
             instance,

@@ -66,6 +66,7 @@ mod scripter;
 mod settings;
 mod side_panes;
 mod signature_track;
+mod smart_controls;
 mod smart_tempo;
 mod song_pattern;
 mod start_screen;
@@ -163,6 +164,7 @@ pub struct UiState {
     pub rack: channel_rack::RackView,
     pub settings: settings::SettingsView,
     pub dialogs: quick_dialogs::QuickDialogs,
+    pub smart: smart_controls::SmartControls,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
     pub undo_labels: Vec<String>,
@@ -246,6 +248,7 @@ impl UiState {
             rack: channel_rack::RackView::default(),
             settings: settings::SettingsView::default(),
             dialogs: quick_dialogs::QuickDialogs::default(),
+            smart: smart_controls::SmartControls::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
@@ -741,6 +744,14 @@ impl eframe::App for App {
         self.project.refresh_generated();
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            for (uid, param, value) in std::mem::take(&mut self.ui.smart.moves) {
+                sync.smart_move(uid, param, value);
+            }
+            for (uid, param) in self.ui.smart.wanted.clone() {
+                if let Some(value) = sync.param_value(uid, param) {
+                    self.ui.smart.values.insert((uid, param), value);
+                }
+            }
             if let Some(cmd) = self.ui.mixer.preset_cmd.take() {
                 if let Err(e) = sync.run_preset(&cmd) {
                     self.ui.status = Some(e);
@@ -856,6 +867,7 @@ impl eframe::App for App {
         channel_rack::show(&ctx, p, s);
         settings::show(&ctx, s);
         quick_dialogs::show(&ctx, p, s);
+        smart_controls::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);

@@ -1100,6 +1100,12 @@ impl LoadedPlugin for LoadedVst3 {
         std::mem::take(&mut *self.handler.moved.borrow_mut())
     }
 
+    fn param_value(&mut self, id: u32) -> Option<f64> {
+        let controller = self.controller.as_ref()?;
+        // SAFETY: the controller is valid while this half lives, and this is its thread.
+        Some(unsafe { controller.getParamNormalized(id) })
+    }
+
     fn show_param(&mut self, id: u32, value: f64) {
         if let Some(controller) = &self.controller {
             // SAFETY: the controller is valid while this half lives, and this is its thread.

@@ -98,6 +98,11 @@ pub trait LoadedPlugin {
         Vec::new()
     }
 
+    /// Where a parameter is now, as a position 0..=1.
+    fn param_value(&mut self, _id: u32) -> Option<f64> {
+        None
+    }
+
     /// Shows a parameter's position in the plugin's window, as an automation lane moves it. Formats
     /// whose window follows the audio half by itself need nothing here.
     fn show_param(&mut self, _id: u32, _value: f64) {}

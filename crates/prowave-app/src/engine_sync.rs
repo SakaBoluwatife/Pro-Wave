@@ -836,6 +836,16 @@ impl EngineSync {
                 .sum::<usize>()
     }
 
+    /// Moves a plugin parameter from a Smart Control.
+    pub fn smart_move(&mut self, uid: u64, param: u32, value: f64) -> bool {
+        self.rack.smart_move(uid, param, value, &mut self.engine)
+    }
+
+    /// Where a plugin parameter is now.
+    pub fn param_value(&mut self, uid: u64, param: u32) -> Option<f64> {
+        self.rack.param_value(uid, param)
+    }
+
     /// Saves or loads a plugin preset.
     pub fn run_preset(&mut self, cmd: &crate::plugin_presets::PresetCmd) -> Result<(), String> {
         use crate::plugin_presets::PresetCmd;
