@@ -391,6 +391,9 @@ pub enum Command {
     /// Master fader (Logic: Stereo Out level), clamped to 0..2 linear. Changes ramp over
     /// 5 ms during playback/audition; silent stopped setup is immediate. Non-finite values
     /// are ignored so malformed commands cannot poison the output.
+    /// Gives the Mastering window a copy of the output, or stops. The old queue comes back as
+    /// garbage.
+    SetMasterTap(Option<Box<rtrb::Producer<f32>>>),
     SetMasterGain {
         linear: f32,
     },
@@ -530,6 +533,7 @@ impl Command {
                 | Self::SetAutomation(_)
                 | Self::SetInput(_)
                 | Self::SetPreview(_)
+                | Self::SetMasterTap(_)
         )
     }
 
@@ -547,6 +551,7 @@ impl Command {
 }
 
 pub enum Garbage {
+    MasterTap(Box<rtrb::Producer<f32>>),
     Song(Box<Song>),
     Notes(Vec<NoteEvent>),
     Controls(Vec<ControlEvent>),
@@ -770,6 +775,10 @@ pub struct EngineCore {
     master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
     /// Whether any is there: the mix should not look through the slots every sample for nothing.
     master_any: bool,
+    /// Hands a copy of the output to the Mastering window.
+    master_tap: Option<Box<rtrb::Producer<f32>>>,
+    /// A render: the output is not cut at full scale.
+    keep_headroom: bool,
     /// Whether any strip has one, and what they are told of the song.
     any_plugin: bool,
     transport: PluginTransport,
@@ -917,6 +926,8 @@ impl EngineCore {
             instruments: (0..MAX_TRACKS).map(|_| None).collect(),
             master_plugins: std::array::from_fn(|_| None),
             master_any: false,
+            master_tap: None,
+            keep_headroom: false,
             any_plugin: false,
             transport: PluginTransport::default(),
             transport_left: 0,
@@ -953,6 +964,11 @@ impl EngineCore {
             preview: None,
             preview_pos: 0,
         }
+    }
+
+    /// For a render: levels above full scale stay in the output instead of being cut there.
+    pub fn keep_headroom(&mut self) {
+        self.keep_headroom = true;
     }
 
     /// Stops playing where it is, with the voices let go and the effects still ringing: the end
@@ -1599,6 +1615,11 @@ impl EngineCore {
                     self.mtc_locate();
                 }
                 Command::SetMetronome { on } => self.metronome = on,
+                Command::SetMasterTap(tap) => {
+                    if let Some(old) = std::mem::replace(&mut self.master_tap, tap) {
+                        let _ = self.trash.push(Garbage::MasterTap(old));
+                    }
+                }
                 Command::SetMasterGain { linear } => {
                     if linear.is_finite() {
                         let samples = self.smoothing_samples();
@@ -2131,8 +2152,21 @@ impl EngineCore {
             }
             let master = self.master.next() as f64;
             // `clamp` lets NaN through, so a non-finite sum becomes silence first.
-            let l = finite_or_zero((l * master) as f32).clamp(-1.0, 1.0);
-            let r = finite_or_zero((r * master) as f32).clamp(-1.0, 1.0);
+            let l = finite_or_zero((l * master) as f32);
+            let r = finite_or_zero((r * master) as f32);
+            if let Some(tap) = self.master_tap.as_mut() {
+                // If nobody is reading, it is lost: the audio does not wait.
+                if tap.slots() >= 2 {
+                    let _ = tap.push(l);
+                    let _ = tap.push(r);
+                }
+            }
+            // A sound card cannot take more than full scale. A float file can.
+            let (l, r) = if self.keep_headroom {
+                (l, r)
+            } else {
+                (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0))
+            };
             pk_l = pk_l.max(l.abs());
             pk_r = pk_r.max(r.abs());
             frame[0] = l;
@@ -2980,6 +3014,49 @@ mod tests {
         assert!(tx.push(Command::Stop).is_ok());
         assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
         assert!(buf.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn a_render_keeps_what_the_sound_card_cannot_take_and_the_tap_gets_a_copy() {
+        use crate::plugin::{tests::FakePlugin, MASTER_STRIP, PLUGIN_BLOCK};
+        let (mut tx, rx) = rtrb::RingBuffer::new(64);
+        let (gtx, mut grx) = rtrb::RingBuffer::new(8);
+        let mut e = EngineCore::new(48_000, rx, gtx, Arc::new(Shared::new()));
+        let hot = PluginSlot::new(Box::new(FakePlugin {
+            add: 3.0,
+            ..FakePlugin::default()
+        }));
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: MASTER_STRIP,
+                slot: 0,
+                plugin: Some(Box::new(hot)),
+            })
+            .is_ok());
+        let (producer, mut tap) = rtrb::RingBuffer::new(PLUGIN_BLOCK * 16);
+        assert!(tx
+            .push(Command::SetMasterTap(Some(Box::new(producer))))
+            .is_ok());
+        let mut buf = vec![0.0f32; PLUGIN_BLOCK * 4];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(buf.iter().all(|s| s.abs() <= 1.0), "a sound card's limit");
+        let mut tapped = 0f32;
+        while let Ok(s) = tap.pop() {
+            tapped = tapped.max(s.abs());
+        }
+        assert!(tapped > 1.0, "the meters see the over: {tapped}");
+
+        e.keep_headroom();
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(buf.iter().any(|s| s.abs() > 1.0), "a render keeps it");
+
+        assert!(tx.push(Command::SetMasterTap(None)).is_ok());
+        e.process(&mut buf);
+        let mut garbage = 0;
+        while grx.pop().is_ok() {
+            garbage += 1;
+        }
+        assert_eq!(garbage, 1, "the queue comes back");
     }
 
     #[test]

@@ -441,7 +441,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
         "Paste" => !s.tracks.clipboard.is_empty(),
-        "Settings…" => true,
+        "Settings…" | "Mastering" => true,
         "Project or Section…"
         | "Bounce"
         | "Export"
@@ -568,6 +568,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Show Library" => s.show_library = !s.show_library,
         "Show Channel Rack" => s.rack.open = !s.rack.open,
+        "Mastering" => s.mastering.open = !s.mastering.open,
         "Settings…" => s.settings.open = true,
         "Show Inspector" => s.show_inspector = !s.show_inspector,
         "Show List Editors" => s.show_lists = !s.show_lists,
@@ -1069,6 +1070,7 @@ mod tests {
                     s.bounce.dialog,
                     s.settings.open,
                     s.rack.open,
+                    s.mastering.open,
                     s.bounce.queue.len(),
                 ),
                 (

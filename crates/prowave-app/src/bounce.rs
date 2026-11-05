@@ -210,6 +210,8 @@ pub struct Render {
     pub from_beat: f64,
     pub to_beat: f64,
     pub depth: BitDepth,
+    /// The file's sample rate; 0 for the engine's.
+    pub out_rate: u32,
     /// Only this track is heard.
     pub solo: Option<usize>,
     pub after: After,
@@ -365,15 +367,87 @@ fn encode(
     format: FileFormat,
     depth: BitDepth,
     rate: u32,
+    out_rate: u32,
 ) -> Result<PathBuf, String> {
-    let bits = usize::from(depth.bytes()) * 8;
-    let made = match format {
-        FileFormat::Wav => return Ok(target.to_path_buf()),
-        FileFormat::Flac => crate::audio_encode::flac(wav, target, bits, rate),
-        FileFormat::Mp3 => crate::audio_encode::mp3(wav, target, rate),
-    };
+    let made = convert(wav, target, format, depth, rate, out_rate);
     let _ = std::fs::remove_file(wav);
     made.map(|()| target.to_path_buf())
+}
+
+/// Frames read at a time from the render.
+const CONVERT_FRAMES: usize = 65_536;
+
+/// Writes the float render `wav` at another rate and depth, as `out`. Only a change of rate needs
+/// all of it in memory at once.
+fn write_converted(
+    wav: &Path,
+    out: &Path,
+    depth: BitDepth,
+    rate: u32,
+    out_rate: u32,
+) -> Result<(), String> {
+    use std::io::Read;
+    let fail = |e: std::io::Error| e.to_string();
+    let mut writer = WavWriter::create(out, depth, out_rate).map_err(fail)?;
+    let mut input = std::io::BufReader::new(std::fs::File::open(wav).map_err(fail)?);
+    input.seek(SeekFrom::Start(44)).map_err(fail)?;
+    let floats = |bytes: &[u8]| -> Vec<f32> {
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    let written = if rate == out_rate {
+        let mut raw = vec![0u8; CONVERT_FRAMES * 8];
+        loop {
+            let got = crate::audio_encode::read_all(&mut input, &mut raw).map_err(fail)?;
+            if got == 0 {
+                break Ok(());
+            }
+            let chunk = floats(&raw[..got]);
+            if let Err(e) = writer.write(&chunk) {
+                break Err(e.to_string());
+            }
+        }
+    } else {
+        let mut raw = Vec::new();
+        input.read_to_end(&mut raw).map_err(fail)?;
+        let all = floats(&raw);
+        drop(raw);
+        let converted = crate::audio_encode::resample(&all, rate, out_rate);
+        writer.write(&converted).map_err(fail)
+    };
+    match written {
+        Ok(()) => writer.finish().map(|_| ()).map_err(fail),
+        Err(e) => {
+            writer.abandon();
+            Err(e)
+        }
+    }
+}
+
+fn convert(
+    wav: &Path,
+    target: &Path,
+    format: FileFormat,
+    depth: BitDepth,
+    rate: u32,
+    out_rate: u32,
+) -> Result<(), String> {
+    if format == FileFormat::Wav {
+        return write_converted(wav, target, depth, rate, out_rate);
+    }
+    let stage = target.with_extension("stage.wav");
+    write_converted(wav, &stage, depth, rate, out_rate)?;
+    let bits = usize::from(depth.bytes()) * 8;
+    let made = match format {
+        FileFormat::Flac => crate::audio_encode::flac(&stage, target, bits, out_rate),
+        _ => crate::audio_encode::mp3(&stage, target, out_rate),
+    };
+    let _ = std::fs::remove_file(&stage);
+    made
 }
 
 /// A render under way.
@@ -410,14 +484,18 @@ impl Job {
         let frames = frames_between(&copy, render.from_beat, render.to_beat, rate);
         let format = render.format;
         let depth = format.depth(render.depth);
-        let wav = if format == FileFormat::Wav {
-            render.path.clone()
+        let out_rate = if render.out_rate == 0 {
+            rate
         } else {
-            render.path.with_extension("tmp.wav")
+            render.out_rate
         };
+        // The render is kept in floating point with all its headroom. The file's rate, depth and
+        // format are made from that afterwards, once.
+        let wav = render.path.with_extension("tmp.wav");
         let target = render.path.clone();
-        let mut writer = WavWriter::create(&wav, depth, rate)
+        let mut writer = WavWriter::create(&wav, BitDepth::Float32, rate)
             .map_err(|e| format!("cannot write {}: {e}", render.path.display()))?;
+        core.keep_headroom();
         let start = render.from_beat;
         let send = |sync: &mut EngineSync, cmd| sync.engine.send(cmd);
         if !send(&mut sync, Command::SetPosition { beat: start }) {
@@ -454,7 +532,7 @@ impl Job {
                     Ok(()) => writer
                         .finish()
                         .map_err(|e| e.to_string())
-                        .and_then(|wav| encode(&wav, &target, format, depth, rate)),
+                        .and_then(|wav| encode(&wav, &target, format, depth, rate, out_rate)),
                     Err(e) => {
                         writer.abandon();
                         Err(e)
@@ -577,6 +655,7 @@ pub fn stems(
         .enumerate()
         .filter(|(i, t)| plays(t.kind) && !p.is_muted(*i) && !t.regions.is_empty())
         .map(|(i, t)| Render {
+            out_rate: 0,
             path: folder.join(format!(
                 "{} {:02} {}.{}",
                 file_safe(&p.name),
@@ -634,13 +713,33 @@ pub enum Purpose {
     Stems,
 }
 
+/// What part of the project a bounce covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RangeChoice {
+    #[default]
+    Project,
+    Cycle,
+    Selection,
+}
+
+/// Sample rates offered, 0 being the engine's own.
+const OUT_RATES: [(u32, &str); 5] = [
+    (0, "Same as now"),
+    (44_100, "44.1 kHz"),
+    (48_000, "48 kHz"),
+    (88_200, "88.2 kHz"),
+    (96_000, "96 kHz"),
+];
+
 /// The window that asks how, and shows how far along it is.
 #[derive(Default)]
 pub struct BounceState {
     pub dialog: Option<Purpose>,
     pub format: FileFormat,
     pub depth: BitDepth,
-    pub use_cycle: bool,
+    pub range: RangeChoice,
+    /// The file's sample rate; 0 for the engine's.
+    pub out_rate: u32,
     /// Renders asked for; `App` starts them, one at a time.
     pub queue: Vec<Render>,
     pub job: Option<Job>,
@@ -728,10 +827,11 @@ fn bounce_dir() -> PathBuf {
 /// Asks where, then what `dialog` said to make.
 fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
     let b = &mut s.bounce;
-    let range = if b.use_cycle && p.cycle_end > p.cycle_start {
-        (p.cycle_start, p.cycle_end)
-    } else {
-        (0.0, project_end(p))
+    let selected = selection_range(p, &s.tracks.all_selected());
+    let range = match b.range {
+        RangeChoice::Cycle if p.cycle_end > p.cycle_start => (p.cycle_start, p.cycle_end),
+        RangeChoice::Selection => selected.unwrap_or((0.0, 0.0)),
+        _ => (0.0, project_end(p)),
     };
     if range.1 <= range.0 {
         s.status = Some("There is nothing to bounce".to_string());
@@ -755,6 +855,7 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
             vec![Render {
                 path: with_extension_kept(path, b.format.extension()),
                 format: b.format,
+                out_rate: b.out_rate,
                 from_beat: range.0,
                 to_beat: range.1,
                 depth: b.depth,
@@ -766,7 +867,11 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
             let Some(folder) = rfd::FileDialog::new().pick_folder() else {
                 return;
             };
-            stems(p, &folder, b.format, b.depth, range)
+            let mut all = stems(p, &folder, b.format, b.depth, range);
+            for render in &mut all {
+                render.out_rate = b.out_rate;
+            }
+            all
         }
     };
     b.enqueue(renders);
@@ -815,6 +920,7 @@ pub fn bounce_selection(p: &Project, s: &mut crate::UiState, replace: bool) {
     s.bounce.enqueue(vec![Render {
         path,
         format: FileFormat::Wav,
+        out_rate: 0,
         from_beat: range.0,
         to_beat: range.1,
         depth: BitDepth::Float32,
@@ -864,6 +970,7 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
         Purpose::Stems => "Bounce All Tracks",
     };
     let has_cycle = p.cycle_end > p.cycle_start;
+    let has_selection = s.tracks.selected.is_some();
     egui::Modal::new(egui::Id::unique("bounce_dialog")).show(ctx, |ui| {
         ui.set_min_width(320.0);
         ui.heading(title);
@@ -892,11 +999,27 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Range");
-            ui.selectable_value(&mut s.bounce.use_cycle, false, "Whole project");
+            ui.selectable_value(&mut s.bounce.range, RangeChoice::Project, "Whole project");
             ui.add_enabled_ui(has_cycle, |ui| {
-                ui.selectable_value(&mut s.bounce.use_cycle, true, "Cycle range");
+                ui.selectable_value(&mut s.bounce.range, RangeChoice::Cycle, "Cycle range");
+            });
+            ui.add_enabled_ui(has_selection, |ui| {
+                ui.selectable_value(
+                    &mut s.bounce.range,
+                    RangeChoice::Selection,
+                    "Selected regions",
+                );
             });
         });
+        ui.horizontal(|ui| {
+            ui.label("Sample rate");
+            for (rate, name) in OUT_RATES {
+                ui.selectable_value(&mut s.bounce.out_rate, rate, name);
+            }
+        });
+        if s.bounce.depth == BitDepth::Int16 && s.bounce.format != FileFormat::Mp3 {
+            ui.label(egui::RichText::new("16-bit files get triangular dither.").small());
+        }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             go = ui.button("Bounce…").clicked();
@@ -944,6 +1067,7 @@ mod tests {
     fn mix_to(path: PathBuf, to_beat: f64) -> Render {
         Render {
             format: FileFormat::Wav,
+            out_rate: 0,
             path,
             from_beat: 0.0,
             to_beat,
@@ -1218,6 +1342,49 @@ mod tests {
         assert!(mp3.len().abs_diff(wav.len()) <= 4000, "{}", mp3.len());
         let (a, b) = (rms(&wav), rms(&mp3));
         assert!((a - b).abs() / a < 0.1, "{a} and {b}");
+    }
+
+    #[test]
+    fn float_keeps_what_is_over_full_scale_and_fixed_point_stops_there() {
+        let (mut p, dir) = audio_project(1.0, 1.0);
+        let t = p.tracks.len() - 1;
+        // 0.5 in the clip, +6 dB of region gain and +6 dB on the fader: about 2.0.
+        p.tracks[t].regions[0].params.gain_db = 6.0;
+        p.tracks[t].volume_db = 6.0;
+        p.master_vol = 1.0;
+        let end = project_end(&p);
+        let level = |depth, name: &str| {
+            let out = render_and_read(
+                &p,
+                Render {
+                    depth,
+                    ..mix_to(dir.path().join(name), end)
+                },
+            );
+            out[RATE as usize / 2]
+        };
+        assert!((level(BitDepth::Float32, "float.wav") - 1.99).abs() < 0.02);
+        assert!(level(BitDepth::Int24, "fixed.wav") <= 1.0);
+    }
+
+    #[test]
+    fn a_file_can_be_made_at_another_sample_rate() {
+        let (p, dir) = audio_project(1.0, 1.0);
+        let end = project_end(&p);
+        let path = dir.path().join("cd.wav");
+        let out = render_and_read(
+            &p,
+            Render {
+                depth: BitDepth::Int16,
+                out_rate: 44_100,
+                ..mix_to(path.clone(), end)
+            },
+        );
+        let file = AudioFile::open(&path).unwrap();
+        assert_eq!(file.sample_rate, 44_100);
+        assert!(out.len().abs_diff(44_100) < 8, "{}", out.len());
+        assert!((out[22_050] - 0.4).abs() < 0.01, "{}", out[22_050]);
+        assert!(!path.with_extension("tmp.wav").exists());
     }
 
     #[test]

@@ -64,6 +64,80 @@ fn same_block_sizes(flac: &mut [u8]) {
     }
 }
 
+/// Filter taps on each side of a sample in [`resample`], and the steps between two samples its table
+/// has. Plenty for a sinc whose first stop-band lobe is well below 16-bit noise.
+const SRC_TAPS: usize = 32;
+const SRC_PHASES: usize = 1024;
+
+/// Interleaved stereo at another sample rate, by a windowed sinc. Goes down without aliasing: the
+/// cutoff follows the lower of the two rates.
+pub fn resample(stereo: &[f32], from: u32, to: u32) -> Vec<f32> {
+    use std::f64::consts::PI;
+    if from == to || from == 0 || to == 0 {
+        return stereo.to_vec();
+    }
+    let cutoff = (f64::from(to) / f64::from(from)).min(1.0) * 0.98;
+    let taps = (SRC_TAPS as f64 / cutoff).ceil() as usize;
+    let width = 2 * taps;
+    let beta = 9.0;
+    // The modified Bessel function a Kaiser window is made from.
+    let bessel = |x: f64| {
+        let (mut sum, mut term) = (1.0f64, 1.0f64);
+        for k in 1..32 {
+            term *= (x / 2.0 / f64::from(k)).powi(2);
+            sum += term;
+        }
+        sum
+    };
+    let norm = bessel(beta);
+    let mut table = vec![0f32; (SRC_PHASES + 1) * width];
+    for phase in 0..=SRC_PHASES {
+        let fraction = phase as f64 / SRC_PHASES as f64;
+        for tap in 0..width {
+            let x = tap as f64 - (taps as f64 - 1.0) - fraction;
+            let sinc = if x.abs() < 1e-9 {
+                cutoff
+            } else {
+                (PI * x * cutoff).sin() / (PI * x)
+            };
+            let w = 1.0 - (x / taps as f64).powi(2);
+            let window = if w > 0.0 {
+                bessel(beta * w.sqrt()) / norm
+            } else {
+                0.0
+            };
+            table[phase * width + tap] = (sinc * window) as f32;
+        }
+    }
+    let frames = stereo.len() / 2;
+    let step = f64::from(from) / f64::from(to);
+    let out_frames = (frames as f64 / step).ceil() as usize;
+    let mut out = Vec::with_capacity(out_frames * 2);
+    for i in 0..out_frames {
+        let at = i as f64 * step;
+        let whole = at.floor() as i64;
+        let position = (at - whole as f64) * SRC_PHASES as f64;
+        let phase = position.floor() as usize;
+        let blend = (position - phase as f64) as f32;
+        let (near, far) = (
+            &table[phase * width..(phase + 1) * width],
+            &table[(phase + 1) * width..(phase + 2) * width],
+        );
+        let (mut l, mut r) = (0f32, 0f32);
+        for tap in 0..width {
+            let source = whole + tap as i64 - (taps as i64 - 1);
+            if source >= 0 && (source as usize) < frames {
+                let c = near[tap] + (far[tap] - near[tap]) * blend;
+                l += c * stereo[source as usize * 2];
+                r += c * stereo[source as usize * 2 + 1];
+            }
+        }
+        out.push(l);
+        out.push(r);
+    }
+    out
+}
+
 /// A 320 kbps file from the 32-bit float `wav` into `out`.
 pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
     let lame = |e: mp3lame_encoder::BuildError| format!("MP3: {e:?}");
@@ -96,12 +170,13 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
                 break;
             }
             samples.clear();
+            // MP3 has no use for what is above full scale.
             samples.extend(
                 raw[..got]
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .map(|b| f32::from_le_bytes(*b)),
+                    .map(|b| f32::from_le_bytes(*b).clamp(-1.0, 1.0)),
             );
             let frames = samples.len() / 2;
             coded.clear();
@@ -128,7 +203,7 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
 }
 
 /// Fills `buf` as far as the file goes.
-fn read_all(input: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+pub fn read_all(input: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut got = 0;
     while got < buf.len() {
         match input.read(&mut buf[got..])? {
@@ -137,4 +212,66 @@ fn read_all(input: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
         }
     }
     Ok(got)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine(hz: f64, rate: u32, seconds: f64) -> Vec<f32> {
+        let frames = (seconds * f64::from(rate)) as usize;
+        (0..frames)
+            .flat_map(|i| {
+                let s =
+                    (0.5 * (std::f64::consts::TAU * hz * i as f64 / f64::from(rate)).sin()) as f32;
+                [s, s]
+            })
+            .collect()
+    }
+
+    fn rms(stereo: &[f32]) -> f32 {
+        let middle = &stereo[stereo.len() / 4..stereo.len() * 3 / 4];
+        (middle.iter().map(|s| s * s).sum::<f32>() / middle.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn a_tone_keeps_its_pitch_level_and_length_at_another_rate() {
+        for (from, to) in [
+            (48_000, 44_100),
+            (44_100, 48_000),
+            (48_000, 96_000),
+            (96_000, 44_100),
+        ] {
+            let out = resample(&sine(1000.0, from, 0.5), from, to);
+            let expected = 0.5 * f64::from(to);
+            assert!(
+                ((out.len() / 2) as f64 - expected).abs() < 2.0,
+                "{from} to {to}"
+            );
+            assert!(
+                (rms(&out) - rms(&sine(1000.0, to, 0.5))).abs() < 0.002,
+                "{from} to {to}"
+            );
+            // The same as the tone made at that rate, by how often it crosses zero.
+            let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+            let crossings = left
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count();
+            assert!(crossings.abs_diff(500) <= 2, "{from} to {to}: {crossings}");
+        }
+    }
+
+    #[test]
+    fn going_down_leaves_out_what_the_lower_rate_cannot_hold() {
+        // 30 kHz cannot exist at 44.1 kHz. It must vanish, not fold down to 14.1 kHz.
+        let out = resample(&sine(30_000.0, 96_000, 0.25), 96_000, 44_100);
+        assert!(rms(&out) < 0.0005, "{}", rms(&out));
+    }
+
+    #[test]
+    fn the_same_rate_is_left_alone() {
+        let tone = sine(1000.0, 48_000, 0.1);
+        assert_eq!(resample(&tone, 48_000, 48_000), tone);
+    }
 }

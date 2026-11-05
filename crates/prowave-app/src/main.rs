@@ -28,6 +28,7 @@ mod key_commands;
 mod left_panel;
 mod library;
 mod marker_track;
+mod mastering;
 mod menus;
 mod midi_file;
 mod midi_fx;
@@ -42,6 +43,8 @@ mod note_edit;
 mod note_tools;
 mod patches;
 mod pattern;
+#[cfg(test)]
+mod perf;
 mod piano_roll;
 mod plugin_guard;
 mod plugin_rack;
@@ -156,6 +159,7 @@ pub struct UiState {
     pub bounce: bounce::BounceState,
     pub rack: channel_rack::RackView,
     pub settings: settings::SettingsView,
+    pub mastering: mastering::MasteringView,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
     /// The computer keyboard as a piano, and what it played this frame.
@@ -233,6 +237,7 @@ impl UiState {
             bounce: bounce::BounceState::default(),
             rack: channel_rack::RackView::default(),
             settings: settings::SettingsView::default(),
+            mastering: mastering::MasteringView::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
@@ -561,6 +566,33 @@ impl App {
 }
 
 impl App {
+    /// Gives the Mastering window a copy of the output while it is open.
+    fn connect_mastering(&mut self) {
+        let wanted = self.ui.mastering.open;
+        if wanted == self.ui.mastering.tap.is_some() {
+            return;
+        }
+        let Some(sync) = self.sync.as_mut() else {
+            return;
+        };
+        if wanted {
+            let rate = sync.engine.sample_rate();
+            let (tx, rx) = rtrb::RingBuffer::new(mastering::MasteringView::tap_capacity(rate));
+            if sync
+                .engine
+                .send(prowave_engine::Command::SetMasterTap(Some(Box::new(tx))))
+            {
+                self.ui.mastering.tap = Some(rx);
+                self.ui.mastering.reset(rate);
+            }
+        } else if sync
+            .engine
+            .send(prowave_engine::Command::SetMasterTap(None))
+        {
+            self.ui.mastering.tap = None;
+        }
+    }
+
     /// Changes the audio driver, device or buffer size: a new engine, which plays the project from
     /// where the old one was. If the choice will not start, the usual device plays and it says so.
     fn restart_audio(&mut self, setup: &settings::AudioSetup) {
@@ -569,6 +601,7 @@ impl App {
         }
         self.project.playing = false;
         self.midi_out = None;
+        self.ui.mastering.tap = None;
         // The old one lets go of the device before the new one asks for it.
         self.sync = None;
         let chosen =
@@ -783,6 +816,7 @@ impl eframe::App for App {
         bounce::show(&ctx, p, s);
         channel_rack::show(&ctx, p, s);
         settings::show(&ctx, s);
+        mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
@@ -793,6 +827,7 @@ impl eframe::App for App {
         if let Some(setup) = self.ui.settings.apply.take() {
             self.restart_audio(&setup);
         }
+        self.connect_mastering();
         if self.ui.settings.open {
             self.ui.settings.current = self.sync.as_ref().map_or("nothing".to_string(), |s| {
                 format!(
