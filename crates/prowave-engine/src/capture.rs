@@ -370,7 +370,30 @@ fn writer_loop(
     let history_samples = sample_rate as usize * channels * HISTORY_SECONDS;
     let mut overruns_seen = 0u64;
     let mut refreshed = Instant::now();
+    let mut closing = false;
     loop {
+        // The message first, then the ring: whatever was delivered before it was sent is in the
+        // ring by now, so a recording that stops gets all of it, and one that starts finds it in
+        // the history.
+        let msg = if ring.slots() / channels * channels == 0 {
+            match ctl.recv_timeout(Duration::from_millis(2)) {
+                Ok(m) => Some(m),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => {
+                    closing = true;
+                    None
+                }
+            }
+        } else {
+            match ctl.try_recv() {
+                Ok(m) => Some(m),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    closing = true;
+                    None
+                }
+            }
+        };
         let n = ring.slots() / channels * channels;
         if n > 0 {
             scratch.clear();
@@ -402,19 +425,6 @@ fn writer_loop(
                 rec.lost = true;
             }
         }
-        let msg = if n == 0 {
-            match ctl.recv_timeout(Duration::from_millis(2)) {
-                Ok(m) => Some(m),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match ctl.try_recv() {
-                Ok(m) => Some(m),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        };
         match msg {
             Some(Ctl::Start {
                 id,
@@ -449,6 +459,10 @@ fn writer_loop(
                     rec.lost = true;
                 }
             }
+        }
+        // Closing: what was read above is the last of it.
+        if closing {
+            break;
         }
     }
     for (_, rec) in recs {
@@ -859,6 +873,50 @@ mod tests {
 
     fn settle() {
         std::thread::sleep(Duration::from_millis(60));
+    }
+
+    #[test]
+    fn stopping_at_once_keeps_all_that_was_delivered_before_the_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..20 {
+            let path = dir.path().join(format!("take{round}.wav"));
+            let (mut cap, mut tx, shared) = fake(1, 48_000);
+            let id = cap.start(&path, InputSource::Mono(0), 0).unwrap();
+            let wave = vec![0.25f32; 48_000];
+            for block in wave.chunks(512) {
+                push(block, 1, &mut tx, &shared);
+            }
+            // No waiting: the writer thread may not have read any of it yet.
+            let done = cap.stop(id).unwrap();
+            assert_eq!((done.frames, done.lost), (48_000, false), "round {round}");
+        }
+    }
+
+    #[test]
+    fn starting_at_once_finds_what_went_by_before_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        for round in 0..20 {
+            let path = dir.path().join(format!("late{round}.wav"));
+            let (mut cap, mut tx, shared) = fake(1, 48_000);
+            push(&ramp(0, 200, 1), 1, &mut tx, &shared);
+            // No waiting: the writer thread may not have read any of it yet.
+            let (reply, answer) = mpsc::channel();
+            cap.ctl
+                .as_ref()
+                .unwrap()
+                .send(Ctl::Start {
+                    id: 9,
+                    path: path.clone(),
+                    source: InputSource::Mono(0),
+                    from_frame: 150,
+                    reply,
+                })
+                .unwrap();
+            answer.recv().unwrap().unwrap();
+            let done = cap.stop(9).unwrap();
+            assert_eq!(done.frames, 50, "round {round}");
+            assert_eq!(read_back(&path)[0], 1500.0, "round {round}");
+        }
     }
 
     #[test]
