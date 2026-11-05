@@ -30,10 +30,38 @@ pub enum IconKind {
     ExternalMidi,
 }
 
+/// The icons that can be chosen for a track, with the names they are saved under.
+pub const CHOICES: [(IconKind, &str); 11] = [
+    (IconKind::Note, "note"),
+    (IconKind::Waveform, "waveform"),
+    (IconKind::DrumKit, "drums"),
+    (IconKind::Piano, "piano"),
+    (IconKind::WoodKeys, "keys"),
+    (IconKind::Synth, "synth"),
+    (IconKind::Bass, "bass"),
+    (IconKind::Guitar, "guitar"),
+    (IconKind::Mic, "mic"),
+    (IconKind::Strings, "strings"),
+    (IconKind::Folder, "folder"),
+];
+
+/// The name an icon is saved under.
+pub fn icon_name(kind: IconKind) -> Option<&'static str> {
+    CHOICES.iter().find(|c| c.0 == kind).map(|c| c.1)
+}
+
+/// The icon saved under `name`.
+pub fn icon_named(name: &str) -> Option<IconKind> {
+    CHOICES.iter().find(|c| c.1 == name).map(|c| c.0)
+}
+
 /// Icon drawn for a track (header, Library, inspector). As in Logic, a software instrument
 /// track shows the generic green note tile until a Library patch is loaded; other tracks use
 /// [`icon_kind`]. (The sound is still chosen from the name, see `patches::synth_patch`.)
 pub fn track_icon(t: &Track) -> IconKind {
+    if let Some(chosen) = t.icon {
+        return chosen;
+    }
     if t.kind == TrackKind::Aux {
         IconKind::Aux
     } else if t.kind == TrackKind::Folder {

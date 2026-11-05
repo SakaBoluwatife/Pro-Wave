@@ -737,6 +737,8 @@ pub struct Track {
     pub auto: Automation,
     /// The mix group (index into `Project::groups`) the track belongs to.
     pub group: Option<usize>,
+    /// The icon chosen with Assign Track Icon; else one follows from the patch.
+    pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
     pub category: Option<&'static str>,
     /// Individual track height as a factor of the global track zoom (Logic: drag the lower
@@ -805,6 +807,7 @@ impl Track {
             auto: Automation::default(),
             group: None,
             category: None,
+            icon: None,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -963,6 +966,7 @@ impl Project {
             regions: vec![],
             params: TrackParams::default(),
             category: None,
+            icon: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1026,6 +1030,7 @@ impl Project {
             }],
             params: TrackParams::default(),
             category: None,
+            icon: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,

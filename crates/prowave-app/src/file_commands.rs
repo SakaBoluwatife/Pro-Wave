@@ -25,6 +25,8 @@ pub enum FileCmd {
     OpenRecent,
     /// Starts a new project from a template (Project Chooser).
     NewFrom(Template),
+    /// Starts a new project from the template file in `UiState::recent_pick`.
+    NewFromFile,
 }
 
 impl FileCmd {
@@ -43,6 +45,7 @@ impl FileCmd {
             | FileCmd::SaveCopy
             | FileCmd::Revert
             | FileCmd::OpenRecent
+            | FileCmd::NewFromFile
             | FileCmd::NewFrom(_) => return None,
         };
         Some(KeyboardShortcut::new(modifiers, key))
@@ -68,6 +71,7 @@ impl FileCmd {
 pub enum FileTask {
     ImportAudio,
     Reveal,
+    SaveTemplate,
     Rename(String),
 }
 
@@ -144,6 +148,7 @@ impl App {
                 | FileCmd::Close
                 | FileCmd::Open
                 | FileCmd::OpenRecent
+                | FileCmd::NewFromFile
                 | FileCmd::NewFrom(_)
         );
         if cmd == FileCmd::Revert {
@@ -160,6 +165,19 @@ impl App {
         match cmd {
             FileCmd::New | FileCmd::Close => self.replace(Project::empty(), None),
             FileCmd::NewFrom(t) => self.replace(t.project(), None),
+            FileCmd::NewFromFile => {
+                if let Some(path) = self.ui.recent_pick.take() {
+                    match project_io::open_project(&path, ctx) {
+                        Ok((mut p, _)) => {
+                            p.name = "Untitled".to_string();
+                            self.replace(p, None);
+                        }
+                        Err(e) => {
+                            self.ui.status = Some(format!("cannot open {}: {e}", path.display()));
+                        }
+                    }
+                }
+            }
             FileCmd::Open => {
                 if let Some(path) = dialog().set_title(tr("Open Project")).pick_file() {
                     self.open(&path, ctx);
@@ -295,6 +313,35 @@ impl App {
                 None => self.ui.status = Some("The project has not been saved yet".to_string()),
             },
             FileTask::Rename(name) => self.rename_project(name.trim()),
+            FileTask::SaveTemplate => self.save_template(),
+        }
+    }
+
+    /// File > Save as Template: the project as it is, for New from Template. It stays the project
+    /// being worked on, under its own file.
+    fn save_template(&mut self) {
+        let Some(dir) = crate::start_screen::template_folder() else {
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.ui.status = Some(e.to_string());
+            return;
+        }
+        let file = dialog()
+            .set_title("Save as Template")
+            .set_directory(&dir)
+            .set_file_name(format!(
+                "{}.{}",
+                self.project.name,
+                prowave_project::EXTENSION
+            ))
+            .save_file();
+        let Some(file) = file else {
+            return;
+        };
+        self.collect_plugin_states();
+        if let Err(e) = project_io::save_project(&self.project, &file) {
+            self.ui.status = Some(format!("cannot save {}: {e}", file.display()));
         }
     }
 

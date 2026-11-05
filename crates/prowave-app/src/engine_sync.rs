@@ -20,6 +20,8 @@ struct Mix {
 /// returns `true`, so a command rejected because the queue was full is retried on the next
 /// `sync`. `None` means nothing has been accepted yet.
 pub struct EngineSync {
+    /// What the engine was last told about pre-fader metering.
+    pre_fader: bool,
     pub engine: Engine,
     playing: bool,
     /// The tracks that hear their input, as last sent.
@@ -493,6 +495,7 @@ fn tempo_key(p: &Project) -> TempoKey {
 impl EngineSync {
     pub fn new(engine: Engine, p: &Project) -> Self {
         let mut sync = Self {
+            pre_fader: false,
             engine,
             playing: false,
             monitors: Vec::new(),
@@ -836,6 +839,13 @@ impl EngineSync {
                 .sum::<usize>()
     }
 
+    /// Where the strip meters read, when it changed. Tried again next frame if the queue is full.
+    pub fn set_pre_fader(&mut self, on: bool) {
+        if self.pre_fader != on && self.engine.send(Command::SetPreFaderMeter(on)) {
+            self.pre_fader = on;
+        }
+    }
+
     /// Moves a plugin parameter from a Smart Control.
     pub fn smart_move(&mut self, uid: u64, param: u32, value: f64) -> bool {
         self.rack.smart_move(uid, param, value, &mut self.engine)
@@ -979,6 +989,7 @@ mod tests {
             }],
             params: TrackParams::default(),
             category: None,
+            icon: None,
             sends: Vec::new(),
             auto: crate::model::Automation::default(),
             group: None,

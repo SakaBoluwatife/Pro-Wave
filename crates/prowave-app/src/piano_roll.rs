@@ -12,7 +12,7 @@ use crate::model::{Note, Project, TrackKind};
 use crate::note_edit::{self, GRIDS, MODES, ROOTS};
 use crate::tracks_area::{snap_step, snap_to, Snap};
 use crate::widgets::{
-    back_chevron, menu_title, popup_button, slider_h, todo_item, BLUE, BTN_BG, TEXT, TEXT_DIM,
+    back_chevron, menu_title, popup_button, slider_h, BLUE, BTN_BG, TEXT, TEXT_DIM,
 };
 use crate::UiState;
 use egui::{
@@ -34,6 +34,21 @@ const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
 const ROW_WHITE: Color32 = Color32::from_rgb(26, 26, 26);
 const ROW_BLACK: Color32 = Color32::from_rgb(20, 20, 20);
 const NOTE_SEL: Color32 = Color32::from_rgb(0xe4, 0xff, 0xb0);
+/// What the colour of a note says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NoteColors {
+    #[default]
+    Velocity,
+    Track,
+    Pitch,
+}
+
+/// A colour for each of the twelve notes of the octave.
+pub(crate) fn pitch_color(pitch: u8) -> Color32 {
+    let hue = f32::from(pitch % 12) / 12.0;
+    egui::ecolor::Hsva::new(hue, 0.62, 0.86, 1.0).into()
+}
+
 /// Logic's velocity colours for a note: green when soft, yellow, then red when hard.
 pub(crate) fn velocity_color(vel: u8) -> Color32 {
     let t = (vel as f32 / 127.0).clamp(0.0, 1.0);
@@ -161,6 +176,8 @@ enum Drag {
 }
 
 pub struct PianoView {
+    /// View > Note Colors.
+    pub note_colors: NoteColors,
     tool: Tool,
     /// Pitch currently sounding because of the mouse (key press or note edit).
     held: Option<u8>,
@@ -200,6 +217,7 @@ pub struct PianoView {
 impl Default for PianoView {
     fn default() -> Self {
         Self {
+            note_colors: NoteColors::default(),
             tools: crate::note_tools::ToolSettings::default(),
             tool: Tool::Draw,
             held: None,
@@ -522,7 +540,18 @@ fn toolbar(
             v.fit = true;
             ui.close();
         }
-        todo_item(ui, tr("Note Colors"));
+        ui.menu_button(tr("Note Colors"), |ui| {
+            for (colors, text) in [
+                (NoteColors::Velocity, "By Velocity"),
+                (NoteColors::Track, "By Track"),
+                (NoteColors::Pitch, "By Pitch"),
+            ] {
+                if ui.selectable_label(v.note_colors == colors, text).clicked() {
+                    v.note_colors = colors;
+                    ui.close();
+                }
+            }
+        });
     });
 
     // Tool buttons, with their keys.
@@ -1865,7 +1894,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
         let selected = v.selected.contains(&i);
         // Logic draws a note with a light edge of its velocity colour around a deeper body.
-        let color = velocity_color(n.vel);
+        let color = match v.note_colors {
+            NoteColors::Velocity => velocity_color(n.vel),
+            NoteColors::Track => p.tracks[ti].color,
+            NoteColors::Pitch => pitch_color(n.pitch),
+        };
         let (fill, edge) = if n.muted {
             (Color32::from_gray(0x55), Color32::from_gray(0x77))
         } else if selected {

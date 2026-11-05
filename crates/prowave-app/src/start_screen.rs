@@ -152,12 +152,45 @@ fn choice(c: &Chooser, recent: &[PathBuf]) -> Option<Choice> {
 enum Choice {
     Template(Template),
     Recent(PathBuf),
+    UserTemplate(PathBuf),
+}
+
+/// Where File > Save as Template puts templates.
+pub fn template_folder() -> Option<PathBuf> {
+    Some(crate::recent_files::config_dir()?.join("templates"))
+}
+
+/// The project files in `dir`: name and file, by name.
+fn templates_in(dir: &std::path::Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(prowave_project::EXTENSION))
+        .filter_map(|p| Some((p.file_stem()?.to_str()?.to_string(), p)))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The templates the user saved.
+fn user_templates() -> Vec<(String, PathBuf)> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    template_folder().map_or_else(Vec::new, |dir| templates_in(&dir))
 }
 
 /// Queues the File command for `choice`.
 fn choose(choice: Choice, s: &mut UiState) {
     match choice {
         Choice::Template(t) => s.file_cmd = Some(FileCmd::NewFrom(t)),
+        Choice::UserTemplate(path) => {
+            s.recent_pick = Some(path);
+            s.file_cmd = Some(FileCmd::NewFromFile);
+        }
         Choice::Recent(path) => {
             s.recent_pick = Some(path);
             s.file_cmd = Some(FileCmd::OpenRecent);
@@ -290,6 +323,31 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
                 }
                 if double {
                     chosen = Some(Choice::Template(*t));
+                }
+            }
+            if c.section == Section::Templates {
+                // The user's own, under the tiles: click to start from one.
+                let rows = items.len().div_ceil(per_row) as f32;
+                let top = list_top + rows * (h + gap);
+                for (k, (name, path)) in user_templates().into_iter().enumerate() {
+                    let r = Rect::from_min_size(
+                        pos2(body.left(), top + k as f32 * 34.0),
+                        vec2(body.width().min(420.0), 30.0),
+                    );
+                    let resp =
+                        ui.interact(r, egui::Id::unique(("chooser_template", k)), Sense::click());
+                    let fill = if resp.hovered() { ACCENT } else { TILE };
+                    ui.painter().rect_filled(r, 4.0, fill);
+                    ui.painter().text(
+                        pos2(r.left() + 10.0, r.center().y),
+                        Align2::LEFT_CENTER,
+                        name,
+                        FontId::proportional(13.0),
+                        TEXT,
+                    );
+                    if resp.clicked() {
+                        chosen = Some(Choice::UserTemplate(path));
+                    }
                 }
             }
         }

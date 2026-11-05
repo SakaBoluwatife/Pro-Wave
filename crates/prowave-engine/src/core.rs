@@ -481,6 +481,8 @@ pub enum Command {
         slot: u8,
         plugin: Option<Box<PluginSlot>>,
     },
+    /// The strip meters read before the fader, or after it.
+    SetPreFaderMeter(bool),
     /// Moves a parameter of the hosted plugin of a slot, as a position 0..=1 along its range.
     SetPluginParam {
         track: u16,
@@ -780,6 +782,7 @@ pub struct EngineCore {
     track_ramp_l: Vec<GainRamp>,
     track_ramp_r: Vec<GainRamp>,
     mix_ramp_remaining: u32,
+    pre_fader_meter: bool,
     track_pk_l: Vec<f32>,
     track_pk_r: Vec<f32>,
     track_audible: Vec<bool>,
@@ -944,6 +947,7 @@ impl EngineCore {
             track_ramp_l: vec![GainRamp::new(1.0); MAX_TRACKS],
             track_ramp_r: vec![GainRamp::new(1.0); MAX_TRACKS],
             mix_ramp_remaining: 0,
+            pre_fader_meter: false,
             track_pk_l: vec![0.0; MAX_TRACKS],
             track_pk_r: vec![0.0; MAX_TRACKS],
             track_audible: vec![true; MAX_TRACKS],
@@ -1500,8 +1504,13 @@ impl EngineCore {
                     self.bus_r[s.bus as usize - 1] += yr * g;
                 }
             }
-            self.track_pk_l[t] = self.track_pk_l[t].max(yl.abs() as f32);
-            self.track_pk_r[t] = self.track_pk_r[t].max(yr.abs() as f32);
+            let (ml, mr) = if self.pre_fader_meter {
+                (xl, xr)
+            } else {
+                (yl, yr)
+            };
+            self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
+            self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
         }
         // The compensation after the fader keeps running while the strip is silent, so its
         // timing is right the moment it is heard.
@@ -1584,12 +1593,17 @@ impl EngineCore {
                 self.in_l[t] * self.track_gain_l[t] as f64,
                 self.in_r[t] * self.track_gain_r[t] as f64,
             );
+            let (ml, mr) = if self.pre_fader_meter {
+                (self.in_l[t], self.in_r[t])
+            } else {
+                (yl, yr)
+            };
             self.in_l[t] = 0.0;
             self.in_r[t] = 0.0;
             out.0 += yl;
             out.1 += yr;
-            self.track_pk_l[t] = self.track_pk_l[t].max(yl.abs() as f32);
-            self.track_pk_r[t] = self.track_pk_r[t].max(yr.abs() as f32);
+            self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
+            self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
         }
         self.dirty.clear();
         for k in 0..self.complex.len() {
@@ -1798,6 +1812,7 @@ impl EngineCore {
                         plugin.set_param(param, value);
                     }
                 }
+                Command::SetPreFaderMeter(on) => self.pre_fader_meter = on,
                 Command::SetPluginLowLatency { track, slot, on } => {
                     if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
                         plugin.set_low_latency(on);
@@ -2814,6 +2829,32 @@ mod tests {
         let mut buf = vec![0.0f32; 4_800 * 2];
         e.process(&mut buf);
         assert!(buf.iter().any(|x| x.abs() > 0.05));
+    }
+
+    #[test]
+    fn pre_fader_meters_do_not_follow_the_fader() {
+        let (mut e, mut tx, mut s) = rig();
+        let mix = TrackMix {
+            gain_db: -120.0,
+            ..TrackMix::default()
+        };
+        let song = Song::new(vec![note(0.0, 2.0)], vec![mix]);
+        assert!(tx.push(Command::SetSong(Box::new(song))).is_ok());
+        assert!(tx.push(Command::Play).is_ok());
+        let mut buf = vec![0.0f32; 4800 * 2];
+        e.process(&mut buf);
+        assert!(
+            s.read().track_peaks(0).0 < 1e-2,
+            "after the fader: almost nothing"
+        );
+        assert!(tx.push(Command::SetPreFaderMeter(true)).is_ok());
+        for _ in 0..4 {
+            e.process(&mut buf);
+        }
+        assert!(
+            s.read().track_peaks(0).0 > 0.05,
+            "before the fader: the sound"
+        );
     }
 
     #[test]

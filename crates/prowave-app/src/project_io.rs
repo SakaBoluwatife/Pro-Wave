@@ -387,6 +387,10 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             group: t.group,
             instrument: t.instrument.map(str::to_string),
             category: t.category.map(str::to_string),
+            icon: t
+                .icon
+                .and_then(crate::track_icons::icon_name)
+                .map(str::to_string),
             transpose: t.params.transpose,
             velocity: t.params.velocity,
             key_limit: t.params.key_limit,
@@ -823,6 +827,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             auto: automation_from_doc(t),
             group: t.group,
             category: t.category.as_deref().map(intern),
+            icon: t.icon.as_deref().and_then(crate::track_icons::icon_named),
             height: finite_in(t.height, Track::MIN_HEIGHT, Track::MAX_HEIGHT, 1.0),
             indent: t.indent,
             folded: t.folded,

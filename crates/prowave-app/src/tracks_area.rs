@@ -137,12 +137,39 @@ pub enum TrackTool {
     Fade,
 }
 
+/// What the headers of the tracks show (Track > Configure Track Header).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderOpts {
+    pub number: bool,
+    pub icon: bool,
+    pub buttons: bool,
+    pub level: bool,
+}
+
+impl Default for HeaderOpts {
+    fn default() -> Self {
+        Self {
+            number: true,
+            icon: true,
+            buttons: true,
+            level: true,
+        }
+    }
+}
+
+/// Regions with View > Show Colors off.
+const NO_COLOR: Color32 = Color32::from_gray(0x7c);
+
+/// The width of the narrow header left when Show Track Header is off.
+const NARROW_HEADER_W: f32 = 112.0;
+
 /// A region edit, from a menu or a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditCmd {
     Cut,
     Copy,
     Paste,
+    PasteReplace,
     Split,
     Join,
 }
@@ -154,6 +181,7 @@ pub fn run_edit(p: &mut Project, v: &mut TracksView, status: &mut Option<String>
         EditCmd::Copy => edit::copy(p, v),
         EditCmd::Cut => edit::copy(p, v).map(|()| delete_selected(p, v)),
         EditCmd::Paste => edit::paste(p, v).map(|_| ()),
+        EditCmd::PasteReplace => edit::paste_replace(p, v),
         EditCmd::Split => edit::split_at_playhead(p, v),
         EditCmd::Join => edit::join_selected(p, v),
     };
@@ -223,6 +251,14 @@ pub struct TracksView {
     pub tempo_all: Option<crate::smart_tempo::AllJob>,
     /// The Smart Tempo Editor window.
     pub tempo_editor: crate::smart_tempo::Editor,
+    /// View > Show Track Header: off leaves a narrow column of numbers and names.
+    pub show_header: bool,
+    pub show_ruler: bool,
+    pub show_grid: bool,
+    /// View > Show Colors: off draws the regions in gray.
+    pub show_colors: bool,
+    /// Track > Configure Track Header.
+    pub header_opts: HeaderOpts,
     /// An entry of the Functions or View menu, for `menus::apply`.
     pub pending_menu: Option<&'static str>,
 }
@@ -316,6 +352,11 @@ impl Default for TracksView {
             tempo_jobs: Vec::new(),
             tempo_all: None,
             tempo_editor: Default::default(),
+            show_header: true,
+            show_ruler: true,
+            show_grid: true,
+            show_colors: true,
+            header_opts: HeaderOpts::default(),
             pending_menu: None,
         }
     }
@@ -857,7 +898,10 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
             v.pending_menu = Some("Show Global Tracks");
             ui.close();
         }
-        todo_item(ui, tr("Configure Track Header…"));
+        if ui.button(tr("Configure Track Header…")).clicked() {
+            v.pending_menu = Some("Configure Track Header…");
+            ui.close();
+        }
     });
 
     // View buttons: grid (Live Loops) / list (Tracks, active).
@@ -1876,11 +1920,14 @@ fn draw_take_folder(
     seconds_per_beat: f32,
     selected: bool,
     silenced: bool,
+    colored: bool,
 ) {
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
-    } else {
+    } else if colored {
         region.params.pattern_color.unwrap_or(track.color)
+    } else {
+        NO_COLOR
     };
     let fill = if silenced {
         Color32::from_rgb(0x2e, 0x2e, 0x30)
@@ -2108,12 +2155,15 @@ fn draw_region(
     recording: bool,
     silenced: bool,
     seed: u32,
+    colored: bool,
 ) {
     // Muted regions are drawn grey, like Logic.
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
-    } else {
+    } else if colored {
         region.params.pattern_color.unwrap_or(track.color)
+    } else {
+        NO_COLOR
     };
     let body = if recording {
         // The region being recorded is red until the recording stops.
@@ -2507,6 +2557,7 @@ fn slider_to_db(f: f32) -> f32 {
 
 /// Draws track `i`'s header and returns the response of its background (for the right-click
 /// menu; the buttons on it handle their own clicks).
+#[allow(clippy::too_many_arguments)]
 fn header(
     ui: &Ui,
     g: &Painter,
@@ -2515,6 +2566,7 @@ fn header(
     hdr: Rect,
     peaks: (f32, f32),
     silenced: bool,
+    opts: HeaderOpts,
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
@@ -2522,14 +2574,17 @@ fn header(
         [hdr.left_bottom(), hdr.right_bottom()],
         Stroke::new(1.0, Color32::from_gray(0x2a)),
     );
-    let num = Rect::from_min_size(hdr.min, vec2(NUM_W, hdr.height()));
-    g.text(
-        num.center(),
-        Align2::CENTER_CENTER,
-        (i + 1).to_string(),
-        FontId::proportional(12.0),
-        TEXT_DIM,
-    );
+    let num_w = if opts.number { NUM_W } else { 0.0 };
+    if opts.number {
+        let num = Rect::from_min_size(hdr.min, vec2(NUM_W, hdr.height()));
+        g.text(
+            num.center(),
+            Align2::CENTER_CENTER,
+            (i + 1).to_string(),
+            FontId::proportional(12.0),
+            TEXT_DIM,
+        );
+    }
     let resp = ui.interact(hdr, id(("hdr", i)), Sense::click());
     if resp.clicked() || context_click(&resp) {
         p.selected_track = i;
@@ -2539,7 +2594,7 @@ fn header(
     let icon_size = (h - 14.0).clamp(22.0, 40.0);
     let indent = f32::from(p.tracks[i].indent) * INDENT_W;
     let folder = p.tracks[i].kind == TrackKind::Folder;
-    let content_x = hdr.left() + NUM_W + 6.0 + indent;
+    let content_x = hdr.left() + num_w + 6.0 + indent;
     if folder {
         // Fold arrow: click to hide or show the tracks inside.
         let arrow = Rect::from_center_size(pos2(content_x + 5.0, hdr.center().y), vec2(14.0, 20.0));
@@ -2558,16 +2613,23 @@ fn header(
         ),
         vec2(icon_size, icon_size),
     );
-    draw_icon(g, icon, track_icon(&p.tracks[i]));
+    if opts.icon {
+        draw_icon(g, icon, track_icon(&p.tracks[i]));
+    }
 
-    let name_x = icon.right() + 10.0;
+    let name_x = if opts.icon {
+        icon.right() + 10.0
+    } else {
+        icon.left()
+    };
     let compact = h < 46.0;
     let name_y = if compact {
         hdr.center().y
     } else {
         hdr.center().y - 9.0
     };
-    let name_w = hdr.right() - 122.0 - name_x;
+    let name_right = if opts.level { 122.0 } else { 6.0 };
+    let name_w = hdr.right() - name_right - name_x;
     let name_galley = g.layout_no_wrap(p.tracks[i].name.clone(), FontId::proportional(13.0), TEXT);
     let clip = g.with_clip_rect(
         Rect::from_min_size(pos2(name_x, hdr.top()), vec2(name_w.max(20.0), h))
@@ -2581,7 +2643,7 @@ fn header(
 
     // A folder only has M and S, which act on everything inside it, and no volume or pan.
     if folder {
-        if !compact {
+        if !compact && opts.buttons {
             folder_buttons(ui, g, p, i, name_x, hdr.center().y + 3.0, selected);
         }
         return (resp, Vec::new());
@@ -2590,7 +2652,7 @@ fn header(
     // M S R (I) buttons under the name (compact tracks: hidden, like Logic at small heights).
     let audio = p.tracks[i].kind == TrackKind::Audio;
     let t = &mut p.tracks[i];
-    if !compact {
+    if !compact && opts.buttons {
         let by = hdr.center().y + 3.0;
         let mut bx = name_x;
         let size = vec2(18.0, 15.0);
@@ -2652,6 +2714,9 @@ fn header(
         }
     }
 
+    if !opts.level {
+        return (resp, Vec::new());
+    }
     // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob.
     // Logic's slider: a dark pill with a grey thumb that stays inside it.
     let sl = Rect::from_min_size(
@@ -2754,15 +2819,21 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     } else {
         0.0
     };
-    let tracks_y = ruler_y + RULER_H + marker_h + signature_h + tempo_h;
+    let ruler_h = if s.tracks.show_ruler { RULER_H } else { 0.0 };
+    let header_w = if s.tracks.show_header {
+        HEADER_W
+    } else {
+        NARROW_HEADER_W
+    };
+    let tracks_y = ruler_y + ruler_h + marker_h + signature_h + tempo_h;
     let headers = Rect::from_min_max(
         pos2(area.left(), tracks_y),
-        pos2(area.left() + HEADER_W, area.bottom()),
+        pos2(area.left() + header_w, area.bottom()),
     );
-    let lanes = Rect::from_min_max(pos2(area.left() + HEADER_W, tracks_y), area.max);
+    let lanes = Rect::from_min_max(pos2(area.left() + header_w, tracks_y), area.max);
     let ruler = Rect::from_min_max(
         pos2(lanes.left(), ruler_y),
-        pos2(area.right(), ruler_y + RULER_H),
+        pos2(area.right(), ruler_y + ruler_h),
     );
     let corner = Rect::from_min_max(
         pos2(area.left(), ruler_y),
@@ -2832,7 +2903,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             Stroke::new(1.0, crate::theme::BORDER),
         );
     }
-    for bar in &bars {
+    let grid_bars: &[_] = if v.show_grid { &bars } else { &[] };
+    for bar in grid_bars {
         let x = x_of(bar.start);
         g.line_segment(
             [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
@@ -3279,6 +3351,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         60.0 / p.tempo_at(start_beat).max(1.0),
                         selected,
                         silenced_by_solo(p, ti),
+                        v.show_colors,
                     );
                     continue;
                 }
@@ -3296,6 +3369,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 rec_targets.contains(&(ti, ri)),
                 silenced_by_solo(p, ti),
                 ti as u32 * 77 + ri as u32 * 13 + 3,
+                v.show_colors,
             );
         }
     }
@@ -3343,7 +3417,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
 
     if marker_h > 0.0 {
-        let top = ruler_y + RULER_H;
+        let top = ruler_y + ruler_h;
         crate::marker_track::show(
             ui,
             p,
@@ -3358,7 +3432,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
     if signature_h > 0.0 {
-        let top = ruler_y + RULER_H + marker_h;
+        let top = ruler_y + ruler_h + marker_h;
         crate::signature_track::show(
             ui,
             p,
@@ -3375,7 +3449,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
     if tempo_h > 0.0 {
-        let top = ruler_y + RULER_H + marker_h + signature_h;
+        let top = ruler_y + ruler_h + marker_h + signature_h;
         crate::tempo_track::show(
             ui,
             p,
@@ -3426,10 +3500,20 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         if y + row_h < headers.top() || y > headers.bottom() {
             continue;
         }
-        let hdr = Rect::from_min_size(pos2(headers.left(), y), vec2(HEADER_W, row_h));
+        let hdr = Rect::from_min_size(pos2(headers.left(), y), vec2(header_w, row_h));
+        let opts = if s.tracks.show_header {
+            s.tracks.header_opts
+        } else {
+            HeaderOpts {
+                number: true,
+                icon: false,
+                buttons: false,
+                level: false,
+            }
+        };
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
-        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced);
+        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;

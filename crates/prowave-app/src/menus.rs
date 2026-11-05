@@ -387,6 +387,7 @@ pub(crate) const CHECKABLE: &[&str] = &[
     "Show Project Notes",
     "Show Media Browser",
     "Check for Updates Automatically",
+    "Pre-Fader Metering",
     "Show Toolbar",
     "Show Track Header",
     "Show Ruler",
@@ -492,7 +493,10 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Delete" | "Deselect All" | "Cut" | "Copy" => s.tracks.selected.is_some(),
         "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
-        "Paste" => !s.tracks.clipboard.is_empty(),
+        "Paste" | "Paste Replace" => !s.tracks.clipboard.is_empty(),
+        "Show Track Header" | "Show Ruler" | "Show Colors" | "Show Grid" => true,
+        "Configure Track Header…" | "Pre-Fader Metering" | "Save as Template…" => true,
+        "Assign Track Icon…" => !p.tracks.is_empty(),
         "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…"
         | "Routing Matrix…" | "General…" | "Synchronization…" | "Metronome…" | "Recording…"
         | "Audio…" | "MIDI…" => true,
@@ -629,8 +633,11 @@ pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
         _ if Lang::from_native_name(label).is_some() => {
             Lang::from_native_name(label) == Some(i18n::current())
         }
-        // Always visible in this app.
-        "Show Track Header" | "Show Ruler" | "Show Colors" | "Show Grid" => true,
+        "Show Track Header" => s.tracks.show_header,
+        "Show Ruler" => s.tracks.show_ruler,
+        "Show Colors" => s.tracks.show_colors,
+        "Show Grid" => s.tracks.show_grid,
+        "Pre-Fader Metering" => s.mixer.pre_fader,
         _ => false,
     }
 }
@@ -873,12 +880,21 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "All Tracks as Audio Files…" => s.bounce.dialog = Some(crate::bounce::Purpose::Stems),
         "Regions in Place…" | "Bounce In Place" => crate::bounce::bounce_selection(p, s, false),
         "Bounce and Join" => crate::bounce::bounce_selection(p, s, true),
-        "Cut" | "Copy" | "Paste" | "Split at Playhead" | "Join" => {
+        "Show Track Header" => s.tracks.show_header = !s.tracks.show_header,
+        "Show Ruler" => s.tracks.show_ruler = !s.tracks.show_ruler,
+        "Show Colors" => s.tracks.show_colors = !s.tracks.show_colors,
+        "Show Grid" => s.tracks.show_grid = !s.tracks.show_grid,
+        "Configure Track Header…" => s.dialogs.track_header = true,
+        "Assign Track Icon…" => s.dialogs.icon = Some(p.selected_track),
+        "Pre-Fader Metering" => s.mixer.pre_fader = !s.mixer.pre_fader,
+        "Save as Template…" => s.file_task = Some(FileTask::SaveTemplate),
+        "Cut" | "Copy" | "Paste" | "Paste Replace" | "Split at Playhead" | "Join" => {
             use crate::tracks_area::{run_edit, EditCmd};
             let cmd = match label {
                 "Cut" => EditCmd::Cut,
                 "Copy" => EditCmd::Copy,
                 "Paste" => EditCmd::Paste,
+                "Paste Replace" => EditCmd::PasteReplace,
                 "Join" => EditCmd::Join,
                 _ => EditCmd::Split,
             };
@@ -1319,7 +1335,16 @@ mod tests {
                     s.file_task.clone(),
                     s.score_tab,
                     s.mixer.auto_editor.track,
-                    s.dialogs.groups,
+                    (
+                        s.dialogs.groups,
+                        s.dialogs.track_header,
+                        s.dialogs.icon,
+                        s.mixer.pre_fader,
+                        s.tracks.show_header,
+                        s.tracks.show_ruler,
+                        s.tracks.show_colors,
+                        s.tracks.show_grid,
+                    ),
                     s.dialogs.rename_project.clone(),
                     p.tracks.iter().filter(|t| t.rec).count(),
                     s.status.clone(),

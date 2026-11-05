@@ -80,6 +80,8 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// Mix > Pre-Fader Metering.
+    pub pre_fader: bool,
     pub strip_error: Option<String>,
     /// What went wrong putting one on, for the status line.
     pub message: Option<String>,
@@ -151,6 +153,7 @@ impl Default for MixerView {
             installed: std::sync::Arc::default(),
             preset_cmd: None,
             strip_cmd: None,
+            pre_fader: false,
             strip_error: None,
             message: None,
             mode: MixerMode::Tracks,

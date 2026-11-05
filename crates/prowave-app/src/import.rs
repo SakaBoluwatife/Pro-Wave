@@ -112,6 +112,7 @@ pub fn import_audio_at(
         regions: vec![region],
         params: TrackParams::default(),
         category: None,
+        icon: None,
         sends: Vec::new(),
         auto: crate::model::Automation::default(),
         group: None,

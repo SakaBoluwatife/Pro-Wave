@@ -754,6 +754,7 @@ impl eframe::App for App {
         self.project.refresh_generated();
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            sync.set_pre_fader(self.ui.mixer.pre_fader);
             for (uid, param, value) in std::mem::take(&mut self.ui.smart.moves) {
                 sync.smart_move(uid, param, value);
             }

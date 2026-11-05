@@ -265,6 +265,8 @@ pub struct TrackDoc {
     pub instrument: Option<String>,
     /// Library category of the loaded patch.
     pub category: Option<String>,
+    /// The icon the user chose; none for the one that follows from the patch.
+    pub icon: Option<String>,
     pub transpose: i8,
     pub velocity: i8,
     pub key_limit: (u8, u8),
@@ -443,6 +445,7 @@ impl Default for TrackDoc {
             inserts: Vec::new(),
             instrument: None,
             category: None,
+            icon: None,
             transpose: 0,
             velocity: 0,
             key_limit: (0, 127),
@@ -785,6 +788,7 @@ mod tests {
                     inserts: vec!["Channel EQ".into()],
                     instrument: Some("E-Piano".into()),
                     category: Some("Keyboards".into()),
+                    icon: None,
                     key_limit: (36, 96),
                     send_bus: Some(3),
                     regions: vec![RegionDoc {

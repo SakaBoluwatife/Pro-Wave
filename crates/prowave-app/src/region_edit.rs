@@ -309,6 +309,68 @@ pub fn copy(p: &Project, v: &mut TracksView) -> Result<(), String> {
     Ok(())
 }
 
+/// Takes the stretch `from..to` (beats) off a track: regions across its edges are split there and
+/// what is inside goes. A region that cannot be split (a take folder) stays, and that is said.
+fn clear_range(p: &mut Project, t: usize, from: f64, to: f64) -> Result<(), String> {
+    const NEAR: f64 = 1e-4;
+    let span = |p: &Project, r: &Region| {
+        (
+            p.bar_to_beats(f64::from(r.start_bar) - 1.0),
+            p.region_end_beats(r),
+        )
+    };
+    for edge in [from, to] {
+        let across = p.tracks[t].regions.iter().position(|r| {
+            let (a, b) = span(p, r);
+            a + NEAR < edge && edge < b - NEAR
+        });
+        if let Some(r) = across {
+            split(p, t, r, edge)?;
+        }
+    }
+    let inside: Vec<bool> = p.tracks[t]
+        .regions
+        .iter()
+        .map(|r| {
+            let (a, b) = span(p, r);
+            a >= from - NEAR && b <= to + NEAR
+        })
+        .collect();
+    let mut flags = inside.into_iter();
+    p.tracks[t]
+        .regions
+        .retain(|_| !flags.next().unwrap_or(false));
+    Ok(())
+}
+
+/// Edit > Paste Replace: pastes at the playhead and takes away what was under the pasted regions.
+pub fn paste_replace(p: &mut Project, v: &mut TracksView) -> Result<(), String> {
+    paste(p, v)?;
+    let mut placed = v.all_selected();
+    // The last index first, so the ones still to come stay where they are.
+    placed.sort_unstable_by(|a, b| b.cmp(a));
+    let taken: Vec<(usize, Region)> = placed
+        .into_iter()
+        .map(|(t, r)| (t, p.tracks[t].regions.remove(r)))
+        .collect();
+    let mut cleared = Ok(());
+    for (t, region) in &taken {
+        let from = p.bar_to_beats(f64::from(region.start_bar) - 1.0);
+        let to = p.region_end_beats(region);
+        if let Err(e) = clear_range(p, *t, from, to) {
+            cleared = Err(e);
+        }
+    }
+    let mut again = Vec::with_capacity(taken.len());
+    for (t, region) in taken {
+        p.tracks[t].regions.push(region);
+        again.push((t, p.tracks[t].regions.len() - 1));
+    }
+    v.select_many(again);
+    p.song_rev += 1;
+    cleared
+}
+
 /// Moves the starts of the notes of the selected MIDI regions to the grid (in beats). Pattern and
 /// Drummer regions make their notes from settings and take folders from their takes, so they stay
 /// as they are. How many regions changed.
@@ -593,6 +655,31 @@ mod tests {
         let right = split(&mut p, t, r, 8.0).unwrap();
         assert!(p.tracks[t].regions[r].generated.is_none());
         assert!(p.tracks[t].regions[right].generated.is_none());
+    }
+
+    #[test]
+    fn paste_replace_takes_away_what_was_under_the_paste() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        let long = p.add_midi_region(t, 1.0).unwrap_or(0);
+        p.tracks[t].regions[long].len_bars = 4.0;
+        p.tracks[t].regions[long].notes = vec![note(0.0, 1.0, 60), note(9.0, 1.0, 62)];
+        let short = p.add_midi_region(t, 9.0).unwrap_or(1);
+        p.tracks[t].regions[short].len_bars = 1.0;
+        let mut v = TracksView::default();
+        v.select_only((t, short));
+        copy(&p, &mut v).unwrap_or_default();
+        p.selected_track = t;
+        p.position_beats = p.bar_to_beats(2.0);
+        assert!(paste_replace(&mut p, &mut v).is_ok());
+        let mut bars: Vec<(i32, i32)> = p.tracks[t]
+            .regions
+            .iter()
+            .map(|r| (r.start_bar as i32, (r.start_bar + r.len_bars) as i32))
+            .collect();
+        bars.sort_unstable();
+        assert_eq!(bars, [(1, 3), (3, 4), (4, 5), (9, 10)]);
+        assert_eq!(v.all_selected().len(), 1, "what was pasted stays selected");
     }
 
     #[test]

@@ -13,6 +13,10 @@ pub struct QuickDialogs {
     pub undo_history: bool,
     pub routing: bool,
     pub project_settings: bool,
+    /// Track > Configure Track Header.
+    pub track_header: bool,
+    /// Track > Assign Track Icon: the track.
+    pub icon: Option<usize>,
     /// Mix > Edit Groups.
     pub groups: bool,
     /// File > Project Management > Rename Project: what has been typed.
@@ -255,6 +259,8 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    track_header_window(ctx, s);
+    icon_window(ctx, p, s);
     rename_project_window(ctx, s);
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
@@ -262,6 +268,70 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     history_window(ctx, s);
     project_settings_window(ctx, p, s);
     crate::routing_matrix::show(ctx, p, s);
+}
+
+/// Track > Configure Track Header: what the track headers show.
+fn track_header_window(ctx: &egui::Context, s: &mut UiState) {
+    if !s.dialogs.track_header {
+        return;
+    }
+    let mut open = true;
+    let o = &mut s.tracks.header_opts;
+    egui::Window::new("Configure Track Header")
+        .id(egui::Id::unique("track_header"))
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.checkbox(&mut o.number, "Track number");
+            ui.checkbox(&mut o.icon, "Icon");
+            ui.checkbox(&mut o.buttons, "Mute, Solo, Record and Input buttons");
+            ui.checkbox(&mut o.level, "Volume and pan");
+        });
+    s.dialogs.track_header = open;
+}
+
+/// Track > Assign Track Icon.
+fn icon_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let Some(track) = s.dialogs.icon else {
+        return;
+    };
+    let Some(t) = p.tracks.get_mut(track) else {
+        s.dialogs.icon = None;
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(format!("Track Icon: {}", t.name))
+        .id(egui::Id::unique("track_icon"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.set_max_width(210.0);
+                for (kind, _) in crate::track_icons::CHOICES {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::click());
+                    crate::track_icons::draw_icon(ui.painter(), rect.shrink(2.0), kind);
+                    if t.icon == Some(kind) {
+                        ui.painter().rect_stroke(
+                            rect,
+                            3.0,
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if resp.clicked() {
+                        t.icon = Some(kind);
+                    }
+                }
+            });
+            if ui.button("Automatic").clicked() {
+                t.icon = None;
+            }
+        });
+    if !open {
+        s.dialogs.icon = None;
+    }
 }
 
 /// Mix > Edit Groups: each group's name, what it links, how many tracks it has.
