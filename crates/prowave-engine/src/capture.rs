@@ -130,6 +130,8 @@ pub struct Recorded {
     pub frames: u64,
     pub sample_rate: u32,
     pub channels: u16,
+    /// The loudest sample of the left and right sides (a mono file has only the left).
+    pub side_peaks: (f32, f32),
     /// Audio was lost: the ring overflowed, the file filled up, or the disk failed. The file
     /// holds what was written before.
     pub lost: bool,
@@ -291,6 +293,7 @@ struct Rec {
     /// The first frame of the stream that belongs to the recording.
     from_frame: u64,
     frames: u64,
+    side_peaks: (f32, f32),
     lost: bool,
     /// The file can take no more (full, or the disk failed).
     closed: bool,
@@ -310,6 +313,8 @@ impl Rec {
                 InputSource::Mono(c) => [frame[usize::from(c)], 0.0],
                 InputSource::Stereo(c) => [frame[usize::from(c)], frame[usize::from(c) + 1]],
             };
+            self.side_peaks.0 = self.side_peaks.0.max(pair[0].abs());
+            self.side_peaks.1 = self.side_peaks.1.max(pair[1].abs());
             let out = &pair[..usize::from(self.source.file_channels())];
             if !self.file.has_room() || self.file.write_frame(out).is_err() {
                 self.lost = true;
@@ -321,7 +326,7 @@ impl Rec {
     }
 
     fn finish(self) -> Result<Recorded, CaptureError> {
-        let (path, frames, lost) = (self.path, self.frames, self.lost);
+        let (path, frames, lost, side_peaks) = (self.path, self.frames, self.lost, self.side_peaks);
         let (channels, sample_rate) = (self.file.channels, self.file.sample_rate);
         self.file.finish()?;
         Ok(Recorded {
@@ -329,6 +334,7 @@ impl Rec {
             frames,
             sample_rate,
             channels,
+            side_peaks,
             lost,
         })
     }
@@ -469,6 +475,7 @@ fn start_rec(
         file: WavFile::create(path, source.file_channels(), sample_rate)?,
         from_frame,
         frames: 0,
+        side_peaks: (0.0, 0.0),
         lost: false,
         closed: false,
     })
@@ -789,6 +796,30 @@ where
 mod tests {
     use super::*;
     use crate::disk::AudioFile;
+
+    // A single input of a stereo device, as a track's Input 1 records it, plays on both sides.
+    #[test]
+    fn input_1_of_a_stereo_device_plays_on_both_sides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mono.wav");
+        let (mut cap, mut tx, shared) = fake(2, 48_000);
+        let id = cap.start(&path, InputSource::Mono(0), 0).unwrap();
+        let wave: Vec<f32> = (0..48_000)
+            .flat_map(|i| [(i as f32 * 0.05).sin() * 0.5, 0.0])
+            .collect();
+        for block in wave.chunks(1024) {
+            push(block, 2, &mut tx, &shared);
+        }
+        let done = cap.stop(id).unwrap();
+        assert_eq!(done.channels, 1);
+        assert!(done.side_peaks.0 > 0.4);
+        let stereo = AudioFile::open(&done.path).unwrap().read_stereo().unwrap();
+        assert!(stereo.len() > 2000);
+        for f in stereo.as_chunks::<2>().0 {
+            assert_eq!(f[0], f[1], "the same on both sides");
+        }
+        assert!(stereo.iter().any(|s| s.abs() > 0.4), "and it has the sound");
+    }
 
     /// A capture with no device, and the producer a device callback would use.
     fn fake(channels: u16, rate: u32) -> (Capture, Producer<f32>, Arc<Shared>) {

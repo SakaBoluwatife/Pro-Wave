@@ -989,11 +989,20 @@ fn slot_bypass_button(
     if resp.hovered() {
         g.rect_filled(b, 2.0, Color32::from_black_alpha(70));
     }
+    // The power sign: an open ring with a stroke through its gap. Dim and filled while bypassed.
+    let c = b.center();
+    let pen = Stroke::new(1.3, color);
     if bypassed {
-        g.circle_filled(b.center(), 3.5, color);
-    } else {
-        g.circle_stroke(b.center(), 3.5, Stroke::new(1.2, color));
+        g.circle_filled(c, 4.0, color.gamma_multiply(0.45));
     }
+    let ring: Vec<egui::Pos2> = (0..=16)
+        .map(|k| {
+            let a = (-55.0 + 290.0 * k as f32 / 16.0).to_radians();
+            c + vec2(a.cos(), a.sin()) * 4.0
+        })
+        .collect();
+    g.add(egui::Shape::line(ring, pen));
+    g.line_segment([c + vec2(0.0, -5.0), c + vec2(0.0, -1.0)], pen);
     resp.clicked()
 }
 
@@ -1537,13 +1546,14 @@ fn instrument_plugin_slot(
         return;
     };
     let loaded = plugin.failed.is_none();
-    let text_color = if loaded { Color32::WHITE } else { TEXT_DIM };
+    let on = loaded && !plugin.bypass;
+    let text_color = if on { Color32::WHITE } else { TEXT_DIM };
     named_slot(
         g,
         r,
         &plugin.name,
-        1,
-        if loaded { PLUGIN_BLUE } else { PLUGIN_OFF },
+        2,
+        if on { PLUGIN_BLUE } else { PLUGIN_OFF },
         text_color,
     );
     let hover = match &plugin.failed {
@@ -1557,6 +1567,11 @@ fn instrument_plugin_slot(
     let mut open = loaded && resp.clicked();
     let mut remove = delete_pressed(ui, &resp);
     remove |= slot_remove_button(ui, g, r, uid, text_color);
+    if slot_bypass_button(ui, g, r, uid, plugin.bypass, text_color) {
+        if let Some(live) = p.tracks[i].instrument_plugin.as_mut() {
+            live.bypass = !live.bypass;
+        }
+    }
     let installed = v.installed.clone();
     let mut pick = None;
     let mut items = |ui: &mut Ui| {

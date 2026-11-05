@@ -215,11 +215,10 @@ impl AudioFile {
         let total = self.frames.max(1);
         while src.next_stereo(&mut buf)? {
             for f in buf.as_chunks::<2>().0 {
-                let m = (f[0] + f[1]) * 0.5;
                 let b = ((frame * bins as u64) / total).min(bins as u64 - 1) as usize;
                 let e = &mut out[b];
-                e.0 = e.0.min(m);
-                e.1 = e.1.max(m);
+                e.0 = e.0.min(f[0]).min(f[1]);
+                e.1 = e.1.max(f[0]).max(f[1]);
                 frame += 1;
             }
             buf.clear();

@@ -393,6 +393,79 @@ pub fn quantize_selected(p: &mut Project, v: &TracksView, grid: f32) -> usize {
     done
 }
 
+/// Where regions dragged up or down were dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropRow {
+    Track(usize),
+    /// Under the last track.
+    Below,
+}
+
+/// Whether `t` can hold `region`: audio on an audio track, MIDI on one that plays MIDI.
+fn track_holds(p: &Project, t: usize, region: &Region) -> bool {
+    p.tracks.get(t).is_some_and(|track| {
+        track.kind.has_regions() && (track.kind == TrackKind::Audio) == region.audio.is_some()
+    })
+}
+
+/// Moves `regions` to the track they were dropped on, keeping their distances between tracks. The
+/// one grabbed is `lead`. Dropped under the last track, or on a track that cannot hold it, it gets
+/// a new track of its own kind. A clip of the Channel Rack belongs to its channel and stays. They
+/// end up selected. Nothing moves during a recording, which is still writing into its region.
+pub fn move_to_track(
+    p: &mut Project,
+    v: &mut TracksView,
+    regions: &[(usize, usize)],
+    lead: (usize, usize),
+    drop: DropRow,
+) {
+    let Some(grabbed) = p.tracks.get(lead.0).and_then(|t| t.regions.get(lead.1)) else {
+        return;
+    };
+    let is_audio = grabbed.audio.is_some();
+    if p.recording {
+        return;
+    }
+    let target = match drop {
+        DropRow::Track(t) if t == lead.0 => return,
+        DropRow::Track(t) if track_holds(p, t, grabbed) => t,
+        _ => p.add_track(if is_audio {
+            TrackKind::Audio
+        } else {
+            TrackKind::Instrument
+        }),
+    };
+    let new_track = target >= p.tracks.len().saturating_sub(1)
+        && p.tracks[target].regions.is_empty()
+        && !matches!(drop, DropRow::Track(t) if t == target);
+    // From the back of each track, so the ones still to go keep their numbers.
+    let mut going = regions.to_vec();
+    going.sort_by(|a, b| b.cmp(a));
+    let mut placed = Vec::new();
+    for (t, r) in going {
+        let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+            continue;
+        };
+        let dest = if new_track {
+            target
+        } else {
+            (t + target).saturating_sub(lead.0)
+        };
+        if dest == t || region.params.pattern != 0 || !track_holds(p, dest, region) {
+            continue;
+        }
+        let region = p.tracks[t].regions.remove(r);
+        p.tracks[dest].regions.push(region);
+        placed.push((dest, p.tracks[dest].regions.len() - 1));
+    }
+    if placed.is_empty() {
+        return;
+    }
+    p.selected_track = target;
+    v.select_many(placed);
+    p.song_rev += 1;
+}
+
 /// Moves the selected regions together so the earliest starts at the playhead.
 pub fn move_selected_to_playhead(p: &mut Project, v: &TracksView) {
     let selected = v.all_selected();
@@ -558,6 +631,49 @@ mod tests {
             vel: 100,
             muted: false,
         }
+    }
+
+    #[test]
+    fn regions_move_between_tracks_and_a_new_track_is_made_when_needed() {
+        let (mut p, t) = midi_project();
+        let other = p.add_track(TrackKind::Instrument);
+        let audio = p.add_track(TrackKind::Audio);
+        let mut v = TracksView::default();
+        move_to_track(&mut p, &mut v, &[(t, 0)], (t, 0), DropRow::Track(other));
+        assert!(p.tracks[t].regions.is_empty());
+        assert_eq!(
+            p.tracks[other].regions.len(),
+            1,
+            "onto a track that can hold it"
+        );
+        assert_eq!(v.selected, Some((other, 0)));
+        let tracks = p.tracks.len();
+        move_to_track(
+            &mut p,
+            &mut v,
+            &[(other, 0)],
+            (other, 0),
+            DropRow::Track(audio),
+        );
+        assert_eq!(
+            p.tracks.len(),
+            tracks + 1,
+            "MIDI cannot go on an audio track"
+        );
+        assert_eq!(p.tracks[tracks].kind, TrackKind::Instrument);
+        assert_eq!(p.tracks[tracks].regions.len(), 1);
+        move_to_track(&mut p, &mut v, &[(tracks, 0)], (tracks, 0), DropRow::Below);
+        assert_eq!(p.tracks.len(), tracks + 2, "under the last track");
+        assert_eq!(p.tracks[tracks + 1].regions.len(), 1);
+        p.recording = true;
+        move_to_track(
+            &mut p,
+            &mut v,
+            &[(tracks + 1, 0)],
+            (tracks + 1, 0),
+            DropRow::Below,
+        );
+        assert_eq!(p.tracks.len(), tracks + 2, "not while recording");
     }
 
     /// One instrument track with a region of four bars at bar 1, at 120 BPM in 4/4.

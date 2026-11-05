@@ -43,6 +43,7 @@ pub fn audio_region(file: AudioFile, ctx: &egui::Context) -> AudioRegion {
     AudioRegion {
         file,
         peaks,
+        peak_top: Default::default(),
         flex: None,
         follow_bpm: None,
     }

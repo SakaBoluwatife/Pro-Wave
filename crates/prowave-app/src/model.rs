@@ -609,11 +609,35 @@ impl Default for TrackParams {
     }
 }
 
+/// How much a quiet clip's waveform is enlarged at most, to fit its region: 24 dB.
+const MAX_WAVEFORM_FIT: f32 = 16.0;
+
+impl AudioRegion {
+    /// What to multiply the overview by so the clip fills its region. Only the drawing: the
+    /// sound stays as it is.
+    pub fn waveform_fit(&self) -> f32 {
+        let Some(peaks) = self.peaks.get() else {
+            return 1.0;
+        };
+        let top = *self.peak_top.get_or_init(|| {
+            peaks
+                .iter()
+                .fold(0f32, |top, bin| top.max(bin.1).max(-bin.0))
+        });
+        if top <= 0.0 {
+            return 1.0;
+        }
+        (0.95 / top).clamp(1.0, MAX_WAVEFORM_FIT)
+    }
+}
+
 #[derive(Clone)]
 pub struct AudioRegion {
     pub file: AudioFile,
     /// Min/max overview, filled by a background thread after import.
     pub peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
+    /// The loudest point of `peaks`, worked out once.
+    pub peak_top: Arc<OnceLock<f32>>,
     /// Flex Time and Flex Pitch: when set, `file` is the sound made from this edit.
     pub flex: Option<crate::flex_edit::FlexEdit>,
     /// The tempo the audio was made at, when it stretches to follow the project's. A hit or a
@@ -2553,6 +2577,7 @@ mod tests {
         AudioRegion {
             file: prowave_engine::AudioFile::open(dir.join("tone.caf")).unwrap(),
             peaks: Default::default(),
+            peak_top: Default::default(),
             flex: None,
             follow_bpm: None,
         }

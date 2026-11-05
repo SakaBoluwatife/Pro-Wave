@@ -431,8 +431,12 @@ impl AudioRecorder {
                         ctx,
                     );
                     kept = Some((take.track, take.region));
-                    if done.is_ok_and(|d| d.lost) {
-                        warning = Some(tr("Part of the recording was lost").to_string());
+                    if let Ok(d) = &done {
+                        if d.lost {
+                            warning = Some(tr("Part of the recording was lost").to_string());
+                        } else if let Some(text) = one_sided_warning(d.channels, d.side_peaks) {
+                            warning = Some(text);
+                        }
                     }
                 }
                 (open, file) => {
@@ -450,10 +454,44 @@ impl AudioRecorder {
     }
 }
 
+/// What to say about a stereo recording with sound on one side only: a single microphone or
+/// instrument on a stereo input plays from one speaker. A mono input plays from both.
+fn one_sided_warning(channels: u16, (left, right): (f32, f32)) -> Option<String> {
+    const SILENT: f32 = 0.001;
+    if channels != 2 || left.max(right) < SILENT * 10.0 {
+        return None;
+    }
+    let side = if right < SILENT {
+        ("left", "right")
+    } else if left < SILENT {
+        ("right", "left")
+    } else {
+        return None;
+    };
+    Some(format!(
+        "This recording has sound on the {} side only: nothing came in on the {} input. \
+         For one microphone or instrument, set the strip's Input slot to a single input.",
+        side.0, side.1
+    ))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stereo_recording_with_one_empty_side_is_pointed_out() {
+        assert!(one_sided_warning(2, (0.5, 0.0))
+            .unwrap()
+            .contains("left side"));
+        assert!(one_sided_warning(2, (0.0, 0.5))
+            .unwrap()
+            .contains("right side"));
+        assert_eq!(one_sided_warning(2, (0.5, 0.4)), None, "both sides");
+        assert_eq!(one_sided_warning(1, (0.5, 0.0)), None, "mono plays on both");
+        assert_eq!(one_sided_warning(2, (0.0, 0.0)), None, "silence");
+    }
     use crate::model::Track;
 
     fn project(kinds: &[TrackKind]) -> Project {
