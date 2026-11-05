@@ -1338,6 +1338,25 @@ fn slot_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, home: Home, k: usiz
     }
 }
 
+/// A channel strip being dragged by its name to another place among the strips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StripDrag(usize);
+
+/// The track a strip dropped at `x` goes before: the one of the strip whose left half or the gap
+/// before it `x` is over. Past the last track's strip it is `tracks`, the end. The strips of the
+/// output stay last. `first` is the left edge of the first strip, `step` from one to the next.
+fn strip_drop_target(keys: &[StripKey], tracks: usize, first: f32, step: f32, x: f32) -> usize {
+    let strips = keys
+        .iter()
+        .filter(|k| matches!(k, StripKey::Track(_)))
+        .count();
+    let gap = ((x - first + step * 0.5) / step).floor().max(0.0) as usize;
+    match keys.get(gap.min(strips)) {
+        Some(StripKey::Track(t)) if gap < strips => *t,
+        _ => tracks,
+    }
+}
+
 /// Whose effects a plugin slot shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Home {
@@ -2265,6 +2284,12 @@ pub fn channel_strip(
 
     // Name.
     let name_r = Rect::from_min_max(pos2(strip.left(), strip.bottom() - name_h), strip.max);
+    if let (StripKey::Track(i), NameStyle::Coloured) = (key, name_style) {
+        // Only a drag: a click or the right button goes through to the strip underneath.
+        ui.interact(name_r, id(ns, (key, "name")), Sense::drag())
+            .on_hover_text_at_pointer("Drag to move this strip")
+            .dnd_set_drag_payload(StripDrag(i));
+    }
     let font = FontId::proportional(10.5);
     let shown = elide(g, &name, &font, name_r.width() - 6.0);
     match name_style {
@@ -3005,6 +3030,38 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             "mixer",
             NameStyle::Coloured,
         );
+    }
+
+    // A strip dragged by its name, while there is an order to change.
+    let reorders = v.mode != MixerMode::Single && !v.signal_flow;
+    let drag = egui::DragAndDrop::payload::<StripDrag>(ui.ctx());
+    if let (Some(drag), true) = (drag, reorders) {
+        let first = strips_area.left() + 4.0 - v.scroll_x;
+        let step = strip_w + GAP;
+        if let Some(at) = ui.input(|i| i.pointer.latest_pos()) {
+            let to = strip_drop_target(&keys, p.tracks.len(), first, step, at.x);
+            let place = keys
+                .iter()
+                .position(|k| *k == StripKey::Track(to))
+                .unwrap_or_else(|| {
+                    keys.iter()
+                        .filter(|k| matches!(k, StripKey::Track(_)))
+                        .count()
+                });
+            let line = first + place as f32 * step - GAP * 0.5;
+            gs.line_segment(
+                [pos2(line, body.top()), pos2(line, body.bottom())],
+                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+            );
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                if p.move_tracks(&[drag.0], to) {
+                    p.linked_strips.clear();
+                    v.peak_hold.clear();
+                    crate::tracks_area::forget_track_indexes(s);
+                }
+            }
+        }
     }
 }
 
