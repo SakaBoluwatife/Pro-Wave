@@ -366,7 +366,8 @@ fn resolve_region_plugins(track: &mut Track) {
     use crate::model::AutoTarget;
     let instrument = track.instrument_plugin.as_ref().map(|i| i.uid);
     let plugins: Vec<u64> = track.plugins.iter().map(|i| i.uid).collect();
-    for region in &mut track.regions {
+    let hidden = track.alternatives.iter_mut().flat_map(|a| &mut a.regions);
+    for region in track.regions.iter_mut().chain(hidden) {
         region.auto.retain_mut(|lane| {
             let AutoTarget::Plugin { uid, param } = lane.target else {
                 return true;
@@ -456,6 +457,150 @@ fn points_from_doc(
     v
 }
 
+/// A region as it is saved. Its files are added to `media`, each once.
+fn region_to_doc(
+    t: &Track,
+    r: &Region,
+    media: &mut Vec<MediaFile>,
+    by_source: &mut HashMap<PathBuf, String>,
+) -> RegionDoc {
+    RegionDoc {
+        auto: region_lanes_to_doc(t, r),
+        song_pattern: r.params.pattern,
+        name: r.name.clone(),
+        start_bar: r.start_bar,
+        len_bars: r.len_bars,
+        notes: r
+            .notes
+            .iter()
+            .map(|n| NoteDoc {
+                start: n.start,
+                len: n.len,
+                pitch: n.pitch,
+                vel: n.vel,
+                muted: n.muted,
+            })
+            .collect(),
+        controls: r
+            .controls
+            .iter()
+            .map(|c| ControlDoc {
+                start: c.start,
+                num: c.num,
+                val: c.val,
+            })
+            .collect(),
+        takes: r.folder.as_ref().map_or_else(Vec::new, |f| {
+            f.takes
+                .iter()
+                .map(|t| TakeDoc {
+                    audio_offset: t.audio_offset,
+                    audio: t.file.as_ref().map(|f| {
+                        by_source
+                            .entry(f.0.file.path.clone())
+                            .or_insert_with(|| {
+                                let zip_path = media_path(media.len(), &f.0.file.path);
+                                media.push(MediaFile {
+                                    zip_path: zip_path.clone(),
+                                    source: f.0.file.path.clone(),
+                                });
+                                zip_path
+                            })
+                            .clone()
+                    }),
+                    window: t.window.map(|(a, b)| [a, b]),
+                    gain_db: t.gain_db,
+                    notes: t
+                        .notes
+                        .iter()
+                        .map(|n| NoteDoc {
+                            start: n.start,
+                            len: n.len,
+                            pitch: n.pitch,
+                            vel: n.vel,
+                            muted: n.muted,
+                        })
+                        .collect(),
+                    controls: t
+                        .controls
+                        .iter()
+                        .map(|c| ControlDoc {
+                            start: c.start,
+                            num: c.num,
+                            val: c.val,
+                        })
+                        .collect(),
+                })
+                .collect()
+        }),
+        comp: r.folder.as_ref().map_or_else(Vec::new, |f| {
+            f.comp
+                .iter()
+                .map(|s| CompDoc {
+                    start: s.start,
+                    end: s.end,
+                    take: s.take as u32,
+                })
+                .collect()
+        }),
+        // A Flex edit is saved as the recording plus the edit, never the sound
+        // made from it.
+        audio: r.audio.as_ref().map(|a| {
+            let file = a.flex.as_ref().map_or(&a.file, |f| &f.original);
+            by_source
+                .entry(file.path.clone())
+                .or_insert_with(|| {
+                    let zip_path = media_path(media.len(), &file.path);
+                    media.push(MediaFile {
+                        zip_path: zip_path.clone(),
+                        source: file.path.clone(),
+                    });
+                    zip_path
+                })
+                .clone()
+        }),
+        follow_bpm: r.audio.as_ref().and_then(|a| a.follow_bpm),
+        flex: r
+            .audio
+            .as_ref()
+            .and_then(|a| a.flex.as_ref())
+            .map(|f| prowave_project::FlexDoc {
+                mode: f.mode.name().into(),
+                markers: f.markers.iter().map(|m| [m.src, m.dst]).collect(),
+                pitch: f
+                    .pitch
+                    .iter()
+                    .map(|p| prowave_project::FlexPitchDoc {
+                        start: p.start,
+                        end: p.end,
+                        semitones: p.semitones,
+                    })
+                    .collect(),
+            }),
+        shape: r.params.shape,
+        mute: r.params.mute,
+        quantize: r.params.quantize,
+        transpose: r.params.transpose,
+        velocity: r.params.velocity,
+        source_start: r.params.source_start,
+        source_len: r.params.source_len,
+        gain_db: r.params.gain_db,
+        fade_in: r.params.fade_in,
+        fade_out: r.params.fade_out,
+        fade_curve: curve_name(r.params.fade_curve).into(),
+        reverse: r.params.reverse,
+        crossfade: r.params.crossfade,
+        pattern: match r.generated.as_ref().map(|g| &g.source) {
+            Some(Generator::Pattern(p)) => Some(pattern_to_doc(p)),
+            _ => None,
+        },
+        drummer: match r.generated.as_ref().map(|g| &g.source) {
+            Some(Generator::Drummer(d)) => Some(drummer_to_doc(d)),
+            _ => None,
+        },
+    }
+}
+
 /// The document for `p` plus the media files to embed (each distinct audio file once).
 pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
     let mut media: Vec<MediaFile> = Vec::new();
@@ -516,6 +661,19 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                     })
                 })
                 .collect(),
+            alternatives: t
+                .alternatives
+                .iter()
+                .map(|a| prowave_project::AlternativeDoc {
+                    name: a.name.clone(),
+                    regions: a
+                        .regions
+                        .iter()
+                        .map(|r| region_to_doc(t, r, &mut media, &mut by_source))
+                        .collect(),
+                })
+                .collect(),
+            active_alternative: t.active_alt,
             auto_mode: t.auto.mode.label().into(),
             show_auto: t.show_auto,
             auto_lane: auto_lane_to_doc(t),
@@ -574,139 +732,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             regions: t
                 .regions
                 .iter()
-                .map(|r| RegionDoc {
-                    auto: region_lanes_to_doc(t, r),
-                    song_pattern: r.params.pattern,
-                    name: r.name.clone(),
-                    start_bar: r.start_bar,
-                    len_bars: r.len_bars,
-                    notes: r
-                        .notes
-                        .iter()
-                        .map(|n| NoteDoc {
-                            start: n.start,
-                            len: n.len,
-                            pitch: n.pitch,
-                            vel: n.vel,
-                            muted: n.muted,
-                        })
-                        .collect(),
-                    controls: r
-                        .controls
-                        .iter()
-                        .map(|c| ControlDoc {
-                            start: c.start,
-                            num: c.num,
-                            val: c.val,
-                        })
-                        .collect(),
-                    takes: r.folder.as_ref().map_or_else(Vec::new, |f| {
-                        f.takes
-                            .iter()
-                            .map(|t| TakeDoc {
-                                audio_offset: t.audio_offset,
-                                audio: t.file.as_ref().map(|f| {
-                                    by_source
-                                        .entry(f.0.file.path.clone())
-                                        .or_insert_with(|| {
-                                            let zip_path = media_path(media.len(), &f.0.file.path);
-                                            media.push(MediaFile {
-                                                zip_path: zip_path.clone(),
-                                                source: f.0.file.path.clone(),
-                                            });
-                                            zip_path
-                                        })
-                                        .clone()
-                                }),
-                                window: t.window.map(|(a, b)| [a, b]),
-                                gain_db: t.gain_db,
-                                notes: t
-                                    .notes
-                                    .iter()
-                                    .map(|n| NoteDoc {
-                                        start: n.start,
-                                        len: n.len,
-                                        pitch: n.pitch,
-                                        vel: n.vel,
-                                        muted: n.muted,
-                                    })
-                                    .collect(),
-                                controls: t
-                                    .controls
-                                    .iter()
-                                    .map(|c| ControlDoc {
-                                        start: c.start,
-                                        num: c.num,
-                                        val: c.val,
-                                    })
-                                    .collect(),
-                            })
-                            .collect()
-                    }),
-                    comp: r.folder.as_ref().map_or_else(Vec::new, |f| {
-                        f.comp
-                            .iter()
-                            .map(|s| CompDoc {
-                                start: s.start,
-                                end: s.end,
-                                take: s.take as u32,
-                            })
-                            .collect()
-                    }),
-                    // A Flex edit is saved as the recording plus the edit, never the sound
-                    // made from it.
-                    audio: r.audio.as_ref().map(|a| {
-                        let file = a.flex.as_ref().map_or(&a.file, |f| &f.original);
-                        by_source
-                            .entry(file.path.clone())
-                            .or_insert_with(|| {
-                                let zip_path = media_path(media.len(), &file.path);
-                                media.push(MediaFile {
-                                    zip_path: zip_path.clone(),
-                                    source: file.path.clone(),
-                                });
-                                zip_path
-                            })
-                            .clone()
-                    }),
-                    follow_bpm: r.audio.as_ref().and_then(|a| a.follow_bpm),
-                    flex: r.audio.as_ref().and_then(|a| a.flex.as_ref()).map(|f| {
-                        prowave_project::FlexDoc {
-                            mode: f.mode.name().into(),
-                            markers: f.markers.iter().map(|m| [m.src, m.dst]).collect(),
-                            pitch: f
-                                .pitch
-                                .iter()
-                                .map(|p| prowave_project::FlexPitchDoc {
-                                    start: p.start,
-                                    end: p.end,
-                                    semitones: p.semitones,
-                                })
-                                .collect(),
-                        }
-                    }),
-                    shape: r.params.shape,
-                    mute: r.params.mute,
-                    quantize: r.params.quantize,
-                    transpose: r.params.transpose,
-                    velocity: r.params.velocity,
-                    source_start: r.params.source_start,
-                    source_len: r.params.source_len,
-                    gain_db: r.params.gain_db,
-                    fade_in: r.params.fade_in,
-                    fade_out: r.params.fade_out,
-                    fade_curve: curve_name(r.params.fade_curve).into(),
-                    reverse: r.params.reverse,
-                    crossfade: r.params.crossfade,
-                    pattern: match r.generated.as_ref().map(|g| &g.source) {
-                        Some(Generator::Pattern(p)) => Some(pattern_to_doc(p)),
-                        _ => None,
-                    },
-                    drummer: match r.generated.as_ref().map(|g| &g.source) {
-                        Some(Generator::Drummer(d)) => Some(drummer_to_doc(d)),
-                        _ => None,
-                    },
-                })
+                .map(|r| region_to_doc(t, r, &mut media, &mut by_source))
                 .collect(),
         })
         .collect();
@@ -871,124 +897,136 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
     })
 }
 
+/// A list of saved regions. A region whose file is missing or unreadable is left out and reported.
+fn regions_from_doc(
+    list: &[RegionDoc],
+    opened: &mut HashMap<String, Option<AudioFile>>,
+    warnings: &mut Vec<String>,
+    media_dir: &Path,
+    ctx: &egui::Context,
+) -> Vec<Region> {
+    let mut regions = Vec::new();
+    for r in list {
+        let audio = match &r.audio {
+            None => None,
+            Some(zip_path) if !prowave_project::is_media_path(zip_path) => {
+                // Never follow a path out of the project's media (e.g. `C:\…`, `../…`).
+                warnings.push(format!("{zip_path}: not a media path in the project"));
+                continue;
+            }
+            Some(zip_path) => {
+                let file = opened
+                    .entry(zip_path.clone())
+                    .or_insert_with(|| match AudioFile::open(media_dir.join(zip_path)) {
+                        Ok(f) => Some(f),
+                        Err(e) => {
+                            warnings.push(format!("{}: {e}", zip_path));
+                            None
+                        }
+                    });
+                match file {
+                    Some(f) => {
+                        let mut a = audio_region(f.clone(), ctx);
+                        a.follow_bpm = r.follow_bpm.filter(|b| b.is_finite() && *b > 0.0);
+                        a.flex = r.flex.as_ref().map(|d| flex_from_doc(d, f.clone()));
+                        Some(a)
+                    }
+                    None => continue,
+                }
+            }
+        };
+        let mut folder = folder_from_doc(r);
+        // A take with a file of its own. One that cannot be read stays in the folder, silent.
+        if let Some(folder) = folder.as_mut() {
+            for (take, d) in folder.takes.iter_mut().zip(&r.takes) {
+                let Some(zip_path) = &d.audio else { continue };
+                let file = if prowave_project::is_media_path(zip_path) {
+                    opened
+                        .entry(zip_path.clone())
+                        .or_insert_with(|| match AudioFile::open(media_dir.join(zip_path)) {
+                            Ok(f) => Some(f),
+                            Err(e) => {
+                                warnings.push(format!("{zip_path}: {e}"));
+                                None
+                            }
+                        })
+                        .clone()
+                } else {
+                    warnings.push(format!("{zip_path}: not a media path in the project"));
+                    None
+                };
+                match file {
+                    Some(f) => {
+                        take.file = Some(crate::model::TakeFile(audio_region(f, ctx)));
+                    }
+                    None => take.window = Some((0.0, 0.0)),
+                }
+            }
+        }
+        let mut region = Region {
+            name: r.name.clone(),
+            start_bar: finite_in(r.start_bar, 1.0, MAX_BARS, 1.0),
+            len_bars: finite_in(r.len_bars, 1.0 / 64.0, MAX_BARS, 1.0),
+            notes: r
+                .notes
+                .iter()
+                .map(|n| Note {
+                    start: finite_in(n.start, 0.0, MAX_BEATS, 0.0),
+                    len: finite_in(n.len, 1.0 / 960.0, MAX_BEATS, 0.25),
+                    pitch: n.pitch.min(127),
+                    vel: n.vel.clamp(1, 127),
+                    muted: n.muted,
+                })
+                .collect(),
+            controls: r
+                .controls
+                .iter()
+                .map(|c| Control {
+                    start: finite_in(c.start, 0.0, MAX_BEATS, 0.0),
+                    num: c.num.min(127),
+                    val: c.val.min(127),
+                })
+                .collect(),
+            folder: None,
+            auto: region_lanes_from_doc(r),
+            generated: generated_from_doc(r),
+            audio,
+            params: RegionParams {
+                pattern: 0,
+                pattern_len: 0.0,
+                pattern_color: None,
+                shape: shape_from_doc(r.shape),
+                mute: r.mute,
+                quantize: r.quantize.filter(|q| q.is_finite() && *q > 0.0),
+                transpose: r.transpose,
+                velocity: r.velocity,
+                source_start: finite_in(r.source_start, 0.0, 1.0e7, 0.0),
+                source_len: finite_in(r.source_len, 0.0, 1.0e7, 0.0),
+                gain_db: finite_in(r.gain_db, MIN_REGION_GAIN, MAX_REGION_GAIN, 0.0),
+                fade_in: finite_in(r.fade_in, 0.0, MAX_FADE, 0.0),
+                fade_out: finite_in(r.fade_out, 0.0, MAX_FADE, 0.0),
+                fade_curve: curve_from_name(&r.fade_curve),
+                reverse: r.reverse,
+                crossfade: r.crossfade,
+            },
+        };
+        // A take folder's notes are what its comp plays.
+        region.params.pattern = r.song_pattern;
+        if let Some(folder) = folder {
+            folder.apply(&mut region.notes, &mut region.controls);
+            region.folder = Some(folder);
+        }
+        regions.push(region);
+    }
+    regions
+}
+
 pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Project, Vec<String>) {
     let mut warnings = Vec::new();
     let mut opened: HashMap<String, Option<AudioFile>> = HashMap::new();
     let mut tracks = Vec::new();
     for t in &doc.tracks {
-        let mut regions = Vec::new();
-        for r in &t.regions {
-            let audio = match &r.audio {
-                None => None,
-                Some(zip_path) if !prowave_project::is_media_path(zip_path) => {
-                    // Never follow a path out of the project's media (e.g. `C:\…`, `../…`).
-                    warnings.push(format!("{zip_path}: not a media path in the project"));
-                    continue;
-                }
-                Some(zip_path) => {
-                    let file = opened.entry(zip_path.clone()).or_insert_with(|| {
-                        match AudioFile::open(media_dir.join(zip_path)) {
-                            Ok(f) => Some(f),
-                            Err(e) => {
-                                warnings.push(format!("{}: {e}", zip_path));
-                                None
-                            }
-                        }
-                    });
-                    match file {
-                        Some(f) => {
-                            let mut a = audio_region(f.clone(), ctx);
-                            a.follow_bpm = r.follow_bpm.filter(|b| b.is_finite() && *b > 0.0);
-                            a.flex = r.flex.as_ref().map(|d| flex_from_doc(d, f.clone()));
-                            Some(a)
-                        }
-                        None => continue,
-                    }
-                }
-            };
-            let mut folder = folder_from_doc(r);
-            // A take with a file of its own. One that cannot be read stays in the folder, silent.
-            if let Some(folder) = folder.as_mut() {
-                for (take, d) in folder.takes.iter_mut().zip(&r.takes) {
-                    let Some(zip_path) = &d.audio else { continue };
-                    let file = if prowave_project::is_media_path(zip_path) {
-                        opened
-                            .entry(zip_path.clone())
-                            .or_insert_with(|| match AudioFile::open(media_dir.join(zip_path)) {
-                                Ok(f) => Some(f),
-                                Err(e) => {
-                                    warnings.push(format!("{zip_path}: {e}"));
-                                    None
-                                }
-                            })
-                            .clone()
-                    } else {
-                        warnings.push(format!("{zip_path}: not a media path in the project"));
-                        None
-                    };
-                    match file {
-                        Some(f) => {
-                            take.file = Some(crate::model::TakeFile(audio_region(f, ctx)));
-                        }
-                        None => take.window = Some((0.0, 0.0)),
-                    }
-                }
-            }
-            let mut region = Region {
-                name: r.name.clone(),
-                start_bar: finite_in(r.start_bar, 1.0, MAX_BARS, 1.0),
-                len_bars: finite_in(r.len_bars, 1.0 / 64.0, MAX_BARS, 1.0),
-                notes: r
-                    .notes
-                    .iter()
-                    .map(|n| Note {
-                        start: finite_in(n.start, 0.0, MAX_BEATS, 0.0),
-                        len: finite_in(n.len, 1.0 / 960.0, MAX_BEATS, 0.25),
-                        pitch: n.pitch.min(127),
-                        vel: n.vel.clamp(1, 127),
-                        muted: n.muted,
-                    })
-                    .collect(),
-                controls: r
-                    .controls
-                    .iter()
-                    .map(|c| Control {
-                        start: finite_in(c.start, 0.0, MAX_BEATS, 0.0),
-                        num: c.num.min(127),
-                        val: c.val.min(127),
-                    })
-                    .collect(),
-                folder: None,
-                auto: region_lanes_from_doc(r),
-                generated: generated_from_doc(r),
-                audio,
-                params: RegionParams {
-                    pattern: 0,
-                    pattern_len: 0.0,
-                    pattern_color: None,
-                    shape: shape_from_doc(r.shape),
-                    mute: r.mute,
-                    quantize: r.quantize.filter(|q| q.is_finite() && *q > 0.0),
-                    transpose: r.transpose,
-                    velocity: r.velocity,
-                    source_start: finite_in(r.source_start, 0.0, 1.0e7, 0.0),
-                    source_len: finite_in(r.source_len, 0.0, 1.0e7, 0.0),
-                    gain_db: finite_in(r.gain_db, MIN_REGION_GAIN, MAX_REGION_GAIN, 0.0),
-                    fade_in: finite_in(r.fade_in, 0.0, MAX_FADE, 0.0),
-                    fade_out: finite_in(r.fade_out, 0.0, MAX_FADE, 0.0),
-                    fade_curve: curve_from_name(&r.fade_curve),
-                    reverse: r.reverse,
-                    crossfade: r.crossfade,
-                },
-            };
-            // A take folder's notes are what its comp plays.
-            region.params.pattern = r.song_pattern;
-            if let Some(folder) = folder {
-                folder.apply(&mut region.notes, &mut region.controls);
-                region.folder = Some(folder);
-            }
-            regions.push(region);
-        }
+        let regions = regions_from_doc(&t.regions, &mut opened, &mut warnings, media_dir, ctx);
         tracks.push(Track {
             name: t.name.clone(),
             kind: kind_from_doc(t.kind),
@@ -1042,6 +1080,23 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 0
             },
             show_auto: t.show_auto,
+            alternatives: t
+                .alternatives
+                .iter()
+                .map(|a| crate::model::TrackAlternative {
+                    name: a.name.chars().take(32).collect(),
+                    regions: regions_from_doc(
+                        &a.regions,
+                        &mut opened,
+                        &mut warnings,
+                        media_dir,
+                        ctx,
+                    ),
+                })
+                .collect(),
+            active_alt: t
+                .active_alternative
+                .min(t.alternatives.len().saturating_sub(1)),
             midi_fx: t
                 .midi_fx
                 .iter()
@@ -2525,6 +2580,45 @@ pub(crate) mod tests {
         let (q, _) = from_doc(&old, Path::new("."), &ctx);
         assert!(!q.tracks[0].show_auto);
         assert_eq!(q.tracks[0].auto.shown, crate::model::AutoTarget::Volume);
+    }
+
+    #[test]
+    fn track_alternatives_survive_saving_with_their_audio() {
+        use crate::alternatives::{run, AltCmd};
+        let dir = tempfile::tempdir().expect("a folder");
+        let wav = dir.path().join("other.wav");
+        prowave_engine::write_wav(&wav, &vec![0.1; 48_000], 48_000).expect("a file");
+        let ctx = egui::Context::default();
+        let mut p = Project::empty();
+        p.tracks[0].regions.clear();
+        crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).expect("the import");
+        let t = p.tracks.len() - 1;
+        run(&mut p, t, AltCmd::New).expect("a new version");
+        p.tracks[t].alternatives[1].name = "Chorus idea".into();
+        let (doc, media) = to_doc(&p);
+        assert_eq!(
+            media.len(),
+            1,
+            "the file of the version not playing is kept"
+        );
+        assert!(doc.tracks[t].regions.is_empty());
+        assert_eq!(doc.tracks[t].alternatives[0].regions.len(), 1);
+        std::fs::create_dir_all(dir.path().join("media")).expect("a folder");
+        std::fs::copy(&wav, dir.path().join(&media[0].zip_path)).expect("a copy");
+        let (mut q, warnings) = from_doc(&doc, dir.path(), &ctx);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(q.tracks[t].active_alt, 1);
+        assert_eq!(q.tracks[t].alternatives[1].name, "Chorus idea");
+        run(&mut q, t, AltCmd::Switch(0)).expect("the other version");
+        assert_eq!(q.tracks[t].regions.len(), 1);
+        assert!(q.tracks[t].regions[0].audio.is_some());
+        // A file from before this has one version, and a number that makes no sense is let go.
+        let mut old = doc.clone();
+        old.tracks[t].alternatives.clear();
+        old.tracks[t].active_alternative = 5;
+        let (q, _) = from_doc(&old, dir.path(), &ctx);
+        assert_eq!(q.tracks[t].active_alt, 0);
+        assert!(q.tracks[t].alternatives.is_empty());
     }
 
     #[test]

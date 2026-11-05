@@ -832,6 +832,17 @@ pub struct Track {
     pub midi_fx: Vec<crate::midi_fx::FxSlot>,
     /// The curve of its automation (the lane `auto.shown`) is drawn on the track in the Tracks area.
     pub show_auto: bool,
+    /// Other versions of the regions (see `alternatives.rs`). Empty until a second one is made. The
+    /// one at `active_alt` has its regions in `regions`, and none here.
+    pub alternatives: Vec<TrackAlternative>,
+    pub active_alt: usize,
+}
+
+/// One version of a track's regions.
+#[derive(Clone)]
+pub struct TrackAlternative {
+    pub name: String,
+    pub regions: Vec<Region>,
 }
 
 impl Track {
@@ -893,6 +904,8 @@ impl Track {
             midi_channel: 1,
             midi_fx: Vec::new(),
             show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         }
     }
 }
@@ -1062,6 +1075,8 @@ impl Project {
             midi_channel: 1,
             midi_fx: Vec::new(),
             show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         }];
         p.position_beats = 0.0;
         p.cycle = false;
@@ -1129,6 +1144,8 @@ impl Project {
             midi_channel: 1,
             midi_fx: Vec::new(),
             show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         };
         let tracks = vec![
             mk(

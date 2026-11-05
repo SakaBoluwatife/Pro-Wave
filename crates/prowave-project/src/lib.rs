@@ -335,6 +335,17 @@ pub struct TrackDoc {
     pub groove: bool,
     pub follow_groove: bool,
     pub regions: Vec<RegionDoc>,
+    /// Other versions of the regions. The one at `active_alternative` has its regions in `regions`.
+    pub alternatives: Vec<AlternativeDoc>,
+    pub active_alternative: usize,
+}
+
+/// One version of a track's regions.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct AlternativeDoc {
+    pub name: String,
+    pub regions: Vec<RegionDoc>,
 }
 
 /// One effect of a channel strip: its kind ("Channel EQ", "Compressor", "Space D", "Tape Delay",
@@ -486,6 +497,8 @@ impl Default for MidiFxDoc {
 impl Default for TrackDoc {
     fn default() -> Self {
         Self {
+            alternatives: Vec::new(),
+            active_alternative: 0,
             show_auto: false,
             auto_lane: String::new(),
             channel: 0,

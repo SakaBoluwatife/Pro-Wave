@@ -145,6 +145,8 @@ pub fn import_audio_at(
         midi_channel: 1,
         midi_fx: Vec::new(),
         show_auto: false,
+        alternatives: Vec::new(),
+        active_alt: 0,
     });
     p.selected_track = p.tracks.len() - 1;
     p.song_rev += 1;

@@ -1293,6 +1293,7 @@ enum CtxAction {
     OpenTrackPianoRoll(usize),
     ToggleRecord(usize),
     ToggleTrackAuto(usize),
+    Alternative(usize, crate::alternatives::AltCmd),
     NewTrack(TrackKind),
     ZoomToFit,
     OpenPianoRoll,
@@ -1334,6 +1335,8 @@ enum CtxAction {
 /// What the track menu needs to know about the track that was right-clicked.
 struct TrackInfo {
     show_auto: bool,
+    /// The versions of its regions and the one playing; `None` for a track without regions.
+    alternatives: Option<(Vec<String>, usize)>,
     rec: bool,
     takes_midi: bool,
     i: usize,
@@ -1588,6 +1591,10 @@ fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
     let t = p.tracks.get(i)?;
     Some(TrackInfo {
         show_auto: t.show_auto,
+        alternatives: t.kind.has_regions().then(|| {
+            let names = t.alternatives.iter().map(|a| a.name.clone()).collect();
+            (names, t.active_alt)
+        }),
         i,
         folder: t.kind == TrackKind::Folder,
         mute: t.mute,
@@ -1602,6 +1609,40 @@ fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
             .filter(|g| *g != i)
             .map(|_| t.params.follow_groove),
     })
+}
+
+/// The entries for the versions of track `i`'s regions.
+fn alternative_items(
+    ui: &mut Ui,
+    i: usize,
+    names: &[String],
+    active: usize,
+    picked: &mut Option<CtxAction>,
+) {
+    use crate::alternatives::AltCmd;
+    for (k, name) in names.iter().enumerate() {
+        if ui.selectable_label(k == active, name).clicked() {
+            *picked = Some(CtxAction::Alternative(i, AltCmd::Switch(k)));
+            ui.close();
+        }
+    }
+    if !names.is_empty() {
+        ui.separator();
+    }
+    for (label, cmd) in [
+        ("New Alternative", AltCmd::New),
+        ("Duplicate Alternative", AltCmd::Duplicate),
+    ] {
+        if ui.button(label).clicked() {
+            *picked = Some(CtxAction::Alternative(i, cmd));
+            ui.close();
+        }
+    }
+    let delete = egui::Button::new("Delete Alternative");
+    if ui.add_enabled(names.len() > 1, delete).clicked() {
+        *picked = Some(CtxAction::Alternative(i, AltCmd::Delete));
+        ui.close();
+    }
 }
 
 /// What the menus of a track have first, wherever it is right-clicked.
@@ -1653,6 +1694,11 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
     ui.separator();
     new_track_items(ui, picked);
     ui.separator();
+    if let Some((names, active)) = &t.alternatives {
+        ui.menu_button("Track Alternatives", |ui| {
+            alternative_items(ui, t.i, names, *active, picked);
+        });
+    }
     pick(
         ui,
         tr("Create Track Stack"),
@@ -1743,6 +1789,14 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
                 track.show_auto = !track.show_auto;
             }
         }
+        CtxAction::Alternative(t, cmd) => match crate::alternatives::run(p, t, cmd) {
+            Ok(()) => {
+                // The region numbers now mean other regions.
+                v.select_many(Vec::new());
+                s.piano.selected.clear();
+            }
+            Err(e) => s.status = Some(e),
+        },
         CtxAction::NewTrack(kind) => {
             p.add_track(kind);
         }
@@ -2768,6 +2822,51 @@ fn slider_to_db(f: f32) -> f32 {
     }
 }
 
+/// The button that says which version of its regions track `t` plays, with the list of them.
+fn alternatives_button(
+    ui: &Ui,
+    g: &Painter,
+    t: &mut Track,
+    i: usize,
+    rect: Rect,
+    picked: &mut Option<CtxAction>,
+) {
+    let several = t.alternatives.len() > 1;
+    let resp = ui
+        .interact(rect, id(("alternatives", i)), Sense::click())
+        .on_hover_text("Track Alternatives: other versions of this track's regions");
+    g.rect_filled(
+        rect,
+        3.0,
+        if several {
+            Color32::from_rgb(0x8a, 0x6c, 0xc8)
+        } else {
+            header_button_bg(false)
+        },
+    );
+    g.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        crate::alternatives::button_label(t),
+        FontId::proportional(10.5),
+        Color32::from_gray(0xe8),
+    );
+    egui::Popup::menu(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(190.0);
+            let names: Vec<String> = t.alternatives.iter().map(|a| a.name.clone()).collect();
+            alternative_items(ui, i, &names, t.active_alt, picked);
+            if let Some(a) = t.alternatives.get_mut(t.active_alt) {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    ui.add(egui::TextEdit::singleline(&mut a.name).char_limit(32));
+                });
+            }
+        });
+}
+
 /// The room the mode and parameter of the curve on a track take on the name's row.
 const LANE_POPUPS_W: f32 = 170.0;
 
@@ -2822,6 +2921,7 @@ fn header(
     peaks: (f32, f32),
     silenced: bool,
     opts: HeaderOpts,
+    picked: &mut Option<CtxAction>,
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
@@ -2999,6 +3099,10 @@ fn header(
             selected,
         ) {
             t.show_auto = !t.show_auto;
+        }
+        if t.kind.has_regions() {
+            bx += 21.0;
+            alternatives_button(ui, g, t, i, Rect::from_min_size(pos2(bx, by), size), picked);
         }
     }
 
@@ -4034,7 +4138,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
         let before = p.selected_track;
-        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts);
+        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts, &mut picked);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;

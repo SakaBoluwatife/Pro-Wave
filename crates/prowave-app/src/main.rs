@@ -5,6 +5,7 @@
 #[global_allocator]
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod alternatives;
 mod audio_encode;
 mod audio_rec;
 mod automation;

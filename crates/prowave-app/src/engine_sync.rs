@@ -1071,6 +1071,8 @@ mod tests {
             midi_channel: 1,
             midi_fx: Vec::new(),
             show_auto: false,
+            alternatives: Vec::new(),
+            active_alt: 0,
         }
     }
 
