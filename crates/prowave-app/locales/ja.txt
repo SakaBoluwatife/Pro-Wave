@@ -45,7 +45,6 @@ Q-Strength: = Q ストレングス：
 Track: = トラック：
 Icon: = アイコン：
 Channel: = チャンネル：
-Freeze Mode: = フリーズモード：
 Pre Fader = プリフェーダー
 Q-Reference: = Q リファレンス：
 Flex Mode: = Flex モード：

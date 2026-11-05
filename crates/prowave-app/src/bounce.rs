@@ -200,6 +200,8 @@ pub enum After {
         bar: f64,
         sources: Vec<(usize, usize)>,
     },
+    /// Track `track` is frozen with it.
+    Freeze { track: usize },
 }
 
 /// One file to make.
@@ -270,6 +272,20 @@ fn render_project(p: &Project, render: &Render) -> Project {
             t.output = 0;
             t.vca = None;
             t.auto = crate::model::Automation::default();
+        }
+    }
+    if let After::Freeze { track } = render.after {
+        // What the strip makes before its fader: that, and what comes after it, stay live.
+        copy.master_vol = 1.0;
+        copy.master_plugins.clear();
+        if let Some(t) = copy.tracks.get_mut(track) {
+            t.sends.clear();
+            t.volume_db = 0.0;
+            t.pan = 0.0;
+            t.output = 0;
+            t.vca = None;
+            t.auto.volume.clear();
+            t.auto.pan.clear();
         }
     }
     // A new song for the new engine, whatever revision the project was at.
@@ -603,6 +619,15 @@ pub fn place(
     };
     match &render.after {
         After::Report => Ok(()),
+        After::Freeze { track } => {
+            let region = crate::import::frozen_region(p, file, ctx)
+                .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            if let Some(t) = p.tracks.get_mut(*track) {
+                t.frozen = Some(Box::new(region));
+                p.song_rev += 1;
+            }
+            Ok(())
+        }
         After::NewTrack { name, bar, sources } => {
             import(p, *bar, None)?;
             if let Some(t) = p.tracks.last_mut() {
@@ -633,6 +658,49 @@ pub fn place(
             import(p, *bar, Some(*track))
         }
     }
+}
+
+/// Whether a track can be frozen: it has something to make sound with, and regions to play.
+pub fn can_freeze(t: &crate::model::Track) -> bool {
+    matches!(
+        t.kind,
+        TrackKind::Audio | TrackKind::Instrument | TrackKind::Drummer
+    ) && !t.regions.is_empty()
+}
+
+/// Freezes track `t`, or thaws it. A frozen track plays a file and runs none of its plugins or
+/// effects, which frees what they cost; the fader, pan and sends still work.
+pub fn toggle_freeze(p: &mut Project, s: &mut crate::UiState, t: usize) {
+    let Some(track) = p.tracks.get_mut(t) else {
+        return;
+    };
+    if track.frozen.take().is_some() {
+        p.song_rev += 1;
+        return;
+    }
+    if !can_freeze(track) {
+        s.status = Some("This track has nothing to freeze".to_string());
+        return;
+    }
+    let name = track.name.clone();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let dir = bounce_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        s.status = Some(e.to_string());
+        return;
+    }
+    s.bounce.enqueue(vec![Render {
+        path: dir.join(format!("{} freeze {stamp}.wav", file_safe(&name))),
+        format: FileFormat::Wav,
+        out_rate: 0,
+        from_beat: 0.0,
+        to_beat: project_end(p),
+        depth: BitDepth::Float32,
+        solo: Some(t),
+        after: After::Freeze { track: t },
+    }]);
 }
 
 /// The renders for each track on its own, into `folder`, named after the project and the track.

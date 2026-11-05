@@ -45,7 +45,6 @@ Q-Strength: = Q-Intensidad:
 Track: = Pista:
 Icon: = Icono:
 Channel: = Canal:
-Freeze Mode: = Modo congelar:
 Pre Fader = Pre-fader
 Q-Reference: = Q-Referencia:
 Flex Mode: = Modo Flex:

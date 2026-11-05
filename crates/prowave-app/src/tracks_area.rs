@@ -1258,6 +1258,7 @@ enum CtxAction {
     /// Smart Tempo of every audio region together (multitrack).
     AdaptTempoToAll,
     SmartTempoEditor(usize, usize),
+    ToggleFreeze(usize),
     FlexMode(usize, usize, prowave_engine::FlexMode),
     Flex(usize, usize, crate::flex_edit::Command),
     FlexRemove(usize, usize),
@@ -1284,6 +1285,8 @@ struct TrackInfo {
     mute: bool,
     solo: bool,
     custom_height: bool,
+    frozen: bool,
+    can_freeze: bool,
     /// The Groove Track, and whether this track follows it (`None`: there is none).
     groove: bool,
     follow_groove: Option<bool>,
@@ -1535,6 +1538,8 @@ fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
         rec: t.rec,
         takes_midi: matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi),
         custom_height: t.height != 1.0,
+        frozen: t.frozen.is_some(),
+        can_freeze: crate::bounce::can_freeze(t),
         groove: t.params.groove,
         follow_groove: crate::groove::groove_track(p)
             .filter(|g| *g != i)
@@ -1616,6 +1621,14 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
         tr("Set as Groove Track")
     };
     pick(ui, groove, "", CtxAction::ToggleGrooveTrack(t.i), picked);
+    if t.frozen || t.can_freeze {
+        let label = if t.frozen {
+            "Unfreeze Track"
+        } else {
+            "Freeze Track"
+        };
+        pick(ui, label, "", CtxAction::ToggleFreeze(t.i), picked);
+    }
     if let Some(follows) = t.follow_groove {
         let label = if follows {
             tr("Stop Following Groove Track")
@@ -1701,6 +1714,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::Normalize(t, r) => start_normalize(p, s, t, r),
         CtxAction::DetectTempo(t, r, adapt) => crate::smart_tempo::start(p, s, t, r, adapt),
         CtxAction::AdaptTempoToAll => crate::smart_tempo::start_all(p, s),
+        CtxAction::ToggleFreeze(i) => crate::bounce::toggle_freeze(p, s, i),
         CtxAction::ToggleGrooveTrack(i) => {
             let was = p.tracks.get(i).is_some_and(|t| t.params.groove);
             crate::groove::set_groove_track(p, (!was).then_some(i));
@@ -2737,7 +2751,12 @@ fn header(
     };
     let name_right = if opts.level { 122.0 } else { 6.0 };
     let name_w = hdr.right() - name_right - name_x;
-    let name_galley = g.layout_no_wrap(p.tracks[i].name.clone(), FontId::proportional(13.0), TEXT);
+    let shown_name = if p.tracks[i].frozen.is_some() {
+        format!("{} (Frozen)", p.tracks[i].name)
+    } else {
+        p.tracks[i].name.clone()
+    };
+    let name_galley = g.layout_no_wrap(shown_name, FontId::proportional(13.0), TEXT);
     let clip = g.with_clip_rect(
         Rect::from_min_size(pos2(name_x, hdr.top()), vec2(name_w.max(20.0), h))
             .intersect(g.clip_rect()),
@@ -4559,8 +4578,8 @@ mod tool_tests {
 
     #[test]
     fn every_tool_in_the_menu_is_a_real_tool() {
-        for n in 1..TOOLS.len() {
-            assert_ne!(TrackTool::of_entry(n), TrackTool::Pointer, "{}", TOOLS[n]);
+        for (n, name) in TOOLS.iter().enumerate().skip(1) {
+            assert_ne!(TrackTool::of_entry(n), TrackTool::Pointer, "{name}");
         }
         assert_eq!(TrackTool::of_entry(0), TrackTool::Pointer);
         assert_eq!(TrackTool::of_entry(SCISSORS_TOOL), TrackTool::Scissors);

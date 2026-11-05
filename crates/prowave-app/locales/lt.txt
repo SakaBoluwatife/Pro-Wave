@@ -45,7 +45,6 @@ Q-Strength: = Q-intensyvumas:
 Track: = Takelis:
 Icon: = Piktograma:
 Channel: = Kanalas:
-Freeze Mode: = Užšaldymo režimas:
 Pre Fader = Prieš slankiklį
 Q-Reference: = Q-atskaita:
 Flex Mode: = Flex režimas:

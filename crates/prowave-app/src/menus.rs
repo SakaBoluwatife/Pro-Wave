@@ -528,6 +528,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Create Track Automation"
         | "Group" => !p.tracks.is_empty(),
         "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Create Mastering Track" | "Plugin Manager" => true,
+        "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
         "Convert Automation" => s
             .tracks
@@ -744,6 +746,22 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 }
             }
         }
+        "Create Mastering Track" => match p.create_mastering_track() {
+            Some(t) => {
+                p.selected_track = t;
+                s.show_mixer = true;
+                s.bottom = Bottom::Mixer;
+            }
+            None => s.status = Some("Every bus is taken: free one to make it".to_string()),
+        },
+        "Show Master Track" => {
+            if let Some(t) = p.mastering_track() {
+                p.selected_track = t;
+                s.mixer.auto_editor.track = Some(t);
+                s.mixer.auto_editor.region = None;
+            }
+        }
+        "Plugin Manager" => s.dialogs.plugin_manager = true,
         "Hide All Automation" => {
             s.mixer.auto_editor.track = None;
             s.mixer.auto_editor.region = None;
@@ -1374,6 +1392,7 @@ mod tests {
                     s.mixer.auto_editor.track,
                     (
                         s.dialogs.groups,
+                        s.dialogs.plugin_manager,
                         s.dialogs.track_header,
                         s.dialogs.icon,
                         s.mixer.pre_fader,

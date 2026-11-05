@@ -45,7 +45,6 @@ Q-Strength: = Q-styrke:
 Track: = Spor:
 Icon: = Symbol:
 Channel: = Kanal:
-Freeze Mode: = Frysemodus:
 Pre Fader = Før fader
 Q-Reference: = Q-referanse:
 Flex Mode: = Flex-modus:

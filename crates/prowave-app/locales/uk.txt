@@ -45,7 +45,6 @@ Q-Strength: = Q-сила:
 Track: = Доріжка:
 Icon: = Значок:
 Channel: = Канал:
-Freeze Mode: = Режим заморозки:
 Pre Fader = Перед фейдером
 Q-Reference: = Q-еталон:
 Flex Mode: = Режим Flex:

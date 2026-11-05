@@ -583,6 +583,9 @@ pub struct MixGroup {
     pub solo: bool,
 }
 
+/// The name of the Aux that Create Mastering Track makes.
+pub const MASTERING_TRACK: &str = "Mastering";
+
 /// Most mix groups in a project.
 pub const MAX_GROUPS: usize = 64;
 
@@ -781,6 +784,9 @@ pub struct Track {
     pub auto: Automation,
     /// The mix group (index into `Project::groups`) the track belongs to.
     pub group: Option<usize>,
+    /// Frozen: this file plays in place of the track's regions, instrument and effects, which
+    /// stay as they are but are not running. Not saved: a project opens with its tracks live.
+    pub frozen: Option<Box<Region>>,
     /// The icon chosen with Assign Track Icon; else one follows from the patch.
     pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
@@ -852,6 +858,7 @@ impl Track {
             group: None,
             category: None,
             icon: None,
+            frozen: None,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -1014,6 +1021,7 @@ impl Project {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1079,6 +1087,7 @@ impl Project {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1943,6 +1952,37 @@ impl Project {
                 other => other,
             };
         }
+    }
+
+    /// The Aux that Create Mastering Track made, if it is still there.
+    pub fn mastering_track(&self) -> Option<usize> {
+        self.tracks
+            .iter()
+            .position(|t| t.kind == TrackKind::Aux && t.name == MASTERING_TRACK)
+    }
+
+    /// Mix > Create Mastering Track: an Aux at the end of the mix that every strip going to Stereo
+    /// Out now goes through, for what works on the whole mix and for its automation. `None` when
+    /// every bus is taken.
+    pub fn create_mastering_track(&mut self) -> Option<usize> {
+        if let Some(t) = self.mastering_track() {
+            return Some(t);
+        }
+        let aux = self.add_track(TrackKind::Aux);
+        let bus = self.aux_bus_of(aux);
+        if bus == 0 {
+            self.tracks.remove(aux);
+            return None;
+        }
+        self.tracks[aux].name = MASTERING_TRACK.to_string();
+        for (i, t) in self.tracks.iter_mut().enumerate() {
+            let routed = !matches!(t.kind, TrackKind::Folder | TrackKind::Vca);
+            if i != aux && routed && t.output == 0 {
+                t.output = bus;
+            }
+        }
+        self.song_rev += 1;
+        Some(aux)
     }
 
     /// The other tracks of track `i`'s group, when the group has the attribute `attr` (a

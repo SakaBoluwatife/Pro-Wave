@@ -19,6 +19,8 @@ pub struct QuickDialogs {
     pub track_header: bool,
     /// Track > Assign Track Icon: the track.
     pub icon: Option<usize>,
+    /// Window > Plugin Manager.
+    pub plugin_manager: bool,
     /// Mix > Edit Groups.
     pub groups: bool,
     /// File > Project Management > Rename Project: what has been typed.
@@ -266,6 +268,7 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    plugin_manager_window(ctx, s);
     rename_region_window(ctx, p, s);
     track_header_window(ctx, s);
     icon_window(ctx, p, s);
@@ -303,6 +306,72 @@ fn rename_region_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     if ok || close {
         d.rename_region = None;
     }
+}
+
+/// Window > Plugin Manager: every plugin found and every file that failed, with where they are.
+fn plugin_manager_window(ctx: &egui::Context, s: &mut UiState) {
+    if !s.dialogs.plugin_manager {
+        return;
+    }
+    let list = &mut s.plugins;
+    list.clap.ensure_started(ctx);
+    list.clap.drain();
+    let mut open = true;
+    egui::Window::new("Plugin Manager")
+        .id(egui::Id::unique("plugin_manager"))
+        .open(&mut open)
+        .default_size([720.0, 460.0])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "{} plugins, {} failed",
+                    list.clap.plugins.len(),
+                    list.clap.failed.len()
+                ));
+                if ui
+                    .button("Rescan")
+                    .on_hover_text("Look for new plugins and try the ones that failed again")
+                    .clicked()
+                {
+                    crate::plugin_guard::clear_blocked();
+                    list.clap.start(true, ctx);
+                }
+                if let Some((done, of)) = list.clap.progress {
+                    ui.label(format!("Scanning {done} of {of}..."));
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new(egui::Id::unique("plugin_manager_grid"))
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for head in ["Name", "Maker", "Format", "Kind", "File"] {
+                            ui.strong(head);
+                        }
+                        ui.end_row();
+                        for info in &list.clap.plugins {
+                            ui.label(&info.name);
+                            ui.label(&info.vendor);
+                            ui.label(info.format.name());
+                            ui.label(if info.is_instrument {
+                                "Instrument"
+                            } else {
+                                "Effect"
+                            });
+                            ui.label(info.path.display().to_string());
+                            ui.end_row();
+                        }
+                    });
+                if !list.clap.failed.is_empty() {
+                    ui.separator();
+                    ui.strong("Failed");
+                    for (path, why) in &list.clap.failed {
+                        ui.label(format!("{}: {why}", path.display()));
+                    }
+                }
+            });
+        });
+    s.dialogs.plugin_manager = open;
 }
 
 /// Track > Configure Track Header: what the track headers show.

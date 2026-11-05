@@ -42,7 +42,7 @@ pub struct PluginDrag(pub PluginInfo);
 /// The plugins found on this computer.
 #[derive(Default)]
 pub struct PluginList {
-    clap: PluginScan,
+    pub clap: PluginScan,
     kind: PluginKind,
     search: String,
     show_folders: bool,

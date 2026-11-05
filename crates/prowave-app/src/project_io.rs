@@ -926,6 +926,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             group: t.group,
             category: t.category.as_deref().map(intern),
             icon: t.icon.as_deref().and_then(crate::track_icons::icon_named),
+            frozen: None,
             height: finite_in(t.height, Track::MIN_HEIGHT, Track::MAX_HEIGHT, 1.0),
             indent: t.indent,
             folded: t.folded,

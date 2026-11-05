@@ -125,6 +125,11 @@ fn plan(want: &[(u64, Place)], live: &HashMap<u64, Place>) -> Vec<Step> {
 fn wanted_places(p: &Project) -> Vec<(u64, Place)> {
     let mut want = Vec::new();
     for (t, track) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
+        // A frozen track's plugins are let go, which is what freezing is for. Their settings are
+        // kept, and they come back when it thaws.
+        if track.frozen.is_some() {
+            continue;
+        }
         if let Some(plugin) = track
             .instrument_plugin
             .as_ref()
@@ -150,6 +155,9 @@ fn wanted_places(p: &Project) -> Vec<(u64, Place)> {
 fn wanted_bypass(p: &Project) -> Vec<((u64, bool), Place)> {
     let mut all = Vec::new();
     for (t, track) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
+        if track.frozen.is_some() {
+            continue;
+        }
         if let Some(plugin) = &track.instrument_plugin {
             all.push(((plugin.uid, plugin.bypass), (t as u16, INSTRUMENT_SLOT)));
         }

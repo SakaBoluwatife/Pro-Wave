@@ -45,7 +45,6 @@ Q-Strength: = Q-styrka:
 Track: = Spår:
 Icon: = Symbol:
 Channel: = Kanal:
-Freeze Mode: = Frysläge:
 Pre Fader = Före fader
 Q-Reference: = Q-referens:
 Flex Mode: = Flex-läge:

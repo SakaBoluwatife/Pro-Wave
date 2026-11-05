@@ -754,6 +754,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             track_icon(&p.tracks[ti]),
         );
         y += 30.0;
+        let mut freeze_pick = false;
         let channel = p.channel_name(ti);
         label(&g, left, y, tr("Channel:"), true);
         g.text(
@@ -765,15 +766,21 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         );
         y += ROW_H;
         if audio {
-            label(&g, left, y, tr("Freeze Mode:"), false);
-            popup(
+            let frozen = p.tracks[ti].frozen.is_some();
+            let can = frozen || crate::bounce::can_freeze(&p.tracks[ti]);
+            label(&g, left, y, "Freeze:", can);
+            if let Some(resp) = popup(
                 ui,
                 &g,
                 Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
                 "freeze",
-                tr("Pre Fader"),
-                false,
-            );
+                if frozen { "On" } else { "Off" },
+                can,
+            ) {
+                if resp.clicked() {
+                    freeze_pick = true;
+                }
+            }
             y += ROW_H;
             label(&g, left, y, tr("Q-Reference:"), false);
             checkbox(ui, &g, pos2(vx, y), "qref", true, false);
@@ -807,6 +814,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             y += ROW_H;
         } else {
             let external = p.tracks[ti].kind == TrackKind::ExternalMidi;
+            let frozen = p.tracks[ti].frozen.is_some();
+            let can = frozen || crate::bounce::can_freeze(&p.tracks[ti]);
+            label(&g, left, y, "Freeze:", can);
+            if let Some(resp) = popup(
+                ui,
+                &g,
+                Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
+                "freeze",
+                if frozen { "On" } else { "Off" },
+                can,
+            ) {
+                if resp.clicked() {
+                    freeze_pick = true;
+                }
+            }
+            y += ROW_H;
             if external {
                 // Where this track's notes go: a MIDI output port and a channel.
                 label(&g, left, y, tr("MIDI Out Port:"), true);
@@ -865,7 +888,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
                 (tr("MIDI In Port:"), tr("All")),
                 (tr("MIDI In Channel:"), tr("All")),
                 (tr("MIDI Out Channel:"), tr("All")),
-                (tr("Freeze Mode:"), tr("Pre Fader")),
             ]
             .into_iter()
             .filter(|(t, _)| !(external && *t == tr("MIDI Out Channel:")))
@@ -1007,6 +1029,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         if p.tracks[ti].params != tp {
             p.tracks[ti].params = tp;
             changed_song = true;
+        }
+        if freeze_pick {
+            crate::bounce::toggle_freeze(p, s, ti);
         }
         y += 4.0;
     }

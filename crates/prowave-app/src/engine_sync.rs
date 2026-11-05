@@ -206,6 +206,10 @@ fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
 
 /// The delay every effect of the strip puts on the sound, in samples.
 fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
+    // The file has the delay taken out already, and nothing is running to add more.
+    if t.frozen.is_some() {
+        return 0;
+    }
     let built_in: usize = t
         .inserts
         .iter()
@@ -366,9 +370,15 @@ fn playing_regions(p: &Project) -> impl Iterator<Item = (u16, &Track, &Region, f
         .enumerate()
         .filter_map(|(ti, t)| Some((track_index(ti)?, t)))
         .flat_map(move |(track, t)| {
-            t.regions
-                .iter()
-                .filter(|r| !r.params.mute)
+            // A frozen track plays its file, and only that.
+            let frozen = t.frozen.as_deref();
+            frozen
+                .into_iter()
+                .chain(
+                    t.regions
+                        .iter()
+                        .filter(move |r| frozen.is_none() && !r.params.mute),
+                )
                 .map(move |r| (track, t, r, p.region_start_beats(r)))
         })
 }
@@ -384,7 +394,11 @@ fn song_controls(p: &Project) -> Vec<ControlEvent> {
         .flat_map(|(track, t)| {
             let mut out = Vec::new();
             let (mut from, mut to) = (f64::MAX, 0.0f64);
-            for r in t.regions.iter().filter(|r| !r.params.mute) {
+            for r in t
+                .regions
+                .iter()
+                .filter(|r| !r.params.mute && t.frozen.is_none())
+            {
                 let origin = p.region_start_beats(r);
                 from = from.min(origin);
                 to = to.max(p.region_end_beats(r));
@@ -432,7 +446,7 @@ fn song_notes(p: &Project) -> Vec<NoteEvent> {
             let mut notes: Vec<NoteEvent> = t
                 .regions
                 .iter()
-                .filter(|r| !r.params.mute)
+                .filter(|r| !r.params.mute && t.frozen.is_none())
                 .flat_map(|r| {
                     let notes = region_notes(t, r, p.region_start_beats(r), track);
                     clip_notes(notes, r, p.region_end_beats(r))
@@ -770,7 +784,7 @@ impl EngineSync {
             let want: &[Insert] = p
                 .tracks
                 .get(i)
-                .filter(|_| i < MAX_TRACKS)
+                .filter(|t| i < MAX_TRACKS && t.frozen.is_none())
                 .map_or(&[], |t| &t.inserts);
             let same_kinds = self.fx[i].len() == want.len()
                 && self.fx[i].iter().zip(want).all(|(a, b)| a.kind == b.kind);
@@ -1050,6 +1064,7 @@ mod tests {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: crate::model::Automation::default(),
             group: None,
@@ -1262,6 +1277,27 @@ mod tests {
         let clipped = clip_notes(play(t), &t.regions[0], 0.2);
         assert_eq!(clipped.len(), 2);
         assert!(clipped.iter().all(|n| n.end_beat <= 0.2));
+    }
+
+    #[test]
+    fn a_frozen_track_plays_its_file_and_not_its_notes_or_effects() {
+        use crate::model::{Note, TrackKind};
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 1.0);
+        p.tracks[t].regions[0].notes = vec![Note {
+            start: 0.0,
+            len: 1.0,
+            pitch: 60,
+            vel: 100,
+            muted: false,
+        }];
+        assert_eq!(song_notes(&p).len(), 1);
+        p.tracks[t].frozen = Some(Box::new(p.tracks[t].regions[0].clone()));
+        assert!(song_notes(&p).is_empty(), "the notes stay quiet");
+        assert_eq!(playing_regions(&p).count(), 1, "only the frozen file");
+        p.tracks[t].frozen = None;
+        assert_eq!(song_notes(&p).len(), 1, "it thaws as it was");
     }
 
     #[test]

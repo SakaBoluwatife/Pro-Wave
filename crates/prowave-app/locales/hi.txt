@@ -45,7 +45,6 @@ Q-Strength: = Q-तीव्रता:
 Track: = ट्रैक:
 Icon: = आइकन:
 Channel: = चैनल:
-Freeze Mode: = फ़्रीज़ मोड:
 Pre Fader = फ़ेडर से पहले
 Q-Reference: = Q-संदर्भ:
 Flex Mode: = Flex मोड:

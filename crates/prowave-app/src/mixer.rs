@@ -2952,6 +2952,29 @@ mod tests {
         assert!(p.group_mates(c, |g| g.volume).is_empty());
     }
 
+    #[test]
+    fn a_mastering_track_takes_the_whole_mix_and_is_made_once() {
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let sub = p.add_track(TrackKind::Aux);
+        let bus = p.aux_bus_of(sub);
+        let b = p.add_track(TrackKind::Instrument);
+        p.tracks[b].output = bus;
+        let Some(m) = p.create_mastering_track() else {
+            panic!("a bus is free");
+        };
+        let master_bus = p.aux_bus_of(m);
+        assert_eq!(p.tracks[a].output, master_bus);
+        assert_eq!(p.tracks[sub].output, master_bus);
+        assert_eq!(p.tracks[b].output, bus, "what went to a bus still does");
+        assert_eq!(p.tracks[m].output, 0, "it goes to Stereo Out");
+        assert_eq!(p.create_mastering_track(), Some(m));
+        assert_eq!(
+            p.tracks.iter().filter(|t| t.kind == TrackKind::Aux).count(),
+            2
+        );
+    }
+
     fn mixer_project() -> Project {
         let mut p = Project::empty();
         p.add_track(TrackKind::Aux);
