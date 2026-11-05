@@ -14,25 +14,90 @@ pub const MAX_NOTES: usize = 100_000;
 const TOOLBAR: &[&str] = &[
     "Undo",
     "Redo",
-    "-",
     "New",
     "Create Marker",
     "Capture Recording",
-    "-",
     "Zoom In",
     "Zoom Out",
     "Zoom to Fit",
 ];
 
+/// What View > Customize Toolbar offers, in the order they show: menu entries.
+pub const TOOLBAR_CHOICES: &[&str] = &[
+    "Undo",
+    "Redo",
+    "Cut",
+    "Copy",
+    "Paste",
+    "Split at Playhead",
+    "Join",
+    "Bounce In Place",
+    "New",
+    "New Aux Track",
+    "Create Marker",
+    "Capture Recording",
+    "Show Automation",
+    "Show Smart Controls",
+    "Show Channel Rack",
+    "Mastering",
+    "Zoom In",
+    "Zoom Out",
+    "Zoom to Fit",
+];
+
+/// Puts an entry on the Toolbar or takes it off. It keeps the order of [`TOOLBAR_CHOICES`].
+pub fn set_toolbar_item(items: &mut Vec<&'static str>, label: &'static str, on: bool) {
+    items.retain(|x| *x != label);
+    if on {
+        items.push(label);
+    }
+    items.sort_by_key(|x| TOOLBAR_CHOICES.iter().position(|c| c == x));
+}
+
+/// The Toolbar from what was saved. An entry that is no longer offered is left out.
+fn toolbar_from_text(text: &str) -> Vec<&'static str> {
+    TOOLBAR_CHOICES
+        .iter()
+        .copied()
+        .filter(|choice| text.lines().any(|line| line.trim() == *choice))
+        .collect()
+}
+
+fn toolbar_file() -> Option<std::path::PathBuf> {
+    Some(crate::recent_files::config_dir()?.join("toolbar.txt"))
+}
+
+/// The Toolbar as the user left it, or the usual one.
+pub fn load_toolbar() -> Vec<&'static str> {
+    let saved = if cfg!(test) {
+        None
+    } else {
+        toolbar_file().and_then(|file| std::fs::read_to_string(file).ok())
+    };
+    match saved {
+        Some(text) => toolbar_from_text(&text),
+        None => TOOLBAR.to_vec(),
+    }
+}
+
+/// Keeps the Toolbar for next time. A failure only means the choice lasts for this run.
+pub fn save_toolbar(items: &[&str]) {
+    if cfg!(test) {
+        return;
+    }
+    if let Some(file) = toolbar_file() {
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, items.join("\n"));
+    }
+}
+
 /// The Toolbar under the control bar (Logic: View > Show Toolbar).
 pub fn toolbar(ui: &mut egui::Ui, p: &mut Project, s: &mut crate::UiState) {
     ui.horizontal_centered(|ui| {
         ui.add_space(8.0);
-        for label in TOOLBAR {
-            if *label == "-" {
-                ui.separator();
-                continue;
-            }
+        for label in s.toolbar.clone() {
             let on = crate::menus::enabled(label, p, s);
             if ui.add_enabled(on, egui::Button::new(tr(label))).clicked() {
                 crate::menus::apply(label, p, s);
@@ -76,4 +141,32 @@ pub fn quick_help(ctx: &egui::Context, s: &mut crate::UiState) {
                 ui.add_space(4.0);
             }
         });
+}
+
+#[cfg(test)]
+mod toolbar_tests {
+    use super::*;
+
+    #[test]
+    fn the_usual_toolbar_only_has_what_can_be_chosen() {
+        assert!(TOOLBAR.iter().all(|x| TOOLBAR_CHOICES.contains(x)));
+    }
+
+    #[test]
+    fn every_choice_is_a_menu_entry() {
+        let all = crate::menus::all_entries();
+        for choice in TOOLBAR_CHOICES {
+            assert!(all.contains(choice), "{choice}");
+        }
+    }
+
+    #[test]
+    fn entries_keep_their_order_and_survive_a_save() {
+        let mut items = vec!["Zoom In"];
+        set_toolbar_item(&mut items, "Undo", true);
+        assert_eq!(items, ["Undo", "Zoom In"]);
+        set_toolbar_item(&mut items, "Zoom In", false);
+        assert_eq!(items, ["Undo"]);
+        assert_eq!(toolbar_from_text("Undo\nNot a thing\nCut"), ["Undo", "Cut"]);
+    }
 }

@@ -23,6 +23,10 @@ pub struct QuickDialogs {
     pub import_project: Option<(Box<Project>, Vec<bool>)>,
     /// File > Clean Up: the files it found to delete.
     pub clean_up: Option<Vec<std::path::PathBuf>>,
+    /// Help > About Pro Wave.
+    pub about: bool,
+    /// View > Customize Toolbar.
+    pub customize_toolbar: bool,
     /// Window > Plugin Manager.
     pub plugin_manager: bool,
     /// Mix > Edit Groups.
@@ -272,6 +276,8 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    about_window(ctx, s);
+    customize_toolbar_window(ctx, s);
     import_project_window(ctx, p, s);
     clean_up_window(ctx, s);
     plugin_manager_window(ctx, s);
@@ -393,6 +399,53 @@ fn clean_up_window(ctx: &egui::Context, s: &mut UiState) {
     if delete || !open {
         s.dialogs.clean_up = None;
     }
+}
+
+/// Help > About Pro Wave.
+fn about_window(ctx: &egui::Context, s: &mut UiState) {
+    if !s.dialogs.about {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("About Pro Wave")
+        .id(egui::Id::unique("about_pro_wave"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.heading("Pro Wave");
+            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.label("Free software under the GNU General Public License, version 3 or later.");
+            ui.hyperlink("https://github.com/SakaBoluwatife/Pro-Wave");
+            ui.label("Built on Pro Wave by fabox-os.");
+        });
+    s.dialogs.about = open;
+}
+
+/// View > Customize Toolbar: which entries the Toolbar has.
+fn customize_toolbar_window(ctx: &egui::Context, s: &mut UiState) {
+    if !s.dialogs.customize_toolbar {
+        return;
+    }
+    let mut open = true;
+    let mut changed = false;
+    egui::Window::new("Customize Toolbar")
+        .id(egui::Id::unique("customize_toolbar"))
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            for label in crate::side_panes::TOOLBAR_CHOICES {
+                let mut on = s.toolbar.contains(label);
+                if ui.checkbox(&mut on, crate::i18n::tr(label)).changed() {
+                    crate::side_panes::set_toolbar_item(&mut s.toolbar, label, on);
+                    changed = true;
+                }
+            }
+        });
+    if changed {
+        crate::side_panes::save_toolbar(&s.toolbar);
+    }
+    s.dialogs.customize_toolbar = open;
 }
 
 /// Window > Plugin Manager: every plugin found and every file that failed, with where they are.

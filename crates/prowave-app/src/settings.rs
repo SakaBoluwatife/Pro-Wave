@@ -111,6 +111,14 @@ impl Tab {
     }
 }
 
+impl SettingsView {
+    /// Help > Logic-style Key Commands: the window, on its Key Commands tab.
+    pub fn open_key_commands(&mut self) {
+        self.open = true;
+        self.tab = Tab::Keys;
+    }
+}
+
 #[derive(Default)]
 pub struct SettingsView {
     pub open: bool,

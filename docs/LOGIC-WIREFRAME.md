@@ -217,7 +217,7 @@ For now the work is on mixing and beat making, so these wait. Kept in the menus,
 - **On hold, Apple's with no Windows alternative:** Song to Mobile Device, Open in Sound Library Manager
 - **On hold by the owner:** Movie, Show Movie, Video (no movie support for now)
 - **On hold, nothing behind them:** Session Player, Performers, Project Settings (Tuning: plugins have no general way to follow it)
-- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools, Show Flex Editor, Customize Toolbar, Logic-style Key Commands (the editor is in Settings), About Pro Wave
+- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools (nothing in Pro Wave is hidden behind it), Show Flex Editor
 - **Mixer:** Create New Output Channel Strip (the engine mixes to one stereo output; a second needs engine work)
 - **Inspector:** Q-Reference, MIDI In Port, MIDI In Channel, MIDI Out Channel
 - **Mix:** Stem Splitter (two versions were made at once; the owner chooses which to keep)

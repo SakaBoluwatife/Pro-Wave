@@ -530,6 +530,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
         "Create Mastering Track" | "Plugin Manager" => true,
+        "Logic-style Key Commands…" | "About Pro Wave" | "Customize Toolbar…" => true,
         "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
         "Convert Automation" => s
@@ -768,6 +769,12 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Plugin Manager" => s.dialogs.plugin_manager = true,
+        "Logic-style Key Commands…" => s.settings.open_key_commands(),
+        "About Pro Wave" => s.dialogs.about = true,
+        "Customize Toolbar…" => {
+            s.dialogs.customize_toolbar = true;
+            s.show_toolbar = true;
+        }
         "Other Projects…" => s.file_task = Some(FileTask::ImportProject),
         "Consolidate…" => s.file_task = Some(FileTask::Consolidate),
         "Clean Up…" => s.dialogs.clean_up = Some(crate::bounce::unused_freeze_files(p)),
@@ -1412,6 +1419,7 @@ mod tests {
                     (
                         s.dialogs.groups,
                         s.dialogs.plugin_manager,
+                        s.dialogs.about,
                         s.dialogs.clean_up.is_some(),
                         s.dialogs.track_header,
                         s.dialogs.icon,

@@ -115,6 +115,8 @@ pub struct UiState {
     pub capture_cmd: bool,
     pub show_quick_help: bool,
     pub show_toolbar: bool,
+    /// The entries of the Toolbar, in order.
+    pub toolbar: Vec<&'static str>,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -220,6 +222,7 @@ impl UiState {
             capture_cmd: false,
             show_quick_help: false,
             show_toolbar: false,
+            toolbar: side_panes::load_toolbar(),
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
