@@ -80,6 +80,8 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// Clip indicators to put out (`App` tells the engine).
+    pub clip_resets: Vec<ClipReset>,
     /// The plugins showing the B side of A/B compare (`App` keeps this current).
     pub showing_b: Vec<u64>,
     /// View > Show Signal Flow Channel Strips: only the path of the selected strip.
@@ -183,6 +185,7 @@ impl Default for MixerView {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
+            clip_resets: Vec::new(),
             showing_b: Vec::new(),
             strip_cmd: None,
             signal_flow: false,
@@ -213,6 +216,17 @@ pub struct Meters {
     /// Gain reduction in dB of each track's compressors.
     pub reduction: Vec<f32>,
     pub master: (f32, f32),
+    /// Each track's meter has gone over full scale since it was last reset.
+    pub clips: Vec<bool>,
+    pub master_clip: bool,
+}
+
+/// Which clip indicators to put out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipReset {
+    Track(usize),
+    Master,
+    All,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -375,6 +389,8 @@ struct Moved {
     /// The gesture began / ended (a double click is both).
     started: bool,
     stopped: bool,
+    /// The clip light was clicked; true with Alt held, for all of them.
+    reset_clip: Option<bool>,
 }
 
 /// The pan knob at `c` showing `value` (-1..1); drag it, or double-click for the centre. Not
@@ -417,6 +433,14 @@ pub(crate) fn meter_colour(db: f32) -> Color32 {
     }
 }
 
+/// Where the clip light of a meter goes, over the well that holds its bars.
+fn clip_light_rect(housing: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(housing.left(), housing.top() - 6.0),
+        pos2(housing.right(), housing.top() - 1.5),
+    )
+}
+
 /// Fader (scale + slot + cap) and stereo meter with peak-hold lines, laid out like Logic's
 /// channel strip: fader scale on the left, the cap, the meter scale numbers, then L/R bars.
 /// Returns the new fader value in dB when it was dragged or double-clicked.
@@ -430,6 +454,7 @@ fn fader_and_meter(
     editable: bool,
     peaks: (f32, f32),
     inactive: bool,
+    clipped: bool,
 ) -> Moved {
     let top = area.top() + 8.0;
     let bottom = area.bottom() - 6.0;
@@ -503,6 +528,14 @@ fn fader_and_meter(
         Stroke::new(1.0, Color32::from_gray(0x2e)),
         StrokeKind::Inside,
     );
+    // The clip light above the bars: on since the meter last went over full scale.
+    let light = clip_light_rect(housing);
+    let light_color = if clipped {
+        Color32::from_rgb(0xf0, 0x30, 0x24)
+    } else {
+        Color32::from_gray(0x24)
+    };
+    g.rect_filled(light, 1.0, light_color);
     for (i, (lvl, hd)) in [(levels.0, hold.0), (levels.1, hold.1)]
         .into_iter()
         .enumerate()
@@ -566,6 +599,16 @@ fn fader_and_meter(
     let cap_y = y_of(db_to_frac(db));
     let cap = Rect::from_center_size(pos2(fader_x, cap_y), vec2(16.0, 27.0));
     let mut out = Moved::default();
+    if clipped {
+        let resp = ui
+            .interact(light, id.with("clip"), Sense::click())
+            .on_hover_text_at_pointer(
+                "This meter went over 0 dB. Click to reset, Alt-click for all",
+            );
+        if resp.clicked() {
+            out.reset_clip = Some(ui.input(|i| i.modifiers.alt));
+        }
+    }
     if editable {
         let hit = Rect::from_min_max(
             pos2(fader_x - 14.0, top - 17.0),
@@ -2181,6 +2224,13 @@ pub fn channel_strip(
         StripKey::Track(i) => meters.tracks.get(i).copied().unwrap_or((0.0, 0.0)),
         _ => meters.master,
     };
+    let (clip_reset, clipped) = match key {
+        StripKey::Track(i) => (
+            ClipReset::Track(i),
+            meters.clips.get(i).copied().unwrap_or(false),
+        ),
+        _ => (ClipReset::Master, meters.master_clip),
+    };
     let hold = v.peak_hold.entry(key).or_insert(0.0);
     *hold = hold.max(peaks.0.max(peaks.1));
     let half = (inner_w - 4.0) / 2.0;
@@ -2210,6 +2260,7 @@ pub fn channel_strip(
         .clicked()
     {
         *hold = 0.0;
+        v.clip_resets.push(clip_reset);
     }
 
     // Fader + scale + meter.
@@ -2234,7 +2285,13 @@ pub fn channel_strip(
         fader_free,
         peaks,
         inactive,
+        clipped,
     );
+    if let Some(all) = moved.reset_clip {
+        v.clip_resets
+            .push(if all { ClipReset::All } else { clip_reset });
+        v.peak_hold.remove(&key);
+    }
     if let Some(db) = moved.value {
         match key {
             StripKey::Track(i) => match send_bus {
@@ -3058,6 +3115,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
                 if p.move_tracks(&[drag.0], to) {
                     p.linked_strips.clear();
                     v.peak_hold.clear();
+                    // The lights are by place, which has changed.
+                    v.clip_resets.push(ClipReset::All);
                     crate::tracks_area::forget_track_indexes(s);
                 }
             }

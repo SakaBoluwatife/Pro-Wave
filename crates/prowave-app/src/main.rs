@@ -799,6 +799,13 @@ impl eframe::App for App {
                 }
             }
             self.ui.mixer.showing_b = sync.showing_b();
+            let resets = std::mem::take(&mut self.ui.mixer.clip_resets);
+            for reset in resets {
+                // One the engine cannot take now is tried again next frame.
+                if !sync.reset_clip(reset) {
+                    self.ui.mixer.clip_resets.push(reset);
+                }
+            }
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
                 sync.open_plugin_editor(uid, &name, main_window_handle(frame));
             }
@@ -835,6 +842,8 @@ impl eframe::App for App {
                 tracks: sync.track_meters(self.project.tracks.len()),
                 reduction: sync.gain_reduction(self.project.tracks.len()),
                 master: sync.master_peaks(),
+                clips: sync.track_clips(self.project.tracks.len()),
+                master_clip: sync.master_clip(),
             },
             None => mixer::Meters::default(),
         };

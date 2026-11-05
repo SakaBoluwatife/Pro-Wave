@@ -503,6 +503,12 @@ pub enum Command {
         slot: u8,
         source: Option<u16>,
     },
+    /// Puts out the clip indicator of a strip's meter, or of the output's for `None`.
+    ResetClip {
+        track: Option<u16>,
+    },
+    /// Puts out every clip indicator.
+    ResetAllClips,
     /// Bypasses or brings back the hosted plugin of a slot, without allocating.
     SetPluginBypass {
         track: u16,
@@ -605,6 +611,11 @@ pub struct EngineState {
     pub peaks: (f32, f32),
     /// Post-fader stereo peak per track, linear, for the mixer meters.
     pub track_peaks: [(f32, f32); MAX_TRACKS],
+    /// The strip's meter went over full scale since this was last reset. It stays on, as short
+    /// overs fall between what the UI reads.
+    pub track_clips: [bool; MAX_TRACKS],
+    /// The same for the output, before it is limited to what a sound card can take.
+    pub master_clip: bool,
     /// Gain reduction in dB (0 or more) of the compressors of each strip, for the mixer's
     /// Gain Reduction meter.
     pub gain_reduction: [f32; MAX_TRACKS],
@@ -621,6 +632,8 @@ impl Default for EngineState {
             playing: false,
             peaks: (0.0, 0.0),
             track_peaks: [(0.0, 0.0); MAX_TRACKS],
+            track_clips: [false; MAX_TRACKS],
+            master_clip: false,
             gain_reduction: [0.0; MAX_TRACKS],
             block_frames: 0,
             output_latency_us: 0,
@@ -635,6 +648,10 @@ impl EngineState {
     }
 
     /// Post-fader (left, right) peak of `track`, linear; silence for a track out of range.
+    pub fn track_clip(&self, track: usize) -> bool {
+        self.track_clips.get(track).copied().unwrap_or(false)
+    }
+
     pub fn track_peaks(&self, track: usize) -> (f32, f32) {
         self.track_peaks.get(track).copied().unwrap_or((0.0, 0.0))
     }
@@ -1876,6 +1893,18 @@ impl EngineCore {
                         self.sort_strips();
                     }
                 }
+                Command::ResetClip { track } => match track {
+                    Some(t) => {
+                        if let Some(clip) = self.shown.track_clips.get_mut(t as usize) {
+                            *clip = false;
+                        }
+                    }
+                    None => self.shown.master_clip = false,
+                },
+                Command::ResetAllClips => {
+                    self.shown.track_clips.fill(false);
+                    self.shown.master_clip = false;
+                }
                 Command::SetPluginLowLatency { track, slot, on } => {
                     if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
                         plugin.set_low_latency(on);
@@ -2109,6 +2138,7 @@ impl EngineCore {
         self.drain_commands();
         let frame_secs = 1.0 / self.sr as f64;
         let (mut pk_l, mut pk_r) = (0f32, 0f32);
+        let mut over = false;
         for c in self.song.clips.iter_mut() {
             c.service();
         }
@@ -2360,6 +2390,7 @@ impl EngineCore {
                     let _ = tap.push(r);
                 }
             }
+            over |= l.abs() > 1.0 || r.abs() > 1.0;
             // A sound card cannot take more than full scale. A float file can.
             let (l, r) = if self.keep_headroom {
                 (l, r)
@@ -2430,7 +2461,9 @@ impl EngineCore {
         // Peak with simple decay so the UI meter does not flicker between callbacks.
         let (ol, or) = shown.peaks;
         shown.peaks = (decayed_peak(pk_l, ol), decayed_peak(pk_r, or));
+        shown.master_clip |= over;
         for (t, (l, r)) in shown.track_peaks.iter_mut().enumerate() {
+            shown.track_clips[t] |= self.track_pk_l[t] > 1.0 || self.track_pk_r[t] > 1.0;
             *l = decayed_peak(self.track_pk_l[t], *l);
             *r = decayed_peak(self.track_pk_r[t], *r);
         }
