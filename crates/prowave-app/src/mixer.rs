@@ -3544,6 +3544,7 @@ mod tests {
             tracks: vec![(0.5, 0.4), (0.0, 0.0)],
             reduction: vec![6.0, 0.0],
             master: (0.3, 0.3),
+            ..Meters::default()
         };
         for _ in 0..3 {
             h.frame(vec![], |ui| show(ui, &mut p, &mut s, &meters));
