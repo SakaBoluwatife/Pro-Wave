@@ -481,6 +481,12 @@ pub enum Command {
         slot: u8,
         plugin: Option<Box<PluginSlot>>,
     },
+    /// Low Latency mode: takes the hosted plugin of a slot out of the way, or brings it back.
+    SetPluginLowLatency {
+        track: u16,
+        slot: u8,
+        on: bool,
+    },
     /// Bypasses or brings back the hosted plugin of a slot, without allocating.
     SetPluginBypass {
         track: u16,
@@ -1774,6 +1780,11 @@ impl EngineCore {
                         let _ = self.trash.push(Garbage::Plugin(old));
                     }
                     self.sort_strips();
+                }
+                Command::SetPluginLowLatency { track, slot, on } => {
+                    if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
+                        plugin.set_low_latency(on);
+                    }
                 }
                 Command::SetPluginBypass {
                     track,

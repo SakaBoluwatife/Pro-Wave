@@ -58,6 +58,7 @@ mod region_edit;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod reliability_tests;
+mod routing_matrix;
 mod sample_browser;
 mod sample_place;
 mod score;

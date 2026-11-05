@@ -21,7 +21,6 @@ const SEG_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
 const SEG_ON: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
 const ICON: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb4);
 const ICON_ON: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
-const ICON_DIM: Color32 = Color32::from_rgb(0x7a, 0x7a, 0x7a);
 const LCD_BG: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1e);
 const LCD_TEXT: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
 const LCD_MID: Color32 = Color32::from_rgb(0x9c, 0x9c, 0x9c);
@@ -81,8 +80,7 @@ fn button_name(key: &str) -> Option<&'static str> {
         "rec" => "Record (R)",
         "capture" => "Capture Recording (Shift+R)",
         "cycle" => "Cycle (C)",
-        "lowlat" => "Low Latency Mode (not built yet)",
-        "tuner" => "Tuner (not built yet)",
+        "lowlat" => "Low Latency Mode: plugins with a long delay step aside",
         "countin" => "Count-in",
         "metronome" => "Metronome (K)",
         "view0" => "Library (Y)",
@@ -327,22 +325,6 @@ fn icon_low_latency(g: &Painter, r: Rect, c: Color32) {
         ],
         stroke(c),
     ));
-}
-
-fn icon_tuner(g: &Painter, r: Rect, c: Color32) {
-    // Tuning fork.
-    let p = r.center();
-    g.add(Shape::line(
-        vec![
-            p + vec2(-3.0, -7.0),
-            p + vec2(-3.0, 0.0),
-            p + vec2(0.0, 2.5),
-            p + vec2(3.0, 0.0),
-            p + vec2(3.0, -7.0),
-        ],
-        stroke(c),
-    ));
-    g.line_segment([p + vec2(0.0, 2.5), p + vec2(0.0, 7.5)], stroke(c));
 }
 
 fn icon_metronome(g: &Painter, r: Rect, c: Color32) {
@@ -1028,8 +1010,19 @@ pub fn control_bar(
     }
 
     let rx = |dx: f32| pos2(lcd_rect.right() + dx, cy);
-    let _low_latency = tbutton(ui, &g, rx(24.0), "lowlat", icon_low_latency, None, ICON);
-    let _tuner = tbutton(ui, &g, rx(54.0), "tuner", icon_tuner, None, ICON_DIM);
+    let low_bg = p.low_latency.then_some(CYCLE_YELLOW);
+    let low_icon = if p.low_latency { Color32::WHITE } else { ICON };
+    if tbutton(
+        ui,
+        &g,
+        rx(24.0),
+        "lowlat",
+        icon_low_latency,
+        low_bg,
+        low_icon,
+    ) {
+        p.low_latency = !p.low_latency;
+    }
     // Count-in "1234": purple when on.
     let ci = Rect::from_center_size(rx(110.0), vec2(28.0, 24.0));
     g.rect_filled(ci, 5.0, if p.count_in { PURPLE } else { SEG_BG });

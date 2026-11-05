@@ -208,6 +208,7 @@ const MIX: &[&str] = &[
     "-",
     "Pre-Fader Metering",
     "Mastering",
+    "Routing Matrix…",
     "Create Mastering Track",
     "Stem Splitter…",
     "-",
@@ -442,7 +443,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
         "Paste" => !s.tracks.clipboard.is_empty(),
-        "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…" => true,
+        "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…"
+        | "Routing Matrix…" | "General…" | "Synchronization…" | "Metronome…" | "Recording…"
+        | "Audio…" | "MIDI…" => true,
         "Rename Track" | "Assign Track Color…" => !p.tracks.is_empty(),
         "Project or Section…"
         | "Bounce"
@@ -584,6 +587,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Go to Position…" => s.dialogs.open_go_to(),
+        "Routing Matrix…" => s.dialogs.routing = true,
+        "General…" | "Synchronization…" | "Metronome…" | "Recording…" => {
+            s.dialogs.project_settings = true;
+        }
+        "Audio…" | "MIDI…" => s.settings.open = true,
         "Undo History…" => s.dialogs.undo_history = true,
         "Rename Track" => {
             let name = p.tracks.get(p.selected_track).map(|t| t.name.clone());
@@ -1099,6 +1107,8 @@ mod tests {
                         s.dialogs.rename.is_some(),
                         s.dialogs.color,
                         s.dialogs.undo_history,
+                        s.dialogs.routing,
+                        s.dialogs.project_settings,
                         p.punch,
                     ),
                     s.bounce.queue.len(),

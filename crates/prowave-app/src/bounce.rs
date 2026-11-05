@@ -1442,6 +1442,49 @@ mod tests {
         );
     }
 
+    /// The routing as it sounds, not as it looks: a track sent to a bus is heard through the Aux of
+    /// that bus at its fader, a track with a bus as its output only there, and an empty bus not at all.
+    #[test]
+    fn what_the_routing_says_is_what_comes_out() {
+        let (mut p, dir) = audio_project(1.0, 1.0);
+        p.master_vol = 1.0;
+        let aux = p.add_track(TrackKind::Aux);
+        let bus = p.aux_bus_of(aux);
+        assert_eq!(bus, 1);
+        let level = |p: &Project, name: &str| {
+            let end = project_end(p);
+            let out = render_and_read(p, mix_to(dir.path().join(name), end));
+            out[RATE as usize / 2]
+        };
+        let direct = level(&p, "direct.wav");
+        assert!((direct - 0.5).abs() < 0.01, "to Stereo Out: {direct}");
+
+        // Through the bus alone, with the Aux at -6 dB.
+        p.tracks[0].output = bus;
+        p.tracks[aux].volume_db = -6.0;
+        let through = level(&p, "through.wav");
+        assert!((through - 0.25).abs() < 0.01, "through the Aux: {through}");
+
+        // The Aux muted: nothing else carries it.
+        p.tracks[aux].mute = true;
+        let silent = level(&p, "silent.wav");
+        assert!(silent.abs() < 0.001, "{silent}");
+        p.tracks[aux].mute = false;
+
+        // To a bus nobody listens to: gone.
+        p.tracks[0].output = 5;
+        let lost = level(&p, "lost.wav");
+        assert!(lost.abs() < 0.001, "{lost}");
+
+        // A send adds to the direct sound.
+        p.tracks[0].output = 0;
+        assert!(crate::routing_matrix::toggle_send(&mut p, 0, bus));
+        let send = prowave_engine::send_gain(p.tracks[0].sends[0].level);
+        let both = level(&p, "send.wav");
+        let expected = 0.5 + 0.5 * send * 0.501;
+        assert!((both - expected).abs() < 0.02, "{both} and {expected}");
+    }
+
     #[test]
     fn a_format_only_has_the_depths_it_can_store() {
         assert_eq!(FileFormat::Flac.depth(BitDepth::Float32), BitDepth::Int24);

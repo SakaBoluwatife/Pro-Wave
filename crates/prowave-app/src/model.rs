@@ -904,6 +904,8 @@ pub struct Project {
     pub song_rev: u64,
     /// The Channel Rack's patterns.
     pub patterns: Vec<crate::song_pattern::SongPattern>,
+    /// Plugins with a long delay step aside, for playing and recording with less delay. Not saved.
+    pub low_latency: bool,
     /// Autopunch: recording happens only between these beats, however it is started.
     pub punch: bool,
     pub punch_start: f64,
@@ -1107,6 +1109,7 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            low_latency: false,
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,

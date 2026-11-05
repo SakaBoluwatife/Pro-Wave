@@ -193,6 +193,8 @@ pub struct PluginSlot {
     events: Vec<PluginEvent>,
     /// The next frame of the block.
     pos: usize,
+    /// Low Latency mode has this one out of the way: the sound passes with no delay but its block.
+    low_latency: bool,
     /// The engine runs a block when it runs all the others, on several cores ([`PluginRound`]).
     in_rounds: bool,
     /// A block is collected, waiting for that.
@@ -222,6 +224,7 @@ impl PluginSlot {
             out_r: buffer(),
             events: Vec::with_capacity(MAX_PLUGIN_EVENTS),
             pos: 0,
+            low_latency: false,
             in_rounds: false,
             full: false,
             bypass: false,
@@ -309,7 +312,18 @@ impl PluginSlot {
         }
     }
 
+    /// Takes the plugin out of the way for Low Latency mode, or brings it back.
+    pub fn set_low_latency(&mut self, on: bool) {
+        self.low_latency = on;
+    }
+
     fn run_block(&mut self, transport: &PluginTransport) {
+        if self.low_latency {
+            self.out_l.copy_from_slice(&self.in_l);
+            self.out_r.copy_from_slice(&self.in_r);
+            self.events.clear();
+            return;
+        }
         self.pass_by();
         if !self.bypass {
             self.plugin.process(
@@ -356,6 +370,21 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use std::sync::Arc;
+
+    #[test]
+    fn low_latency_lets_the_sound_by_with_only_its_block_of_delay() {
+        let mut slot = PluginSlot::new(Box::new(FakePlugin {
+            add: 0.5,
+            ..FakePlugin::default()
+        }));
+        slot.set_low_latency(true);
+        let t = PluginTransport::default();
+        let mut last = (0.0, 0.0);
+        for _ in 0..PLUGIN_BLOCK * 3 {
+            last = slot.process(0.25, 0.25, &t);
+        }
+        assert_eq!(last, (0.25, 0.25), "the plugin did not run");
+    }
 
     #[test]
     fn a_parameter_is_told_only_when_it_moves() {

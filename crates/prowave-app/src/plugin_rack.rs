@@ -191,10 +191,14 @@ struct Live {
     id: String,
     /// As last told to the engine.
     bypass: bool,
+    /// Out of the way for Low Latency mode, as last told to the engine.
+    low: bool,
     loaded: Box<dyn LoadedPlugin>,
 }
 
 const WINDOWS_FILE: &str = "plugin-windows";
+/// In Low Latency mode, plugins that delay the sound by this many samples or more step aside.
+const LOW_LATENCY_LIMIT: usize = 256;
 
 /// Where each plugin's editor window was, by the plugin's identifier: a line of `x y id`.
 fn parse_positions(text: &str) -> HashMap<String, (i32, i32)> {
@@ -305,9 +309,10 @@ impl Rack {
     }
 
     pub fn latency_of(&self, uid: u64) -> usize {
-        self.live
-            .get(&uid)
-            .map_or(0, |l| l.loaded.latency_samples() + PLUGIN_BLOCK)
+        self.live.get(&uid).map_or(0, |l| {
+            let own = if l.low { 0 } else { l.loaded.latency_samples() };
+            own + PLUGIN_BLOCK
+        })
     }
 
     /// Runs what the plugins asked for on this thread.
@@ -513,6 +518,17 @@ impl Rack {
                 }
                 live.bypass = plugin.1;
             }
+            let low = p.low_latency && live.loaded.latency_samples() >= LOW_LATENCY_LIMIT;
+            if live.low != low {
+                if !engine.send(Command::SetPluginLowLatency {
+                    track: place.0,
+                    slot: place.1,
+                    on: low,
+                }) {
+                    return false;
+                }
+                live.low = low;
+            }
         }
         !more
     }
@@ -574,6 +590,7 @@ impl Rack {
                     id,
                     // The slot starts running; the next `sync` tells it if it should not be.
                     bypass: false,
+                    low: false,
                     loaded,
                 },
             );

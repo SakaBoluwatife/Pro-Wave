@@ -11,6 +11,8 @@ pub struct QuickDialogs {
     /// Track > Assign Track Color: the track.
     pub color: Option<usize>,
     pub undo_history: bool,
+    pub routing: bool,
+    pub project_settings: bool,
     /// Asked for from the Undo History: this many steps back (`App` carries it out).
     pub undo_steps: usize,
     /// Asked for from the Undo History: this many undone steps forward.
@@ -210,12 +212,50 @@ fn history_window(ctx: &egui::Context, s: &mut UiState) {
     }
 }
 
+fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    if !s.dialogs.project_settings {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Project Settings")
+        .id(egui::Id::unique("project_settings"))
+        .open(&mut open)
+        .default_width(320.0)
+        .show(ctx, |ui| {
+            ui.heading("General");
+            let beat = p.position_beats;
+            let mut tempo = p.tempo_at(beat);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut tempo)
+                        .range(5.0..=990.0)
+                        .speed(0.1)
+                        .suffix(" BPM"),
+                )
+                .changed()
+            {
+                p.set_tempo_at(beat, tempo);
+            }
+            ui.separator();
+            ui.heading("Metronome and recording");
+            ui.checkbox(&mut p.metronome, "Metronome");
+            ui.checkbox(&mut p.count_in, "Count-in before recording");
+            ui.checkbox(&mut p.low_latency, "Low Latency mode");
+            ui.separator();
+            ui.heading("Synchronization");
+            crate::sync_menu::items(ui, p);
+        });
+    s.dialogs.project_settings = open;
+}
+
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
     color_window(ctx, p, s);
     history_window(ctx, s);
+    project_settings_window(ctx, p, s);
+    crate::routing_matrix::show(ctx, p, s);
 }
 
 #[cfg(test)]
