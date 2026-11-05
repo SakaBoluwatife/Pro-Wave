@@ -4033,6 +4033,113 @@ mod tests {
         ))
     }
 
+    /// A mix of everything the mix loop does, rendered in uneven callbacks. Writes it to the file
+    /// in `PROWAVE_GOLDEN` if there is none, and otherwise must come out the same, so that the mix
+    /// loop can be rewritten without changing the sound.
+    #[test]
+    #[ignore = "compares two versions of the engine: run by hand with PROWAVE_GOLDEN set"]
+    fn golden_render() {
+        use crate::fx::FxKind;
+        use crate::plugin::tests::FakePlugin;
+        let Some(path) = std::env::var_os("PROWAVE_GOLDEN") else {
+            return;
+        };
+        let (mut e, mut tx, _s) = rig();
+        const FRAMES: u64 = 96_000;
+        let mut feeds = Vec::new();
+        let mut clips = Vec::new();
+        for track in 0..5u16 {
+            let (producer, consumer) = rtrb::RingBuffer::new(FRAMES as usize / crate::disk::BLOCK_FRAMES + 4);
+            let edit = if track == 1 {
+                ClipEdit {
+                    fade_in_beats: 0.5,
+                    fade_out_beats: 0.5,
+                    fade_curve: FadeCurve::EqualPower,
+                    gain_db: -3.0,
+                    ..ClipEdit::default()
+                }
+            } else {
+                ClipEdit::default()
+            };
+            let start = f64::from(track) * 0.13;
+            clips.push(AudioClip::new(track, start, FRAMES, edit, consumer, Arc::new(ClipShared::default())));
+            feeds.push(producer);
+        }
+        let mut mixes = vec![TrackMix::default(); 7];
+        mixes[0].pan = -0.3;
+        mixes[1].gain_db = -6.0;
+        let notes = vec![NoteEvent { track: 5, ..note(2.0, 3.0) }];
+        let song = Song::new(notes, mixes).with_clips(clips);
+        assert!(tx.push(Command::SetSong(Box::new(song))).is_ok());
+        let mut send = Route::default();
+        send.sends[0] = SendSpec { bus: 1, level: 0.7, pre: false };
+        send.sends[1] = SendSpec { bus: 2, level: 0.4, pre: true };
+        assert!(tx.push(Command::SetRoute { track: 2, route: send }).is_ok());
+        let aux = Route { bus_in: 1, ..Route::default() };
+        assert!(tx.push(Command::SetRoute { track: 3, route: aux }).is_ok());
+        let second = Route { bus_in: 2, ..Route::default() };
+        assert!(tx.push(Command::SetRoute { track: 6, route: second }).is_ok());
+        assert!(tx.push(Command::SetInserts { track: 3, chain: effect(FxKind::ChannelEq, &[]) }).is_ok());
+        let plugin = PluginSlot::new(Box::new(FakePlugin { gain: 0.5, ..FakePlugin::default() }));
+        assert!(tx.push(Command::SetPlugin { track: 4, slot: 0, plugin: Some(Box::new(plugin)) }).is_ok());
+        let lane = AutoLane {
+            track: 0,
+            target: AutoTarget::Volume,
+            follow: true,
+            offset_db: 0.0,
+            points: vec![AutoPoint::new(0.0, 0.0), AutoPoint::new(3.0, -12.0)],
+        };
+        assert!(tx.push(Command::SetAutomation(vec![lane])).is_ok());
+        assert!(tx.push(Command::Play).is_ok());
+        e.process(&mut [0.0; 2]);
+        for (k, feed) in feeds.iter_mut().enumerate() {
+            let gen = e.song.clips[k].gen;
+            let hz = 110.0 * (k as f32 + 1.0);
+            let mut start = 0u64;
+            while start < FRAMES {
+                let mut data = [0.0; crate::disk::BLOCK_FRAMES * 2];
+                for (i, frame) in data.chunks_exact_mut(2).enumerate() {
+                    let at = (start + i as u64) as f32 / 48_000.0;
+                    frame[0] = (at * hz * std::f32::consts::TAU).sin() * 0.3;
+                    frame[1] = (at * hz * 1.5 * std::f32::consts::TAU).sin() * 0.2;
+                }
+                let block = Block { gen, start, frames: crate::disk::BLOCK_FRAMES as u32, data };
+                if feed.push(block).is_err() {
+                    break;
+                }
+                start += crate::disk::BLOCK_FRAMES as u64;
+            }
+        }
+        let mut out = Vec::new();
+        let sizes = [256usize, 128, 37, 512, 64, 1, 1024];
+        let mut k = 0;
+        while out.len() < 96_000 * 2 {
+            let mut buf = vec![0.0f32; sizes[k % sizes.len()] * 2];
+            e.process(&mut buf);
+            out.extend_from_slice(&buf);
+            k += 1;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            let old: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            assert_eq!(old.len(), out.len());
+            let worst = old
+                .iter()
+                .zip(&out)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            eprintln!("worst difference {worst}");
+            assert!(worst < 1e-5, "the sound changed by {worst}");
+        } else {
+            let bytes: Vec<u8> = out.iter().flat_map(|s| s.to_le_bytes()).collect();
+            assert!(std::fs::write(&path, bytes).is_ok());
+            let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            eprintln!("wrote the reference, peak {peak}");
+        }
+    }
+
     fn strip_note(track: u16, end: f64) -> NoteEvent {
         NoteEvent {
             track,
