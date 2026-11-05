@@ -66,7 +66,8 @@ Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie 
 3. Automation on the tracks, Track Alternatives, New Take and Record Repeat.
 4. Zero crossings, Strip Silence, Project Audio Browser, selection-based processing.
 5. Sidechain, MIDI learn.
-6. Everything else in the lists above.
+6. Pro Tools list, on the build list by the owner's choice, once the three sessions now running are done: dynamic plugin processing first, then nudge and tab to transient, then scrub, clip groups and loops, commit, bus interrogation, mono sum and dim, beat detective.
+7. Everything else in the lists above.
 
 ## Pro Tools guide: what to note
 
