@@ -715,3 +715,6 @@ Side Chain = サイドチェーン
 Compare A/B = A/B を比較
 Copy A to B = A を B にコピー
 Copy B to A = B を A にコピー
+Learn MIDI for Level = レベルの MIDI を学習
+Learn MIDI for Pan = パンの MIDI を学習
+MIDI Assignments = MIDI 割り当て

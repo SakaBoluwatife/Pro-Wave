@@ -715,3 +715,6 @@ Side Chain = Side-chain
 Compare A/B = Comparar A/B
 Copy A to B = Copiar A para B
 Copy B to A = Copiar B para A
+Learn MIDI for Level = Aprender MIDI para o nível
+Learn MIDI for Pan = Aprender MIDI para o pan
+MIDI Assignments = Atribuições MIDI

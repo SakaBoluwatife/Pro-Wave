@@ -715,3 +715,6 @@ Side Chain = Sivuketju
 Compare A/B = Vertaa A/B
 Copy A to B = Kopioi A kohteeseen B
 Copy B to A = Kopioi B kohteeseen A
+Learn MIDI for Level = Opeta MIDI tasolle
+Learn MIDI for Pan = Opeta MIDI panoroinnille
+MIDI Assignments = MIDI-määritykset

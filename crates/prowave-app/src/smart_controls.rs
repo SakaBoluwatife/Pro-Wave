@@ -1,7 +1,7 @@
 //! View > Show Smart Controls: eight knobs on the selected track's plugin, each on a parameter the
 //! user picks, so the sound can be shaped without opening the plugin's window. A knob moves the plugin
 //! the way automation does, and is recorded the same way when the strip is writing.
-use crate::model::{AutoTarget, Project};
+use crate::model::{AutoTarget, LearnTarget, Project};
 use crate::UiState;
 use egui::{vec2, Sense};
 use std::collections::HashMap;
@@ -50,6 +50,7 @@ fn keep_knobs(p: &mut Project, track: usize, uid: u64, knobs: [Option<u32>; KNOB
 
 /// The window.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let learn = &mut s.midi_learn;
     let v = &mut s.smart;
     v.wanted.clear();
     if !v.open {
@@ -143,6 +144,17 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                             }
                             if let Some(id) = id {
                                 v.wanted.push((chosen, id));
+                            }
+                            // The next control moved on a MIDI device goes on this parameter.
+                            if let Some(id) = id {
+                                let target = LearnTarget::Plugin {
+                                    uid: chosen,
+                                    param: id,
+                                };
+                                let armed = learn.armed == Some(target);
+                                if ui.selectable_label(armed, "Learn").clicked() {
+                                    learn.armed = (!armed).then_some(target);
+                                }
                             }
                             let name = id
                                 .and_then(|id| params.iter().find(|x| x.id == id))

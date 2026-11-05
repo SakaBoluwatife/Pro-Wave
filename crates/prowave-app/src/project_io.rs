@@ -650,6 +650,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         punch_start: p.punch_start,
         punch_end: p.punch_end,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
+        midi_map: midi_map_to_doc(p),
         song_patterns: p
             .patterns
             .iter()
@@ -1080,6 +1081,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .take(prowave_engine::MAX_INSERTS)
         .map(plugin_from_doc)
         .collect();
+    p.midi_map = midi_map_from_doc(&p, &doc.midi_map);
     // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
     for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
         resolve_region_plugins(track);
@@ -1372,6 +1374,78 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         side_offered: false,
         smart_knobs: smart_knobs_from_doc(&d.smart_knobs),
     }
+}
+
+/// The hardware controls for the file. Plugins go by place there, as their uids are for this run;
+/// one on a plugin that is gone is not kept.
+fn midi_map_to_doc(p: &Project) -> Vec<prowave_project::MidiMapDoc> {
+    use crate::model::LearnTarget;
+    use prowave_project::MidiMapDoc;
+    p.midi_map
+        .iter()
+        .filter_map(|m| {
+            let doc = |kind: &str, track: Option<usize>, slot: usize, param: u32| MidiMapDoc {
+                channel: m.channel,
+                controller: m.controller,
+                kind: kind.to_string(),
+                track: track.map(|t| t as u32),
+                slot: slot as u32,
+                param,
+            };
+            match m.target {
+                LearnTarget::Volume(t) => Some(doc("volume", Some(t), 0, 0)),
+                LearnTarget::Pan(t) => Some(doc("pan", Some(t), 0, 0)),
+                LearnTarget::MasterVolume => Some(doc("master", None, 0, 0)),
+                LearnTarget::Plugin { uid, param } => {
+                    let on_track = p.tracks.iter().enumerate().find_map(|(t, x)| {
+                        let slot = x.hosted().position(|i| i.uid == uid)?;
+                        Some(doc("plugin", Some(t), slot, param))
+                    });
+                    on_track.or_else(|| {
+                        let slot = p.master_plugins.iter().position(|i| i.uid == uid)?;
+                        Some(doc("plugin", None, slot, param))
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+/// The hardware controls from the file, for a project whose tracks and plugins are in place. What
+/// makes no sense in it is left out.
+fn midi_map_from_doc(
+    p: &Project,
+    docs: &[prowave_project::MidiMapDoc],
+) -> Vec<crate::model::MidiMapping> {
+    use crate::model::{LearnTarget, MidiMapping};
+    docs.iter()
+        .filter_map(|d| {
+            let track = d.track.map(|t| t as usize);
+            let on_track = track.filter(|t| *t < p.tracks.len());
+            let target = match d.kind.as_str() {
+                "volume" => LearnTarget::Volume(on_track?),
+                "pan" => LearnTarget::Pan(on_track?),
+                "master" => LearnTarget::MasterVolume,
+                "plugin" => {
+                    let slot = d.slot as usize;
+                    let uid = match track {
+                        Some(_) => p.tracks[on_track?].hosted().nth(slot)?.uid,
+                        None => p.master_plugins.get(slot)?.uid,
+                    };
+                    LearnTarget::Plugin {
+                        uid,
+                        param: d.param,
+                    }
+                }
+                _ => return None,
+            };
+            (d.channel < 16 && d.controller < 128).then_some(MidiMapping {
+                channel: d.channel,
+                controller: d.controller,
+                target,
+            })
+        })
+        .collect()
 }
 
 /// Smart Controls knobs from the file, with knobs the file has too few of off and any more ignored.

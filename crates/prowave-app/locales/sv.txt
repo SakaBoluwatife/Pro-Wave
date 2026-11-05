@@ -715,3 +715,6 @@ Side Chain = Sidokedja
 Compare A/B = Jämför A/B
 Copy A to B = Kopiera A till B
 Copy B to A = Kopiera B till A
+Learn MIDI for Level = Lär MIDI för nivå
+Learn MIDI for Pan = Lär MIDI för panorering
+MIDI Assignments = MIDI-tilldelningar

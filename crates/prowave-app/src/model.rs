@@ -697,6 +697,24 @@ pub struct PluginInsert {
     pub smart_knobs: Option<[Option<u32>; SMART_KNOBS]>,
 }
 
+/// What a hardware control moves (MIDI learn).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LearnTarget {
+    Volume(usize),
+    Pan(usize),
+    MasterVolume,
+    Plugin { uid: u64, param: u32 },
+}
+
+/// A hardware control and what it moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiMapping {
+    /// 0-15.
+    pub channel: u8,
+    pub controller: u8,
+    pub target: LearnTarget,
+}
+
 /// Knobs in the Smart Controls window.
 pub const SMART_KNOBS: usize = 8;
 
@@ -987,6 +1005,8 @@ pub struct Project {
     pub punch_end: f64,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
+    /// Hardware controls assigned with MIDI learn.
+    pub midi_map: Vec<MidiMapping>,
 }
 
 /// Deterministic pseudo-random so demo content is stable across runs.
@@ -1189,6 +1209,7 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            midi_map: Vec::new(),
             low_latency: false,
             punch: false,
             punch_start: 0.0,
@@ -1931,6 +1952,11 @@ impl Project {
                 *source = new_place.get(*source).copied().unwrap_or(*source);
             }
         }
+        for m in &mut self.midi_map {
+            if let LearnTarget::Volume(t) | LearnTarget::Pan(t) = &mut m.target {
+                *t = new_place.get(*t).copied().unwrap_or(*t);
+            }
+        }
         self.selected_track = new_place
             .get(self.selected_track)
             .copied()
@@ -2069,6 +2095,13 @@ impl Project {
                 }
             }
         }
+        for m in &mut self.midi_map {
+            if let LearnTarget::Volume(t) | LearnTarget::Pan(t) = &mut m.target {
+                if *t >= at {
+                    *t += 1;
+                }
+            }
+        }
     }
 
     /// Keeps VCA assignments right after track `removed` was taken out: tracks that were
@@ -2089,6 +2122,19 @@ impl Project {
                 other => other,
             };
         }
+        // And for hardware controls: the ones on it go with it.
+        self.midi_map.retain_mut(|m| match &mut m.target {
+            LearnTarget::Volume(t) | LearnTarget::Pan(t) => {
+                if *t == removed {
+                    return false;
+                }
+                if *t > removed {
+                    *t -= 1;
+                }
+                true
+            }
+            _ => true,
+        });
     }
 
     /// The VCA track that controls track `i`, if it has one.

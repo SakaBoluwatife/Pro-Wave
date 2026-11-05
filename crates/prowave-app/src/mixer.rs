@@ -80,6 +80,10 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// What the strip's menu wants a hardware control on (`UiState::midi_learn` takes it), and that
+    /// it asked for the list of assignments.
+    pub learn: Option<crate::model::LearnTarget>,
+    pub learn_window: bool,
     /// Clip indicators to put out (`App` tells the engine).
     pub clip_resets: Vec<ClipReset>,
     /// The plugins showing the B side of A/B compare (`App` keeps this current).
@@ -185,6 +189,8 @@ impl Default for MixerView {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
+            learn: None,
+            learn_window: false,
             clip_resets: Vec::new(),
             showing_b: Vec::new(),
             strip_cmd: None,
@@ -986,6 +992,19 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
         };
         if ui.button(label).clicked() {
             p.tracks[i].rec = !rec;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(tr("Learn MIDI for Level")).clicked() {
+            v.learn = Some(crate::model::LearnTarget::Volume(i));
+            ui.close();
+        }
+        if ui.button(tr("Learn MIDI for Pan")).clicked() {
+            v.learn = Some(crate::model::LearnTarget::Pan(i));
+            ui.close();
+        }
+        if ui.button(tr("MIDI Assignments")).clicked() {
+            v.learn_window = true;
             ui.close();
         }
         ui.separator();

@@ -352,6 +352,23 @@ pub struct PluginDoc {
     pub smart_knobs: Vec<Option<u32>>,
 }
 
+/// A hardware control assigned with MIDI learn.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct MidiMapDoc {
+    /// 0-15.
+    pub channel: u8,
+    pub controller: u8,
+    /// `volume`, `pan`, `master` or `plugin`.
+    pub kind: String,
+    /// The track, by its place; none for the output.
+    pub track: Option<u32>,
+    /// `plugin`: its place among the track's hosted plugins (instrument first) or the output's.
+    pub slot: u32,
+    /// `plugin`: the parameter's id.
+    pub param: u32,
+}
+
 /// A channel strip's sound in a file of its own: its effects and plugins with their settings.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
@@ -535,6 +552,9 @@ pub struct ProjectDoc {
     pub punch_end: f64,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
+    /// Hardware controls assigned with MIDI learn.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub midi_map: Vec<MidiMapDoc>,
     /// The Channel Rack's patterns.
     pub song_patterns: Vec<SongPatternDoc>,
     pub format_version: u32,
@@ -609,6 +629,7 @@ impl Default for ProjectDoc {
             punch_start: 0.0,
             punch_end: 0.0,
             master_plugins: Vec::new(),
+            midi_map: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),
             tempo: 120.0,
