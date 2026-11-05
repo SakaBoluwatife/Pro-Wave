@@ -111,6 +111,8 @@ pub struct SongPatternDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct RegionDoc {
+    /// The region's own automation.
+    pub auto: Vec<RegionLaneDoc>,
     /// The Channel Rack pattern it is placed from; 0 for none.
     pub song_pattern: u64,
     pub name: String,
@@ -355,6 +357,18 @@ pub struct InsertDoc {
     pub kind: String,
     pub bypass: bool,
     pub params: Vec<f32>,
+}
+
+/// A lane of a region's own automation; a point's beat counts from the region's start.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct RegionLaneDoc {
+    /// `volume`, `pan`, `fx` or `plugin`.
+    pub kind: String,
+    /// The effect's slot, or where the plugin is: -1 for the instrument.
+    pub slot: i32,
+    pub param: u32,
+    pub points: Vec<[f64; 3]>,
 }
 
 /// The automation lane of one effect parameter.

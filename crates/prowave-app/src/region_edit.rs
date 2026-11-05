@@ -98,6 +98,7 @@ pub fn split(p: &mut Project, t: usize, r: usize, beat: f64) -> Result<usize, St
         })
         .collect();
 
+    right.auto = crate::automation::cut_lanes(&mut region.auto, f64::from(at));
     if region.audio.is_some() {
         let first = region.params.source_start;
         let rest = played - cut_seconds;
@@ -180,6 +181,7 @@ pub fn join_with_next(p: &mut Project, t: usize, r: usize) -> Result<usize, Stri
             start: c.start + shift,
             ..*c
         }));
+    crate::automation::join_lanes(&mut region.auto, &second.auto, f64::from(shift));
     region.params.fade_out = second.params.fade_out;
     if region.audio.is_some() {
         region.params.source_len = played;
@@ -222,6 +224,7 @@ pub struct TrimStart {
     played: f32,
     notes: Vec<Note>,
     controls: Vec<Control>,
+    auto: Vec<crate::model::RegionLane>,
 }
 
 impl TrimStart {
@@ -234,6 +237,7 @@ impl TrimStart {
             played: played_seconds(region),
             notes: region.notes.clone(),
             controls: region.controls.clone(),
+            auto: region.auto.clone(),
         })
     }
 }
@@ -287,6 +291,7 @@ pub fn trim_start(p: &mut Project, t: usize, r: usize, from: &TrimStart, beat: f
             ..*c
         })
         .collect();
+    region.auto = crate::automation::trimmed_lanes(&from.auto, f64::from(moved));
     if is_audio {
         if !region.params.reverse {
             region.params.source_start = (from.source_start + seconds).max(0.0);

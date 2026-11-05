@@ -524,6 +524,7 @@ pub fn import(p: &mut Project, file: &MidiFile) -> usize {
             folder: None,
             audio: None,
             params: RegionParams::default(),
+            auto: Vec::new(),
             generated: None,
         });
         made += 1;

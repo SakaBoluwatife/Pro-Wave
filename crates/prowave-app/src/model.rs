@@ -102,6 +102,9 @@ pub struct Region {
     pub audio: Option<AudioRegion>,
     /// Region inspector parameters (non-destructive, applied when the song is built).
     pub params: RegionParams,
+    /// Automation that belongs to the region and moves with it. Over the region's stretch a lane
+    /// here takes the place of the track's lane of the same control.
+    pub auto: Vec<RegionLane>,
     /// A Pattern or Drummer region: the settings its `notes` are made from.
     pub generated: Option<Generated>,
 }
@@ -286,6 +289,13 @@ impl AutoMode {
 /// What an automation lane moves and its points (the engine's own types).
 pub use prowave_engine::{AutoPoint, AutoTarget};
 
+/// A lane of a region's own automation: its points count their beats from the region's start.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RegionLane {
+    pub target: AutoTarget,
+    pub points: Vec<AutoPoint>,
+}
+
 /// The automation of one effect parameter: slot and parameter number, and the points, whose
 /// values are positions 0..=1 along the parameter's range.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -319,6 +329,9 @@ pub struct Automation {
     pub shown: AutoTarget,
     /// Touch on a plugin: the beat it lets go at, if no move comes before. Not saved.
     pub plugin_touch_until: f64,
+    /// What the strip plays where regions have lanes, by control: see
+    /// `automation::merged_lanes`. Made once a frame, for the fader and knob display. Not saved.
+    pub region_played: Vec<(AutoTarget, Vec<AutoPoint>)>,
     /// The beat and value last written in this pass, so the next write replaces what lies
     /// between. Not saved.
     pub last: Option<(f64, f32)>,
@@ -443,7 +456,12 @@ impl Automation {
         if !self.follows(target) {
             return None;
         }
-        prowave_engine::lane_value(self.lane(target), beat)
+        let lane = self
+            .region_played
+            .iter()
+            .find(|l| l.0 == target)
+            .map_or(self.lane(target), |l| &l.1[..]);
+        prowave_engine::lane_value(lane, beat)
     }
 
     /// The most points one lane keeps.
@@ -1048,6 +1066,7 @@ impl Project {
                 },
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: None,
                 params: RegionParams::default(),
@@ -1692,6 +1711,7 @@ impl Project {
             notes: Vec::new(),
             controls: Vec::new(),
             folder: None,
+            auto: Vec::new(),
             generated: None,
             audio: None,
             params: RegionParams::default(),
@@ -1726,6 +1746,7 @@ impl Project {
             folder: None,
             audio: None,
             params: RegionParams::default(),
+            auto: Vec::new(),
             generated: Some(Generated::new(source)),
         });
         let ri = track.regions.len() - 1;
@@ -2562,6 +2583,7 @@ mod tests {
                 notes: Vec::new(),
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: Some(test_audio()),
                 params: RegionParams::default(),

@@ -528,6 +528,11 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Create Track Automation"
         | "Group" => !p.tracks.is_empty(),
         "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Show Region Automation" => s.tracks.selected.is_some(),
+        "Convert Automation" => s
+            .tracks
+            .selected
+            .is_some_and(|(t, r)| crate::automation::can_convert(p, t, r)),
         "Delete Automation" => has_automation(p),
         "Edit Groups…" => !p.groups.is_empty(),
         "Audio File…" | "Show in File Manager" | "Rename Project…" => true,
@@ -709,8 +714,40 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Record Project Settings" => s.dialogs.project_settings = true,
         "Show Automation" | "Show Track Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);
+            s.mixer.auto_editor.region = None;
         }
-        "Hide All Automation" => s.mixer.auto_editor.track = None,
+        "Show Region Automation" => {
+            if let Some((t, r)) = s.tracks.selected {
+                if let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) {
+                    let (from, to) = (p.region_start_beats(region), p.region_end_beats(region));
+                    let ed = &mut s.mixer.auto_editor;
+                    ed.track = Some(t);
+                    ed.region = Some(r);
+                    ed.from = (from - (to - from) * 0.1).max(0.0);
+                    ed.span = (to - from) * 1.2;
+                }
+            }
+        }
+        "Convert Automation" => {
+            if let Some((t, r)) = s.tracks.selected {
+                let on_region = p
+                    .tracks
+                    .get(t)
+                    .and_then(|x| x.regions.get(r))
+                    .is_some_and(|x| !x.auto.is_empty());
+                if on_region {
+                    crate::automation::convert_to_track(p, t, r);
+                    s.status = Some("Region automation moved to the track".to_string());
+                } else {
+                    crate::automation::convert_to_region(p, t, r);
+                    s.status = Some("Track automation moved to the region".to_string());
+                }
+            }
+        }
+        "Hide All Automation" => {
+            s.mixer.auto_editor.track = None;
+            s.mixer.auto_editor.region = None;
+        }
         "Create Automation" | "Create Track Automation" => {
             s.mixer.auto_editor.track = Some(p.selected_track);
             let beat = p.position_beats;

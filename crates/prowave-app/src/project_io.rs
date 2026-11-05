@@ -241,6 +241,86 @@ fn sends_from_doc(t: &prowave_project::TrackDoc) -> Vec<SendSlot> {
     sends
 }
 
+/// A region's lanes as the file keeps them. A plugin is kept by where it is.
+fn region_lanes_to_doc(t: &Track, r: &Region) -> Vec<prowave_project::RegionLaneDoc> {
+    use crate::model::AutoTarget;
+    r.auto
+        .iter()
+        .filter_map(|l| {
+            let (kind, slot, param) = match l.target {
+                AutoTarget::Volume => ("volume", 0, 0),
+                AutoTarget::Pan => ("pan", 0, 0),
+                AutoTarget::Fx { slot, param } => ("fx", i32::from(slot), u32::from(param)),
+                AutoTarget::Plugin { uid, param } => {
+                    let slot = if t.instrument_plugin.as_ref().is_some_and(|i| i.uid == uid) {
+                        -1
+                    } else {
+                        t.plugins.iter().position(|i| i.uid == uid)? as i32
+                    };
+                    ("plugin", slot, param)
+                }
+            };
+            Some(prowave_project::RegionLaneDoc {
+                kind: kind.into(),
+                slot,
+                param,
+                points: points_to_doc(&l.points),
+            })
+        })
+        .collect()
+}
+
+/// While a project is read, a region's plugin lane holds the plugin's place (the slot plus one, 0
+/// for the instrument) where the instance's number goes: see [`resolve_region_plugins`].
+fn region_lanes_from_doc(r: &RegionDoc) -> Vec<crate::model::RegionLane> {
+    use crate::model::AutoTarget;
+    r.auto
+        .iter()
+        .filter_map(|l| {
+            let target = match l.kind.as_str() {
+                "volume" => AutoTarget::Volume,
+                "pan" => AutoTarget::Pan,
+                "fx" => AutoTarget::Fx {
+                    slot: u8::try_from(l.slot).ok()?,
+                    param: u8::try_from(l.param).ok()?,
+                },
+                "plugin" => AutoTarget::Plugin {
+                    uid: u64::try_from(i64::from(l.slot) + 1).ok()?,
+                    param: l.param,
+                },
+                _ => return None,
+            };
+            let points = points_from_doc(target, &l.points);
+            (!points.is_empty()).then_some(crate::model::RegionLane { target, points })
+        })
+        .collect()
+}
+
+/// Gives the plugin lanes of a track's regions the numbers of the instances that were just made.
+fn resolve_region_plugins(track: &mut Track) {
+    use crate::model::AutoTarget;
+    let instrument = track.instrument_plugin.as_ref().map(|i| i.uid);
+    let plugins: Vec<u64> = track.plugins.iter().map(|i| i.uid).collect();
+    for region in &mut track.regions {
+        region.auto.retain_mut(|lane| {
+            let AutoTarget::Plugin { uid, param } = lane.target else {
+                return true;
+            };
+            let real = match uid {
+                0 => instrument,
+                place => plugins.get(place as usize - 1).copied(),
+            };
+            match real {
+                Some(uid) => {
+                    lane.target = AutoTarget::Plugin { uid, param };
+                    true
+                }
+                None => false,
+            }
+        });
+    }
+}
+
 /// The automation of a track in a file, with every point made safe.
 fn automation_from_doc(t: &prowave_project::TrackDoc) -> crate::model::Automation {
     use crate::model::{AutoMode, AutoTarget, Automation};
@@ -428,6 +508,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 .regions
                 .iter()
                 .map(|r| RegionDoc {
+                    auto: region_lanes_to_doc(t, r),
                     song_pattern: r.params.pattern,
                     name: r.name.clone(),
                     start_bar: r.start_bar,
@@ -761,6 +842,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                     })
                     .collect(),
                 folder: None,
+                auto: region_lanes_from_doc(r),
                 generated: generated_from_doc(r),
                 audio,
                 params: RegionParams {
@@ -977,6 +1059,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .collect();
     // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
     for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
+        resolve_region_plugins(track);
         for l in &d.auto_plugins {
             let plugin = if l.slot < 0 {
                 track.instrument_plugin.as_ref()
@@ -1354,6 +1437,64 @@ pub fn open_project(
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn region_automation_survives_a_save_with_its_plugin_found_again() {
+        use crate::model::{AutoPoint, AutoTarget, RegionLane};
+        let mut t = Track::new("t", TrackKind::Audio);
+        let mut region = Project::empty();
+        let n = region.add_track(TrackKind::Instrument);
+        region.add_midi_region(n, 1.0);
+        let mut r = region.tracks[n].regions.remove(0);
+        let plugin = crate::model::PluginInsert {
+            row: 0,
+            uid: 77,
+            id: "x".into(),
+            name: "x".into(),
+            vendor: String::new(),
+            path: "x.clap".into(),
+            bypass: false,
+            failed: None,
+            state: None,
+            params: std::sync::Arc::default(),
+        };
+        t.plugins.push(plugin);
+        let points = vec![AutoPoint {
+            beat: 1.0,
+            value: 0.5,
+            curve: 0.0,
+        }];
+        for target in [
+            AutoTarget::Volume,
+            AutoTarget::Plugin { uid: 77, param: 9 },
+            AutoTarget::Plugin {
+                uid: 12345,
+                param: 9,
+            },
+        ] {
+            r.auto.push(RegionLane {
+                target,
+                points: points.clone(),
+            });
+        }
+        let doc = RegionDoc {
+            auto: region_lanes_to_doc(&t, &r),
+            ..RegionDoc::default()
+        };
+        assert_eq!(
+            doc.auto.len(),
+            2,
+            "a lane of a plugin that is gone is not kept"
+        );
+        r.auto = region_lanes_from_doc(&doc);
+        t.regions.push(r);
+        t.plugins[0].uid = 88;
+        resolve_region_plugins(&mut t);
+        let lanes = &t.regions[0].auto;
+        assert_eq!(lanes[0].target, AutoTarget::Volume);
+        assert_eq!(lanes[1].target, AutoTarget::Plugin { uid: 88, param: 9 });
+        assert!((lanes[1].points[0].beat - 1.0).abs() < 1e-9);
+    }
 
     #[test]
     fn a_channel_strip_file_brings_back_effects_and_plugins_with_settings() {

@@ -3472,6 +3472,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 v.show_colors,
                 v.wave_zoom,
             );
+            crate::automation::draw_region_lanes(&g, full, &tr.regions[ri], beat_px);
         }
     }
     if moved {

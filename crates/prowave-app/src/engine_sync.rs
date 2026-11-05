@@ -136,11 +136,23 @@ fn lane_offset(p: &Project, i: usize, target: AutoTarget) -> f32 {
     }
 }
 
+/// What a strip plays: its own lanes, and where regions have lanes the two merged.
+fn played_lanes<'a>(
+    t: &'a crate::model::Track,
+    merged: &'a [(AutoTarget, Vec<prowave_engine::AutoPoint>)],
+) -> impl Iterator<Item = (AutoTarget, &'a [prowave_engine::AutoPoint])> {
+    t.auto
+        .lanes()
+        .filter(|(target, _)| !merged.iter().any(|m| m.0 == *target))
+        .chain(merged.iter().map(|m| (m.0, &m.1[..])))
+}
+
 /// The lanes the engine should have for the project's automation.
 fn automation_lanes(p: &Project) -> Vec<AutoLane> {
     let mut lanes = Vec::new();
     for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
-        for (target, points) in t.auto.lanes() {
+        let merged = crate::automation::merged_lanes(p, i);
+        for (target, points) in played_lanes(t, &merged) {
             if !points.is_empty() {
                 lanes.push(
                     AutoLane {
@@ -163,7 +175,8 @@ fn automation_lanes(p: &Project) -> Vec<AutoLane> {
 fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
     let mut it = sent.iter();
     for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
-        for (target, points) in t.auto.lanes() {
+        let merged = crate::automation::merged_lanes(p, i);
+        for (target, points) in played_lanes(t, &merged) {
             if points.is_empty() {
                 continue;
             }
@@ -983,6 +996,7 @@ mod tests {
                 notes,
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: None,
                 params: RegionParams::default(),
@@ -1120,6 +1134,34 @@ mod tests {
     }
 
     #[test]
+    fn region_automation_reaches_the_engine_and_is_not_sent_again_and_again() {
+        use crate::model::{AutoMode, RegionLane, TrackKind};
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 3.0);
+        p.tracks[t].auto.mode = AutoMode::Read;
+        p.tracks[t].regions[0].auto.push(RegionLane {
+            target: AutoTarget::Volume,
+            points: vec![prowave_engine::AutoPoint {
+                beat: 1.0,
+                value: -6.0,
+                curve: 0.0,
+            }],
+        });
+        let lanes = automation_lanes(&p);
+        let lane = lanes.iter().find(|l| l.track as usize == t);
+        let Some(lane) = lane else {
+            panic!("no lane for the track");
+        };
+        let start = p.region_start_beats(&p.tracks[t].regions[0]);
+        let inside = prowave_engine::lane_value(&lane.points, start + 1.0);
+        assert!(inside.is_some_and(|v| (v + 6.0).abs() < 0.01));
+        assert!(automation_unchanged(&p, &lanes));
+        p.tracks[t].regions[0].start_bar += 1.0;
+        assert!(!automation_unchanged(&p, &lanes), "a move is a change");
+    }
+
+    #[test]
     fn quantize_transpose_and_velocity_are_applied() {
         let mut t = track(vec![note(0.9, 60, 100)]);
         t.regions[0].params = RegionParams {
@@ -1218,6 +1260,7 @@ mod tests {
                 folder: None,
                 audio: None,
                 params: RegionParams::default(),
+                auto: Vec::new(),
                 generated: None,
             });
         }

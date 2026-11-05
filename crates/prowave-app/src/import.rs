@@ -83,6 +83,7 @@ pub fn import_audio_at(
         notes: vec![],
         controls: Vec::new(),
         folder: None,
+        auto: Vec::new(),
         generated: None,
         audio: Some(audio_region(file, ctx)),
         params: RegionParams::default(),

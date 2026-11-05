@@ -26,6 +26,8 @@ enum Drag {
 pub struct AutoEditor {
     /// The track whose lanes are shown, when the window is open.
     pub track: Option<usize>,
+    /// The region whose own lanes are shown instead, when that is what is edited.
+    pub region: Option<usize>,
     /// The first beat shown and how many beats are shown (0: not set yet).
     pub from: f64,
     pub span: f64,
@@ -67,6 +69,12 @@ pub fn natural(t: &Track, target: AutoTarget, v: f32) -> f32 {
 /// Once a frame, after the playhead was read from the engine: writes what the strips that
 /// record (Write, and Touch or Latch with a control held) have now.
 pub fn tick(p: &mut Project) {
+    for i in 0..p.tracks.len() {
+        let merged = merged_lanes(p, i);
+        if !merged.is_empty() || !p.tracks[i].auto.region_played.is_empty() {
+            p.tracks[i].auto.region_played = merged;
+        }
+    }
     let (beat, playing) = (p.position_beats, p.playing);
     for t in p.tracks.iter_mut() {
         if !playing {
@@ -131,9 +139,268 @@ pub fn plugin_gesture(t: &mut Track, uid: u64, editing: bool, ended: bool, beat:
     }
 }
 
+/// A lane of a region is this long before and after its stretch, so the track's value comes back.
+const REGION_EDGE: f64 = 1e-3;
+
+/// What track `i` plays for the controls that have lanes on its regions: the track's lane, with
+/// the stretch of each region that has a lane for it replaced by that lane. Controls with no
+/// region lanes are not in the list. Nothing is made for a track without any.
+pub fn merged_lanes(p: &Project, i: usize) -> Vec<(AutoTarget, Vec<AutoPoint>)> {
+    let Some(t) = p.tracks.get(i) else {
+        return Vec::new();
+    };
+    if t.regions.iter().all(|r| r.auto.is_empty()) {
+        return Vec::new();
+    }
+    let mut regions: Vec<&crate::model::Region> =
+        t.regions.iter().filter(|r| !r.auto.is_empty()).collect();
+    regions.sort_by(|a, b| a.start_bar.total_cmp(&b.start_bar));
+    let mut out: Vec<(AutoTarget, Vec<AutoPoint>)> = Vec::new();
+    for region in regions {
+        let (from, to) = (p.region_start_beats(region), p.region_end_beats(region));
+        for lane in region.auto.iter().filter(|l| !l.points.is_empty()) {
+            let at = match out.iter().position(|l| l.0 == lane.target) {
+                Some(at) => at,
+                None => {
+                    out.push((lane.target, t.auto.lane(lane.target).to_vec()));
+                    out.len() - 1
+                }
+            };
+            let merged = &mut out[at].1;
+            // With no lane the control's own setting is what the strip goes back to. A plugin
+            // keeps its own, so there it holds the region's last value.
+            let own = match lane.target {
+                AutoTarget::Plugin { .. } => None,
+                target => Some(current(t, target)),
+            };
+            let before = prowave_engine::lane_value(merged, from).or(own);
+            let after = prowave_engine::lane_value(merged, to).or(own);
+            merged.retain(|q| q.beat < from - REGION_EDGE || q.beat > to + REGION_EDGE);
+            let point = |beat: f64, value: f32| AutoPoint {
+                beat,
+                value,
+                curve: 0.0,
+            };
+            if let (Some(v), true) = (before, from >= REGION_EDGE) {
+                merged.push(point(from - REGION_EDGE, v));
+            }
+            merged.extend(
+                lane.points
+                    .iter()
+                    .filter(|q| q.beat >= 0.0 && from + q.beat <= to)
+                    .map(|q| AutoPoint {
+                        beat: from + q.beat,
+                        ..*q
+                    }),
+            );
+            if let Some(v) = after {
+                merged.push(point(to + REGION_EDGE, v));
+            }
+            merged.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+        }
+    }
+    out
+}
+
+/// The lane of `target` on a region, made if it had none.
+fn region_lane_mut(
+    lanes: &mut Vec<crate::model::RegionLane>,
+    target: AutoTarget,
+) -> &mut Vec<AutoPoint> {
+    let at = match lanes.iter().position(|l| l.target == target) {
+        Some(at) => at,
+        None => {
+            lanes.push(crate::model::RegionLane {
+                target,
+                points: Vec::new(),
+            });
+            lanes.len() - 1
+        }
+    };
+    &mut lanes[at].points
+}
+
+/// A region is cut at `at` beats from its start: `lanes` keep what is before it and the lanes of
+/// the part after it are returned. Both parts have a point at the cut, so the value carries on.
+pub fn cut_lanes(lanes: &mut [crate::model::RegionLane], at: f64) -> Vec<crate::model::RegionLane> {
+    let mut right = Vec::with_capacity(lanes.len());
+    for lane in lanes.iter_mut() {
+        let Some(value) = prowave_engine::lane_value(&lane.points, at) else {
+            continue;
+        };
+        let flat = AutoPoint {
+            beat: 0.0,
+            value,
+            curve: 0.0,
+        };
+        let mut after = vec![flat];
+        after.extend(
+            lane.points
+                .iter()
+                .filter(|q| q.beat > at)
+                .map(|q| AutoPoint {
+                    beat: q.beat - at,
+                    ..*q
+                }),
+        );
+        lane.points.retain(|q| q.beat < at);
+        lane.points.push(AutoPoint { beat: at, ..flat });
+        right.push(crate::model::RegionLane {
+            target: lane.target,
+            points: after,
+        });
+    }
+    right
+}
+
+/// The lanes of a region whose start moved `moved` beats later (earlier when negative).
+pub fn trimmed_lanes(
+    lanes: &[crate::model::RegionLane],
+    moved: f64,
+) -> Vec<crate::model::RegionLane> {
+    lanes
+        .iter()
+        .map(|lane| {
+            let mut points: Vec<AutoPoint> = lane
+                .points
+                .iter()
+                .filter(|q| q.beat >= moved)
+                .map(|q| AutoPoint {
+                    beat: q.beat - moved,
+                    ..*q
+                })
+                .collect();
+            if moved > 0.0 && points.first().is_none_or(|q| q.beat > 0.0) {
+                if let Some(value) = prowave_engine::lane_value(&lane.points, moved) {
+                    points.insert(
+                        0,
+                        AutoPoint {
+                            beat: 0.0,
+                            value,
+                            curve: 0.0,
+                        },
+                    );
+                }
+            }
+            crate::model::RegionLane {
+                target: lane.target,
+                points,
+            }
+        })
+        .collect()
+}
+
+/// Lanes of the second region of a join, added to those of the first; it starts `shift` beats later.
+pub fn join_lanes(
+    lanes: &mut Vec<crate::model::RegionLane>,
+    second: &[crate::model::RegionLane],
+    shift: f64,
+) {
+    for lane in second {
+        let points = region_lane_mut(lanes, lane.target);
+        points.extend(lane.points.iter().map(|q| AutoPoint {
+            beat: q.beat + shift,
+            ..*q
+        }));
+        points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    }
+}
+
+/// Whether Convert Automation has something to do for region `r` of track `t`.
+pub fn can_convert(p: &Project, t: usize, r: usize) -> bool {
+    let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+        return false;
+    };
+    if !region.auto.is_empty() {
+        return true;
+    }
+    let (from, to) = (p.region_start_beats(region), p.region_end_beats(region));
+    p.tracks[t]
+        .auto
+        .lanes()
+        .any(|(_, points)| points.iter().any(|q| q.beat >= from && q.beat <= to))
+}
+
+/// Mix > Convert Automation: the track's points over the region become the region's.
+pub fn convert_to_region(p: &mut Project, t: usize, r: usize) {
+    let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+        return;
+    };
+    let (from, to) = (p.region_start_beats(region), p.region_end_beats(region));
+    let track = &mut p.tracks[t];
+    let targets: Vec<AutoTarget> = track.auto.lanes().map(|l| l.0).collect();
+    for target in targets {
+        let lane = track.auto.lane_mut(target);
+        let inside: Vec<AutoPoint> = lane
+            .iter()
+            .filter(|q| q.beat >= from && q.beat <= to)
+            .map(|q| AutoPoint {
+                beat: q.beat - from,
+                ..*q
+            })
+            .collect();
+        if inside.is_empty() {
+            continue;
+        }
+        lane.retain(|q| q.beat < from || q.beat > to);
+        *region_lane_mut(&mut track.regions[r].auto, target) = inside;
+    }
+    track.auto.prune();
+    p.song_rev += 1;
+}
+
+/// Mix > Convert Automation: the region's lanes go onto the track's, replacing what was there
+/// over the region's stretch.
+pub fn convert_to_track(p: &mut Project, t: usize, r: usize) {
+    let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+        return;
+    };
+    let (from, to) = (p.region_start_beats(region), p.region_end_beats(region));
+    let track = &mut p.tracks[t];
+    for lane in std::mem::take(&mut track.regions[r].auto) {
+        let points = track.auto.lane_mut(lane.target);
+        points.retain(|q| q.beat < from || q.beat > to);
+        points.extend(lane.points.iter().map(|q| AutoPoint {
+            beat: from + q.beat,
+            ..*q
+        }));
+        points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    }
+    p.song_rev += 1;
+}
+
+/// The region's own automation drawn over it in the Tracks area.
+pub fn draw_region_lanes(g: &egui::Painter, r: Rect, region: &crate::model::Region, beat_px: f32) {
+    for lane in &region.auto {
+        let to_pos = |q: &AutoPoint| {
+            pos2(
+                r.left() + q.beat as f32 * beat_px,
+                r.bottom() - frac_of(lane.target, q.value) * r.height(),
+            )
+        };
+        let Some(first) = lane.points.first() else {
+            continue;
+        };
+        let mut line = vec![pos2(r.left(), to_pos(first).y)];
+        line.extend(lane.points.iter().map(to_pos));
+        if let Some(last) = lane.points.last() {
+            line.push(pos2(r.right(), to_pos(last).y));
+        }
+        g.add(Shape::line(
+            line,
+            Stroke::new(1.2, Color32::from_rgb(0xff, 0xe0, 0x66)),
+        ));
+        for q in &lane.points {
+            g.circle_filled(to_pos(q), 2.2, Color32::from_rgb(0xff, 0xe0, 0x66));
+        }
+    }
+}
+
 /// Whether the user can move the control: not while the strip plays its lane in Read mode.
 pub fn editable(t: &Track, target: AutoTarget) -> bool {
-    !(t.auto.mode == AutoMode::Read && !t.auto.lane(target).is_empty())
+    let played =
+        !t.auto.lane(target).is_empty() || t.auto.region_played.iter().any(|l| l.0 == target);
+    !(t.auto.mode == AutoMode::Read && played)
 }
 
 /// The value the control shows, in its lane's units: the lane's at `beat` when the strip
@@ -361,6 +628,33 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         .open(&mut open)
         .default_size([680.0, 330.0])
         .show(ctx, |ui| {
+            // Track or region: a region's lanes are edited as if they were the track's, then
+            // put back (below), so the canvas has one way of working.
+            let picked = s.tracks.selected.filter(|x| x.0 == ti).map(|x| x.1);
+            {
+                let ed = &mut s.mixer.auto_editor;
+                if ed.region.is_some() && picked.is_some() {
+                    ed.region = picked;
+                }
+                if ed.region.is_some_and(|r| r >= p.tracks[ti].regions.len()) {
+                    ed.region = None;
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(ed.region.is_none(), "Track Automation")
+                        .clicked()
+                    {
+                        ed.region = None;
+                    }
+                    let button = egui::Button::selectable(ed.region.is_some(), "Region Automation");
+                    if ui.add_enabled(picked.is_some(), button).clicked() {
+                        ed.region = picked;
+                    }
+                    if let Some(r) = ed.region {
+                        ui.label(p.tracks[ti].regions[r].name.clone());
+                    }
+                });
+            }
             let mut mode = p.tracks[ti].auto.mode;
             let mut target = p.tracks[ti].auto.shown;
             // A lane of an effect that is not there any more shows the fader's.
@@ -428,26 +722,79 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 }
                 ui.separator();
                 if ui.button(tr("Clear Lane")).clicked() {
-                    p.tracks[ti].auto.lane_mut(target).clear();
-                    p.tracks[ti].auto.prune();
+                    match s.mixer.auto_editor.region {
+                        Some(r) => p.tracks[ti].regions[r].auto.retain(|l| l.target != target),
+                        None => {
+                            p.tracks[ti].auto.lane_mut(target).clear();
+                            p.tracks[ti].auto.prune();
+                        }
+                    }
                 }
             });
             if mode != p.tracks[ti].auto.mode {
                 set_mode(&mut p.tracks[ti], mode, beat_now);
             }
             p.tracks[ti].auto.shown = target;
-            canvas(ui, p, &mut s.mixer.auto_editor, ti, target);
-            let n = p.tracks[ti].auto.lane(target).len();
+            let region = s.mixer.auto_editor.region;
+            let stretch = region.map(|r| {
+                let x = &p.tracks[ti].regions[r];
+                (p.region_start_beats(x), p.region_end_beats(x))
+            });
+            let track_points = region.zip(stretch).map(|(r, (from, _))| {
+                let own: Vec<AutoPoint> = p.tracks[ti].regions[r]
+                    .auto
+                    .iter()
+                    .find(|l| l.target == target)
+                    .map_or_else(Vec::new, |l| {
+                        l.points
+                            .iter()
+                            .map(|q| AutoPoint {
+                                beat: from + q.beat,
+                                ..*q
+                            })
+                            .collect()
+                    });
+                std::mem::replace(p.tracks[ti].auto.lane_mut(target), own)
+            });
+            canvas(ui, p, &mut s.mixer.auto_editor, ti, target, stretch);
+            let mut n = p.tracks[ti].auto.lane(target).len();
+            if let (Some(r), Some((from, to)), Some(saved)) = (region, stretch, track_points) {
+                let edited = std::mem::replace(p.tracks[ti].auto.lane_mut(target), saved);
+                p.tracks[ti].auto.prune();
+                let mut own: Vec<AutoPoint> = edited
+                    .into_iter()
+                    .map(|q| AutoPoint {
+                        beat: q.beat.clamp(from, to) - from,
+                        ..q
+                    })
+                    .collect();
+                own.dedup_by(|a, b| a.beat == b.beat);
+                n = own.len();
+                let lanes = &mut p.tracks[ti].regions[r].auto;
+                if own.is_empty() {
+                    lanes.retain(|l| l.target != target);
+                } else {
+                    *region_lane_mut(lanes, target) = own;
+                }
+            }
             ui.label(trf("{} points", &[&n]));
         });
     if !open {
         s.mixer.auto_editor.track = None;
+        s.mixer.auto_editor.region = None;
         s.mixer.auto_editor.drag = None;
     }
 }
 
 /// The lane's drawing area and its mouse editing.
-fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: AutoTarget) {
+fn canvas(
+    ui: &mut Ui,
+    p: &mut Project,
+    ed: &mut AutoEditor,
+    ti: usize,
+    target: AutoTarget,
+    stretch: Option<(f64, f64)>,
+) {
     let width = ui.available_width().max(200.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, CANVAS_H), Sense::click_and_drag());
     let g = ui.painter_at(rect);
@@ -472,6 +819,21 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
                 Color32::from_gray(0x80),
             );
         }
+    }
+    // Outside a region's stretch is dimmed: a point dragged there lands on its edge.
+    if let Some((a, b)) = stretch {
+        let x_of = |beat: f64| rect.left() + ((beat - from) / span) as f32 * rect.width();
+        let dim = Color32::from_black_alpha(110);
+        let (xa, xb) = (
+            x_of(a).clamp(rect.left(), rect.right()),
+            x_of(b).clamp(rect.left(), rect.right()),
+        );
+        g.rect_filled(
+            Rect::from_min_max(rect.min, pos2(xa, rect.bottom())),
+            0.0,
+            dim,
+        );
+        g.rect_filled(Rect::from_min_max(pos2(xb, rect.top()), rect.max), 0.0, dim);
     }
     // Value lines: 0 dB, or the centre.
     let marks: &[f32] = match target {
@@ -682,6 +1044,101 @@ fn canvas(ui: &mut Ui, p: &mut Project, ed: &mut AutoEditor, ti: usize, target: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TrackKind;
+
+    /// A track with one MIDI region at bar 3 and a volume lane of its own.
+    fn region_project() -> (Project, usize) {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 3.0);
+        p.tracks[t].regions[0].auto.push(crate::model::RegionLane {
+            target: AutoTarget::Volume,
+            points: vec![
+                AutoPoint {
+                    beat: 0.0,
+                    value: -12.0,
+                    curve: 0.0,
+                },
+                AutoPoint {
+                    beat: 2.0,
+                    value: -3.0,
+                    curve: 0.0,
+                },
+            ],
+        });
+        (p, t)
+    }
+
+    #[test]
+    fn a_region_lane_plays_over_its_stretch_and_the_strip_comes_back_after_it() {
+        let (mut p, t) = region_project();
+        p.tracks[t].volume_db = -1.0;
+        let from = p.region_start_beats(&p.tracks[t].regions[0]);
+        let to = p.region_end_beats(&p.tracks[t].regions[0]);
+        let merged = merged_lanes(&p, t);
+        assert_eq!(merged.len(), 1);
+        let lane = &merged[0].1;
+        let at = |b: f64| prowave_engine::lane_value(lane, b).unwrap_or(f32::NAN);
+        assert!((at(from - 1.0) + 1.0).abs() < 1e-3, "before: the fader");
+        assert!((at(from) + 12.0).abs() < 0.1, "at its start");
+        assert!((at(from + 2.0) + 3.0).abs() < 0.1, "inside");
+        assert!((at(to + 1.0) + 1.0).abs() < 1e-3, "after: the fader again");
+        assert!(lane.windows(2).all(|w| w[0].beat < w[1].beat), "in order");
+        p.tracks[t].regions[0].start_bar += 4.0;
+        let moved = merged_lanes(&p, t);
+        let start = p.region_start_beats(&p.tracks[t].regions[0]);
+        let value = prowave_engine::lane_value(&moved[0].1, start).unwrap_or(f32::NAN);
+        assert!((value + 12.0).abs() < 0.1, "it moves with the region");
+    }
+
+    #[test]
+    fn a_track_with_no_region_lanes_gets_nothing_merged() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 1.0);
+        p.tracks[t].auto.set_point(AutoTarget::Volume, 1.0, -6.0);
+        assert!(merged_lanes(&p, t).is_empty());
+    }
+
+    #[test]
+    fn convert_moves_points_between_track_and_region_and_back() {
+        let (mut p, t) = region_project();
+        convert_to_track(&mut p, t, 0);
+        assert!(p.tracks[t].regions[0].auto.is_empty());
+        let from = p.region_start_beats(&p.tracks[t].regions[0]);
+        assert_eq!(p.tracks[t].auto.lane(AutoTarget::Volume).len(), 2);
+        assert!((p.tracks[t].auto.lane(AutoTarget::Volume)[0].beat - from).abs() < 1e-9);
+        assert!(can_convert(&p, t, 0));
+        p.tracks[t].auto.set_point(AutoTarget::Volume, 0.0, -20.0);
+        convert_to_region(&mut p, t, 0);
+        assert_eq!(p.tracks[t].regions[0].auto[0].points.len(), 2);
+        assert!(p.tracks[t].regions[0].auto[0].points[0].beat.abs() < 1e-9);
+        assert_eq!(
+            p.tracks[t].auto.lane(AutoTarget::Volume).len(),
+            1,
+            "outside stays"
+        );
+    }
+
+    #[test]
+    fn cutting_and_trimming_keep_each_point_where_it_was_in_the_song() {
+        let (p, t) = region_project();
+        let mut left = p.tracks[t].regions[0].auto.clone();
+        let right = cut_lanes(&mut left, 1.0);
+        let value = |l: &[crate::model::RegionLane], b: f64| {
+            prowave_engine::lane_value(&l[0].points, b).unwrap_or(f32::NAN)
+        };
+        let middle = -7.5;
+        assert!((value(&left, 1.0) - middle).abs() < 0.01);
+        assert!((value(&right, 0.0) - middle).abs() < 0.01);
+        assert!((value(&right, 1.0) + 3.0).abs() < 0.01);
+        let trimmed = trimmed_lanes(&p.tracks[t].regions[0].auto, 1.0);
+        assert!((value(&trimmed, 0.0) - middle).abs() < 0.01);
+        assert!((value(&trimmed, 1.0) + 3.0).abs() < 0.01);
+        let mut joined = left;
+        join_lanes(&mut joined, &right, 1.0);
+        assert!((value(&joined, 2.0) + 3.0).abs() < 0.01);
+    }
 
     #[test]
     fn a_plugin_control_held_keeps_touch_and_letting_go_ends_it() {
