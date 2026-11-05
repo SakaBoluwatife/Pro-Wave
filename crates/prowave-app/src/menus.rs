@@ -2,7 +2,7 @@
 //! menu item: check-mark column, title, key command on the right; entries that do not apply
 //! now, or are not implemented yet, are greyed out (see [`enabled`]). The Smart Controls button in the control bar switches the bar and its
 //! menus between the dark look and the light (white) macOS look (`UiState::light_menus`).
-use crate::file_commands::FileCmd;
+use crate::file_commands::{FileCmd, FileTask};
 use crate::i18n::{self, tr, trf, Lang};
 use crate::model::{Project, TrackKind};
 use crate::undo::UndoCmd;
@@ -323,11 +323,61 @@ pub(crate) const MENUS: [(&str, &[&str]); 9] = [
     ("Help", HELP),
 ];
 
+/// What a Window menu entry asks of the program's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowCmd {
+    Minimize,
+    Zoom,
+    Front,
+    FullScreen,
+}
+
+/// Carries out a Window menu entry.
+pub fn run_window_cmd(ctx: &egui::Context, cmd: WindowCmd) {
+    use egui::ViewportCommand as V;
+    let (maximized, full) = ctx.input(|i| {
+        let v = i.viewport();
+        (v.maximized.unwrap_or(false), v.fullscreen.unwrap_or(false))
+    });
+    ctx.send_viewport_cmd(match cmd {
+        WindowCmd::Minimize => V::Minimized(true),
+        WindowCmd::Zoom => V::Maximized(!maximized),
+        WindowCmd::Front => V::Focus,
+        WindowCmd::FullScreen => V::Fullscreen(!full),
+    });
+}
+
+/// The selected region, if it is audio.
+fn selected_audio(p: &Project, s: &crate::UiState) -> Option<(usize, usize)> {
+    let (t, r) = s.tracks.selected?;
+    p.tracks.get(t)?.regions.get(r)?.audio.as_ref()?;
+    Some((t, r))
+}
+
+/// Whether the selected track can hold a Pattern or Drummer region.
+fn track_plays_midi(p: &Project) -> bool {
+    p.tracks
+        .get(p.selected_track)
+        .is_some_and(|t| t.kind.has_regions() && t.kind != TrackKind::Audio)
+}
+
+/// Whether the selected track has automation points.
+fn has_automation(p: &Project) -> bool {
+    p.tracks.get(p.selected_track).is_some_and(|t| {
+        !t.auto.volume.is_empty()
+            || !t.auto.pan.is_empty()
+            || !t.auto.fx.is_empty()
+            || !t.auto.plugin_lanes.is_empty()
+    })
+}
+
 /// Entries that can show a check mark (see [`checked`]).
 pub(crate) const CHECKABLE: &[&str] = &[
     "Show Tempo Track",
     "Show Marker Track",
     "Show Signature Track",
+    "Show Markers",
+    "Show Global Tracks",
     "Show Piano Roll",
     "Show Mixer",
     "Show Library",
@@ -457,6 +507,31 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         }
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => !p.tracks.is_empty(),
+        "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
+        "Show Score Editor" | "Score Editor" => true,
+        "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
+        "Show Smart Tempo" | "Smart Tempo" => selected_audio(p, s).is_some(),
+        "Show Markers" | "Show Global Tracks" => true,
+        "Record Enable" => p
+            .tracks
+            .get(p.selected_track)
+            .is_some_and(|t| t.kind.has_regions()),
+        "Record Toggle" => p.playing,
+        "Record Project Settings" => true,
+        "Show Automation"
+        | "Show Track Automation"
+        | "Create Automation"
+        | "Create Track Automation"
+        | "Group" => !p.tracks.is_empty(),
+        "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
+        "Delete Automation" => has_automation(p),
+        "Edit Groups…" => !p.groups.is_empty(),
+        "Audio File…" | "Show in File Manager" | "Rename Project…" => true,
+        "Song to File…" => crate::bounce::project_end(p) > 0.0,
+        "Tracks in Place…" => p
+            .tracks
+            .get(p.selected_track)
+            .is_some_and(|t| !t.regions.is_empty()),
         "Release Track Stack" => p
             .tracks
             .get(p.selected_track)
@@ -547,6 +622,10 @@ pub(crate) fn checked(label: &str, s: &crate::UiState) -> bool {
         "Show Tempo Track" => s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures,
+        "Show Markers" => s.tracks.show_markers,
+        "Show Global Tracks" => {
+            s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures
+        }
         _ if Lang::from_native_name(label).is_some() => {
             Lang::from_native_name(label) == Some(i18n::current())
         }
@@ -577,6 +656,117 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Channel Rack" => s.rack.open = !s.rack.open,
         "Show Smart Controls" => s.smart.open = !s.smart.open,
         "Mastering" => s.mastering.open = !s.mastering.open,
+        "Minimize" => s.window_cmd = Some(WindowCmd::Minimize),
+        "Zoom" => s.window_cmd = Some(WindowCmd::Zoom),
+        "Bring All to Front" => s.window_cmd = Some(WindowCmd::Front),
+        "Enter Full Screen" => s.window_cmd = Some(WindowCmd::FullScreen),
+        "Show Score Editor" | "Score Editor" => {
+            s.bottom = Bottom::PianoRoll;
+            s.score_tab = true;
+        }
+        "Show Step Sequencer" | "Step Sequencer" => {
+            s.bottom = Bottom::PianoRoll;
+            s.score_tab = false;
+            let on_pattern = s.tracks.selected.is_some_and(|(t, r)| {
+                p.tracks
+                    .get(t)
+                    .and_then(|t| t.regions.get(r))
+                    .is_some_and(|r| r.generated.is_some())
+            });
+            if !on_pattern {
+                let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+                let track = p.selected_track;
+                if let Some(ri) = p.add_generated_region(track, false, bar) {
+                    s.tracks.selected = Some((track, ri));
+                }
+            }
+        }
+        "Show Smart Tempo" | "Smart Tempo" => {
+            if let Some((t, r)) = selected_audio(p, s) {
+                crate::smart_tempo::open_editor(p, s, t, r);
+            }
+        }
+        "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,
+        "Show Global Tracks" => {
+            let on = !(s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures);
+            s.tracks.show_tempo = on;
+            s.tracks.show_markers = on;
+            s.tracks.show_signatures = on;
+        }
+        "Record Enable" => {
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                t.rec = !t.rec;
+            }
+        }
+        "Record Toggle" => p.recording = !p.recording,
+        "Record Project Settings" => s.dialogs.project_settings = true,
+        "Show Automation" | "Show Track Automation" => {
+            s.mixer.auto_editor.track = Some(p.selected_track);
+        }
+        "Hide All Automation" => s.mixer.auto_editor.track = None,
+        "Create Automation" | "Create Track Automation" => {
+            s.mixer.auto_editor.track = Some(p.selected_track);
+            let beat = p.position_beats;
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                let target = t.auto.shown;
+                let value = crate::automation::shown_value(t, target, beat);
+                t.auto.write(target, beat, value, false);
+                t.auto.end_pass();
+                p.song_rev += 1;
+            }
+        }
+        "Delete Automation" => {
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                t.auto.volume.clear();
+                t.auto.pan.clear();
+                t.auto.fx.clear();
+                t.auto.plugin_lanes.clear();
+                p.song_rev += 1;
+            }
+        }
+        "Group" => {
+            let t = p.selected_track;
+            if p.tracks.get(t).is_some_and(|x| x.group.is_some()) {
+                p.assign_group(t, None);
+            } else {
+                let n = p.groups.len() + 1;
+                if let Some(k) = p.add_group(&format!("Group {n}")) {
+                    p.assign_group(t, Some(k));
+                }
+            }
+        }
+        "Edit Groups…" => s.dialogs.groups = true,
+        "Audio File…" => s.file_task = Some(FileTask::ImportAudio),
+        "Show in File Manager" => s.file_task = Some(FileTask::Reveal),
+        "Rename Project…" => s.dialogs.rename_project = Some(p.name.clone()),
+        "Song to File…" => s.bounce.dialog = Some(crate::bounce::Purpose::Mix),
+        "Tracks in Place…" => {
+            let t = p.selected_track;
+            let count = p.tracks.get(t).map_or(0, |x| x.regions.len());
+            s.tracks.select_many((0..count).map(|r| (t, r)).collect());
+            crate::bounce::bounce_selection(p, s, false);
+        }
+        "Quantize 1/4" | "Quantize 1/8" | "Quantize 1/16" | "Quantize 1/32" => {
+            let grid = match label {
+                "Quantize 1/4" => 1.0,
+                "Quantize 1/8" => 0.5,
+                "Quantize 1/16" => 0.25,
+                _ => 0.125,
+            };
+            let n = crate::region_edit::quantize_selected(p, &s.tracks, grid);
+            s.status = Some(format!("Quantized {n} regions"));
+        }
+        "Move to Playhead" => crate::region_edit::move_selected_to_playhead(p, &s.tracks),
+        "Convert to New Sampler Track" => {
+            let path = selected_audio(p, s)
+                .and_then(|(t, r)| p.tracks[t].regions[r].audio.as_ref())
+                .map(|a| a.file.path.clone());
+            if let Some(path) = path {
+                if let Err(e) = crate::sample_place::new_sampler_track(p, &path) {
+                    s.status = Some(e);
+                }
+            }
+        }
         "Autopunch" => {
             p.punch = !p.punch;
             if p.punch {
@@ -1122,7 +1312,18 @@ mod tests {
                     s.tracks.show_markers,
                     s.tracks.show_signatures
                 ),
-                (i18n::chosen(), i18n::current()),
+                (
+                    i18n::chosen(),
+                    i18n::current(),
+                    s.window_cmd,
+                    s.file_task.clone(),
+                    s.score_tab,
+                    s.mixer.auto_editor.track,
+                    s.dialogs.groups,
+                    s.dialogs.rename_project.clone(),
+                    p.tracks.iter().filter(|t| t.rec).count(),
+                    s.status.clone(),
+                ),
             )
         )
     }
@@ -1187,9 +1388,7 @@ mod tests {
             );
         }
         // And unimplemented ones are greyed, like the ones from the GitHub report.
-        for label in ["Close", "Stem Splitter…"] {
-            assert!(!enabled(label, &p, &s), "{label}");
-        }
+        assert!(!enabled("Stem Splitter…", &p, &s));
     }
 
     #[test]

@@ -52,7 +52,7 @@ impl FileCmd {
     pub fn from_menu(label: &str) -> Option<Self> {
         match label {
             "New…" => Some(FileCmd::New),
-            "Close Project" => Some(FileCmd::Close),
+            "Close Project" | "Close" => Some(FileCmd::Close),
             "Open…" => Some(FileCmd::Open),
             "Save" => Some(FileCmd::Save),
             "Save As…" => Some(FileCmd::SaveAs),
@@ -61,6 +61,23 @@ impl FileCmd {
             _ => None,
         }
     }
+}
+
+/// Work on the project's file that needs `App` but is not a File command with a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileTask {
+    ImportAudio,
+    Reveal,
+    Rename(String),
+}
+
+/// Whether `name` can be a file name on every system.
+pub fn valid_project_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
 }
 
 /// The file command whose key command was pressed this frame, if any (consumes the keys).
@@ -78,6 +95,31 @@ pub fn content(p: &Project) -> ProjectDoc {
     doc.position_beats = 0.0;
     doc.selected_track = 0;
     doc
+}
+
+/// Shows the file in the system's file manager.
+fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(not(windows))]
+    {
+        let program = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let folder = path.parent().unwrap_or(path);
+        std::process::Command::new(program)
+            .arg(folder)
+            .spawn()
+            .map(|_| ())
+    }
 }
 
 fn dialog() -> FileDialog {
@@ -228,6 +270,58 @@ impl App {
             self.revert(ctx);
         }
         ctx.request_repaint();
+    }
+
+    /// Carries out a [`FileTask`].
+    pub fn run_file_task(&mut self, task: FileTask, ctx: &egui::Context) {
+        match task {
+            FileTask::ImportAudio => {
+                let files = FileDialog::new()
+                    .add_filter("Audio", &["wav", "aif", "aiff", "flac", "mp3", "ogg"])
+                    .pick_files()
+                    .unwrap_or_default();
+                for file in files {
+                    if let Err(e) = crate::import::import_audio(&mut self.project, &file, ctx) {
+                        self.ui.status = Some(format!("{}: {e}", file.display()));
+                    }
+                }
+            }
+            FileTask::Reveal => match &self.path {
+                Some(path) => {
+                    if let Err(e) = reveal_in_file_manager(path) {
+                        self.ui.status = Some(e.to_string());
+                    }
+                }
+                None => self.ui.status = Some("The project has not been saved yet".to_string()),
+            },
+            FileTask::Rename(name) => self.rename_project(name.trim()),
+        }
+    }
+
+    /// Gives the project a new name, and its file too when it has one, in the same folder.
+    fn rename_project(&mut self, name: &str) {
+        if !valid_project_name(name) {
+            self.ui.status = Some(format!("\"{name}\" cannot be a project name"));
+            return;
+        }
+        if let Some(old) = self.path.clone() {
+            let new = old.with_file_name(format!("{name}.{}", prowave_project::EXTENSION));
+            if new != old {
+                if new.exists() {
+                    self.ui.status = Some(format!("{} already exists", new.display()));
+                    return;
+                }
+                if let Err(e) = std::fs::rename(&old, &new) {
+                    self.ui.status = Some(format!("cannot rename: {e}"));
+                    return;
+                }
+                self.ui.recent.remove(&old);
+                self.ui.recent.add(&new);
+                self.path = Some(new);
+            }
+        }
+        // The name inside the file changes with the next save, so this counts as a change.
+        self.project.name = name.to_string();
     }
 
     /// Revert needs a saved file and something to throw away; otherwise it says why not.
@@ -381,6 +475,14 @@ impl App {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_names_must_be_able_to_be_file_names() {
+        assert!(valid_project_name("Song 2"));
+        for bad in ["", "  ", ".", "..", "a/b", "a\\b", "a:b", "what?", "a|b"] {
+            assert!(!valid_project_name(bad), "{bad}");
+        }
+    }
 
     fn app() -> App {
         let project = Project::demo();

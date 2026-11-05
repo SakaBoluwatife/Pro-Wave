@@ -177,6 +177,8 @@ pub struct UiState {
     pub typed: Vec<recorder::LiveNote>,
     /// File menu command picked this frame; run by `App` once the panels are drawn.
     pub file_cmd: Option<file_commands::FileCmd>,
+    pub file_task: Option<file_commands::FileTask>,
+    pub window_cmd: Option<menus::WindowCmd>,
     /// A New / Open waiting for the answer to the "save changes?" prompt.
     pub ask_save: Option<file_commands::FileCmd>,
     /// True while the "revert to the last saved version?" prompt is showing.
@@ -256,6 +258,8 @@ impl UiState {
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
+            file_task: None,
+            window_cmd: None,
             ask_save: None,
             ask_revert: false,
             recent_pick: None,
@@ -590,6 +594,12 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| start_screen::show(ui, &mut self.ui));
+        if let Some(cmd) = self.ui.window_cmd.take() {
+            menus::run_window_cmd(ctx, cmd);
+        }
+        if let Some(task) = self.ui.file_task.take() {
+            self.run_file_task(task, ctx);
+        }
         if let Some(cmd) = self.ui.file_cmd.take() {
             self.run_file_cmd(cmd, ctx);
         }
@@ -895,6 +905,9 @@ impl eframe::App for App {
         bounce::show(&ctx, p, s);
         channel_rack::show(&ctx, p, s);
         settings::show(&ctx, s);
+        if let Some(label) = s.tracks.pending_menu.take() {
+            menus::apply(label, p, s);
+        }
         quick_dialogs::show(&ctx, p, s);
         smart_controls::show(&ctx, p, s);
         mastering::show(&ctx, s);
@@ -981,6 +994,12 @@ impl eframe::App for App {
             }
         } else {
             self.ui.audition.clear();
+        }
+        if let Some(cmd) = self.ui.window_cmd.take() {
+            menus::run_window_cmd(&ctx, cmd);
+        }
+        if let Some(task) = self.ui.file_task.take() {
+            self.run_file_task(task, &ctx);
         }
         if let Some(cmd) = self.ui.file_cmd.take() {
             self.run_file_cmd(cmd, &ctx);

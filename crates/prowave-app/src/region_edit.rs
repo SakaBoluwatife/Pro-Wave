@@ -309,6 +309,48 @@ pub fn copy(p: &Project, v: &mut TracksView) -> Result<(), String> {
     Ok(())
 }
 
+/// Moves the starts of the notes of the selected MIDI regions to the grid (in beats). Pattern and
+/// Drummer regions make their notes from settings and take folders from their takes, so they stay
+/// as they are. How many regions changed.
+pub fn quantize_selected(p: &mut Project, v: &TracksView, grid: f32) -> usize {
+    let mut done = 0;
+    for (t, r) in v.all_selected() {
+        let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) else {
+            continue;
+        };
+        if region.audio.is_some() || region.generated.is_some() || region.folder.is_some() {
+            continue;
+        }
+        let all: Vec<usize> = (0..region.notes.len()).collect();
+        crate::note_edit::quantize(&mut region.notes, &all, grid, 1.0, 0.0);
+        done += 1;
+    }
+    if done > 0 {
+        p.song_rev += 1;
+    }
+    done
+}
+
+/// Moves the selected regions together so the earliest starts at the playhead.
+pub fn move_selected_to_playhead(p: &mut Project, v: &TracksView) {
+    let selected = v.all_selected();
+    let earliest = selected
+        .iter()
+        .filter_map(|(t, r)| p.tracks.get(*t)?.regions.get(*r))
+        .map(|r| r.start_bar)
+        .fold(f32::INFINITY, f32::min);
+    if !earliest.is_finite() {
+        return;
+    }
+    let shift = p.beats_to_bar(p.position_beats) as f32 + 1.0 - earliest;
+    for (t, r) in selected {
+        if let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) {
+            region.start_bar += shift;
+        }
+    }
+    p.song_rev += 1;
+}
+
 /// Puts copies of what was copied at the playhead, keeping their distances in time and between
 /// tracks: starting on the selected track if it can hold them, else on the tracks they came from.
 /// They end up selected. Returns where the first one went.
@@ -551,6 +593,22 @@ mod tests {
         let right = split(&mut p, t, r, 8.0).unwrap();
         assert!(p.tracks[t].regions[r].generated.is_none());
         assert!(p.tracks[t].regions[right].generated.is_none());
+    }
+
+    #[test]
+    fn functions_quantize_and_move_what_is_selected() {
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        let r = p.add_midi_region(t, 3.0).unwrap_or(0);
+        p.tracks[t].regions[r].notes = vec![note(0.3, 0.5, 60)];
+        let mut v = TracksView::default();
+        assert_eq!(quantize_selected(&mut p, &v, 0.25), 0, "nothing selected");
+        v.select_only((t, r));
+        assert_eq!(quantize_selected(&mut p, &v, 0.25), 1);
+        assert!((p.tracks[t].regions[r].notes[0].start - 0.25).abs() < 1e-6);
+        p.position_beats = 0.0;
+        move_selected_to_playhead(&mut p, &v);
+        assert!((p.tracks[t].regions[r].start_bar - 1.0).abs() < 1e-6);
     }
 
     #[test]

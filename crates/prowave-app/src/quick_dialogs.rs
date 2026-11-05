@@ -13,6 +13,10 @@ pub struct QuickDialogs {
     pub undo_history: bool,
     pub routing: bool,
     pub project_settings: bool,
+    /// Mix > Edit Groups.
+    pub groups: bool,
+    /// File > Project Management > Rename Project: what has been typed.
+    pub rename_project: Option<String>,
     /// Asked for from the Undo History: this many steps back (`App` carries it out).
     pub undo_steps: usize,
     /// Asked for from the Undo History: this many undone steps forward.
@@ -250,12 +254,78 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    groups_window(ctx, p, s);
+    rename_project_window(ctx, s);
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
     color_window(ctx, p, s);
     history_window(ctx, s);
     project_settings_window(ctx, p, s);
     crate::routing_matrix::show(ctx, p, s);
+}
+
+/// Mix > Edit Groups: each group's name, what it links, how many tracks it has.
+fn groups_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    if !s.dialogs.groups {
+        return;
+    }
+    let mut open = s.dialogs.groups;
+    let mut remove = None;
+    egui::Window::new("Edit Groups")
+        .id(egui::Id::unique("edit_groups"))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            egui::Grid::new(egui::Id::unique("groups_grid")).show(ui, |ui| {
+                for head in ["Name", "Volume", "Pan", "Mute", "Solo", "Tracks", ""] {
+                    ui.label(head);
+                }
+                ui.end_row();
+                for g in 0..p.groups.len() {
+                    let members = p.tracks.iter().filter(|t| t.group == Some(g)).count();
+                    let group = &mut p.groups[g];
+                    ui.add(egui::TextEdit::singleline(&mut group.name).desired_width(140.0));
+                    ui.checkbox(&mut group.volume, "");
+                    ui.checkbox(&mut group.pan, "");
+                    ui.checkbox(&mut group.mute, "");
+                    ui.checkbox(&mut group.solo, "");
+                    ui.label(members.to_string());
+                    if ui.button("Delete").clicked() {
+                        remove = Some(g);
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+    if let Some(g) = remove {
+        p.delete_group(g);
+    }
+    s.dialogs.groups = open;
+}
+
+/// File > Project Management > Rename Project.
+fn rename_project_window(ctx: &egui::Context, s: &mut UiState) {
+    let Some(mut text) = s.dialogs.rename_project.take() else {
+        return;
+    };
+    let (mut done, mut keep) = (None, true);
+    egui::Window::new("Rename Project")
+        .id(egui::Id::unique("rename_project"))
+        .resizable(false)
+        .show(ctx, |ui| {
+            let edit = ui.text_edit_singleline(&mut text);
+            let mut focus = false;
+            let (ok, close) = answer(ui, &mut focus, &edit);
+            if ok {
+                done = Some(text.clone());
+            }
+            keep = !ok && !close;
+        });
+    if let Some(name) = done {
+        s.file_task = Some(crate::file_commands::FileTask::Rename(name));
+    }
+    if keep {
+        s.dialogs.rename_project = Some(text);
+    }
 }
 
 #[cfg(test)]

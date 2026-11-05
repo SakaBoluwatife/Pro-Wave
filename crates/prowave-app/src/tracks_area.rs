@@ -223,6 +223,8 @@ pub struct TracksView {
     pub tempo_all: Option<crate::smart_tempo::AllJob>,
     /// The Smart Tempo Editor window.
     pub tempo_editor: crate::smart_tempo::Editor,
+    /// An entry of the Functions or View menu, for `menus::apply`.
+    pub pending_menu: Option<&'static str>,
 }
 
 impl TracksView {
@@ -314,6 +316,7 @@ impl Default for TracksView {
             tempo_jobs: Vec::new(),
             tempo_all: None,
             tempo_editor: Default::default(),
+            pending_menu: None,
         }
     }
 }
@@ -790,11 +793,45 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
             ui.close();
         }
         ui.separator();
-        todo_item(ui, tr("Folder"));
-        todo_item(ui, tr("Quantize"));
-        todo_item(ui, tr("Bounce in Place…"));
-        todo_item(ui, tr("Convert to New Sampler Track…"));
-        todo_item(ui, tr("Move to Playhead"));
+        if ui.button(tr("Folder")).clicked() {
+            v.pending_menu = Some("Create Track Stack…");
+            ui.close();
+        }
+        let any = v.selected.is_some();
+        ui.add_enabled_ui(any, |ui| {
+            ui.menu_button(tr("Quantize"), |ui| {
+                for (text, label) in [
+                    ("1/4 Note", "Quantize 1/4"),
+                    ("1/8 Note", "Quantize 1/8"),
+                    ("1/16 Note", "Quantize 1/16"),
+                    ("1/32 Note", "Quantize 1/32"),
+                ] {
+                    if ui.button(text).clicked() {
+                        v.pending_menu = Some(label);
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button(tr("Bounce in Place…")).clicked() {
+                v.pending_menu = Some("Bounce In Place");
+                ui.close();
+            }
+            let audio = v.selected.is_some_and(|(t, r)| {
+                p.tracks
+                    .get(t)
+                    .and_then(|t| t.regions.get(r))
+                    .is_some_and(|r| r.audio.is_some())
+            });
+            let convert = egui::Button::new(tr("Convert to New Sampler Track…"));
+            if ui.add_enabled(audio, convert).clicked() {
+                v.pending_menu = Some("Convert to New Sampler Track");
+                ui.close();
+            }
+            if ui.button(tr("Move to Playhead")).clicked() {
+                v.pending_menu = Some("Move to Playhead");
+                ui.close();
+            }
+        });
     });
     let (view, w) = menu_title(ui, &g, x, cy, tr("View"), id(("menu", "View")));
     x += w + 10.0;
@@ -816,7 +853,10 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
         if ui.checkbox(&mut v.catch, tr("Catch Playhead")).clicked() {
             ui.close();
         }
-        todo_item(ui, tr("Show Global Tracks"));
+        if ui.button(tr("Show Global Tracks")).clicked() {
+            v.pending_menu = Some("Show Global Tracks");
+            ui.close();
+        }
         todo_item(ui, tr("Configure Track Header…"));
     });
 
