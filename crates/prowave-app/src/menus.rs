@@ -514,7 +514,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         "Show Score Editor" | "Score Editor" => true,
         "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
-        "Show Smart Tempo" | "Smart Tempo" => selected_audio(p, s).is_some(),
+        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" => selected_audio(p, s).is_some(),
         "Show Markers" | "Show Global Tracks" => true,
         "Record Enable" => p
             .tracks
@@ -691,6 +691,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Smart Tempo" | "Smart Tempo" => {
             if let Some((t, r)) = selected_audio(p, s) {
                 crate::smart_tempo::open_editor(p, s, t, r);
+            }
+        }
+        "Stem Splitter…" => {
+            if let Some((t, r)) = selected_audio(p, s) {
+                crate::stem_splitter::open(p, s, t, r);
             }
         }
         "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,

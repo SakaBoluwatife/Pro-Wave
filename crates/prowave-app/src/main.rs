@@ -70,6 +70,7 @@ mod smart_controls;
 mod smart_tempo;
 mod song_pattern;
 mod start_screen;
+mod stem_splitter;
 mod step_editor;
 mod sync_menu;
 mod takes;
@@ -167,6 +168,7 @@ pub struct UiState {
     pub settings: settings::SettingsView,
     pub dialogs: quick_dialogs::QuickDialogs,
     pub smart: smart_controls::SmartControls,
+    pub stems: stem_splitter::StemSplitter,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
     pub undo_labels: Vec<String>,
@@ -254,6 +256,7 @@ impl UiState {
             settings: settings::SettingsView::default(),
             dialogs: quick_dialogs::QuickDialogs::default(),
             smart: smart_controls::SmartControls::default(),
+            stems: stem_splitter::StemSplitter::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
@@ -914,6 +917,7 @@ impl eframe::App for App {
         }
         quick_dialogs::show(&ctx, p, s);
         smart_controls::show(&ctx, p, s);
+        stem_splitter::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);

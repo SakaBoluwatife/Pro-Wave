@@ -30,6 +30,8 @@ ChangesAssociations=yes
 [Files]
 Source: "..\..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme
+; The Stem Splitter's helper, licence and model: see stems-README.md for how to fill this folder.
+Source: "stems\*"; DestDir: "{app}\stems"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
