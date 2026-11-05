@@ -174,6 +174,36 @@ fn wanted_bypass(p: &Project) -> Vec<((u64, bool), Place)> {
     all
 }
 
+/// (uid, side-chain source) of each plugin, and its place. A source the engine has no strip for, or
+/// a frozen plugin, has none.
+fn wanted_sides(p: &Project) -> Vec<(u64, Option<u16>, Place)> {
+    let source = |i: &PluginInsert| {
+        i.sidechain
+            .filter(|s| *s < MAX_TRACKS && *s < p.tracks.len())
+            .map(|s| s as u16)
+    };
+    let mut all = Vec::new();
+    for (t, track) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
+        if track.frozen.is_some() {
+            continue;
+        }
+        if let Some(plugin) = &track.instrument_plugin {
+            all.push((plugin.uid, source(plugin), (t as u16, INSTRUMENT_SLOT)));
+        }
+        for (k, plugin) in track.plugins.iter().enumerate().take(MAX_INSERTS) {
+            all.push((plugin.uid, source(plugin), (t as u16, k as u8)));
+        }
+    }
+    for (k, plugin) in p.master_plugins.iter().enumerate().take(MAX_INSERTS) {
+        all.push((
+            plugin.uid,
+            source(plugin),
+            (prowave_engine::MASTER_STRIP, k as u8),
+        ));
+    }
+    all
+}
+
 /// Copies of a track (Duplicate, a pasted strip) come with the uids of the originals. Each needs
 /// an instance of its own, so all but the first get a new uid. Returns (original, copy).
 pub fn give_copies_their_own_uids(p: &mut Project) -> Vec<(u64, u64)> {
@@ -201,6 +231,8 @@ struct Live {
     bypass: bool,
     /// Out of the way for Low Latency mode, as last told to the engine.
     low: bool,
+    /// The side-chain source, as last told to the engine.
+    side: Option<u16>,
     loaded: Box<dyn LoadedPlugin>,
 }
 
@@ -247,6 +279,10 @@ pub struct Rack {
     kept_states: Vec<(u64, Arc<Vec<u8>>)>,
     /// A plugin may have changed since the last save (it said so, or its editor was opened).
     touched: bool,
+    /// Plugins loaded again for their side chain, whose editors were open: these open once more.
+    reopen: Vec<u64>,
+    /// The main window, as last told: what reopened editors stay above.
+    owner: Option<isize>,
 }
 
 impl Rack {
@@ -444,6 +480,7 @@ impl Rack {
         title: &str,
         owner: Option<isize>,
     ) -> Result<(), String> {
+        self.owner = owner;
         let Some(id) = self.live.get(&uid).map(|l| l.id.clone()) else {
             return Err(format!("{title} is not running"));
         };
@@ -486,27 +523,8 @@ impl Rack {
         for step in plan(&wanted_places(p), &places) {
             match step {
                 Step::Remove(uid) => {
-                    let Some(place) = self.live.get(&uid).map(|l| l.place) else {
-                        continue;
-                    };
-                    if !engine.send(Command::SetPlugin {
-                        track: place.0,
-                        slot: place.1,
-                        plugin: None,
-                    }) {
+                    if !self.take_out(uid, engine) {
                         return false;
-                    }
-                    if let Some(mut live) = self.live.remove(&uid) {
-                        // Undo may bring it back, as it was.
-                        if let Ok(Some(bytes)) = live.loaded.save_state() {
-                            self.keep_state(uid, Arc::new(bytes));
-                        }
-                        // Its window goes at once; the rest when the engine has let go of it.
-                        live.loaded.close_editor();
-                        if let Some(at) = live.loaded.take_closed_position() {
-                            self.remember_position(&live.id, at);
-                        }
-                        self.retiring.push(live.loaded);
                     }
                 }
                 Step::Swap(a, b) => {
@@ -532,6 +550,32 @@ impl Rack {
                         return false;
                     }
                 }
+            }
+        }
+        for (uid, source, place) in wanted_sides(p) {
+            let Some(live) = self.live.get_mut(&uid) else {
+                continue;
+            };
+            // Its settings are kept, and the plan above brings it back next time.
+            if live.loaded.side_needs_reload(source.is_some()) {
+                if live.loaded.editor_is_open() {
+                    self.reopen.push(uid);
+                }
+                if !self.take_out(uid, engine) {
+                    return false;
+                }
+                more = true;
+                continue;
+            }
+            if live.side != source {
+                if !engine.send(Command::SetPluginSidechain {
+                    track: place.0,
+                    slot: place.1,
+                    source,
+                }) {
+                    return false;
+                }
+                live.side = source;
             }
         }
         for (plugin, place) in wanted_bypass(p) {
@@ -563,6 +607,33 @@ impl Rack {
         !more
     }
 
+    /// Takes a plugin out of the engine. False when the engine could not take that now.
+    fn take_out(&mut self, uid: u64, engine: &mut Engine) -> bool {
+        let Some(place) = self.live.get(&uid).map(|l| l.place) else {
+            return true;
+        };
+        if !engine.send(Command::SetPlugin {
+            track: place.0,
+            slot: place.1,
+            plugin: None,
+        }) {
+            return false;
+        }
+        if let Some(mut live) = self.live.remove(&uid) {
+            // Undo may bring it back, as it was.
+            if let Ok(Some(bytes)) = live.loaded.save_state() {
+                self.keep_state(uid, Arc::new(bytes));
+            }
+            // Its window goes at once; the rest when the engine has let go of it.
+            live.loaded.close_editor();
+            if let Some(at) = live.loaded.take_closed_position() {
+                self.remember_position(&live.id, at);
+            }
+            self.retiring.push(live.loaded);
+        }
+        true
+    }
+
     /// Loads one plugin into the engine. A plugin that will not load is marked in the project,
     /// and shown as such; false only when the engine could not take it now.
     fn load(
@@ -584,8 +655,9 @@ impl Rack {
             return true;
         }
         crate::plugin_guard::before_load(&plugin.path);
+        let side = plugin.sidechain.is_some();
         let (mut loaded, processor) =
-            match load_plugin(&plugin.path, &plugin.id, engine.sample_rate()) {
+            match load_plugin(&plugin.path, &plugin.id, engine.sample_rate(), side) {
                 Ok(both) => both,
                 Err(e) => {
                     crate::plugin_guard::after_load();
@@ -595,6 +667,7 @@ impl Rack {
                 }
             };
         plugin.params = Arc::new(loaded.params());
+        plugin.side_offered = loaded.has_side_input();
         let kept = self.kept_states.iter().find(|(u, _)| *u == uid);
         let state = kept
             .map(|(_, s)| s.clone())
@@ -613,6 +686,14 @@ impl Rack {
         });
         if sent {
             let id = plugin.id.clone();
+            if let Some(at) = self.reopen.iter().position(|u| *u == uid) {
+                self.reopen.remove(at);
+                let name = plugin.name.clone();
+                let place = self.positions().get(&id).copied();
+                if let Err(e) = loaded.open_editor(&name, self.owner, place) {
+                    *message = Some(e.to_string());
+                }
+            }
             self.live.insert(
                 uid,
                 Live {
@@ -621,6 +702,7 @@ impl Rack {
                     // The slot starts running; the next `sync` tells it if it should not be.
                     bypass: false,
                     low: false,
+                    side: None,
                     loaded,
                 },
             );
@@ -739,6 +821,32 @@ mod tests {
         }
         assert_eq!(rack.kept_states.len(), KEPT_STATES);
         assert!(rack.kept_states.iter().all(|(u, _)| *u != 1), "oldest gone");
+    }
+
+    #[test]
+    fn a_side_chain_is_asked_for_only_where_there_is_a_track_for_it() {
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        add_plugin(&mut p, a, &effect("Comp")).unwrap();
+        add_master_effect(&mut p, &effect("Duck"), 0).unwrap();
+        p.tracks[a].plugins[0].sidechain = Some(b);
+        p.master_plugins[0].sidechain = Some(9999);
+        let sides = wanted_sides(&p);
+        assert_eq!(sides[0].1, Some(b as u16));
+        assert_eq!(sides[0].2, (a as u16, 0));
+        assert_eq!(sides[1].1, None, "there is no such track");
+        // Frozen, the plugin is not running.
+        p.tracks[a].frozen = Some(Box::new(
+            p.tracks[0].regions.first().cloned().unwrap_or_else(|| {
+                let mut demo = Project::demo();
+                demo.tracks
+                    .iter_mut()
+                    .find_map(|t| t.regions.pop())
+                    .unwrap()
+            }),
+        ));
+        assert_eq!(wanted_sides(&p).len(), 1);
     }
 
     #[test]

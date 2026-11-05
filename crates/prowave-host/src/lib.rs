@@ -117,6 +117,17 @@ pub trait LoadedPlugin {
     /// whose window follows the audio half by itself need nothing here.
     fn show_param(&mut self, _id: u32, _value: f64) {}
 
+    /// Whether the plugin offers a side-chain input.
+    fn has_side_input(&self) -> bool {
+        false
+    }
+
+    /// Whether the plugin must be loaded again for its side-chain input to be on or off. A VST3
+    /// plugin's buses can only be switched while it is not running.
+    fn side_needs_reload(&self, _on: bool) -> bool {
+        false
+    }
+
     /// The delay the plugin reported when it was activated, in samples.
     fn latency_samples(&self) -> usize;
     /// Whether the audio half is gone. Keep this half until it is.
@@ -171,8 +182,14 @@ pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
     }
 }
 
-/// Loads plugin `id` of a file of any format, for the engine's sample rate.
-pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, HostError> {
+/// Loads plugin `id` of a file of any format, for the engine's sample rate. `side` says a source for
+/// its side-chain input is chosen, if it has one.
+pub fn load_plugin(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+) -> Result<Loaded, HostError> {
     match PluginFormat::of(path) {
         PluginFormat::Sampler => load_sampler(path, sample_rate),
         PluginFormat::Clap => {
@@ -180,7 +197,7 @@ pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Ho
             Ok((Box::new(loaded), audio))
         }
         #[cfg(windows)]
-        PluginFormat::Vst3 => load_vst3(path, id, sample_rate),
+        PluginFormat::Vst3 => load_vst3(path, id, sample_rate, side),
         #[cfg(not(windows))]
         PluginFormat::Vst3 => Err(HostError("VST3 needs Windows for now".to_string())),
     }
@@ -211,7 +228,7 @@ mod tests {
             let Some(info) = found.first() else {
                 continue;
             };
-            let (loaded, mut audio) = match load_plugin(file, &info.id, 48_000) {
+            let (loaded, mut audio) = match load_plugin(file, &info.id, 48_000, true) {
                 Ok(both) => both,
                 Err(e) => {
                     println!("{}: {e}", info.name);
@@ -219,13 +236,20 @@ mod tests {
                 }
             };
             let params = loaded.params();
-            println!("{}: {} parameters", info.name, params.len());
+            println!(
+                "{}: {} parameters, side input {}",
+                info.name,
+                params.len(),
+                loaded.has_side_input()
+            );
+            let key = vec![0.5f32; PLUGIN_BLOCK];
             let input = vec![0.1f32; PLUGIN_BLOCK];
             let (mut l, mut r) = (vec![0.0f32; PLUGIN_BLOCK], vec![0.0f32; PLUGIN_BLOCK]);
             for block in 0..200 {
                 if let Some(param) = params.first() {
                     audio.set_param(param.id, f64::from(block % 2));
                 }
+                audio.set_side_input([&key, &key]);
                 audio.process(
                     [&input, &input],
                     [&mut l, &mut r],

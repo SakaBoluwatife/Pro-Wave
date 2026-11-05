@@ -1217,6 +1217,41 @@ fn preset_items(
     });
 }
 
+/// The Side Chain menu of a plugin that offers a side-chain input: every other track that makes
+/// sound. What was picked goes in `pick`, `Some(None)` for none.
+fn side_chain_items(
+    ui: &mut Ui,
+    sources: &[(usize, String)],
+    now: Option<usize>,
+    pick: &mut Option<Option<usize>>,
+) {
+    ui.menu_button(tr("Side Chain"), |ui| {
+        if ui.selectable_label(now.is_none(), tr("Off")).clicked() {
+            *pick = Some(None);
+            ui.close();
+        }
+        for (t, name) in sources {
+            if ui
+                .selectable_label(now == Some(*t), name.as_str())
+                .clicked()
+            {
+                *pick = Some(Some(*t));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// The tracks that can key a plugin on track `own` (`None`: the output).
+fn side_chain_sources(p: &Project, own: Option<usize>) -> Vec<(usize, String)> {
+    p.tracks
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| Some(*i) != own && crate::model::can_key(Some(t.kind)))
+        .map(|(i, t)| (i, t.name.clone()))
+        .collect()
+}
+
 /// A plugin being dragged to another slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SlotDrag {
@@ -1477,6 +1512,18 @@ fn plugin_slot(
     remove |= slot_remove_button(ui, g, r, uid, text_color);
     let mut open = loaded && resp.clicked();
     let mut preset = None;
+    let own = match home {
+        Home::Track(i) => Some(i),
+        Home::Master => None,
+    };
+    let sources = if plugin.side_offered {
+        side_chain_sources(p, own)
+    } else {
+        Vec::new()
+    };
+    let side_now = plugin.sidechain;
+    let side_offered = plugin.side_offered;
+    let mut side_pick = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1502,6 +1549,9 @@ fn plugin_slot(
             }
         });
         preset_items(ui, plugin_uid, &plugin_id, &name, &mut preset);
+        if side_offered {
+            side_chain_items(ui, &sources, side_now, &mut side_pick);
+        }
         ui.separator();
         if ui.button(tr("Remove")).clicked() {
             remove = true;
@@ -1511,6 +1561,9 @@ fn plugin_slot(
     slot_menu(&resp, false).show(&mut items);
     if preset.is_some() {
         v.preset_cmd = preset;
+    }
+    if let Some(source) = side_pick {
+        home.plugins(p)[j].sidechain = source;
     }
     if open {
         v.open_plugin = Some((plugin_uid, name));
@@ -1604,6 +1657,12 @@ fn instrument_plugin_slot(
     }
     let installed = v.installed.clone();
     let mut pick = None;
+    let sources = if plugin.side_offered {
+        side_chain_sources(p, Some(i))
+    } else {
+        Vec::new()
+    };
+    let mut side_pick = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1612,6 +1671,9 @@ fn instrument_plugin_slot(
                 ui.close();
             }
         });
+        if plugin.side_offered {
+            side_chain_items(ui, &sources, plugin.sidechain, &mut side_pick);
+        }
         ui.separator();
         if installed.iter().any(|info| info.is_instrument) {
             ui.menu_button("Replace With", |ui| {
@@ -1624,6 +1686,9 @@ fn instrument_plugin_slot(
         }
     };
     slot_menu(&resp, false).show(&mut items);
+    if let (Some(source), Some(live)) = (side_pick, p.tracks[i].instrument_plugin.as_mut()) {
+        live.sidechain = source;
+    }
     if open {
         v.open_plugin = Some((plugin.uid, plugin.name));
     }

@@ -496,6 +496,13 @@ pub enum Command {
         slot: u8,
         on: bool,
     },
+    /// Sends a strip's sound, after its own effects and before its fader, to the side-chain input
+    /// of the hosted plugin of a slot; `None` takes it away. Follows the plugin when it moves.
+    SetPluginSidechain {
+        track: u16,
+        slot: u8,
+        source: Option<u16>,
+    },
     /// Bypasses or brings back the hosted plugin of a slot, without allocating.
     SetPluginBypass {
         track: u16,
@@ -829,6 +836,12 @@ pub struct EngineCore {
     /// buses they feed) add up without losing the quiet ones to rounding.
     in_l: Vec<f64>,
     in_r: Vec<f64>,
+    /// Each strip's sound for side-chain inputs, as of the frame it last ran.
+    side_l: Vec<f32>,
+    side_r: Vec<f32>,
+    /// The strips a side-chain input listens to. They keep running when muted or not soloed, so a
+    /// silent strip can still key a compressor: only what leaves them goes.
+    side_source: Vec<bool>,
     touched: Vec<bool>,
     dirty: Vec<u16>,
     bus_l: [f64; MAX_BUSES],
@@ -976,6 +989,9 @@ impl EngineCore {
             strip_kind: vec![0; MAX_TRACKS],
             in_l: vec![0.0; MAX_TRACKS],
             in_r: vec![0.0; MAX_TRACKS],
+            side_l: vec![0.0; MAX_TRACKS],
+            side_r: vec![0.0; MAX_TRACKS],
+            side_source: vec![false; MAX_TRACKS],
             touched: vec![false; MAX_TRACKS],
             dirty: Vec::with_capacity(MAX_TRACKS),
             bus_l: [0.0; MAX_BUSES],
@@ -1355,7 +1371,20 @@ impl EngineCore {
                 .chain(self.master_plugins.iter_mut());
             round.set_slots(effects.chain(others).flatten().map(|slot| &mut **slot));
         }
+        self.side_source.fill(false);
+        let effects = self.plugins.iter().flat_map(|s| s.iter());
+        let others = self.instruments.iter().chain(self.master_plugins.iter());
+        for slot in effects.chain(others).flatten() {
+            if let Some(source) = slot.side_source() {
+                self.side_source[source as usize] = true;
+            }
+        }
         for i in 0..MAX_TRACKS {
+            // A strip that stops being a source must not leave its last sample standing.
+            if !self.side_source[i] {
+                self.side_l[i] = 0.0;
+                self.side_r[i] = 0.0;
+            }
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
             let has_plugin =
                 self.instruments[i].is_some() || self.plugins[i].iter().any(Option::is_some);
@@ -1365,7 +1394,13 @@ impl EngineCore {
             self.strip_kind[i] = if self.routes[i].bus_in > 0 {
                 self.aux.push(i as u16);
                 2
-            } else if has_chain || has_plugin || has_pdc || to_bus || self.routes[i].has_sends() {
+            } else if has_chain
+                || has_plugin
+                || has_pdc
+                || to_bus
+                || self.routes[i].has_sends()
+                || self.side_source[i]
+            {
                 self.complex.push(i as u16);
                 1
             } else {
@@ -1453,6 +1488,7 @@ impl EngineCore {
     fn run_strip(&mut self, t: usize, out: &mut (f64, f64)) {
         let route = self.routes[t];
         let audible = self.track_audible[t];
+        let runs = audible || self.side_source[t];
         let (mut xl, mut xr) = (self.in_l[t], self.in_r[t]);
         self.in_l[t] = 0.0;
         self.in_r[t] = 0.0;
@@ -1461,16 +1497,20 @@ impl EngineCore {
             xl += self.bus_l[b];
             xr += self.bus_r[b];
         }
-        if !audible {
+        if !runs {
             xl = 0.0;
             xr = 0.0;
         }
         // The effects work in 32 bits.
         let (mut xl, mut xr) = (xl as f32, xr as f32);
         if let Some(instrument) = self.instruments[t].as_mut() {
+            if let Some(source) = instrument.side_source() {
+                let source = source as usize;
+                instrument.feed_side(self.side_l[source], self.side_r[source]);
+            }
             let (il, ir) = instrument.process(0.0, 0.0, &self.transport);
             // It goes on sounding while muted, so that it can be heard again at once.
-            if audible {
+            if runs {
                 xl += il;
                 xr += ir;
             }
@@ -1479,7 +1519,19 @@ impl EngineCore {
             (xl, xr) = chain.process(xl, xr);
         }
         for plugin in self.plugins[t].iter_mut().flatten() {
+            if let Some(source) = plugin.side_source() {
+                let source = source as usize;
+                plugin.feed_side(self.side_l[source], self.side_r[source]);
+            }
             (xl, xr) = plugin.process(xl, xr, &self.transport);
+        }
+        // Before the delay compensation: that lines the strip up with the slowest in the mix, which
+        // would make the key later than the sound it is keying.
+        self.side_l[t] = xl;
+        self.side_r[t] = xr;
+        if !audible {
+            xl = 0.0;
+            xr = 0.0;
         }
         if let Some(pdc) = self.pdc[t].as_mut() {
             (xl, xr) = pdc.delay_before(xl, xr);
@@ -1559,7 +1611,7 @@ impl EngineCore {
         feed.advance();
         for m in &self.monitors[..self.monitor_count] {
             let t = m.track as usize;
-            if t >= MAX_TRACKS || !self.track_audible[t] {
+            if t >= MAX_TRACKS || !(self.track_audible[t] || self.side_source[t]) {
                 continue;
             }
             let l = feed.value(m.channel as usize);
@@ -1813,6 +1865,17 @@ impl EngineCore {
                     }
                 }
                 Command::SetPreFaderMeter(on) => self.pre_fader_meter = on,
+                Command::SetPluginSidechain {
+                    track,
+                    slot,
+                    source,
+                } => {
+                    let source = source.filter(|s| (*s as usize) < MAX_TRACKS);
+                    if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
+                        plugin.set_side_source(source);
+                        self.sort_strips();
+                    }
+                }
                 Command::SetPluginLowLatency { track, slot, on } => {
                     if let Some(Some(plugin)) = self.plugin_place((track, slot)) {
                         plugin.set_low_latency(on);
@@ -2125,7 +2188,7 @@ impl EngineCore {
                     let c = &mut self.song.clips[i];
                     if let Some((cl, cr)) = c.tick() {
                         let t = (c.track as usize).min(MAX_TRACKS - 1);
-                        if self.track_audible[t] {
+                        if self.track_audible[t] || self.side_source[t] {
                             let edit_gain = c.envelope(sample_beat, c.end_beat);
                             self.in_l[t] += (cl * edit_gain) as f64;
                             self.in_r[t] += (cr * edit_gain) as f64;
@@ -2231,7 +2294,7 @@ impl EngineCore {
                     x = 0.0;
                 }
                 let t = v.track as usize;
-                if self.track_audible[t] {
+                if self.track_audible[t] || self.side_source[t] {
                     let x = finite_or_zero(x * v.amp * v.env);
                     self.in_l[t] += x as f64;
                     self.in_r[t] += x as f64;
@@ -2277,6 +2340,10 @@ impl EngineCore {
             if self.master_any {
                 let transport = self.transport;
                 for plugin in self.master_plugins.iter_mut().flatten() {
+                    if let Some(source) = plugin.side_source() {
+                        let source = source as usize;
+                        plugin.feed_side(self.side_l[source], self.side_r[source]);
+                    }
                     let (a, b) = plugin.process(l as f32, r as f32, &transport);
                     l = f64::from(a);
                     r = f64::from(b);
@@ -3470,6 +3537,72 @@ mod tests {
         assert!(e
             .plugin_place((MAX_TRACKS as u16, INSTRUMENT_SLOT))
             .is_none());
+    }
+
+    #[test]
+    fn a_muted_strip_keys_a_plugin_on_another_strip_and_stops_when_taken_away() {
+        use crate::plugin::tests::KeyPlugin;
+        let (mut e, mut tx, mut s) = rig();
+        // Only track 1 plays, and it is muted. The plugin on track 0 puts out what keys it.
+        assert!(tx
+            .push(Command::SetSong(two_tracks_song(vec![strip_note(1, 64.0)])))
+            .is_ok());
+        let muted = TrackMix {
+            mute: true,
+            ..TrackMix::default()
+        };
+        assert!(tx
+            .push(Command::SetTrackMix {
+                track: 1,
+                mix: muted
+            })
+            .is_ok());
+        assert!(tx
+            .push(Command::SetPlugin {
+                track: 0,
+                slot: 0,
+                plugin: Some(Box::new(PluginSlot::new(Box::new(KeyPlugin::new())))),
+            })
+            .is_ok());
+        assert!(tx.push(Command::Play).is_ok());
+        let without = render(&mut e, 0.1);
+        assert!(without.iter().all(|x| *x == 0.0), "nothing keys it yet");
+
+        let set = |source| Command::SetPluginSidechain {
+            track: 0,
+            slot: 0,
+            source,
+        };
+        assert!(tx.push(set(Some(1))).is_ok());
+        let mut buf = vec![0.0f32; 512 * 2];
+        for _ in 0..8 {
+            assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        }
+        assert!(buf.iter().any(|x| x.abs() > 1e-3), "the key comes through");
+        assert_eq!(
+            s.read().track_peaks(1),
+            (0.0, 0.0),
+            "the source stays silent"
+        );
+        assert!(s.read().track_peaks(0).0 > 0.0);
+
+        // A source that does not exist is no source.
+        assert!(tx.push(set(Some(MAX_TRACKS as u16))).is_ok());
+        render(&mut e, 0.05);
+        assert_eq!(
+            e.plugin_place((0, 0))
+                .and_then(|x| x.as_ref())
+                .map(|x| x.side_source()),
+            Some(None)
+        );
+        assert!(tx.push(set(Some(1))).is_ok());
+        render(&mut e, 0.05);
+        assert!(tx.push(set(None)).is_ok());
+        let after = render(&mut e, 0.1);
+        assert!(
+            after[after.len() / 2..].iter().all(|x| *x == 0.0),
+            "taken away, it stops"
+        );
     }
 
     #[test]

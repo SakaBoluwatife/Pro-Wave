@@ -1065,6 +1065,12 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         t.vca = t.vca.filter(|&v| {
             kinds.get(v) == Some(&TrackKind::Vca) && v != i && t.kind != TrackKind::Vca
         });
+        // A side chain has to come from another track that makes sound.
+        for plugin in t.hosted_mut() {
+            plugin.sidechain = plugin
+                .sidechain
+                .filter(|&s| s != i && crate::model::can_key(kinds.get(s).copied()));
+        }
     }
     p.tracks = tracks;
     p.master_plugins = doc
@@ -1345,6 +1351,7 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
         bypass: i.bypass,
         // Only when saving, as this runs after every gesture: see `save_project`.
         state: String::new(),
+        sidechain: i.sidechain.map(|s| s as u32),
     }
 }
 
@@ -1360,6 +1367,8 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         failed: None,
         state: plugin_state_from_doc(&d.state),
         params: std::sync::Arc::default(),
+        sidechain: d.sidechain.map(|s| s as usize),
+        side_offered: false,
     }
 }
 
@@ -1381,6 +1390,8 @@ pub fn strip_to_text(t: &Track) -> Result<String, String> {
             .iter()
             .map(|i| {
                 let mut d = plugin_to_doc(i);
+                // Tracks mean nothing in another project.
+                d.sidechain = None;
                 if let Some(state) = &i.state {
                     d.state = base64::engine::general_purpose::STANDARD.encode(state.as_slice());
                 }
@@ -1474,6 +1485,8 @@ pub(crate) mod tests {
             failed: None,
             state: None,
             params: std::sync::Arc::default(),
+            sidechain: None,
+            side_offered: false,
         };
         t.plugins.push(plugin);
         let points = vec![AutoPoint {
@@ -1514,6 +1527,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_side_chain_is_kept_in_the_file_and_one_that_makes_no_sense_is_dropped() {
+        let mut d = prowave_project::PluginDoc {
+            sidechain: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(plugin_from_doc(&d).sidechain, Some(2));
+        let insert = plugin_from_doc(&d);
+        assert_eq!(plugin_to_doc(&insert).sidechain, Some(2));
+        d.sidechain = None;
+        assert_eq!(plugin_from_doc(&d).sidechain, None);
+        // A file from before there were side chains reads as none, and none stays out of files.
+        let old: prowave_project::PluginDoc = serde_json::from_str(r#"{"id":"x"}"#).unwrap();
+        assert_eq!(old.sidechain, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("sidechain"));
+
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Vca);
+        let plugin = |sidechain| crate::model::PluginInsert {
+            sidechain,
+            ..plugin_from_doc(&prowave_project::PluginDoc {
+                id: "x".into(),
+                ..Default::default()
+            })
+        };
+        p.tracks[a].plugins = vec![
+            plugin(Some(a)),
+            plugin(Some(b)),
+            plugin(Some(99)),
+            plugin(Some(0)),
+        ];
+        let (doc, _) = doc_for_saving(&p);
+        let (q, _) = from_doc(&doc, std::path::Path::new("."), &egui::Context::default());
+        let kept: Vec<_> = q.tracks[a].plugins.iter().map(|x| x.sidechain).collect();
+        assert_eq!(kept, [None, None, None, Some(0)]);
+    }
+
+    #[test]
     fn a_channel_strip_file_brings_back_effects_and_plugins_with_settings() {
         let mut p = Project::empty();
         let a = p.add_track(TrackKind::Audio);
@@ -1530,6 +1581,8 @@ pub(crate) mod tests {
             failed: None,
             state: Some(std::sync::Arc::new(vec![1, 2, 3])),
             params: std::sync::Arc::default(),
+            sidechain: Some(a),
+            side_offered: false,
         });
         let text = strip_to_text(&p.tracks[a]).unwrap();
         strip_from_text(&mut p.tracks[b], &text).unwrap();

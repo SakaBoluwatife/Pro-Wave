@@ -1,6 +1,6 @@
 //! CLAP plugins, through the `clack-host` bindings.
 use crate::{HostError as Error, PluginFormat, PluginInfo};
-use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
+use clack_extensions::audio_ports::{AudioPortFlags, AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::gui::{
     GuiApiType, GuiConfiguration, GuiSize, HostGui, HostGuiImpl, PluginGui, Window,
 };
@@ -198,6 +198,7 @@ pub struct LoadedClap {
     latency: usize,
     gui: Arc<GuiRequests>,
     dirty: Arc<AtomicBool>,
+    has_side: bool,
     #[cfg(windows)]
     editor: Option<OpenEditor>,
     /// Where the editor was when it last closed, until asked.
@@ -420,6 +421,10 @@ impl crate::LoadedPlugin for LoadedClap {
         self.params.clone()
     }
 
+    fn has_side_input(&self) -> bool {
+        self.has_side
+    }
+
     fn param_value(&mut self, id: u32) -> Option<f64> {
         let at = self.ranges.binary_search_by_key(&id, |r| r.0).ok()?;
         let (_, min, max) = self.ranges[at];
@@ -516,6 +521,20 @@ fn port_layout(
     Ok(layout)
 }
 
+/// The input port for a side chain: the first with channels that is not the main one.
+fn side_port(instance: &mut PluginInstance<Handlers>) -> Option<usize> {
+    let ports = instance
+        .plugin_shared_handle()
+        .get_extension::<PluginAudioPorts>()?;
+    let plugin = instance.plugin_handle();
+    let mut buffer = AudioPortInfoBuffer::new();
+    (0..ports.count(&plugin, true)).find_map(|i| {
+        let info = ports.get(&plugin, i, true, &mut buffer)?;
+        (!info.flags.contains(AudioPortFlags::IS_MAIN) && info.channel_count > 0)
+            .then_some(i as usize)
+    })
+}
+
 /// Loads plugin `id` of a `.clap` file and activates it for the engine's sample rate and block.
 /// Failure is an error to show, never a panic.
 pub fn load_clap(
@@ -547,6 +566,7 @@ pub fn load_clap(
 
     let inputs = port_layout(&mut instance, true)?;
     let outputs = port_layout(&mut instance, false)?;
+    let side = side_port(&mut instance);
     let config = PluginAudioConfiguration {
         sample_rate: f64::from(sample_rate),
         min_frames_count: PLUGIN_BLOCK as u32,
@@ -569,6 +589,7 @@ pub fn load_clap(
     let mut processor =
         ClapProcessor::new(stopped.into(), &inputs, &outputs, latency, released.clone());
     processor.ranges = ranges.clone();
+    processor.side_port = side;
     let (moved_in, moved) = rtrb::RingBuffer::new(PENDING_PARAMS);
     processor.moved = Some(moved_in);
     Ok((
@@ -582,6 +603,7 @@ pub fn load_clap(
             latency,
             gui,
             dirty,
+            has_side: side.is_some(),
             #[cfg(windows)]
             editor: None,
             closed_at: None,
@@ -623,6 +645,22 @@ pub(crate) fn fill_main_input(ports: &mut [Vec<Vec<f32>>], src: [&[f32]; 2]) {
             *m = (*l + *r) * 0.5;
         }
     } else if let [l, r, ..] = main.as_mut_slice() {
+        l.copy_from_slice(src[0]);
+        r.copy_from_slice(src[1]);
+    }
+}
+
+/// Copies `src` into the side-chain port `index`: stereo into its first two channels, mixed down
+/// for a mono port.
+pub(crate) fn fill_side_input(ports: &mut [Vec<Vec<f32>>], index: usize, src: [&[f32]; 2]) {
+    let Some(side) = ports.get_mut(index) else {
+        return;
+    };
+    if let [mono] = side.as_mut_slice() {
+        for (m, (l, r)) in mono.iter_mut().zip(src[0].iter().zip(src[1])) {
+            *m = (*l + *r) * 0.5;
+        }
+    } else if let [l, r, ..] = side.as_mut_slice() {
         l.copy_from_slice(src[0]);
         r.copy_from_slice(src[1]);
     }
@@ -763,6 +801,8 @@ struct ClapProcessor {
     pending: Vec<(u32, f64)>,
     /// What the plugin's window moved, as positions 0..=1, for automation. Lost if nobody reads.
     moved: Option<rtrb::Producer<(u32, f64)>>,
+    /// The input port a side chain goes in.
+    side_port: Option<usize>,
 }
 
 impl Drop for ClapProcessor {
@@ -783,6 +823,7 @@ impl ClapProcessor {
             ranges: Vec::new(),
             pending: Vec::with_capacity(PENDING_PARAMS),
             moved: None,
+            side_port: None,
             processor,
             input: PortBuffers::new(inputs),
             output: PortBuffers::new(outputs),
@@ -795,6 +836,12 @@ impl ClapProcessor {
 }
 
 impl PluginProcessor for ClapProcessor {
+    fn set_side_input(&mut self, side: [&[f32]; 2]) {
+        if let Some(port) = self.side_port {
+            fill_side_input(&mut self.input.ports, port, side);
+        }
+    }
+
     fn set_param(&mut self, id: u32, value: f64) {
         let Ok(at) = self.ranges.binary_search_by_key(&id, |r| r.0) else {
             return;
@@ -814,7 +861,10 @@ impl PluginProcessor for ClapProcessor {
         transport: &PluginTransport,
     ) {
         let transport = transport_event(transport);
-        fill_main_input(&mut self.input.ports, input);
+        // A plugin whose only input is its side chain has no main one to fill.
+        if self.side_port != Some(0) {
+            fill_main_input(&mut self.input.ports, input);
+        }
         self.events_in.clear();
         self.events_out.clear();
         for (id, value) in self.pending.drain(..) {
@@ -951,6 +1001,21 @@ mod tests {
         fill_main_input(&mut none.ports, [&l, &r]);
         read_main_output(&none.ports, [&mut out_l, &mut out_r]);
         assert_eq!((out_l[0], out_r[0]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_side_chain_goes_to_its_own_port_for_any_layout() {
+        let (l, r) = (vec![0.5; PLUGIN_BLOCK], vec![0.25; PLUGIN_BLOCK]);
+        let mut stereo = PortBuffers::new(&[2, 2]);
+        fill_side_input(&mut stereo.ports, 1, [&l, &r]);
+        assert_eq!(stereo.ports[0][0][0], 0.0, "not the main input");
+        assert_eq!(stereo.ports[1][0][0], 0.5);
+        assert_eq!(stereo.ports[1][1][0], 0.25);
+        let mut mono = PortBuffers::new(&[2, 1]);
+        fill_side_input(&mut mono.ports, 1, [&l, &r]);
+        assert_eq!(mono.ports[1][0][0], 0.375);
+        // A port that is not there is no crash.
+        fill_side_input(&mut mono.ports, 5, [&l, &r]);
     }
 
     #[test]

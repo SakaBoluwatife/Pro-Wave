@@ -343,6 +343,9 @@ pub struct PluginDoc {
     pub bypass: bool,
     /// What the plugin gave to keep, in base64; empty if nothing. Filled in only when saving.
     pub state: String,
+    /// The track (by its place) whose sound goes to its side-chain input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<u32>,
 }
 
 /// A channel strip's sound in a file of its own: its effects and plugins with their settings.

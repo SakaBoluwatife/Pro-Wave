@@ -885,6 +885,7 @@ fn midi_track_from(
     let made = region.notes.len();
     track.regions.push(region);
     p.tracks.insert(t + 1, track);
+    p.vca_inserted(t + 1);
     made
 }
 

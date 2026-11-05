@@ -689,6 +689,10 @@ pub struct PluginInsert {
     pub state: Option<std::sync::Arc<Vec<u8>>>,
     /// What can be automated, once it has loaded. Not saved.
     pub params: std::sync::Arc<Vec<prowave_host::PluginParam>>,
+    /// The track whose sound goes to its side-chain input.
+    pub sidechain: Option<usize>,
+    /// It said it has a side-chain input, once it has loaded. Not saved.
+    pub side_offered: bool,
 }
 
 impl PluginInsert {
@@ -704,8 +708,15 @@ impl PluginInsert {
             failed: None,
             state: None,
             params: std::sync::Arc::default(),
+            sidechain: None,
+            side_offered: false,
         }
     }
+}
+
+/// Whether a track of this kind has a sound that can key a plugin's side-chain input.
+pub fn can_key(kind: Option<TrackKind>) -> bool {
+    !matches!(kind, None | Some(TrackKind::Folder | TrackKind::Vca))
 }
 
 /// The insert row each of `plugins` shows in, with `first` rows taken above them. They stay in
@@ -1909,6 +1920,11 @@ impl Project {
                 *v = new_place.get(*v).copied().unwrap_or(*v);
             }
         }
+        for plugin in self.all_hosted_mut() {
+            if let Some(source) = plugin.sidechain.as_mut() {
+                *source = new_place.get(*source).copied().unwrap_or(*source);
+            }
+        }
         self.selected_track = new_place
             .get(self.selected_track)
             .copied()
@@ -2040,6 +2056,13 @@ impl Project {
                 }
             }
         }
+        for plugin in self.all_hosted_mut() {
+            if let Some(source) = plugin.sidechain.as_mut() {
+                if *source >= at {
+                    *source += 1;
+                }
+            }
+        }
     }
 
     /// Keeps VCA assignments right after track `removed` was taken out: tracks that were
@@ -2049,6 +2072,14 @@ impl Project {
             t.vca = match t.vca {
                 Some(v) if v == removed => None,
                 Some(v) if v > removed => Some(v - 1),
+                other => other,
+            };
+        }
+        // The same for side chains: a plugin keyed by it has no source any more.
+        for plugin in self.all_hosted_mut() {
+            plugin.sidechain = match plugin.sidechain {
+                Some(s) if s == removed => None,
+                Some(s) if s > removed => Some(s - 1),
                 other => other,
             };
         }
@@ -2131,6 +2162,9 @@ impl Project {
             copy.vca = None;
             copy.indent = 0;
             copy.frozen = None;
+            for plugin in copy.hosted_mut() {
+                plugin.sidechain = None;
+            }
             self.tracks.push(copy);
             count += 1;
         }
@@ -3173,6 +3207,50 @@ mod tests {
         assert!(!p.move_tracks(&[track], track), "already there");
         assert!(p.move_tracks(&[track], p.tracks.len()), "to the end");
         assert_eq!(p.tracks.last().unwrap().name, "a");
+    }
+
+    #[test]
+    fn a_side_chain_follows_its_source_and_goes_with_it() {
+        let info = prowave_host::PluginInfo {
+            id: "c".into(),
+            name: "Comp".into(),
+            vendor: String::new(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: "c.clap".into(),
+            is_instrument: false,
+        };
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let kick = p.add_track(TrackKind::Audio);
+        let bass = p.add_track(TrackKind::Audio);
+        let other = p.add_track(TrackKind::Audio);
+        p.tracks[kick].name = "kick".into();
+        p.tracks[other].plugins.push(PluginInsert::new(&info));
+        p.tracks[other].plugins[0].sidechain = Some(kick);
+        p.master_plugins.push(PluginInsert::new(&info));
+        p.master_plugins[0].sidechain = Some(bass);
+        let key_of = |p: &Project| {
+            let t = p.tracks.iter().find(|t| !t.plugins.is_empty()).unwrap();
+            t.plugins[0].sidechain.map(|s| p.tracks[s].name.clone())
+        };
+
+        assert!(p.move_tracks(&[kick], p.tracks.len()), "kick to the end");
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        assert_eq!(p.master_plugins[0].sidechain, Some(0), "bass is first now");
+
+        // A track put in before it moves it along.
+        p.tracks.insert(0, Track::new("new", TrackKind::Audio));
+        p.vca_inserted(0);
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        assert_eq!(p.master_plugins[0].sidechain, Some(1));
+
+        // One taken away before it too, and when the source itself goes the plugin has none.
+        assert!(p.delete_track(0));
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        let kick = p.tracks.iter().position(|t| t.name == "kick").unwrap();
+        assert!(p.delete_track(kick));
+        assert_eq!(key_of(&p), None);
     }
 
     #[test]
