@@ -35,6 +35,10 @@ pub enum Action {
     BarForward,
     NewAudioTrack,
     NewInstrumentTrack,
+    /// Calls back the screenset on this number.
+    RecallScreenset(u8),
+    /// Saves the panels as they are in the screenset on this number.
+    SaveScreenset(u8),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +64,9 @@ fn ctrl() -> Modifiers {
 }
 fn shift() -> Modifiers {
     SHIFT
+}
+fn alt() -> Modifiers {
+    Modifiers::ALT
 }
 
 /// The whole table. Space (play) and the Undo keys are handled where they always were.
@@ -102,6 +109,25 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::Z, none, Action::Menu("Zoom to Fit")),
     cmd(Key::ArrowRight, ctrl, Action::Menu("Zoom In")),
     cmd(Key::ArrowLeft, ctrl, Action::Menu("Zoom Out")),
+    // Screensets.
+    cmd(Key::Num1, none, Action::RecallScreenset(1)),
+    cmd(Key::Num2, none, Action::RecallScreenset(2)),
+    cmd(Key::Num3, none, Action::RecallScreenset(3)),
+    cmd(Key::Num4, none, Action::RecallScreenset(4)),
+    cmd(Key::Num5, none, Action::RecallScreenset(5)),
+    cmd(Key::Num6, none, Action::RecallScreenset(6)),
+    cmd(Key::Num7, none, Action::RecallScreenset(7)),
+    cmd(Key::Num8, none, Action::RecallScreenset(8)),
+    cmd(Key::Num9, none, Action::RecallScreenset(9)),
+    cmd(Key::Num1, alt, Action::SaveScreenset(1)),
+    cmd(Key::Num2, alt, Action::SaveScreenset(2)),
+    cmd(Key::Num3, alt, Action::SaveScreenset(3)),
+    cmd(Key::Num4, alt, Action::SaveScreenset(4)),
+    cmd(Key::Num5, alt, Action::SaveScreenset(5)),
+    cmd(Key::Num6, alt, Action::SaveScreenset(6)),
+    cmd(Key::Num7, alt, Action::SaveScreenset(7)),
+    cmd(Key::Num8, alt, Action::SaveScreenset(8)),
+    cmd(Key::Num9, alt, Action::SaveScreenset(9)),
 ];
 
 /// The user's own keys: a command's name and what it is on now, kept in the config folder. A
@@ -268,7 +294,7 @@ pub fn shortcut_of(label: &str) -> Option<egui::KeyboardShortcut> {
 
 /// Runs what this frame's keys ask for.
 pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
-    if ctx.egui_wants_keyboard_input() || s.piano_focus || s.bounce.busy() {
+    if ctx.egui_wants_keyboard_input() || s.bounce.busy() {
         return;
     }
     s.keys.make_ready();
@@ -276,6 +302,18 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         return;
     }
     for command in COMMANDS {
+        let screenset = matches!(
+            command.action,
+            Action::RecallScreenset(_) | Action::SaveScreenset(_)
+        );
+        // The piano roll's keys win over it, but it has no use for the numbers.
+        if s.piano_focus && !screenset {
+            continue;
+        }
+        // While the computer keyboard plays notes, plain numbers are its own.
+        if s.typing.on && matches!(command.action, Action::RecallScreenset(_)) {
+            continue;
+        }
         let (key, mods) = s.keys.key_of(command);
         let pressed =
             ctx.input_mut(|i| i.modifiers.matches_exact(mods) && i.consume_key(mods, key));
@@ -349,6 +387,8 @@ pub fn perform(action: Action, p: &mut Project, s: &mut UiState) {
         Action::NewInstrumentTrack => {
             p.add_track(TrackKind::Instrument);
         }
+        Action::RecallScreenset(slot) => crate::screensets::go_to(p, s, slot),
+        Action::SaveScreenset(slot) => crate::screensets::save(p, s, slot),
     }
 }
 

@@ -27,6 +27,8 @@ pub struct QuickDialogs {
     pub plugin_manager: bool,
     /// Mix > Edit Groups.
     pub groups: bool,
+    /// Window > Screensets.
+    pub screensets: bool,
     /// File > Project Management > Rename Project: what has been typed.
     pub rename_project: Option<String>,
     /// Asked for from the Undo History: this many steps back (`App` carries it out).
@@ -272,6 +274,7 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    crate::screensets::window(ctx, p, s);
     import_project_window(ctx, p, s);
     clean_up_window(ctx, s);
     plugin_manager_window(ctx, s);

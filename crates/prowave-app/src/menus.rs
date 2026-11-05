@@ -273,6 +273,7 @@ const WINDOW: &[&str] = &[
     "Piano Roll",
     "Mixer",
     "Plugin Manager",
+    "Screensets…",
     "Video",
     "-",
     "Bring All to Front",
@@ -529,7 +530,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Group" => !p.tracks.is_empty(),
         "Hide All Automation" => s.mixer.auto_editor.track.is_some(),
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
-        "Create Mastering Track" | "Plugin Manager" => true,
+        "Create Mastering Track" | "Plugin Manager" | "Screensets…" => true,
         "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
         "Convert Automation" => s
@@ -768,6 +769,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Plugin Manager" => s.dialogs.plugin_manager = true,
+        "Screensets…" => s.dialogs.screensets = !s.dialogs.screensets,
         "Other Projects…" => s.file_task = Some(FileTask::ImportProject),
         "Consolidate…" => s.file_task = Some(FileTask::Consolidate),
         "Clean Up…" => s.dialogs.clean_up = Some(crate::bounce::unused_freeze_files(p)),
@@ -1416,6 +1418,7 @@ mod tests {
                     s.mixer.auto_editor.track,
                     (
                         s.dialogs.groups,
+                        s.dialogs.screensets,
                         s.dialogs.plugin_manager,
                         s.dialogs.clean_up.is_some(),
                         s.dialogs.track_header,

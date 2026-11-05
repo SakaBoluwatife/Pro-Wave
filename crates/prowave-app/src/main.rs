@@ -63,6 +63,7 @@ mod routing_matrix;
 mod sample_browser;
 mod sample_place;
 mod score;
+mod screensets;
 mod scripter;
 mod settings;
 mod side_panes;
@@ -149,6 +150,8 @@ pub struct UiState {
     /// The editor panel shows the Score instead of the Piano Roll for ordinary MIDI regions.
     pub score_tab: bool,
     pub score: score::ScoreView,
+    /// The screenset called back or saved last, for its window.
+    pub screenset_on: Option<u8>,
     /// A note the Score just added is sounding: its pitch and when it stops.
     pub score_heard: Option<(u8, f64)>,
     /// Flex Time and Flex Pitch work running in the background.
@@ -247,6 +250,7 @@ impl UiState {
             transform: transform_ui::TransformView::default(),
             score_tab: false,
             score: score::ScoreView::default(),
+            screenset_on: None,
             score_heard: None,
             flex: flex_edit::FlexState::default(),
             groove: groove::GrooveState::default(),
