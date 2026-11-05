@@ -141,6 +141,7 @@ pub fn import_audio_at(
         indent: 0,
         folded: false,
         vca: None,
+        on_timeline: false,
         midi_port: None,
         midi_channel: 1,
         midi_fx: Vec::new(),

@@ -512,7 +512,7 @@ fn row_layout(p: &Project, row_h: f32) -> Vec<(f32, f32)> {
         .enumerate()
         .map(|(i, t)| {
             // The tracks of a folded folder take no room (every loop below skips them).
-            let h = if p.hidden_by_fold(i) {
+            let h = if p.hidden_by_fold(i) || p.mixer_only(i) {
                 0.0
             } else {
                 (row_h * t.height).round().max(1.0) + take_rows_height(t)
@@ -1860,7 +1860,9 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
             Err(e) => s.status = Some(e),
         },
         CtxAction::NewTrack(kind) => {
-            p.add_track(kind);
+            let t = p.add_track(kind);
+            // Asked for from the Tracks area, so it shows there.
+            p.tracks[t].on_timeline = true;
         }
         CtxAction::ZoomToFit => zoom_to_fit(p, v, lanes_w),
         CtxAction::OpenPianoRoll => s.bottom = Bottom::PianoRoll,

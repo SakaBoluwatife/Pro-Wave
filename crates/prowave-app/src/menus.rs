@@ -1022,7 +1022,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New Aux Track" => {
-            p.add_track(TrackKind::Aux);
+            let t = p.add_track(TrackKind::Aux);
+            p.tracks[t].on_timeline = true;
         }
         "Undo" => s.undo_cmd = Some(UndoCmd::Undo),
         "Redo" => s.undo_cmd = Some(UndoCmd::Redo),

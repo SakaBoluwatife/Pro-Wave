@@ -846,6 +846,9 @@ pub struct Track {
     /// Frozen: this file plays in place of the track's regions, instrument and effects, which
     /// stay as they are but are not running. Not saved: a project opens with its tracks live.
     pub frozen: Option<Box<Region>>,
+    /// An Aux shows in the Tracks area only when asked to; in the mixer it always does. Other
+    /// kinds of track always show.
+    pub on_timeline: bool,
     /// The icon chosen with Assign Track Icon; else one follows from the patch.
     pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
@@ -931,6 +934,7 @@ impl Track {
             category: None,
             icon: None,
             frozen: None,
+            on_timeline: false,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -1128,6 +1132,7 @@ impl Project {
             category: None,
             icon: None,
             frozen: None,
+            on_timeline: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1197,6 +1202,7 @@ impl Project {
             category: None,
             icon: None,
             frozen: None,
+            on_timeline: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1941,6 +1947,13 @@ impl Project {
         false
     }
 
+    /// Whether track `i` is an Aux that shows only in the mixer.
+    pub fn mixer_only(&self, i: usize) -> bool {
+        self.tracks
+            .get(i)
+            .is_some_and(|t| t.kind == TrackKind::Aux && !t.on_timeline)
+    }
+
     /// Track > Create Track Stack: puts track `i` (with everything inside it, if it is a
     /// folder) into a new folder at its place, selects the folder and returns its index.
     /// Tracks after it move down one slot, so the engine is told the song changed.
@@ -2221,6 +2234,7 @@ impl Project {
         self.move_tracks(&[aux], folder + 1);
         let aux = folder + 1;
         self.tracks[aux].name = format!("{} Sum", self.tracks[folder].name);
+        self.tracks[aux].on_timeline = true;
         self.tracks[folder].name = format!("Summing {}", self.tracks[folder].name);
         let bus = self.aux_bus_of(aux);
         // The move put the Aux one further into the stack.

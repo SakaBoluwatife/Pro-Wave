@@ -962,6 +962,11 @@ impl eframe::App for App {
             let n = groove_template::quantize_selected(p, s, index);
             s.status = Some(format!("Quantized {n} regions to the groove"));
         }
+        if let Some(track) = s.mixer.rename.take() {
+            if let Some(name) = p.tracks.get(track).map(|t| t.name.clone()) {
+                s.dialogs.open_rename(track, &name);
+            }
+        }
         if let Some((track, as_send)) = s.mixer.new_aux.take() {
             if p.new_aux_for(track, as_send).is_none() {
                 s.status = Some("Cannot make a new Aux for this strip".to_string());

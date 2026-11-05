@@ -116,6 +116,8 @@ pub struct MixerView {
     pub sends_on_faders: Option<u16>,
     /// A strip asked for a new Aux: its place, and whether as a send rather than its output.
     pub new_aux: Option<(usize, bool)>,
+    /// A strip asked to be renamed.
+    pub rename: Option<usize>,
     /// Edit > Copy Channel Strip.
     pub copied: Option<CopiedStrip>,
     /// The audio input device that the Input slots choose from.
@@ -210,6 +212,7 @@ impl Default for MixerView {
             auto_editor: Default::default(),
             sends_on_faders: None,
             new_aux: None,
+            rename: None,
             copied: None,
             inputs: crate::audio_rec::InputChoice::default(),
         }
@@ -2377,8 +2380,22 @@ pub fn channel_strip(
         }
     }
 
-    // Name.
+    // Name. A double click renames, and leaves clicks and drags to what they do.
     let name_r = Rect::from_min_max(pos2(strip.left(), strip.bottom() - name_h), strip.max);
+    if let StripKey::Track(i) = key {
+        let renames = ui.input(|input| {
+            input
+                .pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|at| name_r.contains(at))
+        });
+        if renames {
+            v.rename = Some(i);
+        }
+    }
     if let (StripKey::Track(i), NameStyle::Coloured) = (key, name_style) {
         // Only a drag: a click or the right button goes through to the strip underneath.
         ui.interact(name_r, id(ns, (key, "name")), Sense::drag())
@@ -2486,6 +2503,23 @@ fn setting_menu(ui: &Ui, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, 
                 }
             });
         });
+        ui.separator();
+        if ui.button("Rename...").clicked() {
+            v.rename = Some(i);
+            ui.close();
+        }
+        if p.tracks[i].kind == TrackKind::Aux {
+            let on = p.tracks[i].on_timeline;
+            let label = if on {
+                "Remove from Tracks Area"
+            } else {
+                "Create Track"
+            };
+            if ui.button(label).clicked() {
+                p.tracks[i].on_timeline = !on;
+                ui.close();
+            }
+        }
         ui.separator();
         if ui.button(tr("Reset Channel Strip")).clicked() {
             let t = &mut p.tracks[i];
