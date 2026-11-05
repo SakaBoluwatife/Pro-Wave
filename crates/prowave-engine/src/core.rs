@@ -21,6 +21,8 @@ use std::sync::Arc;
 /// Tracks the engine mixes (Logic: 1000 tracks per project).
 pub const MAX_TRACKS: usize = 1024;
 const MAX_VOICES: usize = 48;
+/// More clips than this in one song, and the sample loop walks through all of them.
+const ACTIVE_CLIPS: usize = 65_536;
 /// Samples between two readings of the automation (0.7 ms at 48 kHz).
 const AUTO_BLOCK: u32 = 32;
 
@@ -150,6 +152,8 @@ impl Song {
 /// Reads [`Block`]s produced by the disk thread; never allocates or blocks.
 pub struct AudioClip {
     pub track: u16,
+    /// In this callback's sample loop. The others are moved on all at once.
+    in_loop: bool,
     pub start_beat: f64,
     end_beat: f64,
     /// Length in device-rate frames.
@@ -258,6 +262,7 @@ impl AudioClip {
             shared,
             gen: 0,
             cur: None,
+            in_loop: true,
             pos: 0,
             underruns: 0,
         }
@@ -779,6 +784,12 @@ pub struct EngineCore {
     master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
     /// Whether any is there: the mix should not look through the slots every sample for nothing.
     master_any: bool,
+    /// The clips that can sound in this callback, so that the sample loop does not walk through
+    /// every region of the song. Made with room for [`ACTIVE_CLIPS`]; past that, all of them.
+    active_clips: Vec<u32>,
+    all_clips_active: bool,
+    /// Frames played since the clips left out of the loop were last brought up to date.
+    clip_frames: i64,
     /// Runs the plugins' blocks on several cores, once the first plugin has come.
     plugin_round: Option<Box<crate::plugin::PluginRound>>,
     /// Hands a copy of the output to the Mastering window.
@@ -933,6 +944,9 @@ impl EngineCore {
             master_plugins: std::array::from_fn(|_| None),
             master_any: false,
             plugin_round: None,
+            active_clips: Vec::with_capacity(ACTIVE_CLIPS),
+            all_clips_active: false,
+            clip_frames: 0,
             master_tap: None,
             keep_headroom: false,
             any_plugin: false,
@@ -1204,6 +1218,36 @@ impl EngineCore {
         self.next_control = self.song.controls.partition_point(|c| c.beat < self.beat);
         self.reposition_clips();
         self.mtc_locate();
+    }
+
+    /// Works out which clips can sound in the next `frames` frames.
+    fn find_active_clips(&mut self, frames: usize) {
+        self.settle_inactive_clips();
+        self.active_clips.clear();
+        self.all_clips_active = self.song.clips.len() > ACTIVE_CLIPS;
+        if self.all_clips_active {
+            for c in self.song.clips.iter_mut() {
+                c.in_loop = true;
+            }
+            return;
+        }
+        for (i, c) in self.song.clips.iter_mut().enumerate() {
+            let sounds = c.pos < c.len_frames as i64 && c.pos + frames as i64 > 0;
+            c.in_loop = sounds;
+            if sounds {
+                self.active_clips.push(i as u32);
+            }
+        }
+    }
+
+    /// The clips left out of the sample loop catch up with it, all at once.
+    fn settle_inactive_clips(&mut self) {
+        if self.clip_frames != 0 {
+            for c in self.song.clips.iter_mut().filter(|c| !c.in_loop) {
+                c.pos += self.clip_frames;
+            }
+            self.clip_frames = 0;
+        }
     }
 
     fn reposition_clips(&mut self) {
@@ -1968,6 +2012,9 @@ impl EngineCore {
             feed.trim(self.monitor_count > 0);
         }
 
+        crate::plugin::flush_denormals();
+        let callback_frames = out.len() / 2;
+        self.find_active_clips(callback_frames);
         for frame in out.as_chunks_mut::<2>().0 {
             if let Some(round) = self.plugin_round.as_mut() {
                 if round.phase == crate::plugin::PLUGIN_BLOCK {
@@ -1982,7 +2029,7 @@ impl EngineCore {
             let sample_beat = self.beat;
             // Advance once per track/sample, not once per voice or overlapping audio clip.
             if self.mix_ramp_remaining > 0 {
-                for i in 0..MAX_TRACKS {
+                for i in 0..self.song.tracks.len().min(MAX_TRACKS) {
                     if !self.auto_on[i] {
                         self.track_gain_l[i] = self.track_ramp_l[i].next();
                         self.track_gain_r[i] = self.track_ramp_r[i].next();
@@ -2020,7 +2067,19 @@ impl EngineCore {
                     self.next_control += 1;
                     self.send_control(c);
                 }
-                for c in self.song.clips.iter_mut() {
+                self.clip_frames += 1;
+                let count = if self.all_clips_active {
+                    self.song.clips.len()
+                } else {
+                    self.active_clips.len()
+                };
+                for k in 0..count {
+                    let i = if self.all_clips_active {
+                        k
+                    } else {
+                        self.active_clips[k] as usize
+                    };
+                    let c = &mut self.song.clips[i];
                     if let Some((cl, cr)) = c.tick() {
                         let t = (c.track as usize).min(MAX_TRACKS - 1);
                         if self.track_audible[t] {
@@ -2223,6 +2282,9 @@ impl EngineCore {
                             let wrapped =
                                 self.tempo_map.beat_at(start + excess.rem_euclid(duration));
                             self.seek(wrapped);
+                            // Every clip has just been put in its place.
+                            self.clip_frames = 0;
+                            self.find_active_clips(callback_frames);
                             // A fractional-sample wrap must still trigger notes at cycle start.
                             self.next_note = self.song.notes.partition_point(|n| n.start_beat < s);
                             self.next_control = self.song.controls.partition_point(|c| c.beat < s);
@@ -2251,6 +2313,7 @@ impl EngineCore {
                 .underruns
                 .fetch_add(underruns, Ordering::Relaxed);
         }
+        self.settle_inactive_clips();
         let shown = &mut self.shown;
         shown.position_beats = self.beat;
         shown.playing = self.playing;

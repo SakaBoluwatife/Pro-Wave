@@ -104,6 +104,146 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::ArrowLeft, ctrl, Action::Menu("Zoom Out")),
 ];
 
+/// The user's own keys: a command's name and what it is on now, kept in the config folder. A
+/// command not listed has its key from [`COMMANDS`].
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct KeyMap {
+    own: Vec<(String, Key, Modifiers)>,
+    loaded: bool,
+    /// The Settings window waits for a key for this command.
+    pub capturing: Option<usize>,
+}
+
+const KEYS_FILE: &str = "key-commands";
+
+/// What a command is called, in the list and in the file.
+pub fn name_of(action: Action) -> String {
+    label_of(action)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{action:?}"))
+}
+
+fn mods_text(m: Modifiers) -> String {
+    format!(
+        "{}{}{}",
+        if m.command || m.ctrl { "c" } else { "" },
+        if m.alt { "a" } else { "" },
+        if m.shift { "s" } else { "" }
+    )
+}
+
+fn mods_from(text: &str) -> Modifiers {
+    let mut m = Modifiers::NONE;
+    if text.contains('c') {
+        m |= Modifiers::COMMAND;
+    }
+    if text.contains('a') {
+        m |= Modifiers::ALT;
+    }
+    if text.contains('s') {
+        m |= Modifiers::SHIFT;
+    }
+    m
+}
+
+/// How a key reads: Ctrl+Shift+T.
+pub fn key_text(key: Key, m: Modifiers) -> String {
+    let mut out = String::new();
+    if m.command || m.ctrl {
+        out.push_str("Ctrl+");
+    }
+    if m.alt {
+        out.push_str("Alt+");
+    }
+    if m.shift {
+        out.push_str("Shift+");
+    }
+    out.push_str(key.name());
+    out
+}
+
+impl KeyMap {
+    fn to_text(&self) -> String {
+        self.own
+            .iter()
+            .map(|(name, key, m)| format!("{name}\t{}\t{}\n", key.name(), mods_text(*m)))
+            .collect()
+    }
+
+    fn from_text(text: &str) -> Vec<(String, Key, Modifiers)> {
+        text.lines()
+            .filter_map(|line| {
+                let mut parts = line.split('\t');
+                let (name, key) = (parts.next()?, Key::from_name(parts.next()?)?);
+                Some((name.to_string(), key, mods_from(parts.next().unwrap_or(""))))
+            })
+            .collect()
+    }
+
+    fn make_ready(&mut self) {
+        if self.loaded {
+            return;
+        }
+        self.loaded = true;
+        if cfg!(test) {
+            return;
+        }
+        let text = crate::recent_files::config_dir()
+            .and_then(|d| std::fs::read_to_string(d.join(KEYS_FILE)).ok());
+        if let Some(text) = text {
+            self.own = Self::from_text(&text);
+        }
+    }
+
+    fn save(&self) {
+        if cfg!(test) {
+            return;
+        }
+        if let Some(dir) = crate::recent_files::config_dir() {
+            let saved = std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(dir.join(KEYS_FILE), self.to_text()));
+            if let Err(e) = saved {
+                tracing::warn!("cannot save the key commands: {e}");
+            }
+        }
+    }
+
+    /// The key a command is on now.
+    pub fn key_of(&self, command: &Command) -> (Key, Modifiers) {
+        let name = name_of(command.action);
+        self.own
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .map_or((command.key, (command.modifiers)()), |(_, k, m)| (*k, *m))
+    }
+
+    /// The command already on this key, other than `except`.
+    pub fn taken_by(&self, key: Key, m: Modifiers, except: usize) -> Option<&'static Command> {
+        COMMANDS
+            .iter()
+            .enumerate()
+            .find(|(i, c)| *i != except && self.key_of(c) == (key, m))
+            .map(|(_, c)| c)
+    }
+
+    /// Puts command number `index` on this key. Saved at once.
+    pub fn set(&mut self, index: usize, key: Key, m: Modifiers) {
+        let Some(command) = COMMANDS.get(index) else {
+            return;
+        };
+        let name = name_of(command.action);
+        self.own.retain(|(n, _, _)| *n != name);
+        self.own.push((name, key, m));
+        self.save();
+    }
+
+    /// Back to the keys Pro Wave comes with.
+    pub fn reset(&mut self) {
+        self.own.clear();
+        self.save();
+    }
+}
+
 /// The menu label an action has, if it has one.
 fn label_of(action: Action) -> Option<&'static str> {
     Some(match action {
@@ -131,10 +271,14 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     if ctx.egui_wants_keyboard_input() || s.piano_focus || s.bounce.busy() {
         return;
     }
+    s.keys.make_ready();
+    if s.keys.capturing.is_some() {
+        return;
+    }
     for command in COMMANDS {
-        let mods = (command.modifiers)();
+        let (key, mods) = s.keys.key_of(command);
         let pressed =
-            ctx.input_mut(|i| i.modifiers.matches_exact(mods) && i.consume_key(mods, command.key));
+            ctx.input_mut(|i| i.modifiers.matches_exact(mods) && i.consume_key(mods, key));
         if pressed {
             perform(command.action, p, s);
         }
@@ -251,6 +395,37 @@ mod tests {
             |_| {},
         );
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn your_own_keys_replace_the_table_and_are_kept_as_text() {
+        let ctx = egui::Context::default();
+        let mut p = Project::demo();
+        let mut s = UiState::new();
+        let cycle = COMMANDS
+            .iter()
+            .position(|c| c.action == Action::Cycle)
+            .unwrap();
+        s.keys.set(cycle, Key::F9, Modifiers::SHIFT);
+        press(&ctx, Key::C, NONE, &mut p, &mut s);
+        assert!(!p.cycle, "it left its old key");
+        press(&ctx, Key::F9, Modifiers::SHIFT, &mut p, &mut s);
+        assert!(p.cycle, "and is on the new one");
+
+        assert_eq!(KeyMap::from_text(&s.keys.to_text()), s.keys.own);
+        assert_eq!(key_text(Key::F9, Modifiers::SHIFT), "Shift+F9");
+        // Someone else's key is named before it is taken.
+        let metronome = COMMANDS
+            .iter()
+            .position(|c| c.action == Action::Metronome)
+            .unwrap();
+        assert!(s
+            .keys
+            .taken_by(Key::F9, Modifiers::SHIFT, metronome)
+            .is_some());
+        assert!(s.keys.taken_by(Key::F9, Modifiers::SHIFT, cycle).is_none());
+        s.keys.reset();
+        assert_eq!(s.keys.key_of(&COMMANDS[cycle]).0, Key::C);
     }
 
     #[test]

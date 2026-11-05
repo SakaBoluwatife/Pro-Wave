@@ -161,6 +161,20 @@ impl PluginRound {
     }
 }
 
+/// Treats the smallest floating-point numbers as zero on this thread. A decaying tail would otherwise
+/// reach them, where every operation on them takes many times as long, as every serious DAW guards
+/// against. Costs nothing noticeable, and nobody can hear them.
+#[inline]
+pub(crate) fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: only sets the flush-to-zero and denormals-are-zero bits of this thread's control word.
+    #[allow(deprecated)]
+    unsafe {
+        use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+        _mm_setcsr(_mm_getcsr() | 0x8040);
+    }
+}
+
 /// Automated parameters of one plugin whose last value is remembered.
 const SENT_PARAMS: usize = 32;
 

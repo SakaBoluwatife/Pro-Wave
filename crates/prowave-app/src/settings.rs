@@ -86,17 +86,25 @@ enum Tab {
     #[default]
     Audio,
     Keyboard,
+    Keys,
     Plugins,
     General,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Audio, Tab::Keyboard, Tab::Plugins, Tab::General];
+    const ALL: [Tab; 5] = [
+        Tab::Audio,
+        Tab::Keyboard,
+        Tab::Keys,
+        Tab::Plugins,
+        Tab::General,
+    ];
 
     fn name(self) -> &'static str {
         match self {
             Tab::Audio => "Audio",
             Tab::Keyboard => "Keyboard",
+            Tab::Keys => "Key Commands",
             Tab::Plugins => "Plugins",
             Tab::General => "General",
         }
@@ -277,6 +285,67 @@ fn keyboard_tab(ui: &mut Ui, s: &mut UiState) {
     ui.add(egui::Slider::new(&mut s.typing.octave, -5..=4).text("Octave (numpad + and -)"));
 }
 
+fn keys_tab(ui: &mut Ui, s: &mut UiState) {
+    use crate::key_commands::{key_text, name_of, COMMANDS};
+    // Waiting for a key: the next one pressed is it, and Esc gives up.
+    if let Some(index) = s.keys.capturing {
+        let pressed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        match pressed {
+            Some((egui::Key::Escape, _)) => s.keys.capturing = None,
+            Some((key, modifiers)) => {
+                s.keys.capturing = None;
+                if let Some(other) = s.keys.taken_by(key, modifiers, index) {
+                    s.status = Some(format!(
+                        "{} is already on {}",
+                        key_text(key, modifiers),
+                        name_of(other.action)
+                    ));
+                } else {
+                    s.keys.set(index, key, modifiers);
+                }
+            }
+            None => {}
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label("Click a key, then press the new one. Esc gives up.");
+        if ui.small_button("Back to the usual keys").clicked() {
+            s.keys.reset();
+        }
+    });
+    egui::ScrollArea::vertical()
+        .max_height(360.0)
+        .show(ui, |ui| {
+            egui::Grid::new(egui::Id::unique("settings_keys"))
+                .num_columns(2)
+                .show(ui, |ui| {
+                    for (i, command) in COMMANDS.iter().enumerate() {
+                        ui.label(name_of(command.action));
+                        let (key, m) = s.keys.key_of(command);
+                        let text = if s.keys.capturing == Some(i) {
+                            "Press a key…".to_string()
+                        } else {
+                            key_text(key, m)
+                        };
+                        if ui.button(text).clicked() {
+                            s.keys.capturing = Some(i);
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
 fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
     let ctx = ui.ctx().clone();
     ui.label("Folders to look for plugins in, besides the usual ones:");
@@ -356,6 +425,7 @@ pub fn show(ctx: &egui::Context, s: &mut UiState) {
             match s.settings.tab {
                 Tab::Audio => audio_tab(ui, s),
                 Tab::Keyboard => keyboard_tab(ui, s),
+                Tab::Keys => keys_tab(ui, s),
                 Tab::Plugins => plugins_tab(ui, s),
                 Tab::General => general_tab(ui, s),
             }

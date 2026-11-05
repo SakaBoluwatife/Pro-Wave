@@ -148,6 +148,7 @@ pub struct Engine {
 /// the audio thread; never allocates after it is made.
 /// A worker's priority: the same as the audio thread's.
 fn worker_setup() {
+    crate::plugin::flush_denormals();
     #[cfg(windows)]
     // SAFETY: registers the calling thread with the multimedia scheduler, for as long as it lives.
     unsafe {

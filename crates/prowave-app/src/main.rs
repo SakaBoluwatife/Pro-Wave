@@ -162,6 +162,7 @@ pub struct UiState {
     pub rack: channel_rack::RackView,
     pub settings: settings::SettingsView,
     pub dialogs: quick_dialogs::QuickDialogs,
+    pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
     pub undo_labels: Vec<String>,
     pub redo_labels: Vec<String>,
@@ -244,6 +245,7 @@ impl UiState {
             rack: channel_rack::RackView::default(),
             settings: settings::SettingsView::default(),
             dialogs: quick_dialogs::QuickDialogs::default(),
+            keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
             mastering: mastering::MasteringView::default(),
