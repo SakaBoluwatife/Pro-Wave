@@ -146,6 +146,19 @@ pub struct Engine {
 
 /// Renders the engine into a device buffer of any sample format and channel count. Lives on
 /// the audio thread; never allocates after it is made.
+/// A worker's priority: the same as the audio thread's.
+fn worker_setup() {
+    #[cfg(windows)]
+    // SAFETY: registers the calling thread with the multimedia scheduler, for as long as it lives.
+    unsafe {
+        let mut task_index = 0u32;
+        let _ = windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW(
+            windows::core::w!("Pro Audio"),
+            &mut task_index,
+        );
+    }
+}
+
 pub(crate) struct Renderer {
     core: EngineCore,
     shared: Arc<Shared>,
@@ -268,6 +281,19 @@ impl Engine {
             }
         }
         Err(last)
+    }
+
+    /// What plugins need to run on several cores, ready to send as [`Command::SetPluginRound`]. The
+    /// program has one pool of workers, made the first time this is asked for. Half the physical
+    /// cores, at least one: more made every project measured slower in Lemon Studio.
+    pub fn plugin_round(capacity: usize) -> Box<crate::plugin::PluginRound> {
+        use std::sync::OnceLock;
+        static POOL: OnceLock<Arc<crate::parallel::Pool>> = OnceLock::new();
+        let pool = POOL.get_or_init(|| {
+            let init: crate::parallel::ThreadInit = Arc::new(worker_setup);
+            crate::parallel::Pool::new(crate::parallel::default_workers(None), Some(init))
+        });
+        Box::new(crate::plugin::PluginRound::new(pool.clone(), capacity))
     }
 
     /// The audio systems this build can use (WASAPI, and ASIO in a build with that feature).

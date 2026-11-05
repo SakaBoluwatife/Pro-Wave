@@ -95,6 +95,72 @@ pub trait PluginProcessor: Send {
     fn set_param(&mut self, _id: u32, _value: f64) {}
 }
 
+/// Running every hosted plugin's block at once, on several cores. A plugin's output reaches the mix
+/// only from the next block on, so that within a block no plugin waits for another, even in one
+/// chain: they have no order to keep, and any core can take any of them.
+///
+/// Made off the audio thread with room for every slot, so a round never allocates.
+pub struct PluginRound {
+    pool: std::sync::Arc<crate::parallel::Pool>,
+    graph: crate::parallel::Graph,
+    slots: Vec<SlotHandle>,
+    /// Frames since the last round.
+    pub(crate) phase: usize,
+}
+
+/// A slot of a round. It stays where it is as long as the engine holds its box.
+#[derive(Clone, Copy)]
+struct SlotHandle(*mut PluginSlot);
+
+// SAFETY: a round is the only thing touching the slots while it runs, each handle goes to one job, and
+// the plugin half in a slot is `Send`.
+unsafe impl Send for SlotHandle {}
+unsafe impl Sync for SlotHandle {}
+
+impl PluginRound {
+    /// Call off the audio thread: this allocates. `capacity` is how many slots there can be.
+    pub fn new(pool: std::sync::Arc<crate::parallel::Pool>, capacity: usize) -> Self {
+        Self {
+            pool,
+            graph: crate::parallel::Graph::with_capacity(capacity),
+            slots: Vec::with_capacity(capacity),
+            phase: 0,
+        }
+    }
+
+    /// The slots a round runs from now on, each put in step.
+    pub(crate) fn set_slots<'a>(&mut self, slots: impl Iterator<Item = &'a mut PluginSlot>) {
+        self.slots.clear();
+        let phase = self.phase;
+        for slot in slots {
+            if self.slots.len() < self.slots.capacity() {
+                if !slot.in_rounds {
+                    slot.join_rounds(phase);
+                }
+                self.slots.push(SlotHandle(slot));
+            }
+        }
+        self.graph.set(self.slots.len(), &mut Vec::new());
+    }
+
+    /// Runs every slot's block, here and on the workers. If the pool is busy (a bounce is rendering
+    /// while the program plays), on this thread alone, with the same result.
+    pub(crate) fn run(&self, transport: &PluginTransport) {
+        let slots = &self.slots;
+        let one = |j: usize, _lane: usize| {
+            let SlotHandle(slot) = slots[j];
+            // SAFETY: see `SlotHandle`. The graph hands each job out once, and the engine waits for
+            // the run to finish before it touches a slot again.
+            unsafe { (*slot).run_round(transport) }
+        };
+        if slots.len() < 2 || !self.pool.run(&self.graph, &one) {
+            for j in 0..slots.len() {
+                one(j, 0);
+            }
+        }
+    }
+}
+
 /// Automated parameters of one plugin whose last value is remembered.
 const SENT_PARAMS: usize = 32;
 
@@ -113,6 +179,10 @@ pub struct PluginSlot {
     events: Vec<PluginEvent>,
     /// The next frame of the block.
     pos: usize,
+    /// The engine runs a block when it runs all the others, on several cores ([`PluginRound`]).
+    in_rounds: bool,
+    /// A block is collected, waiting for that.
+    full: bool,
     /// While on, the plugin is not run and the sound passes by it, delayed as much as the plugin
     /// would so that nothing shifts in time.
     bypass: bool,
@@ -138,6 +208,8 @@ impl PluginSlot {
             out_r: buffer(),
             events: Vec::with_capacity(MAX_PLUGIN_EVENTS),
             pos: 0,
+            in_rounds: false,
+            full: false,
             bypass: false,
             dry_l: dry.clone(),
             dry_r: dry,
@@ -198,9 +270,29 @@ impl PluginSlot {
         self.pos += 1;
         if self.pos == PLUGIN_BLOCK {
             self.pos = 0;
-            self.run_block(transport);
+            if self.in_rounds {
+                self.full = true;
+            } else {
+                self.run_block(transport);
+            }
         }
         out
+    }
+
+    /// From now on its blocks wait for the engine's round, which comes at `phase` frames into the
+    /// block a slot collects: the slots of a round all finish a block together.
+    pub fn join_rounds(&mut self, phase: usize) {
+        self.in_rounds = true;
+        self.pos = phase % PLUGIN_BLOCK;
+        self.full = false;
+    }
+
+    /// Runs the block, if one is ready.
+    pub fn run_round(&mut self, transport: &PluginTransport) {
+        if self.full {
+            self.full = false;
+            self.run_block(transport);
+        }
     }
 
     fn run_block(&mut self, transport: &PluginTransport) {

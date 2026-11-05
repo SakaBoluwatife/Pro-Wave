@@ -223,6 +223,8 @@ fn windows_file() -> Option<std::path::PathBuf> {
 /// The plugins running in one engine. Dropped after the engine, so instances go last.
 #[derive(Default)]
 pub struct Rack {
+    /// The engine runs plugins on several cores.
+    rounds_sent: bool,
     live: HashMap<u64, Live>,
     /// Taken out of the engine, kept until the engine has given the audio half back: an instance
     /// dropped before that is never destroyed.
@@ -237,6 +239,17 @@ pub struct Rack {
 
 impl Rack {
     /// The delay of the plugin with this uid in its slot, 0 when it is not running.
+    /// Tells the engine to run plugins on several cores, the first time there are any.
+    fn start_rounds(&mut self, engine: &mut Engine) {
+        if self.rounds_sent {
+            return;
+        }
+        let capacity = (MAX_INSERTS + 1) * MAX_TRACKS + MAX_INSERTS;
+        if engine.send(Command::SetPluginRound(Engine::plugin_round(capacity))) {
+            self.rounds_sent = true;
+        }
+    }
+
     pub fn latency_of(&self, uid: u64) -> usize {
         self.live
             .get(&uid)
@@ -419,6 +432,7 @@ impl Rack {
                     }
                 }
                 Step::Load(uid, place) => {
+                    self.start_rounds(engine);
                     if loaded_one {
                         more = true;
                         continue;

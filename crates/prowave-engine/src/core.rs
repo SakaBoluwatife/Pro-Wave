@@ -391,6 +391,8 @@ pub enum Command {
     /// Master fader (Logic: Stereo Out level), clamped to 0..2 linear. Changes ramp over
     /// 5 ms during playback/audition; silent stopped setup is immediate. Non-finite values
     /// are ignored so malformed commands cannot poison the output.
+    /// Runs the hosted plugins on several cores from now on. The old one comes back as garbage.
+    SetPluginRound(Box<crate::plugin::PluginRound>),
     /// Gives the Mastering window a copy of the output, or stops. The old queue comes back as
     /// garbage.
     SetMasterTap(Option<Box<rtrb::Producer<f32>>>),
@@ -534,6 +536,7 @@ impl Command {
                 | Self::SetInput(_)
                 | Self::SetPreview(_)
                 | Self::SetMasterTap(_)
+                | Self::SetPluginRound(_)
         )
     }
 
@@ -551,6 +554,7 @@ impl Command {
 }
 
 pub enum Garbage {
+    PluginRound(Box<crate::plugin::PluginRound>),
     MasterTap(Box<rtrb::Producer<f32>>),
     Song(Box<Song>),
     Notes(Vec<NoteEvent>),
@@ -775,6 +779,8 @@ pub struct EngineCore {
     master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
     /// Whether any is there: the mix should not look through the slots every sample for nothing.
     master_any: bool,
+    /// Runs the plugins' blocks on several cores, once the first plugin has come.
+    plugin_round: Option<Box<crate::plugin::PluginRound>>,
     /// Hands a copy of the output to the Mastering window.
     master_tap: Option<Box<rtrb::Producer<f32>>>,
     /// A render: the output is not cut at full scale.
@@ -926,6 +932,7 @@ impl EngineCore {
             instruments: (0..MAX_TRACKS).map(|_| None).collect(),
             master_plugins: std::array::from_fn(|_| None),
             master_any: false,
+            plugin_round: None,
             master_tap: None,
             keep_headroom: false,
             any_plugin: false,
@@ -1279,6 +1286,14 @@ impl EngineCore {
         self.aux.clear();
         self.any_plugin = false;
         self.master_any = self.master_plugins.iter().any(Option::is_some);
+        if let Some(round) = self.plugin_round.as_mut() {
+            let effects = self.plugins.iter_mut().flat_map(|s| s.iter_mut());
+            let others = self
+                .instruments
+                .iter_mut()
+                .chain(self.master_plugins.iter_mut());
+            round.set_slots(effects.chain(others).flatten().map(|slot| &mut **slot));
+        }
         for i in 0..MAX_TRACKS {
             let has_chain = self.chains[i].as_ref().is_some_and(|c| !c.fx.is_empty());
             let has_plugin =
@@ -1615,6 +1630,14 @@ impl EngineCore {
                     self.mtc_locate();
                 }
                 Command::SetMetronome { on } => self.metronome = on,
+                Command::SetPluginRound(mut round) => {
+                    if let Some(old) = self.plugin_round.take() {
+                        round.phase = old.phase;
+                        let _ = self.trash.push(Garbage::PluginRound(old));
+                    }
+                    self.plugin_round = Some(round);
+                    self.sort_strips();
+                }
                 Command::SetMasterTap(tap) => {
                     if let Some(old) = std::mem::replace(&mut self.master_tap, tap) {
                         let _ = self.trash.push(Garbage::MasterTap(old));
@@ -1946,6 +1969,13 @@ impl EngineCore {
         }
 
         for frame in out.as_chunks_mut::<2>().0 {
+            if let Some(round) = self.plugin_round.as_mut() {
+                if round.phase == crate::plugin::PLUGIN_BLOCK {
+                    round.phase = 0;
+                    round.run(&self.transport);
+                }
+                round.phase += 1;
+            }
             if self.counting {
                 self.tick_count_in();
             }
@@ -3057,6 +3087,100 @@ mod tests {
             garbage += 1;
         }
         assert_eq!(garbage, 1, "the queue comes back");
+    }
+
+    /// The same plugins give the same sound on many cores as on one, without allocating, and the
+    /// work does spread out.
+    #[test]
+    fn plugins_on_several_cores_sound_as_they_do_on_one() {
+        use crate::parallel::Pool;
+        use crate::plugin::{tests::FakePlugin, PluginEvent, PluginProcessor, PluginRound};
+        use crate::plugin::{PluginTransport, PLUGIN_BLOCK};
+        use std::sync::Mutex;
+
+        static THREADS: Mutex<Vec<std::thread::ThreadId>> = Mutex::new(Vec::new());
+        /// Takes long enough for the workers to get to the others.
+        struct Busy;
+        impl PluginProcessor for Busy {
+            fn process(
+                &mut self,
+                input: [&[f32]; 2],
+                output: [&mut [f32]; 2],
+                _: &[PluginEvent],
+                _: &PluginTransport,
+            ) {
+                let [l, r] = output;
+                l.copy_from_slice(input[0]);
+                r.copy_from_slice(input[1]);
+                let began = std::time::Instant::now();
+                while began.elapsed().as_micros() < 200 {
+                    std::hint::spin_loop();
+                }
+                if let Ok(mut seen) = THREADS.lock() {
+                    let id = std::thread::current().id();
+                    if !seen.contains(&id) {
+                        seen.push(id);
+                    }
+                }
+            }
+            fn latency_samples(&self) -> usize {
+                0
+            }
+        }
+
+        let render = |round: Option<Box<PluginRound>>, busy: bool| {
+            let (mut tx, rx) = rtrb::RingBuffer::new(256);
+            let (gtx, _grx) = rtrb::RingBuffer::new(64);
+            let mut e = EngineCore::new(48_000, rx, gtx, Arc::new(Shared::new()));
+            if let Some(round) = round {
+                assert!(tx.push(Command::SetPluginRound(round)).is_ok());
+            }
+            for track in 0..4u16 {
+                for slot in 0..2u8 {
+                    let plugin: Box<dyn PluginProcessor> = if busy {
+                        Box::new(Busy)
+                    } else {
+                        Box::new(FakePlugin {
+                            add: 0.01 * f32::from(track + 1) + 0.1 * f32::from(slot),
+                            ..FakePlugin::default()
+                        })
+                    };
+                    assert!(tx
+                        .push(Command::SetPlugin {
+                            track,
+                            slot,
+                            plugin: Some(Box::new(PluginSlot::new(plugin))),
+                        })
+                        .is_ok());
+                }
+            }
+            let mut out = Vec::new();
+            let mut buf = vec![0.0f32; 128];
+            e.process(&mut []);
+            for _ in 0..20 {
+                if busy {
+                    // This one keeps a list of threads, for the test.
+                    e.process(&mut buf);
+                } else {
+                    assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+                }
+                out.extend_from_slice(&buf);
+            }
+            out
+        };
+        let capacity = 64;
+        let serial = render(None, false);
+        let pool = Pool::new(3, None);
+        let round = |pool: &Arc<Pool>| Box::new(PluginRound::new(pool.clone(), capacity));
+        let parallel = render(Some(round(&pool)), false);
+        assert!(serial.iter().any(|s| s.abs() > 0.01), "it played");
+        // The slots start a round's phase apart from a lone one's: compare once both are going.
+        let settled = PLUGIN_BLOCK * 8;
+        assert_eq!(serial[settled..], parallel[settled..]);
+
+        let _ = render(Some(round(&pool)), true);
+        let threads = THREADS.lock().map_or(0, |t| t.len());
+        assert!(threads >= 2, "on {threads} threads");
     }
 
     #[test]
