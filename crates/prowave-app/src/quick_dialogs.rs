@@ -261,6 +261,10 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
             ui.heading("Metronome and recording");
             ui.checkbox(&mut p.metronome, "Metronome");
             ui.checkbox(&mut p.count_in, "Count-in before recording");
+            ui.checkbox(
+                &mut p.rec_replace,
+                "Replace mode: a new recording takes away what it covers",
+            );
             ui.checkbox(&mut p.low_latency, "Low Latency mode");
             ui.separator();
             ui.heading("Synchronization");

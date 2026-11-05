@@ -24,7 +24,7 @@ fn seconds_between(p: &Project, from: f64, to: f64) -> f32 {
 }
 
 /// How much of its file an audio region plays, from its `source_start`, in seconds.
-fn played_seconds(region: &Region) -> f32 {
+pub(crate) fn played_seconds(region: &Region) -> f32 {
     let Some(a) = region.audio.as_ref() else {
         return 0.0;
     };
@@ -324,14 +324,25 @@ fn clear_range(p: &mut Project, t: usize, from: f64, to: f64) -> Result<(), Stri
             p.region_end_beats(r),
         )
     };
+    let mut result = Ok(());
     for edge in [from, to] {
-        let across = p.tracks[t].regions.iter().position(|r| {
+        // Regions can overlap, so there can be several across an edge.
+        while let Some(r) = p.tracks[t].regions.iter().position(|r| {
             let (a, b) = span(p, r);
-            a + NEAR < edge && edge < b - NEAR
-        });
-        if let Some(r) = across {
-            split(p, t, r, edge)?;
+            r.folder.is_none() && a + EDGE_BEATS < edge && edge < b - EDGE_BEATS
+        }) {
+            if let Err(e) = split(p, t, r, edge) {
+                result = Err(e);
+                break;
+            }
         }
+    }
+    let folder_across = p.tracks[t].regions.iter().any(|r| {
+        let (a, b) = span(p, r);
+        r.folder.is_some() && [from, to].iter().any(|e| a + NEAR < *e && *e < b - NEAR)
+    });
+    if folder_across {
+        result = Err("A take folder stays as it is: pick a take first".to_string());
     }
     let inside: Vec<bool> = p.tracks[t]
         .regions
@@ -345,7 +356,19 @@ fn clear_range(p: &mut Project, t: usize, from: f64, to: f64) -> Result<(), Stri
     p.tracks[t]
         .regions
         .retain(|_| !flags.next().unwrap_or(false));
-    Ok(())
+    result
+}
+
+/// Takes away what lies under region `r` of track `t` (replace mode). Returns the region's number
+/// afterwards, and why something had to stay if something did.
+pub fn replace_under(p: &mut Project, t: usize, r: usize) -> (usize, Result<(), String>) {
+    let kept = p.tracks[t].regions.remove(r);
+    let from = p.bar_to_beats(f64::from(kept.start_bar) - 1.0);
+    let to = p.region_end_beats(&kept);
+    let done = clear_range(p, t, from, to);
+    p.tracks[t].regions.push(kept);
+    p.song_rev += 1;
+    (p.tracks[t].regions.len() - 1, done)
 }
 
 /// Edit > Paste Replace: pastes at the playhead and takes away what was under the pasted regions.

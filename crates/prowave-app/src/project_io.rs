@@ -605,6 +605,21 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                             .iter()
                             .map(|t| TakeDoc {
                                 audio_offset: t.audio_offset,
+                                audio: t.file.as_ref().map(|f| {
+                                    by_source
+                                        .entry(f.0.file.path.clone())
+                                        .or_insert_with(|| {
+                                            let zip_path = media_path(media.len(), &f.0.file.path);
+                                            media.push(MediaFile {
+                                                zip_path: zip_path.clone(),
+                                                source: f.0.file.path.clone(),
+                                            });
+                                            zip_path
+                                        })
+                                        .clone()
+                                }),
+                                window: t.window.map(|(a, b)| [a, b]),
+                                gain_db: t.gain_db,
                                 notes: t
                                     .notes
                                     .iter()
@@ -702,6 +717,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         punch: p.punch,
         punch_start: p.punch_start,
         punch_end: p.punch_end,
+        rec_replace: p.rec_replace,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
         song_patterns: p
             .patterns
@@ -804,6 +820,12 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
         .iter()
         .map(|t| Take {
             audio_offset: t.audio_offset.filter(|o| o.is_finite()),
+            file: None,
+            window: t
+                .window
+                .filter(|w| w[0].is_finite() && w[1].is_finite())
+                .map(|w| (w[0], w[1])),
+            gain_db: finite_in(t.gain_db, MIN_REGION_GAIN, MAX_REGION_GAIN, 0.0),
             notes: t
                 .notes
                 .iter()
@@ -884,7 +906,34 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                     }
                 }
             };
-            let folder = folder_from_doc(r);
+            let mut folder = folder_from_doc(r);
+            // A take with a file of its own. One that cannot be read stays in the folder, silent.
+            if let Some(folder) = folder.as_mut() {
+                for (take, d) in folder.takes.iter_mut().zip(&r.takes) {
+                    let Some(zip_path) = &d.audio else { continue };
+                    let file = if prowave_project::is_media_path(zip_path) {
+                        opened
+                            .entry(zip_path.clone())
+                            .or_insert_with(|| match AudioFile::open(media_dir.join(zip_path)) {
+                                Ok(f) => Some(f),
+                                Err(e) => {
+                                    warnings.push(format!("{zip_path}: {e}"));
+                                    None
+                                }
+                            })
+                            .clone()
+                    } else {
+                        warnings.push(format!("{zip_path}: not a media path in the project"));
+                        None
+                    };
+                    match file {
+                        Some(f) => {
+                            take.file = Some(crate::model::TakeFile(audio_region(f, ctx)));
+                        }
+                        None => take.window = Some((0.0, 0.0)),
+                    }
+                }
+            }
             let mut region = Region {
                 name: r.name.clone(),
                 start_bar: finite_in(r.start_bar, 1.0, MAX_BARS, 1.0),
@@ -1019,6 +1068,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         })
         .collect();
     p.tempo_ramp = doc.tempo_ramp;
+    p.rec_replace = doc.rec_replace;
     p.tidy_tempo();
     p.smpte_rate = smpte_rate_from_name(&doc.smpte_rate);
     p.smpte_start = valid_smpte_start(doc.smpte_start, p.smpte_rate);
@@ -2498,11 +2548,13 @@ pub(crate) mod tests {
                 notes: vec![note(0.0, 60), note(2.0, 62)],
                 controls: vec![pedal(127)],
                 audio_offset: None,
+                ..Take::default()
             },
             Take {
                 notes: vec![note(1.0, 64)],
                 controls: vec![pedal(0)],
                 audio_offset: None,
+                ..Take::default()
             },
         ];
         let mut folder = TakeFolder::new(takes, 8.0);

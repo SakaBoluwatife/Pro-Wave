@@ -1305,6 +1305,7 @@ enum CtxAction {
     ToggleReverse(usize, usize),
     ToggleTakeFolder(usize, usize),
     FlattenTakeFolder(usize, usize),
+    DeleteTake(usize, usize, usize),
     Normalize(usize, usize),
     /// Smart Tempo: say the region's tempo (false) or make it the project's (true).
     DetectTempo(usize, usize, bool),
@@ -1778,9 +1779,12 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         }
         // The comp as it is becomes an ordinary region: the other takes are let go.
         CtxAction::FlattenTakeFolder(t, r) => {
-            if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
-                region.folder = None;
-            }
+            let made = crate::takes::flatten(p, t, r);
+            v.select_many(made.into_iter().map(|r| (t, r)).collect());
+        }
+        CtxAction::DeleteTake(t, r, take) => {
+            let left = crate::takes::delete_take(p, t, r, take);
+            v.select_many(left.into_iter().map(|r| (t, r)).collect());
         }
         CtxAction::ToggleReverse(t, r) => {
             if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
@@ -2225,16 +2229,18 @@ fn draw_take_folder(
         );
     }
     // What the comp plays.
-    let audio_peaks = region
-        .audio
-        .as_ref()
-        .filter(|_| folder.is_audio())
-        .and_then(|a| Some((a.peaks.get()?.as_slice(), a.file.duration_secs() as f32)));
+    let main_audio = region.audio.as_ref().filter(|_| folder.is_audio());
     let take_wave = |g: &Painter, rect: Rect, take: usize, seg: (f32, f32), col: Color32| {
-        let Some((peaks, duration)) = audio_peaks else {
+        let Some(take) = folder.takes.get(take) else {
             return;
         };
-        let Some(offset) = folder.takes.get(take).and_then(|t| t.audio_offset) else {
+        let Some(offset) = take.audio_offset else {
+            return;
+        };
+        let audio = take.file.as_ref().map(|f| &f.0).or(main_audio);
+        let Some((peaks, duration)) =
+            audio.and_then(|a| Some((a.peaks.get()?.as_slice(), a.file.duration_secs() as f32)))
+        else {
             return;
         };
         if duration <= 0.0 || peaks.is_empty() {
@@ -3668,6 +3674,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             folder.apply(&mut region.notes, &mut region.controls);
                             moved = true;
                         }
+                        context_menu(&resp, |ui| {
+                            pick(
+                                ui,
+                                tr("Delete Take"),
+                                "",
+                                CtxAction::DeleteTake(ti, ri, take),
+                                &mut picked,
+                            );
+                        });
                     }
                 }
                 if let Some(folder) = p.tracks[ti].regions[ri].folder.as_ref() {

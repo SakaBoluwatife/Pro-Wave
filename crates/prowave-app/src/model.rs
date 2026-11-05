@@ -55,6 +55,29 @@ pub struct Take {
     /// for this take. Below 0 when the recording began after the start of the cycle. All the takes
     /// of a folder are windows into the one file that was recorded.
     pub audio_offset: Option<f32>,
+    /// A take that came from another recording: its own file. `None` is the region's.
+    pub file: Option<TakeFile>,
+    /// What of its file it may play, in seconds (a region that was trimmed before it became a take
+    /// keeps hiding the rest). `None` is the whole file.
+    pub window: Option<(f32, f32)>,
+    /// The gain it had as a region, in dB, on top of the folder's.
+    pub gain_db: f32,
+}
+
+/// The file of a take, with its waveform. Two are the same when they read the same file.
+#[derive(Clone)]
+pub struct TakeFile(pub AudioRegion);
+
+impl PartialEq for TakeFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.file.path == other.0.file.path
+    }
+}
+
+impl std::fmt::Debug for TakeFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TakeFile({})", self.0.file.path.display())
+    }
 }
 
 /// A stretch of a take folder (beats from the region start) that plays this take.
@@ -971,6 +994,8 @@ pub struct Project {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// A new recording takes away what it was recorded over, instead of making takes of it.
+    pub rec_replace: bool,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
 }
@@ -1181,6 +1206,7 @@ impl Project {
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,
+            rec_replace: false,
             sig: (4, 4),
             key: "Cmaj",
             tracks,

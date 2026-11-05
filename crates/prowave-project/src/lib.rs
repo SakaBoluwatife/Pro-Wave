@@ -66,6 +66,14 @@ pub struct TakeDoc {
     /// A pass of an audio recording: where the region's start falls in its file, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_offset: Option<f32>,
+    /// A take from another recording: its own file, in the archive (`media/…`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
+    /// What of its file it may play, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<[f32; 2]>,
+    /// Its own gain in dB, on top of the folder's.
+    pub gain_db: f32,
 }
 
 /// A stretch of a take folder that plays one take.
@@ -532,6 +540,8 @@ pub struct ProjectDoc {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// A new recording takes away what it was recorded over.
+    pub rec_replace: bool,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
     /// The Channel Rack's patterns.
@@ -607,6 +617,7 @@ impl Default for ProjectDoc {
             punch: false,
             punch_start: 0.0,
             punch_end: 0.0,
+            rec_replace: false,
             master_plugins: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),

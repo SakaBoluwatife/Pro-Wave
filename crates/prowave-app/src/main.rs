@@ -113,6 +113,9 @@ pub struct UiState {
     pub audio_rec: audio_rec::AudioRecorder,
     /// Capture Recording was asked for.
     pub capture_cmd: bool,
+    /// Record Repeat or New Take was picked, and how far going back to record again has got.
+    pub rec_cmd: Option<takes::RecCmd>,
+    pub rec_restart: Option<takes::Restart>,
     pub show_quick_help: bool,
     pub show_toolbar: bool,
     /// The Note Pad.
@@ -218,6 +221,8 @@ impl UiState {
             rec: recorder::Recorder::default(),
             audio_rec: audio_rec::AudioRecorder::default(),
             capture_cmd: false,
+            rec_cmd: None,
+            rec_restart: None,
             show_quick_help: false,
             show_toolbar: false,
             show_notes: false,
@@ -758,6 +763,7 @@ impl eframe::App for App {
         self.follow_time_code(&ctx);
         // Pattern and Drummer regions follow their length and the bars under them.
         self.project.refresh_generated();
+        takes::record_commands(&mut self.project, &mut self.ui);
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
             sync.set_pre_fader(self.ui.mixer.pre_fader);
