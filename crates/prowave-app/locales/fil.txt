@@ -45,7 +45,6 @@ Q-Strength: = Q-Lakas:
 Track: = Track:
 Icon: = Icon:
 Channel: = Channel:
-Freeze Mode: = Freeze Mode:
 Pre Fader = Bago ang Fader
 Q-Reference: = Q-Sanggunian:
 Flex Mode: = Flex Mode:

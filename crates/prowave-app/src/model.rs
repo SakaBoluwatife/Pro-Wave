@@ -102,6 +102,9 @@ pub struct Region {
     pub audio: Option<AudioRegion>,
     /// Region inspector parameters (non-destructive, applied when the song is built).
     pub params: RegionParams,
+    /// Automation that belongs to the region and moves with it. Over the region's stretch a lane
+    /// here takes the place of the track's lane of the same control.
+    pub auto: Vec<RegionLane>,
     /// A Pattern or Drummer region: the settings its `notes` are made from.
     pub generated: Option<Generated>,
 }
@@ -149,6 +152,8 @@ pub struct RegionParams {
     /// Its pattern's color, which it is drawn in. Not saved.
     pub pattern_color: Option<Color32>,
     pub mute: bool,
+    /// The rows under More in the Region Inspector.
+    pub shape: prowave_project::RegionShape,
     /// Playback quantize grid in beats (`None` = Off).
     pub quantize: Option<f32>,
     /// Semitones.
@@ -286,6 +291,13 @@ impl AutoMode {
 /// What an automation lane moves and its points (the engine's own types).
 pub use prowave_engine::{AutoPoint, AutoTarget};
 
+/// A lane of a region's own automation: its points count their beats from the region's start.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RegionLane {
+    pub target: AutoTarget,
+    pub points: Vec<AutoPoint>,
+}
+
 /// The automation of one effect parameter: slot and parameter number, and the points, whose
 /// values are positions 0..=1 along the parameter's range.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -319,6 +331,9 @@ pub struct Automation {
     pub shown: AutoTarget,
     /// Touch on a plugin: the beat it lets go at, if no move comes before. Not saved.
     pub plugin_touch_until: f64,
+    /// What the strip plays where regions have lanes, by control: see
+    /// `automation::merged_lanes`. Made once a frame, for the fader and knob display. Not saved.
+    pub region_played: Vec<(AutoTarget, Vec<AutoPoint>)>,
     /// The beat and value last written in this pass, so the next write replaces what lies
     /// between. Not saved.
     pub last: Option<(f64, f32)>,
@@ -443,7 +458,12 @@ impl Automation {
         if !self.follows(target) {
             return None;
         }
-        prowave_engine::lane_value(self.lane(target), beat)
+        let lane = self
+            .region_played
+            .iter()
+            .find(|l| l.0 == target)
+            .map_or(self.lane(target), |l| &l.1[..]);
+        prowave_engine::lane_value(lane, beat)
     }
 
     /// The most points one lane keeps.
@@ -562,6 +582,9 @@ pub struct MixGroup {
     pub mute: bool,
     pub solo: bool,
 }
+
+/// The name of the Aux that Create Mastering Track makes.
+pub const MASTERING_TRACK: &str = "Mastering";
 
 /// Most mix groups in a project.
 pub const MAX_GROUPS: usize = 64;
@@ -762,6 +785,9 @@ pub struct Track {
     pub auto: Automation,
     /// The mix group (index into `Project::groups`) the track belongs to.
     pub group: Option<usize>,
+    /// Frozen: this file plays in place of the track's regions, instrument and effects, which
+    /// stay as they are but are not running. Not saved: a project opens with its tracks live.
+    pub frozen: Option<Box<Region>>,
     /// The icon chosen with Assign Track Icon; else one follows from the patch.
     pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
@@ -833,6 +859,7 @@ impl Track {
             group: None,
             category: None,
             icon: None,
+            frozen: None,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -881,6 +908,9 @@ pub const MAX_BPM: f32 = 990.0;
 
 #[derive(Clone)]
 pub struct Project {
+    /// Mixer > Select Audio Channel Strips: strips that move together until another is clicked.
+    /// Not saved.
+    pub linked_strips: Vec<usize>,
     pub name: String,
     /// Tempo at the start of the song (the first point of the Tempo track).
     pub tempo: f32,
@@ -992,6 +1022,7 @@ impl Project {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1049,6 +1080,7 @@ impl Project {
                 },
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: None,
                 params: RegionParams::default(),
@@ -1056,6 +1088,7 @@ impl Project {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1159,6 +1192,7 @@ impl Project {
             selected_track: 0,
             master_vol: 0.8,
             groups: Vec::new(),
+            linked_strips: Vec::new(),
             song_rev: 0,
             tempo_ramp: false,
             groove_onsets: Default::default(),
@@ -1693,6 +1727,7 @@ impl Project {
             notes: Vec::new(),
             controls: Vec::new(),
             folder: None,
+            auto: Vec::new(),
             generated: None,
             audio: None,
             params: RegionParams::default(),
@@ -1727,6 +1762,7 @@ impl Project {
             folder: None,
             audio: None,
             params: RegionParams::default(),
+            auto: Vec::new(),
             generated: Some(Generated::new(source)),
         });
         let ri = track.regions.len() - 1;
@@ -2077,18 +2113,55 @@ impl Project {
         }
     }
 
+    /// The Aux that Create Mastering Track made, if it is still there.
+    pub fn mastering_track(&self) -> Option<usize> {
+        self.tracks
+            .iter()
+            .position(|t| t.kind == TrackKind::Aux && t.name == MASTERING_TRACK)
+    }
+
+    /// Mix > Create Mastering Track: an Aux at the end of the mix that every strip going to Stereo
+    /// Out now goes through, for what works on the whole mix and for its automation. `None` when
+    /// every bus is taken.
+    pub fn create_mastering_track(&mut self) -> Option<usize> {
+        if let Some(t) = self.mastering_track() {
+            return Some(t);
+        }
+        let aux = self.add_track(TrackKind::Aux);
+        let bus = self.aux_bus_of(aux);
+        if bus == 0 {
+            self.tracks.remove(aux);
+            return None;
+        }
+        self.tracks[aux].name = MASTERING_TRACK.to_string();
+        for (i, t) in self.tracks.iter_mut().enumerate() {
+            let routed = !matches!(t.kind, TrackKind::Folder | TrackKind::Vca);
+            if i != aux && routed && t.output == 0 {
+                t.output = bus;
+            }
+        }
+        self.song_rev += 1;
+        Some(aux)
+    }
+
     /// The other tracks of track `i`'s group, when the group has the attribute `attr` (a
     /// function of the group).
     pub fn group_mates(&self, i: usize, attr: impl Fn(&MixGroup) -> bool) -> Vec<usize> {
-        let Some(g) = self.tracks.get(i).and_then(|t| t.group) else {
-            return Vec::new();
+        let mut mates: Vec<usize> = match self.tracks.get(i).and_then(|t| t.group) {
+            Some(g) if self.groups.get(g).is_some_and(attr) => (0..self.tracks.len())
+                .filter(|j| *j != i && self.tracks[*j].group == Some(g))
+                .collect(),
+            _ => Vec::new(),
         };
-        if !self.groups.get(g).is_some_and(attr) {
-            return Vec::new();
+        // Strips selected together move together for as long as they stay selected.
+        if self.linked_strips.contains(&i) {
+            for &j in &self.linked_strips {
+                if j != i && j < self.tracks.len() && !mates.contains(&j) {
+                    mates.push(j);
+                }
+            }
         }
-        (0..self.tracks.len())
-            .filter(|j| *j != i && self.tracks[*j].group == Some(g))
-            .collect()
+        mates
     }
 
     /// Sets Mute on track `i` and on the tracks of its group, if the group has Mute.
@@ -2721,6 +2794,7 @@ mod tests {
                 notes: Vec::new(),
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: Some(test_audio()),
                 params: RegionParams::default(),

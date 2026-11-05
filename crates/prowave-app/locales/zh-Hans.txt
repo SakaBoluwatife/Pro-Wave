@@ -45,7 +45,6 @@ Q-Strength: = 量化强度：
 Track: = 轨道：
 Icon: = 图标：
 Channel: = 通道：
-Freeze Mode: = 冻结模式：
 Pre Fader = 推子前
 Q-Reference: = 量化参考：
 Flex Mode: = Flex 模式：

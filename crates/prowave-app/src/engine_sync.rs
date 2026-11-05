@@ -136,11 +136,23 @@ fn lane_offset(p: &Project, i: usize, target: AutoTarget) -> f32 {
     }
 }
 
+/// What a strip plays: its own lanes, and where regions have lanes the two merged.
+fn played_lanes<'a>(
+    t: &'a crate::model::Track,
+    merged: &'a [(AutoTarget, Vec<prowave_engine::AutoPoint>)],
+) -> impl Iterator<Item = (AutoTarget, &'a [prowave_engine::AutoPoint])> {
+    t.auto
+        .lanes()
+        .filter(|(target, _)| !merged.iter().any(|m| m.0 == *target))
+        .chain(merged.iter().map(|m| (m.0, &m.1[..])))
+}
+
 /// The lanes the engine should have for the project's automation.
 fn automation_lanes(p: &Project) -> Vec<AutoLane> {
     let mut lanes = Vec::new();
     for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
-        for (target, points) in t.auto.lanes() {
+        let merged = crate::automation::merged_lanes(p, i);
+        for (target, points) in played_lanes(t, &merged) {
             if !points.is_empty() {
                 lanes.push(
                     AutoLane {
@@ -163,7 +175,8 @@ fn automation_lanes(p: &Project) -> Vec<AutoLane> {
 fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
     let mut it = sent.iter();
     for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
-        for (target, points) in t.auto.lanes() {
+        let merged = crate::automation::merged_lanes(p, i);
+        for (target, points) in played_lanes(t, &merged) {
             if points.is_empty() {
                 continue;
             }
@@ -193,6 +206,10 @@ fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
 
 /// The delay every effect of the strip puts on the sound, in samples.
 fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
+    // The file has the delay taken out already, and nothing is running to add more.
+    if t.frozen.is_some() {
+        return 0;
+    }
     let built_in: usize = t
         .inserts
         .iter()
@@ -279,27 +296,70 @@ fn mixes(p: &Project) -> Vec<Mix> {
 /// velocity limits) applied non-destructively, as Logic does on playback.
 pub(crate) fn region_notes(t: &Track, r: &Region, origin: f64, track: u16) -> Vec<NoteEvent> {
     let (rp, tp) = (r.params, t.params);
+    let shape = rp.shape;
+    let average_vel = if shape.q_velocity > 0 && !r.notes.is_empty() {
+        r.notes.iter().map(|n| f32::from(n.vel)).sum::<f32>() / r.notes.len() as f32
+    } else {
+        0.0
+    };
+    let mut flams: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
     r.notes
         .iter()
         .filter(|n| !n.muted)
         .filter_map(|n| {
-            let start = match rp.quantize {
-                Some(q) if q > 0.0 => (n.start / q).round() * q,
-                _ => n.start,
-            };
+            let (mut start, mut len) = (n.start, n.len);
+            if let Some(q) = rp.quantize.filter(|q| *q > 0.0) {
+                let target = (n.start / q).round() * q;
+                let range = f32::from(shape.q_range) / 100.0;
+                if shape.q_range == 0 || (target - n.start).abs() <= range {
+                    let strength = 1.0 - f32::from(shape.q_soft) / 100.0;
+                    start = n.start + (target - n.start) * strength;
+                }
+                if shape.q_length > 0 {
+                    let on_grid = ((n.len / q).round() * q).max(q);
+                    len += (on_grid - len) * f32::from(shape.q_length) / 100.0;
+                }
+                if shape.q_flam > 0 {
+                    let count = flams.entry((target / q).round() as i64).or_insert(0);
+                    start += *count as f32 * f32::from(shape.q_flam) / 100.0;
+                    *count += 1;
+                }
+            }
+            if shape.gate != 0 {
+                len = (len * (1.0 + f32::from(shape.gate) / 100.0)).max(1.0 / 64.0);
+            }
+            let mut own_vel = f32::from(n.vel);
+            if shape.q_velocity > 0 {
+                own_vel += (average_vel - own_vel) * f32::from(shape.q_velocity) / 100.0;
+            }
+            if shape.dynamics != 0 {
+                own_vel = 64.0 + (own_vel - 64.0) * (1.0 + f32::from(shape.dynamics) / 100.0);
+            }
             let pitch = n.pitch as i32 + rp.transpose as i32 + tp.transpose as i32;
-            let vel = (n.vel as i32 + rp.velocity as i32 + tp.velocity as i32).clamp(1, 127);
+            let vel =
+                (own_vel.round() as i32 + rp.velocity as i32 + tp.velocity as i32).clamp(1, 127);
             let in_keys = (tp.key_limit.0 as i32..=tp.key_limit.1 as i32).contains(&pitch);
             let in_vels = (tp.vel_limit.0 as i32..=tp.vel_limit.1 as i32).contains(&vel);
             (in_keys && in_vels && (0..=127).contains(&pitch)).then_some(NoteEvent {
                 start_beat: origin + start as f64,
-                end_beat: origin + (start + n.len) as f64,
+                end_beat: origin + (start + len) as f64,
                 pitch: pitch as u8,
                 vel: vel as u8,
                 track,
             })
         })
         .collect()
+}
+
+/// Clip Length: what of `notes` falls inside the region, cut at its end.
+fn clip_notes(mut notes: Vec<NoteEvent>, r: &Region, end: f64) -> Vec<NoteEvent> {
+    if r.params.shape.clip_length {
+        notes.retain(|n| n.start_beat < end);
+        for n in &mut notes {
+            n.end_beat = n.end_beat.min(end);
+        }
+    }
+    notes
 }
 
 /// Every unmuted region on an engine track, with its engine track number and start beat
@@ -310,9 +370,15 @@ fn playing_regions(p: &Project) -> impl Iterator<Item = (u16, &Track, &Region, f
         .enumerate()
         .filter_map(|(ti, t)| Some((track_index(ti)?, t)))
         .flat_map(move |(track, t)| {
-            t.regions
-                .iter()
-                .filter(|r| !r.params.mute)
+            // A frozen track plays its file, and only that.
+            let frozen = t.frozen.as_deref();
+            frozen
+                .into_iter()
+                .chain(
+                    t.regions
+                        .iter()
+                        .filter(move |r| frozen.is_none() && !r.params.mute),
+                )
                 .map(move |r| (track, t, r, p.region_start_beats(r)))
         })
 }
@@ -328,7 +394,11 @@ fn song_controls(p: &Project) -> Vec<ControlEvent> {
         .flat_map(|(track, t)| {
             let mut out = Vec::new();
             let (mut from, mut to) = (f64::MAX, 0.0f64);
-            for r in t.regions.iter().filter(|r| !r.params.mute) {
+            for r in t
+                .regions
+                .iter()
+                .filter(|r| !r.params.mute && t.frozen.is_none())
+            {
                 let origin = p.region_start_beats(r);
                 from = from.min(origin);
                 to = to.max(p.region_end_beats(r));
@@ -376,8 +446,11 @@ fn song_notes(p: &Project) -> Vec<NoteEvent> {
             let mut notes: Vec<NoteEvent> = t
                 .regions
                 .iter()
-                .filter(|r| !r.params.mute)
-                .flat_map(|r| region_notes(t, r, p.region_start_beats(r), track))
+                .filter(|r| !r.params.mute && t.frozen.is_none())
+                .flat_map(|r| {
+                    let notes = region_notes(t, r, p.region_start_beats(r), track);
+                    clip_notes(notes, r, p.region_end_beats(r))
+                })
                 .collect();
             if let Some(g) = groove
                 .as_ref()
@@ -711,7 +784,7 @@ impl EngineSync {
             let want: &[Insert] = p
                 .tracks
                 .get(i)
-                .filter(|_| i < MAX_TRACKS)
+                .filter(|t| i < MAX_TRACKS && t.frozen.is_none())
                 .map_or(&[], |t| &t.inserts);
             let same_kinds = self.fx[i].len() == want.len()
                 && self.fx[i].iter().zip(want).all(|(a, b)| a.kind == b.kind);
@@ -983,6 +1056,7 @@ mod tests {
                 notes,
                 controls: Vec::new(),
                 folder: None,
+                auto: Vec::new(),
                 generated: None,
                 audio: None,
                 params: RegionParams::default(),
@@ -990,6 +1064,7 @@ mod tests {
             params: TrackParams::default(),
             category: None,
             icon: None,
+            frozen: None,
             sends: Vec::new(),
             auto: crate::model::Automation::default(),
             group: None,
@@ -1120,6 +1195,112 @@ mod tests {
     }
 
     #[test]
+    fn region_automation_reaches_the_engine_and_is_not_sent_again_and_again() {
+        use crate::model::{AutoMode, RegionLane, TrackKind};
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 3.0);
+        p.tracks[t].auto.mode = AutoMode::Read;
+        p.tracks[t].regions[0].auto.push(RegionLane {
+            target: AutoTarget::Volume,
+            points: vec![prowave_engine::AutoPoint {
+                beat: 1.0,
+                value: -6.0,
+                curve: 0.0,
+            }],
+        });
+        let lanes = automation_lanes(&p);
+        let lane = lanes.iter().find(|l| l.track as usize == t);
+        let Some(lane) = lane else {
+            panic!("no lane for the track");
+        };
+        let start = p.region_start_beats(&p.tracks[t].regions[0]);
+        let inside = prowave_engine::lane_value(&lane.points, start + 1.0);
+        assert!(inside.is_some_and(|v| (v + 6.0).abs() < 0.01));
+        assert!(automation_unchanged(&p, &lanes));
+        p.tracks[t].regions[0].start_bar += 1.0;
+        assert!(!automation_unchanged(&p, &lanes), "a move is a change");
+    }
+
+    #[test]
+    fn the_rows_under_more_change_the_notes_as_they_play() {
+        use crate::model::{Note, TrackKind};
+        let mut p = Project::empty();
+        let i = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(i, 1.0);
+        let t = &mut p.tracks[i];
+        let note = |start: f32, pitch: u8, vel: u8| Note {
+            start,
+            len: 0.3,
+            pitch,
+            vel,
+            muted: false,
+        };
+        t.regions[0].notes = vec![note(0.1, 60, 40), note(0.1, 64, 100), note(0.9, 67, 100)];
+        t.regions[0].params.quantize = Some(1.0);
+        let play = |t: &Track| region_notes(t, &t.regions[0], 0.0, 0);
+        let plain = play(t);
+        assert!(plain[0].start_beat.abs() < 1e-6);
+        // Half strength: half way to the grid.
+        t.regions[0].params.shape.q_soft = 50;
+        assert!((play(t)[0].start_beat - 0.05).abs() < 1e-5);
+        t.regions[0].params.shape.q_soft = 0;
+        // Range: only what is near the grid moves.
+        t.regions[0].params.shape.q_range = 5;
+        assert!((play(t)[0].start_beat - 0.1).abs() < 1e-5);
+        t.regions[0].params.shape.q_range = 0;
+        // Flam: notes on one place are spread.
+        t.regions[0].params.shape.q_flam = 10;
+        let flam = play(t);
+        assert!((flam[1].start_beat - flam[0].start_beat - 0.1).abs() < 1e-5);
+        t.regions[0].params.shape.q_flam = 0;
+        // Length, gate, velocity and dynamics.
+        t.regions[0].params.shape.q_length = 100;
+        let n = play(t)[0];
+        assert!(
+            ((n.end_beat - n.start_beat) - 1.0).abs() < 1e-5,
+            "a whole step of the grid"
+        );
+        t.regions[0].params.shape.q_length = 0;
+        t.regions[0].params.shape.gate = -50;
+        let n = play(t)[0];
+        assert!(((n.end_beat - n.start_beat) - 0.15).abs() < 1e-5);
+        t.regions[0].params.shape.gate = 0;
+        t.regions[0].params.shape.q_velocity = 100;
+        assert_eq!(play(t)[0].vel, 80, "the average");
+        t.regions[0].params.shape.q_velocity = 0;
+        t.regions[0].params.shape.dynamics = 50;
+        assert_eq!(play(t)[1].vel, 118, "further from the middle");
+        t.regions[0].params.shape.dynamics = 0;
+        // Clip Length.
+        t.regions[0].params.shape.clip_length = true;
+        let clipped = clip_notes(play(t), &t.regions[0], 0.2);
+        assert_eq!(clipped.len(), 2);
+        assert!(clipped.iter().all(|n| n.end_beat <= 0.2));
+    }
+
+    #[test]
+    fn a_frozen_track_plays_its_file_and_not_its_notes_or_effects() {
+        use crate::model::{Note, TrackKind};
+        let mut p = Project::empty();
+        let t = p.add_track(TrackKind::Instrument);
+        p.add_midi_region(t, 1.0);
+        p.tracks[t].regions[0].notes = vec![Note {
+            start: 0.0,
+            len: 1.0,
+            pitch: 60,
+            vel: 100,
+            muted: false,
+        }];
+        assert_eq!(song_notes(&p).len(), 1);
+        p.tracks[t].frozen = Some(Box::new(p.tracks[t].regions[0].clone()));
+        assert!(song_notes(&p).is_empty(), "the notes stay quiet");
+        assert_eq!(playing_regions(&p).count(), 1, "only the frozen file");
+        p.tracks[t].frozen = None;
+        assert_eq!(song_notes(&p).len(), 1, "it thaws as it was");
+    }
+
+    #[test]
     fn quantize_transpose_and_velocity_are_applied() {
         let mut t = track(vec![note(0.9, 60, 100)]);
         t.regions[0].params = RegionParams {
@@ -1218,6 +1399,7 @@ mod tests {
                 folder: None,
                 audio: None,
                 params: RegionParams::default(),
+                auto: Vec::new(),
                 generated: None,
             });
         }

@@ -8,3 +8,11 @@ codegen-units = 1
 strip = true
 panic = "abort"
 opt-level = 3
+
+# A quick optimized build for trying the program: `cargo run --profile fast -p prowave-app --features asio`.
+# `release` stays the slow, smallest and fastest one, for installers.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

@@ -30,7 +30,7 @@ pub fn propagate(p: &mut Project, watch: &mut GroupWatch) {
         watch.solo = p.tracks.iter().map(|t| t.solo).collect();
         return;
     }
-    if p.groups.is_empty() {
+    if p.groups.is_empty() && p.linked_strips.is_empty() {
         for (i, t) in p.tracks.iter().enumerate() {
             watch.mute[i] = t.mute;
             watch.solo[i] = t.solo;

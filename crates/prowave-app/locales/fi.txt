@@ -45,7 +45,6 @@ Q-Strength: = Q-voimakkuus:
 Track: = Raita:
 Icon: = Symboli:
 Channel: = Kanava:
-Freeze Mode: = Jäädytystila:
 Pre Fader = Ennen liukua
 Q-Reference: = Q-viite:
 Flex Mode: = Flex-tila:

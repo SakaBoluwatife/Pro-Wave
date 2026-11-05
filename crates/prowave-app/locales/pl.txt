@@ -45,7 +45,6 @@ Q-Strength: = Q-Siła:
 Track: = Ścieżka:
 Icon: = Ikona:
 Channel: = Kanał:
-Freeze Mode: = Tryb zamrażania:
 Pre Fader = Przed tłumikiem
 Q-Reference: = Q-Odniesienie:
 Flex Mode: = Tryb Flex:

@@ -45,7 +45,6 @@ Q-Strength: = Q-Kekuatan:
 Track: = Trek:
 Icon: = Ikon:
 Channel: = Kanal:
-Freeze Mode: = Mode Bekukan:
 Pre Fader = Sebelum Fader
 Q-Reference: = Q-Referensi:
 Flex Mode: = Mode Flex:

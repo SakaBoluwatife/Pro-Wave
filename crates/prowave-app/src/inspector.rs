@@ -614,7 +614,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         });
         y += ROW_H;
 
-        // "More" disclosure with the rest of Logic's region parameters (not implemented yet).
+        // "More" disclosure with the rest of Logic's region parameters (applied on playback).
         let more = Rect::from_min_size(pos2(left, y), vec2(w, ROW_H));
         if ui.interact(more, id("more"), Sense::click()).clicked() {
             s.inspector.more_open = !s.inspector.more_open;
@@ -643,20 +643,74 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         );
         y += ROW_H;
         if s.inspector.more_open {
-            for t in [
-                tr("Dynamics:"),
-                tr("Gate Time:"),
-                tr("Clip Length:"),
-                tr("Score:"),
-                tr("Q-Velocity:"),
-                tr("Q-Length:"),
-                tr("Q-Flam:"),
-                tr("Q-Range:"),
-                tr("Q-Strength:"),
+            let midi = sel.is_some() && !audio;
+            let shape = &mut params.shape;
+            for (text, key, value, range, reset, plus) in [
+                (
+                    tr("Dynamics:"),
+                    "dynamics",
+                    shape.dynamics,
+                    (-100, 100),
+                    0,
+                    100,
+                ),
+                (tr("Gate Time:"), "gate", shape.gate, (-100, 100), 0, 100),
+                (
+                    tr("Q-Velocity:"),
+                    "q_velocity",
+                    shape.q_velocity,
+                    (0, 100),
+                    0,
+                    0,
+                ),
+                (tr("Q-Length:"), "q_length", shape.q_length, (0, 100), 0, 0),
+                (tr("Q-Flam:"), "q_flam", shape.q_flam, (0, 100), 0, 0),
+                (tr("Q-Range:"), "q_range", shape.q_range, (0, 100), 0, 0),
+                (tr("Q-Strength:"), "q_soft", shape.q_soft, (0, 100), 0, 0),
             ] {
-                label(&g, left, y, t, false);
+                label(&g, left, y, text, midi);
+                let r = Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0));
+                let strength = key == "q_soft";
+                let shown = if strength {
+                    100 - i32::from(value)
+                } else {
+                    i32::from(value) + plus
+                };
+                let unit = if key == "q_flam" || key == "q_range" {
+                    format!("{:.2} beat", shown as f32 / 100.0)
+                } else {
+                    format!("{shown} %")
+                };
+                let (lo, hi) = if strength {
+                    (0, 100)
+                } else {
+                    (range.0 + plus, range.1 + plus)
+                };
+                let reset = if strength { 100 } else { reset + plus };
+                if let Some(v) = drag_value(ui, &g, r, key, shown, (lo, hi), reset, unit, midi) {
+                    let stored = if strength { 100 - v } else { v - plus } as i16;
+                    match key {
+                        "dynamics" => shape.dynamics = stored,
+                        "gate" => shape.gate = stored,
+                        "q_velocity" => shape.q_velocity = stored,
+                        "q_length" => shape.q_length = stored,
+                        "q_flam" => shape.q_flam = stored,
+                        "q_range" => shape.q_range = stored,
+                        _ => shape.q_soft = stored,
+                    }
+                }
                 y += ROW_H;
             }
+            label(&g, left, y, tr("Clip Length:"), midi);
+            if checkbox(ui, &g, pos2(vx, y), "clip_length", shape.clip_length, midi) {
+                shape.clip_length = !shape.clip_length;
+            }
+            y += ROW_H;
+            label(&g, left, y, tr("Score:"), midi);
+            if checkbox(ui, &g, pos2(vx, y), "in_score", !shape.hide_in_score, midi) {
+                shape.hide_in_score = !shape.hide_in_score;
+            }
+            y += ROW_H;
         }
         if let Some((t, r)) = sel {
             if p.tracks[t].regions[r].params != params {
@@ -700,43 +754,82 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             track_icon(&p.tracks[ti]),
         );
         y += 30.0;
+        let mut freeze_pick = false;
         let channel = p.channel_name(ti);
-        label(&g, left, y, tr("Channel:"), false);
-        popup(
-            ui,
-            &g,
-            Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
-            "channel",
+        label(&g, left, y, tr("Channel:"), true);
+        g.text(
+            pos2(vx + 4.0, y + ROW_H / 2.0),
+            Align2::LEFT_CENTER,
             &channel,
-            false,
+            FontId::proportional(11.5),
+            TEXT,
         );
         y += ROW_H;
         if audio {
-            label(&g, left, y, tr("Freeze Mode:"), false);
-            popup(
+            let frozen = p.tracks[ti].frozen.is_some();
+            let can = frozen || crate::bounce::can_freeze(&p.tracks[ti]);
+            label(&g, left, y, "Freeze:", can);
+            if let Some(resp) = popup(
                 ui,
                 &g,
                 Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
                 "freeze",
-                tr("Pre Fader"),
-                false,
-            );
+                if frozen { "On" } else { "Off" },
+                can,
+            ) {
+                if resp.clicked() {
+                    freeze_pick = true;
+                }
+            }
             y += ROW_H;
             label(&g, left, y, tr("Q-Reference:"), false);
             checkbox(ui, &g, pos2(vx, y), "qref", true, false);
             y += ROW_H;
-            label(&g, left, y, tr("Flex Mode:"), false);
-            popup(
+            let flexed = sel.filter(|x| x.0 == ti);
+            let mode = flexed
+                .and_then(|(t, r)| p.tracks[t].regions[r].audio.as_ref()?.flex.as_ref())
+                .map(|f| f.mode);
+            label(&g, left, y, tr("Flex Mode:"), flexed.is_some());
+            if let Some(resp) = popup(
                 ui,
                 &g,
                 Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
                 "flex",
-                tr("Off"),
-                false,
-            );
+                mode.map_or(tr("Off"), crate::flex_edit::mode_label),
+                flexed.is_some(),
+            ) {
+                egui::Popup::menu(&resp).show(|ui| {
+                    for m in prowave_engine::FlexMode::ALL {
+                        let name = crate::flex_edit::mode_label(m);
+                        if ui.selectable_label(mode == Some(m), name).clicked() {
+                            if let Some((t, r)) = flexed {
+                                crate::flex_edit::set_mode(p, t, r, m);
+                                changed_song = true;
+                            }
+                            ui.close();
+                        }
+                    }
+                });
+            }
             y += ROW_H;
         } else {
             let external = p.tracks[ti].kind == TrackKind::ExternalMidi;
+            let frozen = p.tracks[ti].frozen.is_some();
+            let can = frozen || crate::bounce::can_freeze(&p.tracks[ti]);
+            label(&g, left, y, "Freeze:", can);
+            if let Some(resp) = popup(
+                ui,
+                &g,
+                Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
+                "freeze",
+                if frozen { "On" } else { "Off" },
+                can,
+            ) {
+                if resp.clicked() {
+                    freeze_pick = true;
+                }
+            }
+            y += ROW_H;
             if external {
                 // Where this track's notes go: a MIDI output port and a channel.
                 label(&g, left, y, tr("MIDI Out Port:"), true);
@@ -795,7 +888,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
                 (tr("MIDI In Port:"), tr("All")),
                 (tr("MIDI In Channel:"), tr("All")),
                 (tr("MIDI Out Channel:"), tr("All")),
-                (tr("Freeze Mode:"), tr("Pre Fader")),
             ]
             .into_iter()
             .filter(|(t, _)| !(external && *t == tr("MIDI Out Channel:")))
@@ -937,6 +1029,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         if p.tracks[ti].params != tp {
             p.tracks[ti].params = tp;
             changed_song = true;
+        }
+        if freeze_pick {
+            crate::bounce::toggle_freeze(p, s, ti);
         }
         y += 4.0;
     }

@@ -9,8 +9,7 @@ use crate::i18n::{tr, trf};
 use crate::model::{Project, Region, Track, TrackKind};
 use crate::track_icons::{draw_icon, track_icon};
 use crate::widgets::{
-    context_click, context_menu, menu_title, popup_button, stroke, todo_item, BLUE, BTN_BG, TEXT,
-    TEXT_DIM,
+    context_click, context_menu, menu_title, popup_button, stroke, BLUE, BTN_BG, TEXT, TEXT_DIM,
 };
 use crate::{Bottom, UiState};
 use egui::{
@@ -135,6 +134,71 @@ pub enum TrackTool {
     Glue,
     /// Drag on an audio region to set its fade in (left half) or fade out (right half).
     Fade,
+    /// Click an empty stretch of a MIDI track to make a region there.
+    Pencil,
+    /// Click a region to delete it.
+    Eraser,
+    /// Click a region to rename it.
+    Text,
+    /// Click a region to solo its track.
+    Solo,
+    /// Click a region to mute or unmute it.
+    Mute,
+    /// Click to zoom in.
+    Zoom,
+    /// Click a region to edit its own automation.
+    Automation,
+    /// Drag over regions to select them, without moving any.
+    Marquee,
+    /// Click an audio region to turn Flex on for it.
+    Flex,
+}
+
+impl TrackTool {
+    /// The tool of an entry of [`TOOLS`].
+    fn of_entry(n: usize) -> Self {
+        match n {
+            1 => Self::Pencil,
+            2 => Self::Eraser,
+            3 => Self::Text,
+            SCISSORS_TOOL => Self::Scissors,
+            GLUE_TOOL => Self::Glue,
+            6 => Self::Solo,
+            7 => Self::Mute,
+            8 => Self::Zoom,
+            FADE_TOOL => Self::Fade,
+            10 | 11 => Self::Automation,
+            12 => Self::Marquee,
+            13 => Self::Flex,
+            _ => Self::Pointer,
+        }
+    }
+
+    /// The letter on the tool's button.
+    fn letter(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Scissors => "S",
+            Self::Glue => "G",
+            Self::Pencil => "P",
+            Self::Eraser => "E",
+            Self::Text => "T",
+            Self::Solo => "O",
+            Self::Mute => "M",
+            Self::Zoom => "Z",
+            Self::Automation => "A",
+            Self::Marquee => "Q",
+            Self::Flex => "X",
+            Self::Pointer | Self::Fade => return None,
+        })
+    }
+
+    /// A tool that only clicks on a region: nothing moves.
+    fn only_clicks(self) -> bool {
+        !matches!(
+            self,
+            Self::Pointer | Self::Fade | Self::Pencil | Self::Marquee
+        )
+    }
 }
 
 /// What the headers of the tracks show (Track > Configure Track Header).
@@ -223,6 +287,8 @@ pub struct TracksView {
     pub snap: Snap,
     pub drag_mode: DragMode,
     pub tool: TrackTool,
+    /// The tool used with Ctrl held (Logic's Command-click tool).
+    pub tool2: TrackTool,
     /// A Fade tool drag in progress: `true` for a fade in, `false` for a fade out.
     fade_drag: Option<bool>,
     pub catch: bool,
@@ -347,6 +413,7 @@ impl Default for TracksView {
             picked_tracks: Vec::new(),
             track_drag: None,
             tool: TrackTool::Pointer,
+            tool2: TrackTool::Pointer,
             fade_drag: None,
             catch: true,
             show_tempo: false,
@@ -1159,8 +1226,7 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
         let icon_at = pos2(r.left() + 13.0, cy);
         if i == 0 && v.tool == TrackTool::Fade {
             draw_fade_tool(g, icon_at, TEXT);
-        } else if i == 0 && matches!(v.tool, TrackTool::Scissors | TrackTool::Glue) {
-            let letter = if v.tool == TrackTool::Glue { "G" } else { "S" };
+        } else if let (0, Some(letter)) = (i, v.tool.letter()) {
             g.text(
                 icon_at,
                 Align2::CENTER_CENTER,
@@ -1185,24 +1251,15 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(220.0);
             for (n, t) in TOOLS.iter().enumerate() {
-                let tool = match n {
-                    0 => Some(TrackTool::Pointer),
-                    FADE_TOOL => Some(TrackTool::Fade),
-                    SCISSORS_TOOL => Some(TrackTool::Scissors),
-                    GLUE_TOOL => Some(TrackTool::Glue),
-                    _ => None,
-                };
-                match tool {
-                    Some(tool) if i == 0 => {
-                        if ui.selectable_label(v.tool == tool, tr(t)).clicked() {
-                            v.tool = tool;
-                            ui.close();
-                        }
+                let tool = TrackTool::of_entry(n);
+                let current = if i == 0 { v.tool } else { v.tool2 };
+                if ui.selectable_label(current == tool, tr(t)).clicked() {
+                    if i == 0 {
+                        v.tool = tool;
+                    } else {
+                        v.tool2 = tool;
                     }
-                    Some(TrackTool::Pointer) => {
-                        let _ = ui.selectable_label(true, tr(t));
-                    }
-                    _ => todo_item(ui, t),
+                    ui.close();
                 }
             }
         });
@@ -1236,6 +1293,7 @@ enum CtxAction {
     /// Smart Tempo of every audio region together (multitrack).
     AdaptTempoToAll,
     SmartTempoEditor(usize, usize),
+    ToggleFreeze(usize),
     FlexMode(usize, usize, prowave_engine::FlexMode),
     Flex(usize, usize, crate::flex_edit::Command),
     FlexRemove(usize, usize),
@@ -1263,6 +1321,8 @@ struct TrackInfo {
     mute: bool,
     solo: bool,
     custom_height: bool,
+    frozen: bool,
+    can_freeze: bool,
     /// The Groove Track, and whether this track follows it (`None`: there is none).
     groove: bool,
     follow_groove: Option<bool>,
@@ -1514,6 +1574,8 @@ fn track_info(p: &Project, i: usize) -> Option<TrackInfo> {
         rec: t.rec,
         takes_midi: matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi),
         custom_height: t.height != 1.0,
+        frozen: t.frozen.is_some(),
+        can_freeze: crate::bounce::can_freeze(t),
         groove: t.params.groove,
         follow_groove: crate::groove::groove_track(p)
             .filter(|g| *g != i)
@@ -1602,6 +1664,14 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
         tr("Set as Groove Track")
     };
     pick(ui, groove, "", CtxAction::ToggleGrooveTrack(t.i), picked);
+    if t.frozen || t.can_freeze {
+        let label = if t.frozen {
+            "Unfreeze Track"
+        } else {
+            "Freeze Track"
+        };
+        pick(ui, label, "", CtxAction::ToggleFreeze(t.i), picked);
+    }
     if let Some(follows) = t.follow_groove {
         let label = if follows {
             tr("Stop Following Groove Track")
@@ -1687,6 +1757,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::Normalize(t, r) => start_normalize(p, s, t, r),
         CtxAction::DetectTempo(t, r, adapt) => crate::smart_tempo::start(p, s, t, r, adapt),
         CtxAction::AdaptTempoToAll => crate::smart_tempo::start_all(p, s),
+        CtxAction::ToggleFreeze(i) => crate::bounce::toggle_freeze(p, s, i),
         CtxAction::ToggleGrooveTrack(i) => {
             let was = p.tracks.get(i).is_some_and(|t| t.params.groove);
             crate::groove::set_groove_track(p, (!was).then_some(i));
@@ -2737,7 +2808,12 @@ fn header(
     };
     let name_right = if opts.level { 8.0 } else { 6.0 };
     let name_w = hdr.right() - name_right - name_x;
-    let name_galley = g.layout_no_wrap(p.tracks[i].name.clone(), FontId::proportional(13.0), TEXT);
+    let shown_name = if p.tracks[i].frozen.is_some() {
+        format!("{} (Frozen)", p.tracks[i].name)
+    } else {
+        p.tracks[i].name.clone()
+    };
+    let name_galley = g.layout_no_wrap(shown_name, FontId::proportional(13.0), TEXT);
     let clip = g.with_clip_rect(
         Rect::from_min_size(pos2(name_x, hdr.top()), vec2(name_w.max(20.0), h))
             .intersect(g.clip_rect()),
@@ -3043,12 +3119,19 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             v.track_focus = false;
         }
     }
+    let mut pencil_at: Option<(usize, f64)> = None;
     let mut picked: Option<CtxAction> = None;
     if lane_resp.clicked() || context_click(&lane_resp) {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
             if let Some(row) = row_at(&rows, pt.y - lanes.top() + scroll_y) {
                 p.selected_track = row;
+                if lane_resp.clicked() && v.tool == TrackTool::Pencil {
+                    pencil_at = Some((row, beat_of(pt.x)));
+                }
             }
+        }
+        if lane_resp.clicked() && v.tool == TrackTool::Zoom {
+            v.bar_w = (v.bar_w * 1.5).min(600.0);
         }
         v.track_focus = false;
         v.selected = None;
@@ -3232,7 +3315,18 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             if rr.width() <= 0.0 || rr.height() <= 0.0 {
                 continue;
             }
-            let resp = ui.interact(rr, id(("region", ti, ri)), Sense::click_and_drag());
+            // With the Marquee tool regions take no drags, so one that starts on them selects.
+            let sense = if v.tool == TrackTool::Marquee {
+                Sense::hover()
+            } else {
+                Sense::click_and_drag()
+            };
+            let resp = ui.interact(rr, id(("region", ti, ri)), sense);
+            let active = if ui.input(|i| i.modifiers.command) && v.tool2 != TrackTool::Pointer {
+                v.tool2
+            } else {
+                v.tool
+            };
             if resp.clicked() || resp.drag_started() || context_click(&resp) {
                 let ctrl = ui.input(|i| i.modifiers.command);
                 let here = (ti, ri);
@@ -3256,14 +3350,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             if resp.double_clicked() && p.tracks[ti].kind != TrackKind::Audio {
                 s.bottom = Bottom::PianoRoll;
             }
-            let fade_tool = v.tool == TrackTool::Fade && p.tracks[ti].kind == TrackKind::Audio;
+            let fade_tool = active == TrackTool::Fade && p.tracks[ti].kind == TrackKind::Audio;
             if fade_tool && resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             }
-            let click_tool = matches!(v.tool, TrackTool::Scissors | TrackTool::Glue);
+            let click_tool = active.only_clicks();
             if click_tool && resp.clicked() {
                 if let Some(pt) = resp.interact_pointer_pos() {
-                    region_click = Some((ti, ri, v.tool, snap_pos(beat_of(pt.x))));
+                    region_click = Some((ti, ri, active, snap_pos(beat_of(pt.x))));
                 }
             }
             if click_tool {
@@ -3534,6 +3628,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 v.show_colors,
                 v.wave_zoom,
             );
+            crate::automation::draw_region_lanes(&g, full, &tr.regions[ri], beat_px);
         }
     }
     if moved {
@@ -3622,13 +3717,75 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     if lane_resp.drag_stopped() {
         v.marquee = None;
     }
+    if let Some((row, beat)) = pencil_at {
+        let kind = p.tracks[row].kind;
+        if kind.has_regions() && kind != TrackKind::Audio {
+            let bar = p.beats_to_bar(snap_pos(beat)) as f32 + 1.0;
+            p.add_midi_region(row, bar);
+        }
+    }
     if let Some((t, r, tool, beat)) = region_click {
+        use crate::region_edit as edit;
         let done = match tool {
-            TrackTool::Glue => crate::region_edit::join_with_next(p, t, r),
-            _ => crate::region_edit::split(p, t, r, beat),
+            TrackTool::Glue => edit::join_with_next(p, t, r).map(|_| ()),
+            TrackTool::Scissors => edit::split(p, t, r, beat).map(|_| ()),
+            TrackTool::Eraser => {
+                p.tracks[t].regions.remove(r);
+                p.song_rev += 1;
+                Ok(())
+            }
+            TrackTool::Mute => {
+                let params = &mut p.tracks[t].regions[r].params;
+                params.mute = !params.mute;
+                p.song_rev += 1;
+                Ok(())
+            }
+            TrackTool::Solo => {
+                let on = !p.tracks[t].solo;
+                p.set_solo(t, on);
+                Ok(())
+            }
+            TrackTool::Text => {
+                s.dialogs
+                    .open_rename_region(t, r, &p.tracks[t].regions[r].name);
+                Ok(())
+            }
+            TrackTool::Zoom => {
+                v.bar_w = (v.bar_w * 1.5).min(600.0);
+                Ok(())
+            }
+            TrackTool::Automation => {
+                let ed = &mut s.mixer.auto_editor;
+                ed.track = Some(t);
+                ed.region = Some(r);
+                Ok(())
+            }
+            TrackTool::Flex => {
+                if p.tracks[t].regions[r].audio.is_some() {
+                    crate::flex_edit::set_mode(p, t, r, prowave_engine::FlexMode::default());
+                    p.song_rev += 1;
+                    Ok(())
+                } else {
+                    Err("Flex is for audio regions".to_string())
+                }
+            }
+            TrackTool::Pointer | TrackTool::Fade | TrackTool::Pencil | TrackTool::Marquee => Ok(()),
         };
+        let keeps_selection = matches!(
+            tool,
+            TrackTool::Solo
+                | TrackTool::Text
+                | TrackTool::Zoom
+                | TrackTool::Automation
+                | TrackTool::Mute
+                | TrackTool::Flex
+        );
         match done {
-            Ok(_) => v.selected = None,
+            Ok(()) if !keeps_selection => {
+                v.selected = None;
+                v.also.clear();
+            }
+            Ok(()) => {}
             Err(e) => s.status = Some(e),
         }
     }
@@ -4525,5 +4682,20 @@ mod row_tests {
         assert_eq!(p.tracks[t].regions.len(), 3);
         assert_eq!(p.tracks[t].regions[0].start_bar, 5.0);
         assert!(v.all_selected().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tool_tests {
+    use super::*;
+
+    #[test]
+    fn every_tool_in_the_menu_is_a_real_tool() {
+        for (n, name) in TOOLS.iter().enumerate().skip(1) {
+            assert_ne!(TrackTool::of_entry(n), TrackTool::Pointer, "{name}");
+        }
+        assert_eq!(TrackTool::of_entry(0), TrackTool::Pointer);
+        assert_eq!(TrackTool::of_entry(SCISSORS_TOOL), TrackTool::Scissors);
+        assert!(!TrackTool::Pointer.only_clicks() && !TrackTool::Fade.only_clicks());
     }
 }

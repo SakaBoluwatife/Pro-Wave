@@ -516,6 +516,16 @@ fn bar_lines(p: &Project, origin: f64, len: f64) -> Vec<f32> {
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize, body: Rect) {
     let g = ui.painter_at(body);
     g.rect_filled(body, 0.0, PAPER);
+    if p.tracks[ti].regions[ri].params.shape.hide_in_score {
+        g.text(
+            body.center(),
+            Align2::CENTER_CENTER,
+            "This region is left out of the Score (Region Inspector, More)",
+            FontId::proportional(13.0),
+            TEXT_DIM,
+        );
+        return;
+    }
     let (origin, len_beats) = {
         let r = &p.tracks[ti].regions[ri];
         (p.region_start_beats(r), p.region_len_beats(r))

@@ -875,6 +875,7 @@ fn midi_track_from(
         folder: None,
         audio: None,
         params: crate::model::RegionParams::default(),
+        auto: Vec::new(),
         generated: None,
     };
     let mut track = Track::new(

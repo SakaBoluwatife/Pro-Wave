@@ -13,10 +13,14 @@ pub struct QuickDialogs {
     pub undo_history: bool,
     pub routing: bool,
     pub project_settings: bool,
+    /// The Text tool: the region and what has been typed.
+    pub rename_region: Option<(usize, usize, String)>,
     /// Track > Configure Track Header.
     pub track_header: bool,
     /// Track > Assign Track Icon: the track.
     pub icon: Option<usize>,
+    /// Window > Plugin Manager.
+    pub plugin_manager: bool,
     /// Mix > Edit Groups.
     pub groups: bool,
     /// File > Project Management > Rename Project: what has been typed.
@@ -62,6 +66,11 @@ fn answer(ui: &mut egui::Ui, focus: &mut bool, edit: &egui::Response) -> (bool, 
 }
 
 impl QuickDialogs {
+    pub fn open_rename_region(&mut self, t: usize, r: usize, name: &str) {
+        self.rename_region = Some((t, r, name.to_string()));
+        self.focus = true;
+    }
+
     pub fn open_go_to(&mut self) {
         self.go_to = Some(String::new());
         self.focus = true;
@@ -259,6 +268,8 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
 /// The windows.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     groups_window(ctx, p, s);
+    plugin_manager_window(ctx, s);
+    rename_region_window(ctx, p, s);
     track_header_window(ctx, s);
     icon_window(ctx, p, s);
     rename_project_window(ctx, s);
@@ -268,6 +279,99 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     history_window(ctx, s);
     project_settings_window(ctx, p, s);
     crate::routing_matrix::show(ctx, p, s);
+}
+
+/// The Text tool: a new name for a region.
+fn rename_region_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let d = &mut s.dialogs;
+    let Some((t, r, text)) = d.rename_region.as_mut() else {
+        return;
+    };
+    let mut result = (false, false);
+    let mut focus = std::mem::take(&mut d.focus);
+    egui::Modal::new(egui::Id::unique("rename_region")).show(ctx, |ui| {
+        ui.set_width(280.0);
+        ui.label("Region name:");
+        let edit = ui.add(egui::TextEdit::singleline(text));
+        result = answer(ui, &mut focus, &edit);
+    });
+    let (ok, close) = result;
+    if ok {
+        let name = text.trim();
+        let region = p.tracks.get_mut(*t).and_then(|x| x.regions.get_mut(*r));
+        if let (false, Some(region)) = (name.is_empty(), region) {
+            region.name = name.to_string();
+        }
+    }
+    if ok || close {
+        d.rename_region = None;
+    }
+}
+
+/// Window > Plugin Manager: every plugin found and every file that failed, with where they are.
+fn plugin_manager_window(ctx: &egui::Context, s: &mut UiState) {
+    if !s.dialogs.plugin_manager {
+        return;
+    }
+    let list = &mut s.plugins;
+    list.clap.ensure_started(ctx);
+    list.clap.drain();
+    let mut open = true;
+    egui::Window::new("Plugin Manager")
+        .id(egui::Id::unique("plugin_manager"))
+        .open(&mut open)
+        .default_size([720.0, 460.0])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "{} plugins, {} failed",
+                    list.clap.plugins.len(),
+                    list.clap.failed.len()
+                ));
+                if ui
+                    .button("Rescan")
+                    .on_hover_text("Look for new plugins and try the ones that failed again")
+                    .clicked()
+                {
+                    crate::plugin_guard::clear_blocked();
+                    list.clap.start(true, ctx);
+                }
+                if let Some((done, of)) = list.clap.progress {
+                    ui.label(format!("Scanning {done} of {of}..."));
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new(egui::Id::unique("plugin_manager_grid"))
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for head in ["Name", "Maker", "Format", "Kind", "File"] {
+                            ui.strong(head);
+                        }
+                        ui.end_row();
+                        for info in &list.clap.plugins {
+                            ui.label(&info.name);
+                            ui.label(&info.vendor);
+                            ui.label(info.format.name());
+                            ui.label(if info.is_instrument {
+                                "Instrument"
+                            } else {
+                                "Effect"
+                            });
+                            ui.label(info.path.display().to_string());
+                            ui.end_row();
+                        }
+                    });
+                if !list.clap.failed.is_empty() {
+                    ui.separator();
+                    ui.strong("Failed");
+                    for (path, why) in &list.clap.failed {
+                        ui.label(format!("{}: {why}", path.display()));
+                    }
+                }
+            });
+        });
+    s.dialogs.plugin_manager = open;
 }
 
 /// Track > Configure Track Header: what the track headers show.

@@ -55,6 +55,24 @@ pub fn import_audio(p: &mut Project, path: &Path, ctx: &egui::Context) -> Result
     import_audio_at(p, path, ctx, start_bar, None)
 }
 
+/// A region of a whole audio file, starting at bar 1, that goes on no track.
+pub fn frozen_region(p: &Project, path: &Path, ctx: &egui::Context) -> Result<Region, AudioError> {
+    let file = AudioFile::open(path)?;
+    let end = p.tempo_map().advance(0.0, file.duration_secs());
+    Ok(Region {
+        name: "Frozen".to_string(),
+        start_bar: 1.0,
+        len_bars: p.beats_to_bar(end) as f32,
+        notes: vec![],
+        controls: Vec::new(),
+        folder: None,
+        auto: Vec::new(),
+        generated: None,
+        audio: Some(audio_region(file, ctx)),
+        params: RegionParams::default(),
+    })
+}
+
 /// Puts an audio file at `start_bar` (counted from 1): on track `onto` when that is an audio
 /// track, else on a new audio track. Used by drag-and-drop from the Browser.
 pub fn import_audio_at(
@@ -83,6 +101,7 @@ pub fn import_audio_at(
         notes: vec![],
         controls: Vec::new(),
         folder: None,
+        auto: Vec::new(),
         generated: None,
         audio: Some(audio_region(file, ctx)),
         params: RegionParams::default(),
@@ -114,6 +133,7 @@ pub fn import_audio_at(
         params: TrackParams::default(),
         category: None,
         icon: None,
+        frozen: None,
         sends: Vec::new(),
         auto: crate::model::Automation::default(),
         group: None,

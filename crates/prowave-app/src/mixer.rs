@@ -80,6 +80,8 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// View > Show Signal Flow Channel Strips: only the path of the selected strip.
+    pub signal_flow: bool,
     /// Mix > Pre-Fader Metering.
     pub pre_fader: bool,
     pub strip_error: Option<String>,
@@ -121,6 +123,33 @@ pub struct CopiedStrip {
     pan: f32,
 }
 
+/// Where track `t`'s sound goes: the strip, the Aux strips of the buses it reaches and of the ones
+/// those reach, then the outputs.
+pub fn signal_path(p: &Project, t: usize) -> Vec<StripKey> {
+    let mut path = vec![t];
+    let mut k = 0;
+    while k < path.len() {
+        let track = &p.tracks[path[k]];
+        let buses = track
+            .sends
+            .iter()
+            .filter_map(|s| s.bus)
+            .chain((track.output > 0).then_some(track.output));
+        for bus in buses {
+            for i in 0..p.tracks.len() {
+                if p.aux_bus_of(i) == bus && !path.contains(&i) {
+                    path.push(i);
+                }
+            }
+        }
+        k += 1;
+    }
+    let mut keys: Vec<StripKey> = path.into_iter().map(StripKey::Track).collect();
+    keys.push(StripKey::StereoOut);
+    keys.push(StripKey::Master);
+    keys
+}
+
 impl CopiedStrip {
     /// The strip as it is now.
     pub fn of(t: &crate::model::Track) -> Self {
@@ -153,6 +182,7 @@ impl Default for MixerView {
             installed: std::sync::Arc::default(),
             preset_cmd: None,
             strip_cmd: None,
+            signal_flow: false,
             pre_fader: false,
             strip_error: None,
             message: None,
@@ -1747,11 +1777,13 @@ pub fn channel_strip(
         let resp = ui.interact(strip, id(ns, (key, "strip")), Sense::click());
         if resp.clicked() || resp.secondary_clicked() {
             p.selected_track = i;
+            p.linked_strips.clear();
             v.track_clicked = true;
         }
         strip_menu(&resp, p, v, i);
     }
-    let bg = if selected && name_style == NameStyle::Coloured {
+    let linked = matches!(key, StripKey::Track(i) if p.linked_strips.contains(&i));
+    let bg = if (selected && name_style == NameStyle::Coloured) || linked {
         STRIP_SEL
     } else {
         STRIP_BG
@@ -2493,7 +2525,12 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             }
             ui.close();
         }
-        todo_item(ui, tr("Select Audio Channel Strips"));
+        if ui.button(tr("Select Audio Channel Strips")).clicked() {
+            p.linked_strips = (0..p.tracks.len())
+                .filter(|i| p.tracks[*i].kind == TrackKind::Audio)
+                .collect();
+            ui.close();
+        }
     });
     if undo_pick.is_some() {
         s.undo_cmd = undo_pick;
@@ -2534,7 +2571,13 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             v.wide = !v.wide;
             ui.close();
         }
-        todo_item(ui, tr("Show Signal Flow Channel Strips"));
+        if ui
+            .selectable_label(v.signal_flow, tr("Show Signal Flow Channel Strips"))
+            .clicked()
+        {
+            v.signal_flow = !v.signal_flow;
+            ui.close();
+        }
     });
 
     let menus_end = x;
@@ -2777,6 +2820,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     if filters[6] && v.mode != MixerMode::Single {
         keys.push(StripKey::Master);
     }
+    if v.signal_flow && !p.tracks.is_empty() {
+        keys = signal_path(p, p.selected_track.min(p.tracks.len() - 1));
+    }
 
     let strip_w = if v.wide { 96.0 } else { 80.0 };
     let total_w = keys.len() as f32 * (strip_w + GAP);
@@ -2867,6 +2913,68 @@ mod tests {
 
     /// A project with an audio-style track and an Aux track, and its mixer drawn in a window
     /// 1400 by 700 points.
+    #[test]
+    fn the_signal_path_follows_sends_and_outputs_through_auxes() {
+        let mut p = Project::empty();
+        let source = p.add_track(TrackKind::Audio);
+        let other = p.add_track(TrackKind::Audio);
+        let first = p.add_track(TrackKind::Aux);
+        let second = p.add_track(TrackKind::Aux);
+        let (bus1, bus2) = (p.aux_bus_of(first), p.aux_bus_of(second));
+        p.tracks[source].output = bus1;
+        p.tracks[first].output = bus2;
+        let path = signal_path(&p, source);
+        assert_eq!(
+            path,
+            [
+                StripKey::Track(source),
+                StripKey::Track(first),
+                StripKey::Track(second),
+                StripKey::StereoOut,
+                StripKey::Master,
+            ]
+        );
+        assert!(!path.contains(&StripKey::Track(other)));
+        // A loop ends.
+        p.tracks[second].output = bus1;
+        assert_eq!(signal_path(&p, source).len(), 5);
+    }
+
+    #[test]
+    fn strips_selected_together_move_together() {
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        let c = p.add_track(TrackKind::Instrument);
+        assert!(p.group_mates(a, |g| g.volume).is_empty());
+        p.linked_strips = vec![a, b];
+        assert_eq!(p.group_mates(a, |g| g.volume), [b]);
+        assert!(p.group_mates(c, |g| g.volume).is_empty());
+    }
+
+    #[test]
+    fn a_mastering_track_takes_the_whole_mix_and_is_made_once() {
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let sub = p.add_track(TrackKind::Aux);
+        let bus = p.aux_bus_of(sub);
+        let b = p.add_track(TrackKind::Instrument);
+        p.tracks[b].output = bus;
+        let Some(m) = p.create_mastering_track() else {
+            panic!("a bus is free");
+        };
+        let master_bus = p.aux_bus_of(m);
+        assert_eq!(p.tracks[a].output, master_bus);
+        assert_eq!(p.tracks[sub].output, master_bus);
+        assert_eq!(p.tracks[b].output, bus, "what went to a bus still does");
+        assert_eq!(p.tracks[m].output, 0, "it goes to Stereo Out");
+        assert_eq!(p.create_mastering_track(), Some(m));
+        assert_eq!(
+            p.tracks.iter().filter(|t| t.kind == TrackKind::Aux).count(),
+            2
+        );
+    }
+
     fn mixer_project() -> Project {
         let mut p = Project::empty();
         p.add_track(TrackKind::Aux);
