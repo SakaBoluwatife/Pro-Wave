@@ -95,3 +95,30 @@ The owner wants Atmos left open. `libspatialaudio` (https://github.com/videolan/
 - Snap to Zero Crossings, in the Snap and Edit menus.
 - Strip Silence, in the Edit and Functions menus and on the region.
 - Chord track and Arrangement track: drag a section to move it, with Ctrl to copy it.
+
+## From the owner's Logic screenshots
+
+Reference for layout and feel, in our own artwork. Nothing here is built yet.
+
+**Mixer**
+
+- A track icon on each strip, above the pan knob.
+- Pan knobs show their position with a green arc and a number.
+- A curve of the strip's EQ drawn in the EQ slot.
+- A MIDI FX row, and R and I buttons above Mute and Solo.
+- Empty send rows drawn as small slots with a knob, and sends coloured by level.
+- The peak readout turns red on an over.
+- A plugin menu with a search field, recent plugins, and folders by kind.
+- Selected strip and fader meters in green, yellow and red.
+
+**Tracks area**
+
+- A coloured number column at the left of each track.
+- An on/off power button on each track, with a freeze icon.
+- A level meter dot at the right end of a header, with faders hidden when wanted.
+- Disclosure arrows on tracks that have more inside them.
+
+**Browser**
+
+- One panel: search, then All, Loops and One-Shots, Instruments, Effects, Plug-in Presets, Sound Library and folders under Locations.
+- A find-similar search from a dragged sound. Logic's own sound library is not something we have or copy.
