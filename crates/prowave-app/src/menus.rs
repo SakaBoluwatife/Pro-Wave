@@ -936,7 +936,13 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             crate::tracks_area::zoom_to_fit(p, &mut s.tracks, w);
         }
         "Create Track Stack…" => {
-            p.create_track_stack(p.selected_track);
+            let tracks = if s.tracks.picked_tracks.contains(&p.selected_track) {
+                s.tracks.picked_tracks.clone()
+            } else {
+                vec![p.selected_track]
+            };
+            p.stack_tracks(&tracks);
+            s.tracks.picked_tracks.clear();
             forget_region_selection(s);
         }
         "Bigger Interface" | "Smaller Interface" | "Actual Interface Size" => {

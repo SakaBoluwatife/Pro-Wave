@@ -259,6 +259,10 @@ pub struct TracksView {
     pub show_colors: bool,
     /// Track > Configure Track Header.
     pub header_opts: HeaderOpts,
+    /// Tracks picked besides the selected one, with Ctrl or Shift on their headers.
+    pub picked_tracks: Vec<usize>,
+    /// The track whose header is being dragged to a new place.
+    track_drag: Option<usize>,
     /// How much larger waveforms are drawn than fits their regions. Not the sound.
     pub wave_zoom: f32,
     /// An entry of the Functions or View menu, for `menus::apply`.
@@ -340,6 +344,8 @@ impl Default for TracksView {
             snap: Snap::Smart,
             drag_mode: DragMode::NoOverlap,
             wave_zoom: 1.0,
+            picked_tracks: Vec::new(),
+            track_drag: None,
             tool: TrackTool::Pointer,
             fade_drag: None,
             catch: true,
@@ -440,6 +446,35 @@ type TrackDrop = (
     (usize, usize),
     crate::region_edit::DropRow,
 );
+
+/// A click on header `i`: Ctrl adds or takes away, Shift picks from the selected track `from` to it,
+/// and a plain click starts over.
+fn pick_track(picked: &mut Vec<usize>, from: usize, i: usize, ctrl: bool, shift: bool) {
+    if shift {
+        picked.clear();
+        picked.extend(from.min(i)..=from.max(i));
+    } else if ctrl {
+        if picked.is_empty() {
+            picked.push(from);
+        }
+        if let Some(at) = picked.iter().position(|t| *t == i) {
+            picked.remove(at);
+        } else {
+            picked.push(i);
+        }
+    } else {
+        picked.clear();
+    }
+}
+
+/// The tracks picked if `i` is one of them, else `i`.
+fn picked_or(picked: &[usize], i: usize) -> Vec<usize> {
+    if picked.contains(&i) {
+        picked.to_vec()
+    } else {
+        vec![i]
+    }
+}
 
 /// Where a region dropped at height `y` of the lanes goes: under the last track counts as a new one.
 fn drop_row(rows: &[(f32, f32)], y: f32) -> Option<crate::region_edit::DropRow> {
@@ -1208,6 +1243,7 @@ enum CtxAction {
     LocatorsByRegion,
     DeleteRegion,
     CreateStack(usize),
+    CreateSummingStack(usize),
     ReleaseStack(usize),
     ToggleMute(usize),
     ToggleSolo(usize),
@@ -1533,6 +1569,13 @@ fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
         CtxAction::CreateStack(t.i),
         picked,
     );
+    pick(
+        ui,
+        "Create Summing Stack",
+        "",
+        CtxAction::CreateSummingStack(t.i),
+        picked,
+    );
     if t.folder {
         pick(
             ui,
@@ -1665,7 +1708,15 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
         CtxAction::DeleteRegion => delete_selected(p, v),
         CtxAction::CreateStack(i) => {
-            p.create_track_stack(i);
+            let tracks = picked_or(&s.tracks.picked_tracks, i);
+            p.stack_tracks(&tracks);
+            forget_track_indexes(s);
+        }
+        CtxAction::CreateSummingStack(i) => {
+            let tracks = picked_or(&s.tracks.picked_tracks, i);
+            if p.summing_stack(&tracks).is_none() {
+                s.status = Some("No bus is free for a Summing Stack".to_string());
+            }
             forget_track_indexes(s);
         }
         CtxAction::ReleaseStack(i) => {
@@ -1777,6 +1828,8 @@ pub fn poll_normalize(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 
 /// Track numbers shifted, so a remembered region or note selection may point at another track.
 fn forget_track_indexes(s: &mut UiState) {
+    s.tracks.picked_tracks.clear();
+    s.tracks.track_drag = None;
     s.tracks.selected = None;
     s.piano.selected.clear();
 }
@@ -2639,7 +2692,7 @@ fn header(
             TEXT_DIM,
         );
     }
-    let resp = ui.interact(hdr, id(("hdr", i)), Sense::click());
+    let resp = ui.interact(hdr, id(("hdr", i)), Sense::click_and_drag());
     if resp.clicked() || context_click(&resp) {
         p.selected_track = i;
     }
@@ -3677,10 +3730,28 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         };
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
+        let before = p.selected_track;
         let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;
+            let mods = ui.input(|m| m.modifiers);
+            pick_track(
+                &mut s.tracks.picked_tracks,
+                before,
+                i,
+                mods.command,
+                mods.shift,
+            );
+        }
+        if resp.drag_started() {
+            s.tracks.track_drag = Some(i);
+            if !s.tracks.picked_tracks.contains(&i) {
+                s.tracks.picked_tracks.clear();
+            }
+        }
+        if s.tracks.picked_tracks.contains(&i) && p.selected_track != i {
+            gh.rect_filled(hdr, 0.0, crate::theme::ACCENT_BLUE.gamma_multiply(0.22));
         }
         let Some(info) = track_info(p, i) else {
             continue;
@@ -3694,6 +3765,39 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
     if let Some(action) = picked {
         apply_ctx(action, p, s, lanes.width());
+    }
+    // A header being dragged: where it would land, and the move when it is let go.
+    if let Some(from) = s.tracks.track_drag {
+        let (pointer, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        if let Some(pt) = pointer {
+            let y = pt.y - lanes.top() + scroll_y;
+            let to = rows
+                .iter()
+                .position(|(top, h)| *h > 0.0 && y < top + h / 2.0)
+                .unwrap_or(rows.len());
+            let line_y = rows.get(to).map_or_else(
+                || rows.iter().map(|r| r.0 + r.1).fold(0.0, f32::max),
+                |r| r.0,
+            );
+            let line = lanes.top() + line_y - scroll_y;
+            gh.line_segment(
+                [pos2(headers.left(), line), pos2(headers.right(), line)],
+                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+            );
+            if !down {
+                let moving = if s.tracks.picked_tracks.contains(&from) {
+                    s.tracks.picked_tracks.clone()
+                } else {
+                    vec![from]
+                };
+                if p.move_tracks(&moving, to) {
+                    forget_track_indexes(s);
+                }
+            }
+        }
+        if !down {
+            s.tracks.track_drag = None;
+        }
     }
     let v = &mut s.tracks;
 
