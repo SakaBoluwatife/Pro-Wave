@@ -13,6 +13,14 @@ const NONE: Modifiers = Modifiers::NONE;
 const CTRL: Modifiers = Modifiers::COMMAND;
 const SHIFT: Modifiers = Modifiers::SHIFT;
 
+fn ctrl_shift() -> Modifiers {
+    Modifiers::COMMAND | Modifiers::SHIFT
+}
+
+fn alt_shift() -> Modifiers {
+    Modifiers::ALT | Modifiers::SHIFT
+}
+
 fn ctrl_alt() -> Modifiers {
     Modifiers::COMMAND | Modifiers::ALT
 }
@@ -110,6 +118,22 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::Z, none, Action::Menu("Zoom to Fit")),
     cmd(Key::ArrowRight, ctrl, Action::Menu("Zoom In")),
     cmd(Key::ArrowLeft, ctrl, Action::Menu("Zoom Out")),
+    cmd(Key::B, none, Action::Menu("Show Smart Controls")),
+    cmd(Key::G, none, Action::Menu("Show Global Tracks")),
+    cmd(Key::O, none, Action::Menu("Show Loop Browser")),
+    cmd(Key::K, shift, Action::Menu("Count-in")),
+    cmd(Key::C, alt, Action::Menu("Assign Track Color…")),
+    cmd(Key::T, alt, Action::Menu("Configure Track Header…")),
+    cmd(Key::K, alt, Action::Menu("Logic-style Key Commands…")),
+    cmd(Key::Z, ctrl_alt, Action::Menu("Undo History…")),
+    cmd(Key::D, ctrl_shift, Action::Menu("Create Track Stack…")),
+    cmd(Key::H, ctrl_shift, Action::Menu("Create Track Stack…")),
+    cmd(Key::G, ctrl_shift, Action::Menu("Create Summing Stack")),
+    cmd(Key::D, alt_shift, Action::Menu("Deselect All")),
+    cmd(Key::W, ctrl, Action::Menu("Close")),
+    cmd(Key::W, ctrl_alt, Action::Menu("Close Project")),
+    cmd(Key::Num2, ctrl, Action::Menu("Mixer")),
+    cmd(Key::Num4, ctrl, Action::Menu("Piano Roll")),
     // Screensets.
     cmd(Key::Num1, none, Action::RecallScreenset(1)),
     cmd(Key::Num2, none, Action::RecallScreenset(2)),

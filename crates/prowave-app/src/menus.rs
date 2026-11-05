@@ -525,6 +525,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => !p.tracks.is_empty(),
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
+        // Key commands with no menu entry.
+        "Show Loop Browser" | "Count-in" => true,
+        "Create Summing Stack" => !p.tracks.is_empty(),
         "Show Score Editor" | "Score Editor" => true,
         "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
         "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" | "Strip Silence…" => {
@@ -713,6 +716,20 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.bottom = Bottom::Mixer;
         }
         "Show Library" => s.show_library = !s.show_library,
+        "Show Loop Browser" => s.browser.toggle(crate::file_browser::Tab::Loops),
+        "Count-in" => p.count_in = !p.count_in,
+        "Create Summing Stack" => {
+            let tracks = if s.tracks.picked_tracks.contains(&p.selected_track) {
+                s.tracks.picked_tracks.clone()
+            } else {
+                vec![p.selected_track]
+            };
+            if p.summing_stack(&tracks).is_none() {
+                s.status = Some("No bus is free for a Summing Stack".to_string());
+            }
+            s.tracks.picked_tracks.clear();
+            forget_region_selection(s);
+        }
         "Show Channel Rack" => s.rack.open = !s.rack.open,
         "Show Smart Controls" => s.smart.open = !s.smart.open,
         "Mastering" => s.mastering.open = !s.mastering.open,
