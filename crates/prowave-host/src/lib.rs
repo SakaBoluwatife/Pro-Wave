@@ -80,6 +80,25 @@ impl std::error::Error for HostError {}
 
 /// The UI-thread half of a loaded plugin, of any format. It must outlive the audio half that came
 /// with it and stay on the UI thread. Call [`LoadedPlugin::tick`] about once a frame.
+/// A button in the bar at the top of a plugin's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderClick {
+    Bypass,
+    Presets,
+    Compare,
+    CopyCompare,
+}
+
+/// What the bar at the top of a plugin's window shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeaderState {
+    pub bypass: bool,
+    /// A/B compare is on its B side.
+    pub on_b: bool,
+    /// The preset last loaded or saved, if any.
+    pub preset: Option<String>,
+}
+
 /// A parameter a plugin lets the host move.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginParam {
@@ -116,6 +135,31 @@ pub trait LoadedPlugin {
     /// Shows a parameter's position in the plugin's window, as an automation lane moves it. Formats
     /// whose window follows the audio half by itself need nothing here.
     fn show_param(&mut self, _id: u32, _value: f64) {}
+
+    /// Whether the plugin offers a side-chain input.
+    fn has_side_input(&self) -> bool {
+        false
+    }
+
+    /// Whether the plugin must be loaded again for its side-chain input to be on or off. A VST3
+    /// plugin's buses can only be switched while it is not running.
+    fn side_needs_reload(&self, _on: bool) -> bool {
+        false
+    }
+
+    /// What the bar at the top of the editor window shows, while it is open.
+    fn show_header(&mut self, _state: &HeaderState) {}
+
+    /// A button pressed in that bar since last asked.
+    fn take_header_click(&mut self) -> Option<HeaderClick> {
+        None
+    }
+
+    /// Shows a menu under the bar's preset button and waits for the choice, by its place in `items`.
+    /// An empty item is a separator.
+    fn header_menu(&mut self, _items: &[String]) -> Option<usize> {
+        None
+    }
 
     /// The delay the plugin reported when it was activated, in samples.
     fn latency_samples(&self) -> usize;
@@ -171,8 +215,14 @@ pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
     }
 }
 
-/// Loads plugin `id` of a file of any format, for the engine's sample rate.
-pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, HostError> {
+/// Loads plugin `id` of a file of any format, for the engine's sample rate. `side` says a source for
+/// its side-chain input is chosen, if it has one.
+pub fn load_plugin(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+) -> Result<Loaded, HostError> {
     match PluginFormat::of(path) {
         PluginFormat::Sampler => load_sampler(path, sample_rate),
         PluginFormat::Clap => {
@@ -180,7 +230,7 @@ pub fn load_plugin(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Ho
             Ok((Box::new(loaded), audio))
         }
         #[cfg(windows)]
-        PluginFormat::Vst3 => load_vst3(path, id, sample_rate),
+        PluginFormat::Vst3 => load_vst3(path, id, sample_rate, side),
         #[cfg(not(windows))]
         PluginFormat::Vst3 => Err(HostError("VST3 needs Windows for now".to_string())),
     }
@@ -211,7 +261,7 @@ mod tests {
             let Some(info) = found.first() else {
                 continue;
             };
-            let (loaded, mut audio) = match load_plugin(file, &info.id, 48_000) {
+            let (loaded, mut audio) = match load_plugin(file, &info.id, 48_000, true) {
                 Ok(both) => both,
                 Err(e) => {
                     println!("{}: {e}", info.name);
@@ -219,13 +269,20 @@ mod tests {
                 }
             };
             let params = loaded.params();
-            println!("{}: {} parameters", info.name, params.len());
+            println!(
+                "{}: {} parameters, side input {}",
+                info.name,
+                params.len(),
+                loaded.has_side_input()
+            );
+            let key = vec![0.5f32; PLUGIN_BLOCK];
             let input = vec![0.1f32; PLUGIN_BLOCK];
             let (mut l, mut r) = (vec![0.0f32; PLUGIN_BLOCK], vec![0.0f32; PLUGIN_BLOCK]);
             for block in 0..200 {
                 if let Some(param) = params.first() {
                     audio.set_param(param.id, f64::from(block % 2));
                 }
+                audio.set_side_input([&key, &key]);
                 audio.process(
                     [&input, &input],
                     [&mut l, &mut r],

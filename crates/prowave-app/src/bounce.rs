@@ -202,6 +202,17 @@ pub enum After {
     },
     /// Track `track` is frozen with it.
     Freeze { track: usize },
+    /// It takes the place of the stretch `from_beat..to_beat` of region `region` on track `track`,
+    /// made by the effects named here. The file the region played stays as it was.
+    Process {
+        track: usize,
+        region: usize,
+        from_beat: f64,
+        to_beat: f64,
+        /// The hosted plugins that are heard, by uid, and the built-in effects, by their place.
+        plugins: Vec<u64>,
+        inserts: Vec<usize>,
+    },
 }
 
 /// One file to make.
@@ -279,6 +290,37 @@ fn render_project(p: &Project, render: &Render) -> Project {
         copy.master_vol = 1.0;
         copy.master_plugins.clear();
         if let Some(t) = copy.tracks.get_mut(track) {
+            t.sends.clear();
+            t.volume_db = 0.0;
+            t.pan = 0.0;
+            t.output = 0;
+            t.vca = None;
+            t.auto.volume.clear();
+            t.auto.pan.clear();
+        }
+    }
+    if let After::Process {
+        track,
+        region,
+        plugins,
+        inserts,
+        ..
+    } = &render.after
+    {
+        // The region alone, through the chosen effects and nothing else. Effects, fader and output
+        // stay on the track and go on applying to what is played, so they are not printed.
+        copy.master_vol = 1.0;
+        copy.master_plugins.clear();
+        if let Some(t) = copy.tracks.get_mut(*track) {
+            for (r, x) in t.regions.iter_mut().enumerate() {
+                x.params.mute = r != *region;
+            }
+            t.plugins.retain(|x| plugins.contains(&x.uid));
+            let mut place = 0;
+            t.inserts.retain(|_| {
+                place += 1;
+                inserts.contains(&(place - 1))
+            });
             t.sends.clear();
             t.volume_db = 0.0;
             t.pan = 0.0;
@@ -657,7 +699,57 @@ pub fn place(
             }
             import(p, *bar, Some(*track))
         }
+        After::Process {
+            track,
+            region,
+            from_beat,
+            to_beat,
+            ..
+        } => {
+            let made = crate::import::frozen_region(p, file, ctx)
+                .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            put_processed(p, *track, *region, (*from_beat, *to_beat), made)
+        }
     }
+}
+
+/// Cuts the stretch `range` out of region `r` of track `t` and has it play from the start of the
+/// region `made` holds. The parts around it go on playing the old file, untouched. What the region
+/// did to its sound (gain, fades, reverse) is in the new file now, so the stretch does none of it.
+fn put_processed(
+    p: &mut Project,
+    t: usize,
+    r: usize,
+    (from, to): (f64, f64),
+    made: crate::model::Region,
+) -> Result<(), String> {
+    let region = p
+        .tracks
+        .get(t)
+        .and_then(|x| x.regions.get(r))
+        .ok_or("The region is gone")?;
+    let (start, end) = (p.region_start_beats(region), p.region_end_beats(region));
+    let edge = crate::region_edit::EDGE_BEATS;
+    let middle = if from > start + edge {
+        crate::region_edit::split(p, t, r, from)?
+    } else {
+        r
+    };
+    if to < end - edge {
+        crate::region_edit::split(p, t, middle, to)?;
+    }
+    let map = p.tempo_map();
+    let seconds = map.seconds_at(to) - map.seconds_at(from);
+    let target = &mut p.tracks[t].regions[middle];
+    target.name = format!("{} Processed", target.name);
+    target.audio = made.audio;
+    target.params = crate::model::RegionParams {
+        source_start: 0.0,
+        source_len: seconds as f32,
+        ..Default::default()
+    };
+    p.song_rev += 1;
+    Ok(())
 }
 
 /// The files of `files` that hold a freeze and that no track in `p` is playing.
@@ -827,9 +919,195 @@ const OUT_RATES: [(u32, &str); 5] = [
     (96_000, "96 kHz"),
 ];
 
+/// File > Bounce > Process Selection: what is about to be printed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcessDialog {
+    pub track: usize,
+    pub region: usize,
+    /// The stretch to print, in bars counted from 1, inside the region.
+    pub from_bar: f64,
+    pub to_bar: f64,
+    /// The region's own bounds, in the same units.
+    pub bounds: (f64, f64),
+    /// The track's hosted plugins (uid, name) and built-in effects (place, name), and whether each
+    /// goes in the print.
+    pub plugins: Vec<(u64, String, bool)>,
+    pub inserts: Vec<(usize, String, bool)>,
+}
+
+/// The one region Process Selection works on, or why there is none.
+pub fn process_target(p: &Project, selected: &[(usize, usize)]) -> Result<(usize, usize), String> {
+    let &[(t, r)] = selected else {
+        return Err("Select one audio region first".to_string());
+    };
+    let track = p.tracks.get(t).ok_or("Select one audio region first")?;
+    let region = track
+        .regions
+        .get(r)
+        .ok_or("Select one audio region first")?;
+    if region.audio.is_none() {
+        return Err("Process Selection works on audio regions".to_string());
+    }
+    if region.folder.is_some() {
+        return Err("Pick a take first".to_string());
+    }
+    if track.frozen.is_some() {
+        return Err(format!("{} is frozen", track.name));
+    }
+    Ok((t, r))
+}
+
+/// The dialog for a region: the Cycle's stretch of it when the Cycle is on and crosses it, else all
+/// of it, through every effect on the track that is not bypassed.
+fn process_dialog(p: &Project, t: usize, r: usize) -> ProcessDialog {
+    let track = &p.tracks[t];
+    let region = &track.regions[r];
+    let (start, end) = (p.region_start_beats(region), p.region_end_beats(region));
+    let bar = |beat: f64| p.beats_to_bar(beat) + 1.0;
+    let (from, to) = if p.cycle && p.cycle_start < end && p.cycle_end > start {
+        (p.cycle_start.max(start), p.cycle_end.min(end))
+    } else {
+        (start, end)
+    };
+    ProcessDialog {
+        track: t,
+        region: r,
+        from_bar: bar(from),
+        to_bar: bar(to),
+        bounds: (bar(start), bar(end)),
+        plugins: track
+            .plugins
+            .iter()
+            .filter(|x| x.failed.is_none())
+            .map(|x| (x.uid, x.name.clone(), !x.bypass))
+            .collect(),
+        inserts: track
+            .inserts
+            .iter()
+            .enumerate()
+            .map(|(k, x)| (k, x.name().to_string(), !x.bypass))
+            .collect(),
+    }
+}
+
+/// Opens the dialog for what is selected, or says why it cannot.
+pub fn open_process(p: &Project, s: &mut crate::UiState) {
+    match process_target(p, &s.tracks.all_selected()) {
+        Ok((t, r)) => s.bounce.process = Some(process_dialog(p, t, r)),
+        Err(e) => s.status = Some(e),
+    }
+}
+
+/// The render a dialog asks for, into `path`. `None` if the stretch is empty.
+fn process_render(p: &Project, d: &ProcessDialog, path: PathBuf) -> Option<Render> {
+    let (from_beat, to_beat) = (
+        p.bar_to_beats(d.from_bar - 1.0),
+        p.bar_to_beats(d.to_bar - 1.0),
+    );
+    (to_beat > from_beat + crate::region_edit::EDGE_BEATS).then(|| Render {
+        path,
+        format: FileFormat::Wav,
+        out_rate: 0,
+        from_beat,
+        to_beat,
+        depth: BitDepth::Float32,
+        solo: Some(d.track),
+        after: After::Process {
+            track: d.track,
+            region: d.region,
+            from_beat,
+            to_beat,
+            plugins: d.plugins.iter().filter(|x| x.2).map(|x| x.0).collect(),
+            inserts: d.inserts.iter().filter(|x| x.2).map(|x| x.0).collect(),
+        },
+    })
+}
+
+/// The Process Selection dialog.
+fn show_process(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
+    let Some(d) = s.bounce.process.as_mut() else {
+        return;
+    };
+    let mut open = true;
+    let mut go = false;
+    egui::Window::new("Process Selection")
+        .id(egui::Id::unique("process_selection"))
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(340.0)
+        .show(ctx, |ui| {
+            ui.label(
+                "Prints this stretch through the effects ticked here to a new file. The old file \
+                 stays as it was, and Undo brings the region back.",
+            );
+            ui.add_space(4.0);
+            let (low, high) = d.bounds;
+            egui::Grid::new(egui::Id::unique("process_range"))
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("From bar");
+                    ui.add(
+                        egui::DragValue::new(&mut d.from_bar)
+                            .speed(0.01)
+                            .range(low..=high)
+                            .fixed_decimals(3),
+                    );
+                    ui.end_row();
+                    ui.label("To bar");
+                    ui.add(
+                        egui::DragValue::new(&mut d.to_bar)
+                            .speed(0.01)
+                            .range(low..=high)
+                            .fixed_decimals(3),
+                    );
+                    ui.end_row();
+                });
+            ui.add_space(4.0);
+            for (_, name, on) in &mut d.inserts {
+                ui.checkbox(on, name.as_str());
+            }
+            for (_, name, on) in &mut d.plugins {
+                ui.checkbox(on, name.as_str());
+            }
+            let chosen = d.plugins.iter().any(|x| x.2) || d.inserts.iter().any(|x| x.2);
+            if d.plugins.is_empty() && d.inserts.is_empty() {
+                ui.label("This track has no effects. Put the ones to print on it first.");
+            }
+            ui.add_space(6.0);
+            let ready = chosen && d.to_bar > d.from_bar;
+            go = ui
+                .add_enabled(ready, egui::Button::new("Process"))
+                .clicked();
+        });
+    if go {
+        let name = p.tracks.get(d.track).map_or("", |t| t.name.as_str());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |x| x.as_millis());
+        let dir = bounce_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            s.status = Some(e.to_string());
+            return;
+        }
+        let path = dir.join(format!("{} processed {stamp}.wav", file_safe(name)));
+        let render = process_render(p, d, path);
+        s.bounce.process = None;
+        if let Some(render) = render {
+            s.bounce.enqueue(vec![render]);
+            s.tracks.select_many(Vec::new());
+        }
+        return;
+    }
+    if !open {
+        s.bounce.process = None;
+    }
+}
+
 /// The window that asks how, and shows how far along it is.
 #[derive(Default)]
 pub struct BounceState {
+    /// Process Selection, while its dialog is open.
+    pub process: Option<ProcessDialog>,
     pub dialog: Option<Purpose>,
     pub format: FileFormat,
     pub depth: BitDepth,
@@ -1055,6 +1333,7 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
         }
         return;
     }
+    show_process(ctx, p, s);
     let Some(purpose) = s.bounce.dialog else {
         return;
     };

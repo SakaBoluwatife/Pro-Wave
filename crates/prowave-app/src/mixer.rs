@@ -80,6 +80,14 @@ pub struct MixerView {
     /// A preset to save or load (`App` carries it out).
     pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
     pub strip_cmd: Option<crate::plugin_presets::StripCmd>,
+    /// What the strip's menu wants a hardware control on (`UiState::midi_learn` takes it), and that
+    /// it asked for the list of assignments.
+    pub learn: Option<crate::model::LearnTarget>,
+    pub learn_window: bool,
+    /// Clip indicators to put out (`App` tells the engine).
+    pub clip_resets: Vec<ClipReset>,
+    /// The plugins showing the B side of A/B compare (`App` keeps this current).
+    pub showing_b: Vec<u64>,
     /// View > Show Signal Flow Channel Strips: only the path of the selected strip.
     pub signal_flow: bool,
     /// Mix > Pre-Fader Metering.
@@ -181,6 +189,10 @@ impl Default for MixerView {
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
+            learn: None,
+            learn_window: false,
+            clip_resets: Vec::new(),
+            showing_b: Vec::new(),
             strip_cmd: None,
             signal_flow: false,
             pre_fader: false,
@@ -210,6 +222,17 @@ pub struct Meters {
     /// Gain reduction in dB of each track's compressors.
     pub reduction: Vec<f32>,
     pub master: (f32, f32),
+    /// Each track's meter has gone over full scale since it was last reset.
+    pub clips: Vec<bool>,
+    pub master_clip: bool,
+}
+
+/// Which clip indicators to put out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipReset {
+    Track(usize),
+    Master,
+    All,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -372,6 +395,8 @@ struct Moved {
     /// The gesture began / ended (a double click is both).
     started: bool,
     stopped: bool,
+    /// The clip light was clicked; true with Alt held, for all of them.
+    reset_clip: Option<bool>,
 }
 
 /// The pan knob at `c` showing `value` (-1..1); drag it, or double-click for the centre. Not
@@ -414,6 +439,14 @@ pub(crate) fn meter_colour(db: f32) -> Color32 {
     }
 }
 
+/// Where the clip light of a meter goes, over the well that holds its bars.
+fn clip_light_rect(housing: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(housing.left(), housing.top() - 6.0),
+        pos2(housing.right(), housing.top() - 1.5),
+    )
+}
+
 /// Fader (scale + slot + cap) and stereo meter with peak-hold lines, laid out like Logic's
 /// channel strip: fader scale on the left, the cap, the meter scale numbers, then L/R bars.
 /// Returns the new fader value in dB when it was dragged or double-clicked.
@@ -427,6 +460,7 @@ fn fader_and_meter(
     editable: bool,
     peaks: (f32, f32),
     inactive: bool,
+    clipped: bool,
 ) -> Moved {
     let top = area.top() + 8.0;
     let bottom = area.bottom() - 6.0;
@@ -500,6 +534,14 @@ fn fader_and_meter(
         Stroke::new(1.0, Color32::from_gray(0x2e)),
         StrokeKind::Inside,
     );
+    // The clip light above the bars: on since the meter last went over full scale.
+    let light = clip_light_rect(housing);
+    let light_color = if clipped {
+        Color32::from_rgb(0xf0, 0x30, 0x24)
+    } else {
+        Color32::from_gray(0x24)
+    };
+    g.rect_filled(light, 1.0, light_color);
     for (i, (lvl, hd)) in [(levels.0, hold.0), (levels.1, hold.1)]
         .into_iter()
         .enumerate()
@@ -563,6 +605,16 @@ fn fader_and_meter(
     let cap_y = y_of(db_to_frac(db));
     let cap = Rect::from_center_size(pos2(fader_x, cap_y), vec2(16.0, 27.0));
     let mut out = Moved::default();
+    if clipped {
+        let resp = ui
+            .interact(light, id.with("clip"), Sense::click())
+            .on_hover_text_at_pointer(
+                "This meter went over 0 dB. Click to reset, Alt-click for all",
+            );
+        if resp.clicked() {
+            out.reset_clip = Some(ui.input(|i| i.modifiers.alt));
+        }
+    }
     if editable {
         let hit = Rect::from_min_max(
             pos2(fader_x - 14.0, top - 17.0),
@@ -943,6 +995,19 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
             ui.close();
         }
         ui.separator();
+        if ui.button(tr("Learn MIDI for Level")).clicked() {
+            v.learn = Some(crate::model::LearnTarget::Volume(i));
+            ui.close();
+        }
+        if ui.button(tr("Learn MIDI for Pan")).clicked() {
+            v.learn = Some(crate::model::LearnTarget::Pan(i));
+            ui.close();
+        }
+        if ui.button(tr("MIDI Assignments")).clicked() {
+            v.learn_window = true;
+            ui.close();
+        }
+        ui.separator();
         if ui
             .add_enabled(!last, egui::Button::new(tr("Delete Track")))
             .clicked()
@@ -1217,6 +1282,64 @@ fn preset_items(
     });
 }
 
+/// A/B compare of plugin `uid`, in a slot's menu.
+fn compare_items(
+    ui: &mut Ui,
+    uid: u64,
+    on_b: bool,
+    cmd: &mut Option<crate::plugin_presets::PresetCmd>,
+) {
+    use crate::plugin_presets::PresetCmd;
+    if ui.selectable_label(on_b, tr("Compare A/B")).clicked() {
+        *cmd = Some(PresetCmd::Compare { uid });
+        ui.close();
+    }
+    let copy = if on_b {
+        tr("Copy B to A")
+    } else {
+        tr("Copy A to B")
+    };
+    if ui.button(copy).clicked() {
+        *cmd = Some(PresetCmd::CopyCompare { uid });
+        ui.close();
+    }
+}
+
+/// The Side Chain menu of a plugin that offers a side-chain input: every other track that makes
+/// sound. What was picked goes in `pick`, `Some(None)` for none.
+fn side_chain_items(
+    ui: &mut Ui,
+    sources: &[(usize, String)],
+    now: Option<usize>,
+    pick: &mut Option<Option<usize>>,
+) {
+    ui.menu_button(tr("Side Chain"), |ui| {
+        if ui.selectable_label(now.is_none(), tr("Off")).clicked() {
+            *pick = Some(None);
+            ui.close();
+        }
+        for (t, name) in sources {
+            if ui
+                .selectable_label(now == Some(*t), name.as_str())
+                .clicked()
+            {
+                *pick = Some(Some(*t));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// The tracks that can key a plugin on track `own` (`None`: the output).
+fn side_chain_sources(p: &Project, own: Option<usize>) -> Vec<(usize, String)> {
+    p.tracks
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| Some(*i) != own && crate::model::can_key(Some(t.kind)))
+        .map(|(i, t)| (i, t.name.clone()))
+        .collect()
+}
+
 /// A plugin being dragged to another slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SlotDrag {
@@ -1274,6 +1397,25 @@ fn slot_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, home: Home, k: usiz
     if ui.input(|i| i.pointer.any_released()) {
         egui::DragAndDrop::clear_payload(ui.ctx());
         move_plugin(p, *drag, home, k);
+    }
+}
+
+/// A channel strip being dragged by its name to another place among the strips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StripDrag(usize);
+
+/// The track a strip dropped at `x` goes before: the one of the strip whose left half or the gap
+/// before it `x` is over. Past the last track's strip it is `tracks`, the end. The strips of the
+/// output stay last. `first` is the left edge of the first strip, `step` from one to the next.
+fn strip_drop_target(keys: &[StripKey], tracks: usize, first: f32, step: f32, x: f32) -> usize {
+    let strips = keys
+        .iter()
+        .filter(|k| matches!(k, StripKey::Track(_)))
+        .count();
+    let gap = ((x - first + step * 0.5) / step).floor().max(0.0) as usize;
+    match keys.get(gap.min(strips)) {
+        Some(StripKey::Track(t)) if gap < strips => *t,
+        _ => tracks,
     }
 }
 
@@ -1477,6 +1619,19 @@ fn plugin_slot(
     remove |= slot_remove_button(ui, g, r, uid, text_color);
     let mut open = loaded && resp.clicked();
     let mut preset = None;
+    let own = match home {
+        Home::Track(i) => Some(i),
+        Home::Master => None,
+    };
+    let sources = if plugin.side_offered {
+        side_chain_sources(p, own)
+    } else {
+        Vec::new()
+    };
+    let side_now = plugin.sidechain;
+    let side_offered = plugin.side_offered;
+    let mut side_pick = None;
+    let on_b = v.showing_b.contains(&plugin_uid);
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1502,6 +1657,12 @@ fn plugin_slot(
             }
         });
         preset_items(ui, plugin_uid, &plugin_id, &name, &mut preset);
+        if loaded {
+            compare_items(ui, plugin_uid, on_b, &mut preset);
+        }
+        if side_offered {
+            side_chain_items(ui, &sources, side_now, &mut side_pick);
+        }
         ui.separator();
         if ui.button(tr("Remove")).clicked() {
             remove = true;
@@ -1511,6 +1672,9 @@ fn plugin_slot(
     slot_menu(&resp, false).show(&mut items);
     if preset.is_some() {
         v.preset_cmd = preset;
+    }
+    if let Some(source) = side_pick {
+        home.plugins(p)[j].sidechain = source;
     }
     if open {
         v.open_plugin = Some((plugin_uid, name));
@@ -1604,6 +1768,14 @@ fn instrument_plugin_slot(
     }
     let installed = v.installed.clone();
     let mut pick = None;
+    let sources = if plugin.side_offered {
+        side_chain_sources(p, Some(i))
+    } else {
+        Vec::new()
+    };
+    let mut side_pick = None;
+    let on_b = v.showing_b.contains(&plugin.uid);
+    let mut compare = None;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         ui.add_enabled_ui(loaded, |ui| {
@@ -1612,6 +1784,12 @@ fn instrument_plugin_slot(
                 ui.close();
             }
         });
+        if loaded {
+            compare_items(ui, plugin.uid, on_b, &mut compare);
+        }
+        if plugin.side_offered {
+            side_chain_items(ui, &sources, plugin.sidechain, &mut side_pick);
+        }
         ui.separator();
         if installed.iter().any(|info| info.is_instrument) {
             ui.menu_button("Replace With", |ui| {
@@ -1624,6 +1802,12 @@ fn instrument_plugin_slot(
         }
     };
     slot_menu(&resp, false).show(&mut items);
+    if compare.is_some() {
+        v.preset_cmd = compare;
+    }
+    if let (Some(source), Some(live)) = (side_pick, p.tracks[i].instrument_plugin.as_mut()) {
+        live.sidechain = source;
+    }
     if open {
         v.open_plugin = Some((plugin.uid, plugin.name));
     }
@@ -2059,6 +2243,13 @@ pub fn channel_strip(
         StripKey::Track(i) => meters.tracks.get(i).copied().unwrap_or((0.0, 0.0)),
         _ => meters.master,
     };
+    let (clip_reset, clipped) = match key {
+        StripKey::Track(i) => (
+            ClipReset::Track(i),
+            meters.clips.get(i).copied().unwrap_or(false),
+        ),
+        _ => (ClipReset::Master, meters.master_clip),
+    };
     let hold = v.peak_hold.entry(key).or_insert(0.0);
     *hold = hold.max(peaks.0.max(peaks.1));
     let half = (inner_w - 4.0) / 2.0;
@@ -2088,6 +2279,7 @@ pub fn channel_strip(
         .clicked()
     {
         *hold = 0.0;
+        v.clip_resets.push(clip_reset);
     }
 
     // Fader + scale + meter.
@@ -2112,7 +2304,13 @@ pub fn channel_strip(
         fader_free,
         peaks,
         inactive,
+        clipped,
     );
+    if let Some(all) = moved.reset_clip {
+        v.clip_resets
+            .push(if all { ClipReset::All } else { clip_reset });
+        v.peak_hold.remove(&key);
+    }
     if let Some(db) = moved.value {
         match key {
             StripKey::Track(i) => match send_bus {
@@ -2162,6 +2360,12 @@ pub fn channel_strip(
 
     // Name.
     let name_r = Rect::from_min_max(pos2(strip.left(), strip.bottom() - name_h), strip.max);
+    if let (StripKey::Track(i), NameStyle::Coloured) = (key, name_style) {
+        // Only a drag: a click or the right button goes through to the strip underneath.
+        ui.interact(name_r, id(ns, (key, "name")), Sense::drag())
+            .on_hover_text_at_pointer("Drag to move this strip")
+            .dnd_set_drag_payload(StripDrag(i));
+    }
     let font = FontId::proportional(10.5);
     let shown = elide(g, &name, &font, name_r.width() - 6.0);
     match name_style {
@@ -2903,6 +3107,40 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             NameStyle::Coloured,
         );
     }
+
+    // A strip dragged by its name, while there is an order to change.
+    let reorders = v.mode != MixerMode::Single && !v.signal_flow;
+    let drag = egui::DragAndDrop::payload::<StripDrag>(ui.ctx());
+    if let (Some(drag), true) = (drag, reorders) {
+        let first = strips_area.left() + 4.0 - v.scroll_x;
+        let step = strip_w + GAP;
+        if let Some(at) = ui.input(|i| i.pointer.latest_pos()) {
+            let to = strip_drop_target(&keys, p.tracks.len(), first, step, at.x);
+            let place = keys
+                .iter()
+                .position(|k| *k == StripKey::Track(to))
+                .unwrap_or_else(|| {
+                    keys.iter()
+                        .filter(|k| matches!(k, StripKey::Track(_)))
+                        .count()
+                });
+            let line = first + place as f32 * step - GAP * 0.5;
+            gs.line_segment(
+                [pos2(line, body.top()), pos2(line, body.bottom())],
+                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+            );
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                if p.move_tracks(&[drag.0], to) {
+                    p.linked_strips.clear();
+                    v.peak_hold.clear();
+                    // The lights are by place, which has changed.
+                    v.clip_resets.push(ClipReset::All);
+                    crate::tracks_area::forget_track_indexes(s);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3306,6 +3544,7 @@ mod tests {
             tracks: vec![(0.5, 0.4), (0.0, 0.0)],
             reduction: vec![6.0, 0.0],
             master: (0.3, 0.3),
+            ..Meters::default()
         };
         for _ in 0..3 {
             h.frame(vec![], |ui| show(ui, &mut p, &mut s, &meters));

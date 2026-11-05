@@ -935,7 +935,14 @@ impl EngineSync {
         match cmd {
             PresetCmd::Save { uid, file } => self.rack.save_preset(*uid, file),
             PresetCmd::Load { uid, file } => self.rack.load_preset(*uid, file),
+            PresetCmd::Compare { uid } => self.rack.compare_flip(*uid),
+            PresetCmd::CopyCompare { uid } => self.rack.compare_copy(*uid),
         }
+    }
+
+    /// The plugins showing the B side of A/B compare.
+    pub fn showing_b(&self) -> Vec<u64> {
+        self.rack.showing_b()
     }
 
     /// Runs what the plugins asked for on this thread, with no other change.
@@ -981,6 +988,29 @@ impl EngineSync {
     pub fn track_meters(&mut self, n: usize) -> Vec<(f32, f32)> {
         let state = self.engine.state();
         (0..n).map(|i| state.track_peaks(i)).collect()
+    }
+
+    /// The clip indicators of the first `n` tracks, for the mixer.
+    pub fn track_clips(&mut self, n: usize) -> Vec<bool> {
+        let state = self.engine.state();
+        (0..n).map(|i| state.track_clip(i)).collect()
+    }
+
+    /// The output's clip indicator.
+    pub fn master_clip(&mut self) -> bool {
+        self.engine.state().master_clip
+    }
+
+    /// Puts out clip indicators. False when the engine could not take that now.
+    pub fn reset_clip(&mut self, reset: crate::mixer::ClipReset) -> bool {
+        use crate::mixer::ClipReset;
+        self.engine.send(match reset {
+            ClipReset::Track(t) => Command::ResetClip {
+                track: track_index(t),
+            },
+            ClipReset::Master => Command::ResetClip { track: None },
+            ClipReset::All => Command::ResetAllClips,
+        })
     }
 
     /// Gain reduction in dB of the compressors of the first `n` tracks, for the mixer.

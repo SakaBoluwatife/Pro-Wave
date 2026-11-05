@@ -10,6 +10,27 @@ use std::time::{Duration, Instant};
 /// How often to look for a MIDI keyboard while none is connected.
 const RESCAN: Duration = Duration::from_secs(3);
 
+/// A controller moved on a device, for MIDI learn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Control {
+    /// 0-15.
+    pub channel: u8,
+    pub controller: u8,
+    pub value: u8,
+}
+
+/// The controller change in a raw MIDI message, if it is one.
+pub fn parse_control(msg: &[u8]) -> Option<Control> {
+    let [status, controller, value, ..] = *msg else {
+        return None;
+    };
+    (status & 0xf0 == 0xb0 && controller < 128 && value < 128).then_some(Control {
+        channel: status & 0x0f,
+        controller,
+        value,
+    })
+}
+
 pub struct MidiIn {
     /// Every input open now, by name.
     connections: Vec<(String, MidiInputConnection<()>)>,
@@ -20,6 +41,8 @@ pub struct MidiIn {
     avoided: Option<String>,
     tx: SyncSender<LiveNote>,
     rx: Receiver<LiveNote>,
+    controls_tx: SyncSender<Control>,
+    controls_rx: Receiver<Control>,
     last_try: Option<Instant>,
 }
 
@@ -47,12 +70,15 @@ impl MidiIn {
     pub fn new() -> Self {
         // Bounded: a device that floods the port cannot fill the memory.
         let (tx, rx) = sync_channel(4096);
+        let (controls_tx, controls_rx) = sync_channel(4096);
         let mut midi = Self {
             connections: Vec::new(),
             refused: Vec::new(),
             avoided: None,
             tx,
             rx,
+            controls_tx,
+            controls_rx,
             last_try: None,
         };
         midi.connect();
@@ -110,12 +136,16 @@ impl MidiIn {
             return;
         };
         let tx = self.tx.clone();
+        let controls_tx = self.controls_tx.clone();
         match input.connect(
             port,
             "prowave-in",
             move |_stamp, msg, _| {
                 if let Some(note) = parse(msg) {
                     let _ = tx.try_send(note);
+                }
+                if let Some(control) = parse_control(msg) {
+                    let _ = controls_tx.try_send(control);
                 }
             },
             (),
@@ -142,6 +172,13 @@ impl MidiIn {
         }
         while let Ok(note) = self.rx.try_recv() {
             out.push(note);
+        }
+    }
+
+    /// Appends the controllers moved since the last call to `out`.
+    pub fn poll_controls(&mut self, out: &mut Vec<Control>) {
+        while let Ok(control) = self.controls_rx.try_recv() {
+            out.push(control);
         }
     }
 }

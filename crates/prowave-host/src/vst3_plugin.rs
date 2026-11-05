@@ -5,7 +5,7 @@
 //! and controller, connect them, choose the buses, set up processing, activate, then process. Edits
 //! made in a plugin's editor arrive at the host on the UI thread and go to the audio thread through
 //! a queue, because in VST3 the host carries them from the controller to the processor.
-use crate::clap::{fill_main_input, read_main_output};
+use crate::clap::{fill_main_input, fill_side_input, read_main_output};
 use crate::editor_window::EditorWindow;
 use crate::{HostError as Error, Loaded, LoadedPlugin, PluginFormat, PluginInfo};
 use prowave_engine::{
@@ -833,11 +833,32 @@ unsafe fn bus_layout(component: &ComPtr<IComponent>, direction: i32) -> Vec<usiz
         .collect()
 }
 
-/// Asks for stereo on the main buses, keeps what the others have, and turns on the main ones and
-/// the first note input. A plugin may say no: its layout is read afterwards, whatever it is.
+/// The input bus for a side chain: the first auxiliary audio bus with channels.
+///
+/// SAFETY: `component` must be initialized.
+unsafe fn side_bus_of(component: &ComPtr<IComponent>) -> Option<usize> {
+    use BusDirections_::kInput;
+    let count = unsafe { component.getBusCount(MediaTypes_::kAudio as MediaType, kInput) };
+    (0..count.max(0)).find_map(|i| {
+        // SAFETY: the struct is plain data, and the plugin fills it in.
+        let mut info: BusInfo = unsafe { std::mem::zeroed() };
+        let found =
+            unsafe { component.getBusInfo(MediaTypes_::kAudio as MediaType, kInput, i, &mut info) };
+        (found == kResultOk && info.busType == BusTypes_::kAux as BusType && info.channelCount > 0)
+            .then_some(i as usize)
+    })
+}
+
+/// Asks for stereo on the main buses, keeps what the others have, and turns on the main ones, the
+/// first note input and, when a source is chosen, the side-chain bus `side`. A plugin may say no:
+/// its layout is read afterwards, whatever it is.
 ///
 /// SAFETY: both must be the initialized halves of one plugin, not yet active.
-unsafe fn set_up_buses(component: &ComPtr<IComponent>, processor: &ComPtr<IAudioProcessor>) {
+unsafe fn set_up_buses(
+    component: &ComPtr<IComponent>,
+    processor: &ComPtr<IAudioProcessor>,
+    side: Option<usize>,
+) {
     use BusDirections_::{kInput, kOutput};
     use MediaTypes_::{kAudio, kEvent};
     let stereo = SpeakerArr::kStereo;
@@ -865,6 +886,9 @@ unsafe fn set_up_buses(component: &ComPtr<IComponent>, processor: &ComPtr<IAudio
         if !inputs.is_empty() {
             component.activateBus(kAudio as MediaType, kInput, 0, 1);
         }
+        if let Some(side) = side {
+            component.activateBus(kAudio as MediaType, kInput, side as int32, 1);
+        }
         if !outputs.is_empty() {
             component.activateBus(kAudio as MediaType, kOutput, 0, 1);
         }
@@ -874,9 +898,10 @@ unsafe fn set_up_buses(component: &ComPtr<IComponent>, processor: &ComPtr<IAudio
     }
 }
 
-/// Loads plugin `id` of a `.vst3` and activates it for the engine's sample rate and block. Failure
-/// is an error to show, never a panic.
-pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Error> {
+/// Loads plugin `id` of a `.vst3` and activates it for the engine's sample rate and block. `side`
+/// turns its side-chain bus on, which cannot be done later without loading it again. Failure is an
+/// error to show, never a panic.
+pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<Loaded, Error> {
     let module = load_module(path)?;
     let cid = uid_from_text(id).ok_or_else(|| err(path, "the plugin's identifier is not valid"))?;
     let dirty = Arc::new(AtomicBool::new(false));
@@ -949,7 +974,8 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
                 }
             }
         }
-        set_up_buses(&component, &processor);
+        let side_bus = side_bus_of(&component);
+        set_up_buses(&component, &processor, side_bus.filter(|_| side));
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -975,7 +1001,7 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
         let params = controller
             .as_ref()
             .map_or_else(Vec::new, |c| vst3_params(c));
-        let audio = Vst3Processor::new(
+        let mut audio = Vst3Processor::new(
             processor,
             &inputs,
             &outputs,
@@ -985,9 +1011,12 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32) -> Result<Loaded, Erro
             f64::from(sample_rate),
             released.clone(),
         );
+        audio.side_bus = side_bus.filter(|_| side);
         Ok((
             Box::new(LoadedVst3 {
                 params,
+                side_bus,
+                side_on: side,
                 component,
                 controller,
                 separate,
@@ -1058,6 +1087,9 @@ struct LoadedVst3 {
     component: ComPtr<IComponent>,
     controller: Option<ComPtr<IEditController>>,
     params: Vec<crate::PluginParam>,
+    /// The bus a side chain goes in, and whether it was turned on when this was loaded.
+    side_bus: Option<usize>,
+    side_on: bool,
     separate: bool,
     points: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     handler: ComWrapper<Handler>,
@@ -1102,6 +1134,28 @@ fn unpack_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 impl LoadedPlugin for LoadedVst3 {
     fn params(&self) -> Vec<crate::PluginParam> {
         self.params.clone()
+    }
+
+    fn has_side_input(&self) -> bool {
+        self.side_bus.is_some()
+    }
+
+    fn side_needs_reload(&self, on: bool) -> bool {
+        self.side_bus.is_some() && self.side_on != on
+    }
+
+    fn show_header(&mut self, state: &crate::HeaderState) {
+        if let Some(open) = &self.editor {
+            open.window.show_header(state);
+        }
+    }
+
+    fn take_header_click(&mut self) -> Option<crate::HeaderClick> {
+        self.editor.as_ref()?.window.take_header_click()
+    }
+
+    fn header_menu(&mut self, items: &[String]) -> Option<usize> {
+        self.editor.as_ref()?.window.header_menu(items)
     }
 
     fn take_edits(&mut self) -> Vec<(u32, f64)> {
@@ -1411,6 +1465,8 @@ struct Vst3Processor {
     continuous: i64,
     started: bool,
     released: Arc<AtomicBool>,
+    /// The bus a side chain goes in, when it is on.
+    side_bus: Option<usize>,
 }
 
 // SAFETY: this half is handed to the audio thread once and used only there until it comes back.
@@ -1445,6 +1501,7 @@ impl Vst3Processor {
             continuous: 0,
             started: false,
             released,
+            side_bus: None,
         }
     }
 
@@ -1540,6 +1597,12 @@ fn process_context(now: &PluginTransport, sample_rate: f64, continuous: i64) -> 
 }
 
 impl PluginProcessor for Vst3Processor {
+    fn set_side_input(&mut self, side: [&[f32]; 2]) {
+        if let Some(bus) = self.side_bus {
+            fill_side_input(&mut self.inputs.channels, bus, side);
+        }
+    }
+
     fn set_param(&mut self, id: u32, value: f64) {
         if self.pending.len() < self.pending.capacity() {
             self.pending.push((id, value.clamp(0.0, 1.0)));
@@ -1564,7 +1627,10 @@ impl PluginProcessor for Vst3Processor {
             self.params.add(id, 0, value);
         }
         self.take_events(events);
-        fill_main_input(&mut self.inputs.channels, input);
+        // A plugin whose only input is its side chain has no main one to fill.
+        if self.side_bus != Some(0) {
+            fill_main_input(&mut self.inputs.channels, input);
+        }
         let mut context = process_context(transport, self.sample_rate, self.continuous);
         self.continuous += PLUGIN_BLOCK as i64;
         let params = self.params.as_com_ref::<IParameterChanges>();
@@ -1677,7 +1743,7 @@ mod tests {
         let fake = dir.path().join("fake.vst3");
         std::fs::write(&fake, b"not a plugin").unwrap();
         assert!(scan_vst3_file(&fake).is_err());
-        assert!(load_vst3(&fake, &"0".repeat(32), 48_000).is_err());
+        assert!(load_vst3(&fake, &"0".repeat(32), 48_000, false).is_err());
     }
 
     #[test]
@@ -1800,7 +1866,8 @@ mod tests {
                     "{} / {} ({}) instrument {}",
                     info.vendor, info.name, info.id, info.is_instrument
                 );
-                let (mut loaded, mut audio) = load_vst3(&info.path, &info.id, 48_000).unwrap();
+                let (mut loaded, mut audio) =
+                    load_vst3(&info.path, &info.id, 48_000, false).unwrap();
                 println!("  latency {}", loaded.latency_samples());
                 let (mut l, mut r) = (vec![9.0; PLUGIN_BLOCK], vec![9.0; PLUGIN_BLOCK]);
                 let mut peak = 0f32;
@@ -1847,7 +1914,8 @@ mod tests {
 
                 let state = loaded.save_state().unwrap().unwrap();
                 println!("  state {} bytes", state.len());
-                let (mut other, other_audio) = load_vst3(&info.path, &info.id, 48_000).unwrap();
+                let (mut other, other_audio) =
+                    load_vst3(&info.path, &info.id, 48_000, false).unwrap();
                 other.load_state(&state).unwrap();
                 assert!(!other.take_dirty(), "loading is not an edit");
                 drop(other_audio);

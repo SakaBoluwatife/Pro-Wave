@@ -689,7 +689,34 @@ pub struct PluginInsert {
     pub state: Option<std::sync::Arc<Vec<u8>>>,
     /// What can be automated, once it has loaded. Not saved.
     pub params: std::sync::Arc<Vec<prowave_host::PluginParam>>,
+    /// The track whose sound goes to its side-chain input.
+    pub sidechain: Option<usize>,
+    /// It said it has a side-chain input, once it has loaded. Not saved.
+    pub side_offered: bool,
+    /// The parameter on each Smart Controls knob, once the user has chosen.
+    pub smart_knobs: Option<[Option<u32>; SMART_KNOBS]>,
 }
+
+/// What a hardware control moves (MIDI learn).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LearnTarget {
+    Volume(usize),
+    Pan(usize),
+    MasterVolume,
+    Plugin { uid: u64, param: u32 },
+}
+
+/// A hardware control and what it moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiMapping {
+    /// 0-15.
+    pub channel: u8,
+    pub controller: u8,
+    pub target: LearnTarget,
+}
+
+/// Knobs in the Smart Controls window.
+pub const SMART_KNOBS: usize = 8;
 
 impl PluginInsert {
     pub fn new(info: &prowave_host::PluginInfo) -> Self {
@@ -704,8 +731,16 @@ impl PluginInsert {
             failed: None,
             state: None,
             params: std::sync::Arc::default(),
+            sidechain: None,
+            side_offered: false,
+            smart_knobs: None,
         }
     }
+}
+
+/// Whether a track of this kind has a sound that can key a plugin's side-chain input.
+pub fn can_key(kind: Option<TrackKind>) -> bool {
+    !matches!(kind, None | Some(TrackKind::Folder | TrackKind::Vca))
 }
 
 /// The insert row each of `plugins` shows in, with `first` rows taken above them. They stay in
@@ -970,6 +1005,8 @@ pub struct Project {
     pub punch_end: f64,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
+    /// Hardware controls assigned with MIDI learn.
+    pub midi_map: Vec<MidiMapping>,
 }
 
 /// Deterministic pseudo-random so demo content is stable across runs.
@@ -1172,6 +1209,7 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            midi_map: Vec::new(),
             low_latency: false,
             punch: false,
             punch_start: 0.0,
@@ -1909,6 +1947,16 @@ impl Project {
                 *v = new_place.get(*v).copied().unwrap_or(*v);
             }
         }
+        for plugin in self.all_hosted_mut() {
+            if let Some(source) = plugin.sidechain.as_mut() {
+                *source = new_place.get(*source).copied().unwrap_or(*source);
+            }
+        }
+        for m in &mut self.midi_map {
+            if let LearnTarget::Volume(t) | LearnTarget::Pan(t) = &mut m.target {
+                *t = new_place.get(*t).copied().unwrap_or(*t);
+            }
+        }
         self.selected_track = new_place
             .get(self.selected_track)
             .copied()
@@ -2040,6 +2088,20 @@ impl Project {
                 }
             }
         }
+        for plugin in self.all_hosted_mut() {
+            if let Some(source) = plugin.sidechain.as_mut() {
+                if *source >= at {
+                    *source += 1;
+                }
+            }
+        }
+        for m in &mut self.midi_map {
+            if let LearnTarget::Volume(t) | LearnTarget::Pan(t) = &mut m.target {
+                if *t >= at {
+                    *t += 1;
+                }
+            }
+        }
     }
 
     /// Keeps VCA assignments right after track `removed` was taken out: tracks that were
@@ -2052,6 +2114,27 @@ impl Project {
                 other => other,
             };
         }
+        // The same for side chains: a plugin keyed by it has no source any more.
+        for plugin in self.all_hosted_mut() {
+            plugin.sidechain = match plugin.sidechain {
+                Some(s) if s == removed => None,
+                Some(s) if s > removed => Some(s - 1),
+                other => other,
+            };
+        }
+        // And for hardware controls: the ones on it go with it.
+        self.midi_map.retain_mut(|m| match &mut m.target {
+            LearnTarget::Volume(t) | LearnTarget::Pan(t) => {
+                if *t == removed {
+                    return false;
+                }
+                if *t > removed {
+                    *t -= 1;
+                }
+                true
+            }
+            _ => true,
+        });
     }
 
     /// The VCA track that controls track `i`, if it has one.
@@ -2131,6 +2214,9 @@ impl Project {
             copy.vca = None;
             copy.indent = 0;
             copy.frozen = None;
+            for plugin in copy.hosted_mut() {
+                plugin.sidechain = None;
+            }
             self.tracks.push(copy);
             count += 1;
         }
@@ -3173,6 +3259,50 @@ mod tests {
         assert!(!p.move_tracks(&[track], track), "already there");
         assert!(p.move_tracks(&[track], p.tracks.len()), "to the end");
         assert_eq!(p.tracks.last().unwrap().name, "a");
+    }
+
+    #[test]
+    fn a_side_chain_follows_its_source_and_goes_with_it() {
+        let info = prowave_host::PluginInfo {
+            id: "c".into(),
+            name: "Comp".into(),
+            vendor: String::new(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: "c.clap".into(),
+            is_instrument: false,
+        };
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let kick = p.add_track(TrackKind::Audio);
+        let bass = p.add_track(TrackKind::Audio);
+        let other = p.add_track(TrackKind::Audio);
+        p.tracks[kick].name = "kick".into();
+        p.tracks[other].plugins.push(PluginInsert::new(&info));
+        p.tracks[other].plugins[0].sidechain = Some(kick);
+        p.master_plugins.push(PluginInsert::new(&info));
+        p.master_plugins[0].sidechain = Some(bass);
+        let key_of = |p: &Project| {
+            let t = p.tracks.iter().find(|t| !t.plugins.is_empty()).unwrap();
+            t.plugins[0].sidechain.map(|s| p.tracks[s].name.clone())
+        };
+
+        assert!(p.move_tracks(&[kick], p.tracks.len()), "kick to the end");
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        assert_eq!(p.master_plugins[0].sidechain, Some(0), "bass is first now");
+
+        // A track put in before it moves it along.
+        p.tracks.insert(0, Track::new("new", TrackKind::Audio));
+        p.vca_inserted(0);
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        assert_eq!(p.master_plugins[0].sidechain, Some(1));
+
+        // One taken away before it too, and when the source itself goes the plugin has none.
+        assert!(p.delete_track(0));
+        assert_eq!(key_of(&p).as_deref(), Some("kick"));
+        let kick = p.tracks.iter().position(|t| t.name == "kick").unwrap();
+        assert!(p.delete_track(kick));
+        assert_eq!(key_of(&p), None);
     }
 
     #[test]

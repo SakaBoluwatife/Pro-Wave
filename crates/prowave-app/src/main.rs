@@ -34,6 +34,7 @@ mod midi_file;
 mod midi_fx;
 mod midi_fx_ui;
 mod midi_in;
+mod midi_learn;
 mod midi_out;
 mod mixer;
 mod model;
@@ -170,6 +171,7 @@ pub struct UiState {
     pub settings: settings::SettingsView,
     pub dialogs: quick_dialogs::QuickDialogs,
     pub smart: smart_controls::SmartControls,
+    pub midi_learn: midi_learn::MidiLearn,
     pub stems: stem_splitter::StemSplitter,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
@@ -259,6 +261,7 @@ impl UiState {
             settings: settings::SettingsView::default(),
             dialogs: quick_dialogs::QuickDialogs::default(),
             smart: smart_controls::SmartControls::default(),
+            midi_learn: midi_learn::MidiLearn::default(),
             stems: stem_splitter::StemSplitter::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
@@ -481,11 +484,17 @@ impl App {
     fn play_and_record_midi(&mut self, ctx: &egui::Context) {
         // What was typed on the computer keyboard goes the way a MIDI keyboard's notes do.
         let mut input = std::mem::take(&mut self.ui.typed);
+        let mut controls = Vec::new();
         if let Some(midi) = self.midi.as_mut() {
             midi.poll(&mut input);
+            midi.poll_controls(&mut controls);
         }
         let p = &mut self.project;
         let s = &mut self.ui;
+        let said = midi_learn::apply(p, &mut s.midi_learn, &controls, &mut s.smart.moves);
+        if said.is_some() {
+            s.status = said;
+        }
         let track = s.rec.target().map_or(p.selected_track, |(t, _)| t);
         let plays = p
             .tracks
@@ -801,6 +810,14 @@ impl eframe::App for App {
                     self.ui.status = Some(e);
                 }
             }
+            self.ui.mixer.showing_b = sync.showing_b();
+            let resets = std::mem::take(&mut self.ui.mixer.clip_resets);
+            for reset in resets {
+                // One the engine cannot take now is tried again next frame.
+                if !sync.reset_clip(reset) {
+                    self.ui.mixer.clip_resets.push(reset);
+                }
+            }
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
                 sync.open_plugin_editor(uid, &name, main_window_handle(frame));
             }
@@ -837,6 +854,8 @@ impl eframe::App for App {
                 tracks: sync.track_meters(self.project.tracks.len()),
                 reduction: sync.gain_reduction(self.project.tracks.len()),
                 master: sync.master_peaks(),
+                clips: sync.track_clips(self.project.tracks.len()),
+                master_clip: sync.master_clip(),
             },
             None => mixer::Meters::default(),
         };
@@ -920,6 +939,7 @@ impl eframe::App for App {
         }
         quick_dialogs::show(&ctx, p, s);
         smart_controls::show(&ctx, p, s);
+        midi_learn::show(&ctx, p, s);
         stem_splitter::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);

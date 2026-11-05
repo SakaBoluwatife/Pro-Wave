@@ -93,6 +93,11 @@ pub trait PluginProcessor: Send {
     /// Moves a parameter, as a position 0..=1 along its range, from the next block on. Called on
     /// the audio thread: it must not allocate.
     fn set_param(&mut self, _id: u32, _value: f64) {}
+
+    /// The side-chain input of the block that comes next, for a plugin that has one. Called on the
+    /// audio thread just before [`Self::process`]: it must not allocate. Each slice is
+    /// `PLUGIN_BLOCK` frames long. Not called while no source is chosen, after one call with silence.
+    fn set_side_input(&mut self, _side: [&[f32]; 2]) {}
 }
 
 /// Running every hosted plugin's block at once, on several cores. A plugin's output reaches the mix
@@ -206,6 +211,12 @@ pub struct PluginSlot {
     dry_l: Box<[f32]>,
     dry_r: Box<[f32]>,
     dry_pos: usize,
+    /// The strip whose sound goes to the plugin's side-chain input.
+    side_source: Option<u16>,
+    side_l: Box<[f32]>,
+    side_r: Box<[f32]>,
+    /// The source was taken away: the plugin is told silence once.
+    side_flush: bool,
 }
 
 impl PluginSlot {
@@ -231,6 +242,10 @@ impl PluginSlot {
             dry_l: dry.clone(),
             dry_r: dry,
             dry_pos: 0,
+            side_source: None,
+            side_l: buffer(),
+            side_r: buffer(),
+            side_flush: false,
         }
     }
 
@@ -264,6 +279,28 @@ impl PluginSlot {
 
     pub fn set_bypass(&mut self, bypass: bool) {
         self.bypass = bypass;
+    }
+
+    /// The strip whose sound goes to the side-chain input from now on.
+    pub fn set_side_source(&mut self, source: Option<u16>) {
+        if source.is_none() && self.side_source.is_some() {
+            self.side_l.fill(0.0);
+            self.side_r.fill(0.0);
+            self.side_flush = true;
+        }
+        self.side_source = source;
+    }
+
+    #[inline]
+    pub fn side_source(&self) -> Option<u16> {
+        self.side_source
+    }
+
+    /// The side-chain input of the frame [`Self::process`] is about to take.
+    #[inline]
+    pub fn feed_side(&mut self, l: f32, r: f32) {
+        self.side_l[self.pos] = l;
+        self.side_r[self.pos] = r;
     }
 
     /// An event for the frame being collected. Dropped when the block already holds
@@ -326,6 +363,10 @@ impl PluginSlot {
         }
         self.pass_by();
         if !self.bypass {
+            if self.side_source.is_some() || self.side_flush {
+                self.side_flush = false;
+                self.plugin.set_side_input([&self.side_l, &self.side_r]);
+            }
             self.plugin.process(
                 [&self.in_l, &self.in_r],
                 [&mut self.out_l, &mut self.out_r],
@@ -485,6 +526,59 @@ pub(crate) mod tests {
         fn latency_samples(&self) -> usize {
             self.latency
         }
+    }
+
+    /// Passes on what its side-chain input holds, as if that were its output.
+    pub(crate) struct KeyPlugin(pub Box<[f32]>);
+
+    impl KeyPlugin {
+        pub(crate) fn new() -> Self {
+            Self(vec![0.0; PLUGIN_BLOCK].into_boxed_slice())
+        }
+    }
+
+    impl PluginProcessor for KeyPlugin {
+        fn process(
+            &mut self,
+            _: [&[f32]; 2],
+            output: [&mut [f32]; 2],
+            _: &[PluginEvent],
+            _: &PluginTransport,
+        ) {
+            let [l, r] = output;
+            l.copy_from_slice(&self.0);
+            r.copy_from_slice(&self.0);
+        }
+
+        fn latency_samples(&self) -> usize {
+            0
+        }
+
+        fn set_side_input(&mut self, side: [&[f32]; 2]) {
+            self.0.copy_from_slice(side[0]);
+        }
+    }
+
+    #[test]
+    fn the_side_input_reaches_the_plugin_with_its_block_and_goes_silent_when_taken_away() {
+        let mut slot = PluginSlot::new(Box::new(KeyPlugin::new()));
+        let t = PluginTransport::default();
+        slot.set_side_source(Some(3));
+        assert_eq!(slot.side_source(), Some(3));
+        let mut last = 0.0;
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..PLUGIN_BLOCK * 2 {
+                slot.feed_side(i as f32, 0.0);
+                last = slot.process(0.0, 0.0, &t).0;
+            }
+        });
+        // The first block comes out during the second, in order.
+        assert_eq!(last, (PLUGIN_BLOCK - 1) as f32);
+        slot.set_side_source(None);
+        for _ in 0..PLUGIN_BLOCK * 3 {
+            last = slot.process(0.0, 0.0, &t).0;
+        }
+        assert_eq!(last, 0.0, "no key without a source");
     }
 
     #[test]

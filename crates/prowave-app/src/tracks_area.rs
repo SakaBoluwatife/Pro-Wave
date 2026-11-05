@@ -1898,7 +1898,7 @@ pub fn poll_normalize(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 }
 
 /// Track numbers shifted, so a remembered region or note selection may point at another track.
-fn forget_track_indexes(s: &mut UiState) {
+pub(crate) fn forget_track_indexes(s: &mut UiState) {
     s.tracks.picked_tracks.clear();
     s.tracks.track_drag = None;
     s.tracks.selected = None;

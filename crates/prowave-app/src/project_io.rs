@@ -650,6 +650,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         punch_start: p.punch_start,
         punch_end: p.punch_end,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
+        midi_map: midi_map_to_doc(p),
         song_patterns: p
             .patterns
             .iter()
@@ -1065,6 +1066,12 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         t.vca = t.vca.filter(|&v| {
             kinds.get(v) == Some(&TrackKind::Vca) && v != i && t.kind != TrackKind::Vca
         });
+        // A side chain has to come from another track that makes sound.
+        for plugin in t.hosted_mut() {
+            plugin.sidechain = plugin
+                .sidechain
+                .filter(|&s| s != i && crate::model::can_key(kinds.get(s).copied()));
+        }
     }
     p.tracks = tracks;
     p.master_plugins = doc
@@ -1074,6 +1081,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .take(prowave_engine::MAX_INSERTS)
         .map(plugin_from_doc)
         .collect();
+    p.midi_map = midi_map_from_doc(&p, &doc.midi_map);
     // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
     for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
         resolve_region_plugins(track);
@@ -1345,6 +1353,8 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
         bypass: i.bypass,
         // Only when saving, as this runs after every gesture: see `save_project`.
         state: String::new(),
+        sidechain: i.sidechain.map(|s| s as u32),
+        smart_knobs: i.smart_knobs.map_or_else(Vec::new, |knobs| knobs.to_vec()),
     }
 }
 
@@ -1360,7 +1370,94 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         failed: None,
         state: plugin_state_from_doc(&d.state),
         params: std::sync::Arc::default(),
+        sidechain: d.sidechain.map(|s| s as usize),
+        side_offered: false,
+        smart_knobs: smart_knobs_from_doc(&d.smart_knobs),
     }
+}
+
+/// The hardware controls for the file. Plugins go by place there, as their uids are for this run;
+/// one on a plugin that is gone is not kept.
+fn midi_map_to_doc(p: &Project) -> Vec<prowave_project::MidiMapDoc> {
+    use crate::model::LearnTarget;
+    use prowave_project::MidiMapDoc;
+    p.midi_map
+        .iter()
+        .filter_map(|m| {
+            let doc = |kind: &str, track: Option<usize>, slot: usize, param: u32| MidiMapDoc {
+                channel: m.channel,
+                controller: m.controller,
+                kind: kind.to_string(),
+                track: track.map(|t| t as u32),
+                slot: slot as u32,
+                param,
+            };
+            match m.target {
+                LearnTarget::Volume(t) => Some(doc("volume", Some(t), 0, 0)),
+                LearnTarget::Pan(t) => Some(doc("pan", Some(t), 0, 0)),
+                LearnTarget::MasterVolume => Some(doc("master", None, 0, 0)),
+                LearnTarget::Plugin { uid, param } => {
+                    let on_track = p.tracks.iter().enumerate().find_map(|(t, x)| {
+                        let slot = x.hosted().position(|i| i.uid == uid)?;
+                        Some(doc("plugin", Some(t), slot, param))
+                    });
+                    on_track.or_else(|| {
+                        let slot = p.master_plugins.iter().position(|i| i.uid == uid)?;
+                        Some(doc("plugin", None, slot, param))
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+/// The hardware controls from the file, for a project whose tracks and plugins are in place. What
+/// makes no sense in it is left out.
+fn midi_map_from_doc(
+    p: &Project,
+    docs: &[prowave_project::MidiMapDoc],
+) -> Vec<crate::model::MidiMapping> {
+    use crate::model::{LearnTarget, MidiMapping};
+    docs.iter()
+        .filter_map(|d| {
+            let track = d.track.map(|t| t as usize);
+            let on_track = track.filter(|t| *t < p.tracks.len());
+            let target = match d.kind.as_str() {
+                "volume" => LearnTarget::Volume(on_track?),
+                "pan" => LearnTarget::Pan(on_track?),
+                "master" => LearnTarget::MasterVolume,
+                "plugin" => {
+                    let slot = d.slot as usize;
+                    let uid = match track {
+                        Some(_) => p.tracks[on_track?].hosted().nth(slot)?.uid,
+                        None => p.master_plugins.get(slot)?.uid,
+                    };
+                    LearnTarget::Plugin {
+                        uid,
+                        param: d.param,
+                    }
+                }
+                _ => return None,
+            };
+            (d.channel < 16 && d.controller < 128).then_some(MidiMapping {
+                channel: d.channel,
+                controller: d.controller,
+                target,
+            })
+        })
+        .collect()
+}
+
+/// Smart Controls knobs from the file, with knobs the file has too few of off and any more ignored.
+fn smart_knobs_from_doc(knobs: &[Option<u32>]) -> Option<[Option<u32>; crate::model::SMART_KNOBS]> {
+    if knobs.is_empty() {
+        return None;
+    }
+    let mut out = [None; crate::model::SMART_KNOBS];
+    for (slot, knob) in out.iter_mut().zip(knobs) {
+        *slot = *knob;
+    }
+    Some(out)
 }
 
 /// The text of a strip's settings file. The plugins' states must have been collected first.
@@ -1381,6 +1478,8 @@ pub fn strip_to_text(t: &Track) -> Result<String, String> {
             .iter()
             .map(|i| {
                 let mut d = plugin_to_doc(i);
+                // Tracks mean nothing in another project.
+                d.sidechain = None;
                 if let Some(state) = &i.state {
                     d.state = base64::engine::general_purpose::STANDARD.encode(state.as_slice());
                 }
@@ -1474,6 +1573,9 @@ pub(crate) mod tests {
             failed: None,
             state: None,
             params: std::sync::Arc::default(),
+            sidechain: None,
+            side_offered: false,
+            smart_knobs: None,
         };
         t.plugins.push(plugin);
         let points = vec![AutoPoint {
@@ -1514,6 +1616,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_side_chain_is_kept_in_the_file_and_one_that_makes_no_sense_is_dropped() {
+        let mut d = prowave_project::PluginDoc {
+            sidechain: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(plugin_from_doc(&d).sidechain, Some(2));
+        let insert = plugin_from_doc(&d);
+        assert_eq!(plugin_to_doc(&insert).sidechain, Some(2));
+        d.sidechain = None;
+        assert_eq!(plugin_from_doc(&d).sidechain, None);
+        // A file from before there were side chains reads as none, and none stays out of files.
+        let old: prowave_project::PluginDoc = serde_json::from_str(r#"{"id":"x"}"#).unwrap();
+        assert_eq!(old.sidechain, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("sidechain"));
+
+        let mut p = Project::empty();
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Vca);
+        let plugin = |sidechain| crate::model::PluginInsert {
+            sidechain,
+            ..plugin_from_doc(&prowave_project::PluginDoc {
+                id: "x".into(),
+                ..Default::default()
+            })
+        };
+        p.tracks[a].plugins = vec![
+            plugin(Some(a)),
+            plugin(Some(b)),
+            plugin(Some(99)),
+            plugin(Some(0)),
+        ];
+        let (doc, _) = doc_for_saving(&p);
+        let (q, _) = from_doc(&doc, std::path::Path::new("."), &egui::Context::default());
+        let kept: Vec<_> = q.tracks[a].plugins.iter().map(|x| x.sidechain).collect();
+        assert_eq!(kept, [None, None, None, Some(0)]);
+    }
+
+    #[test]
     fn a_channel_strip_file_brings_back_effects_and_plugins_with_settings() {
         let mut p = Project::empty();
         let a = p.add_track(TrackKind::Audio);
@@ -1530,6 +1670,9 @@ pub(crate) mod tests {
             failed: None,
             state: Some(std::sync::Arc::new(vec![1, 2, 3])),
             params: std::sync::Arc::default(),
+            sidechain: Some(a),
+            side_offered: false,
+            smart_knobs: Some([Some(7); crate::model::SMART_KNOBS]),
         });
         let text = strip_to_text(&p.tracks[a]).unwrap();
         strip_from_text(&mut p.tracks[b], &text).unwrap();
