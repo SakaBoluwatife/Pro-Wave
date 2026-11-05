@@ -1833,6 +1833,7 @@ fn draw_take_folder(
     region: &Region,
     folder: &crate::model::TakeFolder,
     beat_px: f32,
+    seconds_per_beat: f32,
     selected: bool,
     silenced: bool,
 ) {
@@ -1932,6 +1933,27 @@ fn draw_take_folder(
         );
     }
     // What the comp plays.
+    let audio_peaks = region
+        .audio
+        .as_ref()
+        .filter(|_| folder.is_audio())
+        .and_then(|a| Some((a.peaks.get()?.as_slice(), a.file.duration_secs() as f32)));
+    let take_wave = |g: &Painter, rect: Rect, take: usize, seg: (f32, f32), col: Color32| {
+        let Some((peaks, duration)) = audio_peaks else {
+            return;
+        };
+        let Some(offset) = folder.takes.get(take).and_then(|t| t.audio_offset) else {
+            return;
+        };
+        if duration <= 0.0 || peaks.is_empty() {
+            return;
+        }
+        let at = |beat: f32| (offset + beat * seconds_per_beat) / duration * peaks.len() as f32;
+        let from = (at(seg.0).max(0.0) as usize).min(peaks.len());
+        let to = (at(seg.1).max(0.0) as usize).clamp(from, peaks.len());
+        let x = (full.left() + seg.0 * beat_px, (seg.1 - seg.0) * beat_px);
+        draw_peaks(g, rect, x, &peaks[from..to], 1.0, false, col);
+    };
     let (lo, hi) = pitch_range(&region.notes);
     let inner = Rect::from_min_max(
         pos2(body.left(), body.top() + 2.0),
@@ -1947,6 +1969,9 @@ fn draw_take_folder(
         hi,
         ink,
     );
+    for seg in &folder.comp {
+        take_wave(g, inner, seg.take, (seg.start, seg.end), ink);
+    }
     let border = if selected {
         SELECTED_EDGE
     } else {
@@ -1979,6 +2004,13 @@ fn draw_take_folder(
                     );
                 }
             }
+            take_wave(
+                g,
+                row_inner,
+                take_idx,
+                (0.0, folder.len),
+                Color32::from_gray(0xa0),
+            );
             let used = |start: f32| {
                 folder
                     .comp
@@ -3204,6 +3236,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         &p.tracks[ti].regions[ri],
                         folder,
                         beat_px,
+                        60.0 / p.tempo_at(start_beat).max(1.0),
                         selected,
                         silenced_by_solo(p, ti),
                     );

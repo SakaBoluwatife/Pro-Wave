@@ -413,15 +413,40 @@ fn clip_edit(p: &Project, t: &Track, r: &Region) -> prowave_engine::ClipEdit {
     }
 }
 
+/// The clips that play audio region `r`: itself, or the stretches of its comp of takes.
+fn region_clips(
+    p: &Project,
+    t: &Track,
+    r: &Region,
+    origin: f64,
+) -> Vec<(f64, prowave_engine::ClipEdit)> {
+    let edit = clip_edit(p, t, r);
+    match (&r.folder, &r.audio) {
+        (Some(folder), Some(a)) if folder.is_audio() => crate::takes::audio_comp_clips(
+            folder,
+            &p.tempo_map(),
+            origin,
+            edit,
+            a.file.duration_secs(),
+        ),
+        _ => vec![(origin, edit)],
+    }
+}
+
 fn audio_layout(p: &Project) -> AudioLayout {
     AudioLayout {
         tracks: p.tracks.len(),
         clips: playing_regions(p)
-            .filter_map(|(track, t, r, origin)| {
-                let a = r.audio.as_ref()?;
-                // Gain, fades and reverse are set when a clip starts streaming.
-                let edit = format!("{:?}", clip_edit(p, t, r));
-                Some((a.file.path.clone(), track, origin.to_bits(), edit))
+            .filter(|(_, _, r, _)| r.audio.is_some())
+            .flat_map(|(track, t, r, origin)| {
+                let path = r.audio.as_ref().map(|a| a.file.path.clone());
+                region_clips(p, t, r, origin)
+                    .into_iter()
+                    .map(move |(at, edit)| {
+                        // Gain, fades and reverse are set when a clip starts streaming.
+                        let edit = format!("{edit:?}");
+                        (path.clone().unwrap_or_default(), track, at.to_bits(), edit)
+                    })
             })
             .collect(),
     }
@@ -431,11 +456,14 @@ fn build_song(engine: &Engine, p: &Project) -> Song {
     // Every clip reads ahead as much as the whole song's prefetch memory allows.
     let streamed = playing_regions(p)
         .filter(|(_, _, r, _)| r.audio.is_some())
-        .count();
+        .map(|(_, t, r, origin)| region_clips(p, t, r, origin).len())
+        .sum();
     let clips = playing_regions(p)
-        .filter_map(|(track, t, r, origin)| {
-            let a = r.audio.as_ref()?;
-            Some(engine.stream_clip_in(&a.file, track, origin, clip_edit(p, t, r), streamed))
+        .filter_map(|(track, t, r, origin)| Some((track, t, r, origin, r.audio.as_ref()?)))
+        .flat_map(|(track, t, r, origin, a)| {
+            region_clips(p, t, r, origin)
+                .into_iter()
+                .map(move |(at, edit)| engine.stream_clip_in(&a.file, track, at, edit, streamed))
         })
         .collect();
     let notes = song_notes(p);

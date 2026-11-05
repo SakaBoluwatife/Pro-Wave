@@ -104,6 +104,8 @@ struct Take {
     id: u32,
     start: f64,
     path: PathBuf,
+    /// Recording inside the Cycle: where it runs, as each pass becomes a take.
+    cycle: Option<(f64, f64)>,
 }
 
 /// The recording in progress, and the open input.
@@ -180,16 +182,48 @@ fn apply_take(
     t: usize,
     r: usize,
     start: f64,
+    cycle: Option<(f64, f64)>,
     file: AudioFile,
     ctx: &egui::Context,
 ) {
-    let end = p.tempo_map().advance(start, file.duration_secs());
-    let len_bars = (p.beats_to_bar(end) - p.beats_to_bar(start)) as f32;
+    let map = p.tempo_map();
     let name = p.tracks[t].name.clone();
-    let region = &mut p.tracks[t].regions[r];
-    region.name = name;
-    region.len_bars = len_bars;
-    region.audio = Some(crate::import::audio_region(file, ctx));
+    // Round the Cycle more than once: a take folder, with a take for each pass.
+    let passes = cycle.map(|(from, to)| {
+        let lead = map.seconds_at(start) - map.seconds_at(from);
+        let pass = map.seconds_at(to) - map.seconds_at(from);
+        (
+            from,
+            to,
+            crate::takes::audio_take_offsets(file.duration_secs(), lead, pass),
+        )
+    });
+    if let Some((from, to, offsets)) = passes.filter(|(_, _, o)| o.len() > 1) {
+        let takes = offsets
+            .into_iter()
+            .map(|offset| crate::model::Take {
+                audio_offset: Some(offset),
+                ..crate::model::Take::default()
+            })
+            .collect();
+        let start_bar = p.beats_to_bar(from) as f32 + 1.0;
+        let len_bars = (p.beats_to_bar(to) - p.beats_to_bar(from)) as f32;
+        let region = &mut p.tracks[t].regions[r];
+        region.name = name;
+        region.start_bar = start_bar;
+        region.len_bars = len_bars;
+        region.audio = Some(crate::import::audio_region(file, ctx));
+        region.folder = Some(crate::model::TakeFolder::new(takes, (to - from) as f32));
+    } else {
+        let end = map.advance(start, file.duration_secs());
+        let start_bar = p.beats_to_bar(start) as f32 + 1.0;
+        let len_bars = (p.beats_to_bar(end) - p.beats_to_bar(start)) as f32;
+        let region = &mut p.tracks[t].regions[r];
+        region.name = name;
+        region.start_bar = start_bar;
+        region.len_bars = len_bars;
+        region.audio = Some(crate::import::audio_region(file, ctx));
+    }
     p.song_rev += 1;
 }
 
@@ -305,9 +339,17 @@ impl AudioRecorder {
             return Outcome::Failed(trf("Cannot record: {}", &[&e]));
         }
         let start = p.position_beats.max(0.0);
-        let (start_bar, mut error) = (p.beats_to_bar(start) as f32 + 1.0, None);
+        // With the Cycle on, recording from inside it goes round: each pass is a take.
+        let cycle = (p.cycle
+            && p.cycle_end > p.cycle_start
+            && (p.cycle_start..p.cycle_end).contains(&start))
+        .then_some((p.cycle_start, p.cycle_end));
+        let shown_from = cycle.map_or(start, |(from, _)| from);
+        let (start_bar, mut error) = (p.beats_to_bar(shown_from) as f32 + 1.0, None);
         for t in targets(p) {
             self.count += 1;
+            let cycle_bars =
+                cycle.map(|(from, to)| (p.beats_to_bar(to) - p.beats_to_bar(from)) as f32);
             let track = &mut p.tracks[t];
             let path = dir.join(file_name(&track.name, self.count));
             match capture.start(&path, track.input, latency_us) {
@@ -315,7 +357,7 @@ impl AudioRecorder {
                     track.regions.push(Region {
                         name: format!("*{}", track.name),
                         start_bar,
-                        len_bars: 0.01,
+                        len_bars: cycle_bars.unwrap_or(0.01),
                         notes: Vec::new(),
                         controls: Vec::new(),
                         folder: None,
@@ -329,6 +371,7 @@ impl AudioRecorder {
                         id,
                         start,
                         path,
+                        cycle,
                     });
                 }
                 Err(e) => error = Some(trf("Cannot record: {}", &[&e])),
@@ -344,6 +387,11 @@ impl AudioRecorder {
         let takes = std::mem::take(&mut self.takes);
         for take in takes {
             if is_open(p, take.track, take.region) {
+                if take.cycle.is_some() {
+                    // It stays as long as the Cycle: the passes pile up, they do not spread out.
+                    self.takes.push(take);
+                    continue;
+                }
                 let now = p.position_beats.max(take.start);
                 let len = (p.beats_to_bar(now) - p.beats_to_bar(take.start)) as f32;
                 let region = &mut p.tracks[take.track].regions[take.region];
@@ -373,7 +421,15 @@ impl AudioRecorder {
             };
             match (open, file) {
                 (true, Ok(file)) => {
-                    apply_take(p, take.track, take.region, take.start, file, ctx);
+                    apply_take(
+                        p,
+                        take.track,
+                        take.region,
+                        take.start,
+                        take.cycle,
+                        file,
+                        ctx,
+                    );
                     kept = Some((take.track, take.region));
                     if done.is_ok_and(|d| d.lost) {
                         warning = Some(tr("Part of the recording was lost").to_string());
@@ -515,7 +571,7 @@ mod tests {
         let rev = p.song_rev;
         assert!(is_open(&p, 0, 0));
         let file = AudioFile::open(&path).unwrap();
-        apply_take(&mut p, 0, 0, 4.0, file, &egui::Context::default());
+        apply_take(&mut p, 0, 0, 4.0, None, file, &egui::Context::default());
         let region = &p.tracks[0].regions[0];
         assert_eq!(region.name, "Vox");
         assert!((region.len_bars - 1.0).abs() < 1e-3, "{}", region.len_bars);

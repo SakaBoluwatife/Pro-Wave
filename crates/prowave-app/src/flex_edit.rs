@@ -302,6 +302,10 @@ pub fn fit_region(p: &mut Project, t: usize, r: usize) {
     let Some(a) = region.audio.as_ref() else {
         return;
     };
+    // A folder of takes is as long as the Cycle it was recorded in, in bars.
+    if region.folder.is_some() {
+        return;
+    }
     let source_len = f64::from(region.params.source_len);
     let seconds = if source_len > 0.0 {
         source_len

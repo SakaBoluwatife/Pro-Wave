@@ -63,6 +63,9 @@ pub struct NoteDoc {
 pub struct TakeDoc {
     pub notes: Vec<NoteDoc>,
     pub controls: Vec<ControlDoc>,
+    /// A pass of an audio recording: where the region's start falls in its file, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_offset: Option<f32>,
 }
 
 /// A stretch of a take folder that plays one take.

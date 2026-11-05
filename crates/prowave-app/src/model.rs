@@ -51,6 +51,10 @@ pub struct Note {
 pub struct Take {
     pub notes: Vec<Note>,
     pub controls: Vec<Control>,
+    /// A pass of an audio recording: seconds into the region's file where the region's start falls
+    /// for this take. Below 0 when the recording began after the start of the cycle. All the takes
+    /// of a folder are windows into the one file that was recorded.
+    pub audio_offset: Option<f32>,
 }
 
 /// A stretch of a take folder (beats from the region start) that plays this take.

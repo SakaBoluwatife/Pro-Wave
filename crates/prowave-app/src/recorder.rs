@@ -273,6 +273,7 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
             rec.takes.push(Take {
                 notes: std::mem::take(&mut region.notes),
                 controls: std::mem::take(&mut region.controls),
+                audio_offset: None,
             });
             region.controls.push(Control {
                 start: 0.0,
@@ -360,6 +361,7 @@ fn finish(rec: &mut Recorder, p: &mut Project) -> Outcome {
         takes.push(Take {
             notes: std::mem::take(&mut region.notes),
             controls: std::mem::take(&mut region.controls),
+            audio_offset: None,
         });
         takes.retain(|t| !t.notes.is_empty());
         region.len_bars = bars_between_len;

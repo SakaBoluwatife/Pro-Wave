@@ -1388,6 +1388,61 @@ mod tests {
     }
 
     #[test]
+    fn a_comp_of_audio_takes_plays_each_stretch_from_its_pass() {
+        // Three passes of a second each in one file, each at its own level.
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("passes.wav");
+        let levels = [0.1f32, 0.2, 0.3];
+        let samples: Vec<f32> = levels
+            .iter()
+            .flat_map(|l| std::iter::repeat_n(*l, RATE as usize * 2))
+            .collect();
+        prowave_engine::write_wav(&wav, &samples, RATE).unwrap();
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        p.master_vol = 1.0;
+        p.tracks.clear();
+        let ctx = egui::Context::default();
+        crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).unwrap();
+        // A second is two beats: half a bar, the length of each pass.
+        let take = |offset: f32| crate::model::Take {
+            audio_offset: Some(offset),
+            ..crate::model::Take::default()
+        };
+        let region = &mut p.tracks[0].regions[0];
+        region.len_bars = 0.5;
+        let mut folder = crate::model::TakeFolder::new(vec![take(0.0), take(1.0), take(2.0)], 2.0);
+        folder.swipe(1, 1.0, 2.0);
+        region.folder = Some(folder);
+        let end = project_end(&p);
+        let out = render_and_read(&p, mix_to(dir.path().join("comp.wav"), end));
+        let rate = RATE as usize;
+        assert!(
+            (out[rate / 4] - 0.3).abs() < 0.01,
+            "the last take: {}",
+            out[rate / 4]
+        );
+        assert!(
+            (out[rate * 3 / 4] - 0.2).abs() < 0.01,
+            "the swipe: {}",
+            out[rate * 3 / 4]
+        );
+        assert!(
+            out.len().abs_diff(rate) < 200,
+            "as long as the cycle: {}",
+            out.len()
+        );
+
+        // And it comes back from a file the same.
+        let path = crate::project_io::save_project(&p, &dir.path().join("song")).unwrap();
+        let (back, _) = crate::project_io::open_project(&path, &ctx).unwrap();
+        assert_eq!(
+            back.tracks[0].regions[0].folder,
+            p.tracks[0].regions[0].folder
+        );
+    }
+
+    #[test]
     fn a_format_only_has_the_depths_it_can_store() {
         assert_eq!(FileFormat::Flac.depth(BitDepth::Float32), BitDepth::Int24);
         assert_eq!(FileFormat::Flac.depth(BitDepth::Int16), BitDepth::Int16);

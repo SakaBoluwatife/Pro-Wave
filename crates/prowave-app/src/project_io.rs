@@ -452,6 +452,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                         f.takes
                             .iter()
                             .map(|t| TakeDoc {
+                                audio_offset: t.audio_offset,
                                 notes: t
                                     .notes
                                     .iter()
@@ -646,6 +647,7 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
         .takes
         .iter()
         .map(|t| Take {
+            audio_offset: t.audio_offset.filter(|o| o.is_finite()),
             notes: t
                 .notes
                 .iter()
@@ -2179,10 +2181,12 @@ pub(crate) mod tests {
             Take {
                 notes: vec![note(0.0, 60), note(2.0, 62)],
                 controls: vec![pedal(127)],
+                audio_offset: None,
             },
             Take {
                 notes: vec![note(1.0, 64)],
                 controls: vec![pedal(0)],
+                audio_offset: None,
             },
         ];
         let mut folder = TakeFolder::new(takes, 8.0);
