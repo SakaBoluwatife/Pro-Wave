@@ -3581,6 +3581,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             Stroke::new(2.0, CYCLE_OFF),
         );
     }
+    if p.punch {
+        gr.line_segment(
+            [
+                pos2(x_of(p.punch_start), ruler.bottom() - 2.0),
+                pos2(x_of(p.punch_end), ruler.bottom() - 2.0),
+            ],
+            Stroke::new(3.0, Color32::from_rgb(0xd9, 0x4f, 0x4f)),
+        );
+    }
     let label_every = [1i64, 2, 4, 8, 16, 32]
         .into_iter()
         .find(|n| *n as f32 * v.bar_w >= 34.0)

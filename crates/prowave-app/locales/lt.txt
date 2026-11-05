@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Įjungus įskaitym
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Užfiksuoti įrašą paverčia sritimi tai, ką ką tik grojote MIDI klaviatūra.
 Show Channel Rack = Rodyti kanalų stovą
 Settings… = Nustatymai…
+Autopunch = Automatinis įrašo intervalas

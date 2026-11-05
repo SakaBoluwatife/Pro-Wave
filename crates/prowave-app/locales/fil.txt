@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Kapag naka-on ang 
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Ginagawang region ng Capture Recording ang kakatugtog mo lang sa MIDI keyboard.
 Show Channel Rack = Ipakita ang Channel Rack
 Settings… = Mga Setting…
+Autopunch = Autopunch

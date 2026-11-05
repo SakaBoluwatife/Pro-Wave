@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = カウントイン
 Capture Recording turns what you just played on a MIDI keyboard into a region. = 録音をキャプチャは、MIDI キーボードで弾いたばかりの演奏をリージョンにします。
 Show Channel Rack = チャンネルラックを表示
 Settings… = 設定…
+Autopunch = オートパンチ

@@ -546,6 +546,9 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         name: p.name.clone(),
         tempo: p.tempo,
         sig: p.sig,
+        punch: p.punch,
+        punch_start: p.punch_start,
+        punch_end: p.punch_end,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
         song_patterns: p
             .patterns
@@ -916,6 +919,9 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .collect(),
         })
         .collect();
+    p.punch = doc.punch;
+    p.punch_start = doc.punch_start.max(0.0);
+    p.punch_end = doc.punch_end.max(p.punch_start);
     p.cycle = doc.cycle;
     p.cycle_start = doc.cycle_start.max(0.0);
     p.cycle_end = doc.cycle_end.max(p.cycle_start);

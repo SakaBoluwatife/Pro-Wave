@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Med inntelling på
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Fang opptak gjør det du nettopp spilte på et MIDI-klaviatur til en region.
 Show Channel Rack = Vis kanalrack
 Settings… = Innstillinger…
+Autopunch = Autopunch

@@ -185,6 +185,7 @@ const RECORD: &[&str] = &[
     "Record",
     "Record / Record Repeat",
     "Record Toggle",
+    "Autopunch",
     "Record Enable",
     "-",
     "Capture Recording",
@@ -441,7 +442,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Select All" => p.tracks.iter().any(|t| !t.regions.is_empty()),
         "Join" => crate::region_edit::can_join(p, &s.tracks),
         "Paste" => !s.tracks.clipboard.is_empty(),
-        "Settings…" | "Mastering" => true,
+        "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…" => true,
+        "Rename Track" | "Assign Track Color…" => !p.tracks.is_empty(),
         "Project or Section…"
         | "Bounce"
         | "Export"
@@ -569,6 +571,27 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Library" => s.show_library = !s.show_library,
         "Show Channel Rack" => s.rack.open = !s.rack.open,
         "Mastering" => s.mastering.open = !s.mastering.open,
+        "Autopunch" => {
+            p.punch = !p.punch;
+            if p.punch {
+                // Over what is selected, or else the Cycle's locators.
+                let selection = crate::bounce::selection_range(p, &s.tracks.all_selected());
+                let (from, to) = selection.unwrap_or((p.cycle_start, p.cycle_end));
+                p.punch_start = from;
+                p.punch_end = to;
+                let (a, b) = (p.beats_to_bar(from) + 1.0, p.beats_to_bar(to) + 1.0);
+                s.status = Some(format!("Autopunch from bar {a:.1} to bar {b:.1}"));
+            }
+        }
+        "Go to Position…" => s.dialogs.open_go_to(),
+        "Undo History…" => s.dialogs.undo_history = true,
+        "Rename Track" => {
+            let name = p.tracks.get(p.selected_track).map(|t| t.name.clone());
+            if let Some(name) = name {
+                s.dialogs.open_rename(p.selected_track, &name);
+            }
+        }
+        "Assign Track Color…" => s.dialogs.color = Some(p.selected_track),
         "Settings…" => s.settings.open = true,
         "Show Inspector" => s.show_inspector = !s.show_inspector,
         "Show List Editors" => s.show_lists = !s.show_lists,
@@ -1071,6 +1094,13 @@ mod tests {
                     s.settings.open,
                     s.rack.open,
                     s.mastering.open,
+                    (
+                        s.dialogs.go_to.is_some(),
+                        s.dialogs.rename.is_some(),
+                        s.dialogs.color,
+                        s.dialogs.undo_history,
+                        p.punch,
+                    ),
                     s.bounce.queue.len(),
                 ),
                 (

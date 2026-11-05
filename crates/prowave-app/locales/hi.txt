@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Count-in चाल
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Capture Recording आपने MIDI कीबोर्ड पर अभी जो बजाया उसे रीजन बना देता है।
 Show Channel Rack = चैनल रैक दिखाएँ
 Settings… = सेटिंग्स…
+Autopunch = ऑटोपंच

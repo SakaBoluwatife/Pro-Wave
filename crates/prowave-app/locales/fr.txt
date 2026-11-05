@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Avec le décompte,
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Capturer l'enregistrement crée une région à partir de ce que vous venez de jouer sur un clavier MIDI.
 Show Channel Rack = Afficher le rack de canaux
 Settings… = Réglages…
+Autopunch = Autopunch

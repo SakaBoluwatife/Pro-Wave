@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Якщо відл�
 Capture Recording turns what you just played on a MIDI keyboard into a region. = Захопити запис перетворює на регіон те, що ви щойно зіграли на MIDI-клавіатурі.
 Show Channel Rack = Показати стійку каналів
 Settings… = Налаштування…
+Autopunch = Автопанч

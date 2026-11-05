@@ -472,6 +472,9 @@ impl Default for TrackDoc {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ProjectDoc {
+    pub punch: bool,
+    pub punch_start: f64,
+    pub punch_end: f64,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
     /// The Channel Rack's patterns.
@@ -544,6 +547,9 @@ impl Default for ProjectDoc {
     fn default() -> Self {
         Self {
             song_patterns: Vec::new(),
+            punch: false,
+            punch_start: 0.0,
+            punch_end: 0.0,
             master_plugins: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),

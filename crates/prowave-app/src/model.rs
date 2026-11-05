@@ -902,6 +902,10 @@ pub struct Project {
     pub song_rev: u64,
     /// The Channel Rack's patterns.
     pub patterns: Vec<crate::song_pattern::SongPattern>,
+    /// Autopunch: recording happens only between these beats, however it is started.
+    pub punch: bool,
+    pub punch_start: f64,
+    pub punch_end: f64,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
 }
@@ -1101,6 +1105,9 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            punch: false,
+            punch_start: 0.0,
+            punch_end: 0.0,
             sig: (4, 4),
             key: "Cmaj",
             tracks,
@@ -1962,6 +1969,11 @@ impl Project {
             self.cycle_start = 0.0;
             self.cycle_end = self.next_bar_start(song_end - 1e-9);
         }
+    }
+
+    /// Whether Autopunch lets recording happen at the playhead.
+    pub fn punched_in(&self) -> bool {
+        !self.punch || (self.punch_start..self.punch_end).contains(&self.position_beats)
     }
 
     /// Every hosted plugin in the project.

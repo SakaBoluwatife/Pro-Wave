@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = 打开预备拍后
 Capture Recording turns what you just played on a MIDI keyboard into a region. = 捕捉录音会把你刚在 MIDI 键盘上弹奏的内容变成一个片段。
 Show Channel Rack = 显示通道架
 Settings… = 设置…
+Autopunch = 自动穿插

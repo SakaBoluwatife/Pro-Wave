@@ -301,7 +301,7 @@ impl AudioRecorder {
             }
         }
         self.read_levels();
-        let record = p.recording && p.playing && !p.counting_in;
+        let record = p.recording && p.playing && !p.counting_in && p.punched_in();
         if self.takes.is_empty() {
             if self.failed && takes_over(p) {
                 p.recording = false;

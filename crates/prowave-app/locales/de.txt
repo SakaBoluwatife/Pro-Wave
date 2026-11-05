@@ -710,3 +710,4 @@ With Count-in on, recording starts after one bar of clicks. = Mit Einzähler beg
 Capture Recording turns what you just played on a MIDI keyboard into a region. = „Aufnahme übernehmen“ macht aus dem, was du gerade auf einem MIDI-Keyboard gespielt hast, eine Region.
 Show Channel Rack = Channel Rack einblenden
 Settings… = Einstellungen…
+Autopunch = Autopunch

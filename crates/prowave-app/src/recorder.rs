@@ -91,7 +91,7 @@ fn record_track(p: &Project) -> Option<usize> {
 
 /// Call once per frame with the notes played since the last one.
 pub fn update(rec: &mut Recorder, p: &mut Project, input: &[LiveNote]) -> Outcome {
-    let want = p.recording && p.playing && !p.counting_in;
+    let want = p.recording && p.playing && !p.counting_in && p.punched_in();
     remember_played(rec, p, input, want);
     let pedal_before = rec.pedal;
     for ev in input {

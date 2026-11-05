@@ -13,9 +13,61 @@ const LIMIT: usize = 100;
 pub struct History {
     undo: Vec<Project>,
     redo: Vec<Project>,
+    /// What each step was, in words.
+    undo_labels: Vec<String>,
+    redo_labels: Vec<String>,
     /// The project as last recorded, and what it saves as.
     base: Project,
     base_doc: ProjectDoc,
+}
+
+/// What an edit did, in words, from how the project differs.
+fn describe(before: &ProjectDoc, after: &ProjectDoc) -> String {
+    let (a, b) = (&before.tracks, &after.tracks);
+    if b.len() > a.len() {
+        return "Add Track".to_string();
+    }
+    if b.len() < a.len() {
+        return "Delete Track".to_string();
+    }
+    if before.tempo != after.tempo || before.tempo_changes != after.tempo_changes {
+        return "Change Tempo".to_string();
+    }
+    if before.song_patterns != after.song_patterns {
+        return "Edit Pattern".to_string();
+    }
+    if before.master_plugins != after.master_plugins {
+        return "Change Output Plugins".to_string();
+    }
+    for (x, y) in a.iter().zip(b) {
+        if x.regions.len() != y.regions.len() {
+            let what = if y.regions.len() > x.regions.len() {
+                "Add"
+            } else {
+                "Delete"
+            };
+            return format!("{what} Region on {}", y.name);
+        }
+        if x.name != y.name {
+            return format!("Rename Track to {}", y.name);
+        }
+        if x.regions != y.regions {
+            let notes = x
+                .regions
+                .iter()
+                .zip(&y.regions)
+                .any(|(r, s)| r.notes != s.notes);
+            let what = if notes { "Edit Notes" } else { "Edit Region" };
+            return format!("{what} on {}", y.name);
+        }
+        if x.plugins != y.plugins || x.instrument_plugin != y.instrument_plugin {
+            return format!("Change Plugins on {}", y.name);
+        }
+        if x != y {
+            return format!("Change {}", y.name);
+        }
+    }
+    "Edit".to_string()
 }
 
 /// An Undo command picked in a menu or by key; run by `App` after the panels.
@@ -32,6 +84,8 @@ impl History {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
+            undo_labels: Vec::new(),
+            redo_labels: Vec::new(),
             base: p.clone(),
             base_doc: content(p),
         }
@@ -40,6 +94,16 @@ impl History {
     /// Forgets every step (a project was opened or created).
     pub fn reset(&mut self, p: &Project) {
         *self = Self::new(p);
+    }
+
+    /// What each step Undo can go back through was, oldest first.
+    pub fn undo_labels(&self) -> &[String] {
+        &self.undo_labels
+    }
+
+    /// What each undone step was, the next to redo last.
+    pub fn redo_labels(&self) -> &[String] {
+        &self.redo_labels
     }
 
     pub fn can_undo(&self) -> bool {
@@ -56,12 +120,16 @@ impl History {
         if doc == self.base_doc {
             return false;
         }
+        let label = describe(&self.base_doc, &doc);
         let before = std::mem::replace(&mut self.base, p.clone());
         self.undo.push(before);
+        self.undo_labels.push(label);
         if self.undo.len() > LIMIT {
             self.undo.remove(0);
+            self.undo_labels.remove(0);
         }
         self.redo.clear();
+        self.redo_labels.clear();
         self.base_doc = doc;
         true
     }
@@ -74,6 +142,9 @@ impl History {
             return false;
         };
         self.redo.push(p.clone());
+        if let Some(label) = self.undo_labels.pop() {
+            self.redo_labels.push(label);
+        }
         self.restore(p, prev);
         true
     }
@@ -88,10 +159,14 @@ impl History {
             return false;
         };
         self.undo.push(p.clone());
+        if let Some(label) = self.redo_labels.pop() {
+            self.undo_labels.push(label);
+        }
         self.restore(p, next);
         true
     }
 
+    /// Gives up every step.
     pub fn clear(&mut self, p: &Project) {
         self.reset(p);
     }

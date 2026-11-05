@@ -50,6 +50,7 @@ mod plugin_guard;
 mod plugin_rack;
 mod plugin_scan;
 mod project_io;
+mod quick_dialogs;
 mod recent_files;
 mod recorder;
 mod region_edit;
@@ -159,6 +160,10 @@ pub struct UiState {
     pub bounce: bounce::BounceState,
     pub rack: channel_rack::RackView,
     pub settings: settings::SettingsView,
+    pub dialogs: quick_dialogs::QuickDialogs,
+    /// What the steps of Undo and Redo were, for the Undo History.
+    pub undo_labels: Vec<String>,
+    pub redo_labels: Vec<String>,
     pub mastering: mastering::MasteringView,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
@@ -237,6 +242,9 @@ impl UiState {
             bounce: bounce::BounceState::default(),
             rack: channel_rack::RackView::default(),
             settings: settings::SettingsView::default(),
+            dialogs: quick_dialogs::QuickDialogs::default(),
+            undo_labels: Vec::new(),
+            redo_labels: Vec::new(),
             mastering: mastering::MasteringView::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
@@ -405,6 +413,24 @@ impl App {
             self.ui.tracks.selected = None;
             self.ui.piano.selected.clear();
             ctx.request_repaint();
+        }
+        let (back, forward) = (
+            std::mem::take(&mut self.ui.dialogs.undo_steps),
+            std::mem::take(&mut self.ui.dialogs.redo_steps),
+        );
+        for _ in 0..back {
+            self.history.undo(&mut self.project);
+        }
+        for _ in 0..forward {
+            self.history.redo(&mut self.project);
+        }
+        if back + forward > 0 {
+            self.ui.tracks.selected = None;
+            self.ui.piano.selected.clear();
+        }
+        if self.ui.dialogs.undo_history {
+            self.ui.undo_labels = self.history.undo_labels().to_vec();
+            self.ui.redo_labels = self.history.redo_labels().to_vec();
         }
         self.ui.can_undo = self.history.can_undo();
         self.ui.can_redo = self.history.can_redo();
@@ -816,6 +842,7 @@ impl eframe::App for App {
         bounce::show(&ctx, p, s);
         channel_rack::show(&ctx, p, s);
         settings::show(&ctx, s);
+        quick_dialogs::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
