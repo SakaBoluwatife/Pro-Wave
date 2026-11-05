@@ -17,6 +17,7 @@ Proposed, for the owner to confirm:
 - Surround and binaural panning: a large job for a stereo workflow
 - Apple Loops library features: there is no stock library, though users' own loops still work
 - Live Loops, full score engraving (staff styles, score sets, parts): large, and outside the priorities so far
+- Tuning: skipped by the owner. Plugins have their own tuning, and there are no built-in instruments for it to serve. Its menu entry stays greyed.
 
 ## Improve: built, but shallower than Logic
 
@@ -50,8 +51,7 @@ Most useful for daily mixing and production first:
 8. **Chord track and arrangement markers:** move whole song sections.
 9. **Groove templates:** make a quantize grid from a region.
 10. **Screensets:** save and recall window layouts.
-11. **Tuning:** Project Settings' page, the one still greyed there.
-12. **Project Alternatives and backups:** named versions of a project.
+11. **Project Alternatives and backups:** named versions of a project.
 
 ## Smaller entries still greyed
 
