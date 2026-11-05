@@ -15,11 +15,11 @@ use egui::{
     StrokeKind, Ui,
 };
 
-const BAR_BG: Color32 = Color32::from_rgb(0x47, 0x47, 0x47);
-const SEG_BG: Color32 = Color32::from_rgb(0x56, 0x56, 0x56);
+const BAR_BG: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
+const SEG_BG: Color32 = Color32::from_rgb(0x6c, 0x6c, 0x6c);
 const SEG_BORDER: Color32 = crate::theme::PANEL_BG;
-const SEG_ON: Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
-const ICON: Color32 = Color32::from_rgb(0xb4, 0xb4, 0xb4);
+const SEG_ON: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const ICON: Color32 = Color32::from_rgb(0xd2, 0xd2, 0xd2);
 const ICON_ON: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
 const LCD_BG: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1e);
 const LCD_TEXT: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
@@ -408,7 +408,7 @@ fn segmented(
         pos2(left, cy - seg.y / 2.0),
         vec2(seg.x * items.len() as f32, seg.y),
     );
-    g.rect_filled(full, 5.0, SEG_BG);
+    crate::theme::glass_plate(g, full, 6.0);
     let mut hit = None;
     for (i, (draw, on)) in items.iter().enumerate() {
         let r = Rect::from_min_size(pos2(left + i as f32 * seg.x, full.top()), seg);
@@ -435,7 +435,6 @@ fn segmented(
             hit = Some(i);
         }
     }
-    g.rect_stroke(full, 5.0, Stroke::new(1.0, SEG_BORDER), StrokeKind::Inside);
     hit
 }
 
@@ -579,6 +578,176 @@ fn tempo_field(ui: &mut Ui, p: &mut Project, open: bool, field: Rect) -> bool {
     true
 }
 
+/// The display in its everyday form: bar, beat, tempo, signature and key. The arrow at its right
+/// end changes to the full display and back.
+fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
+    let pal = LcdColors::new(p.recording);
+    g.rect_filled(rect, 6.0, pal.bg);
+    g.rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, Color32::from_gray(0x10)),
+        StrokeKind::Inside,
+    );
+    let x0 = rect.left();
+    let (top, cy) = (rect.top(), rect.center().y);
+    let small = FontId::proportional(7.5);
+    let smpte = ui
+        .interact(
+            Rect::from_min_size(rect.min, vec2(92.0, rect.height())),
+            egui::Id::unique(("control_bar", "smpte")),
+            Sense::click(),
+        )
+        .on_hover_text(tr("Right-click for the SMPTE and synchronization settings"));
+    crate::widgets::context_menu(&smpte, |ui| crate::sync_menu::items(ui, p));
+    let (bar, beat, _, _) = p.bbdt(p.position_beats);
+    let bar_s = format!("{bar:03}");
+    let dim = bar_s.len() - bar.to_string().len();
+    let mut job = LayoutJob::default();
+    lcd_seg(&mut job, &bar_s, dim, 25.0, pal.text, pal.dim);
+    g.galley(pos2(x0 + 7.0, top + 3.0), g.layout_job(job), pal.text);
+    g.text(
+        pos2(x0 + 26.0, top + 33.0),
+        Align2::CENTER_TOP,
+        "BAR",
+        small.clone(),
+        pal.mid,
+    );
+    g.text(
+        pos2(x0 + 72.0, top + 3.0),
+        Align2::CENTER_TOP,
+        beat.to_string(),
+        FontId::proportional(25.0),
+        pal.text,
+    );
+    g.text(
+        pos2(x0 + 72.0, top + 33.0),
+        Align2::CENTER_TOP,
+        "BEAT",
+        small.clone(),
+        pal.mid,
+    );
+    // Tempo: drag it up and down, or click to type.
+    let tempo_rect = Rect::from_min_size(pos2(x0 + 92.0, top), vec2(54.0, rect.height()));
+    let resp = ui
+        .interact(
+            tempo_rect,
+            egui::Id::unique(("control_bar", "tempo")),
+            Sense::click_and_drag(),
+        )
+        .on_hover_text("Click to type the tempo, or drag up and down");
+    let tempo_now = p.tempo_at(p.position_beats);
+    if resp.dragged() {
+        p.set_tempo_at(p.position_beats, tempo_now - resp.drag_delta().y * 0.5);
+    }
+    let field = Rect::from_min_size(pos2(x0 + 94.0, top + 4.0), vec2(50.0, 18.0));
+    if !tempo_field(ui, p, resp.clicked(), field) {
+        let shown = p.tempo_at(p.position_beats);
+        let text = if shown.fract().abs() < 0.005 {
+            format!("{shown:.0}")
+        } else {
+            format!("{shown:.2}")
+        };
+        g.text(
+            pos2(tempo_rect.center().x, top + 6.0),
+            Align2::CENTER_TOP,
+            text,
+            FontId::proportional(14.0),
+            pal.text,
+        );
+    }
+    g.text(
+        pos2(tempo_rect.center().x, cy + 3.0),
+        Align2::CENTER_TOP,
+        "KEEP",
+        small.clone(),
+        pal.mid,
+    );
+    g.text(
+        pos2(tempo_rect.center().x, cy + 12.0),
+        Align2::CENTER_TOP,
+        "TEMPO",
+        small,
+        pal.mid,
+    );
+    // Signature (drag each number) over the key.
+    let sig_x = x0 + 172.0;
+    signature_drag(
+        ui,
+        p,
+        [
+            Rect::from_min_size(pos2(sig_x - 22.0, top), vec2(22.0, cy - top)),
+            Rect::from_min_size(pos2(sig_x, top), vec2(22.0, cy - top)),
+        ],
+    );
+    let (num, den) = p.signature_of_bar(p.beats_to_bar(p.position_beats) as u32);
+    g.text(
+        pos2(sig_x, top + 6.0),
+        Align2::CENTER_TOP,
+        format!("{num}/{den}"),
+        FontId::proportional(14.0),
+        pal.text,
+    );
+    g.text(
+        pos2(sig_x, cy + 4.0),
+        Align2::CENTER_TOP,
+        p.key,
+        fitting_font(g, p.key, 12.0, 46.0),
+        pal.text,
+    );
+}
+
+/// Dragging the numerator or denominator of the signature, in `areas`, up or down.
+fn signature_drag(ui: &Ui, p: &mut Project, areas: [Rect; 2]) {
+    for (part, area) in [SigPart::Numerator, SigPart::Denominator]
+        .into_iter()
+        .zip(areas)
+    {
+        let id = egui::Id::unique(("control_bar", "signature", part as u8));
+        let resp = ui
+            .interact(area, id, Sense::drag())
+            .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+            .on_hover_text(tr("Drag to change the time signature"));
+        let mut leftover = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+        if resp.drag_started() {
+            leftover = 0.0;
+        }
+        let steps = if resp.dragged() {
+            take_steps(&mut leftover, -resp.drag_delta().y, SIG_PX_PER_STEP)
+        } else {
+            0
+        };
+        ui.data_mut(|d| d.insert_temp(id, leftover));
+        if steps != 0 {
+            let bar0 = p.beats_to_bar(p.position_beats) as u32;
+            p.step_signature_at(bar0, part, steps);
+        }
+    }
+}
+
+/// The arrow at the right end of the display, which changes its form. True when clicked.
+fn lcd_arrow(ui: &Ui, g: &Painter, rect: Rect, recording: bool) -> bool {
+    let pal = LcdColors::new(recording);
+    let area = Rect::from_min_max(pos2(rect.right() - 22.0, rect.top()), rect.max);
+    let resp = ui
+        .interact(
+            area,
+            egui::Id::unique(("control_bar", "lcd_form")),
+            Sense::click(),
+        )
+        .on_hover_text("Show more or less in the display");
+    let c = area.center();
+    g.add(Shape::line(
+        vec![
+            c + vec2(-4.0, -2.0),
+            c + vec2(0.0, 2.0),
+            c + vec2(4.0, -2.0),
+        ],
+        Stroke::new(1.6, pal.mid),
+    ));
+    resp.clicked()
+}
+
 fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
     let pal = LcdColors::new(p.recording);
     g.rect_filled(rect, 6.0, pal.bg);
@@ -665,34 +834,14 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
     // like the tempo.
     let sig_x = x0 + 360.0;
     let half = vec2(24.0, bot - rect.top());
-    for (part, left) in [
-        (SigPart::Numerator, sig_x - 24.0),
-        (SigPart::Denominator, sig_x),
-    ] {
-        let id = egui::Id::unique(("control_bar", "signature", part as u8));
-        let resp = ui
-            .interact(
-                Rect::from_min_size(pos2(left, rect.top()), half),
-                id,
-                Sense::drag(),
-            )
-            .on_hover_cursor(egui::CursorIcon::ResizeVertical)
-            .on_hover_text(tr("Drag to change the time signature"));
-        let mut leftover = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
-        if resp.drag_started() {
-            leftover = 0.0;
-        }
-        let steps = if resp.dragged() {
-            take_steps(&mut leftover, -resp.drag_delta().y, SIG_PX_PER_STEP)
-        } else {
-            0
-        };
-        ui.data_mut(|d| d.insert_temp(id, leftover));
-        if steps != 0 {
-            let bar0 = p.beats_to_bar(p.position_beats) as u32;
-            p.step_signature_at(bar0, part, steps);
-        }
-    }
+    signature_drag(
+        ui,
+        p,
+        [
+            Rect::from_min_size(pos2(sig_x - 24.0, rect.top()), half),
+            Rect::from_min_size(pos2(sig_x, rect.top()), half),
+        ],
+    );
     g.text(
         pos2(sig_x, top),
         Align2::CENTER_TOP,
@@ -761,16 +910,6 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
         }
     }
 
-    // Chevron (display mode menu).
-    let c = pos2(rect.right() - 11.0, rect.center().y);
-    g.add(Shape::line(
-        vec![
-            c + vec2(-4.0, -2.0),
-            c + vec2(0.0, 2.0),
-            c + vec2(4.0, -2.0),
-        ],
-        Stroke::new(1.6, pal.mid),
-    ));
     g.line_segment(
         [
             pos2(rect.right() - 22.0, rect.top() + 6.0),
@@ -937,9 +1076,25 @@ pub fn control_bar(
     }
 
     // Centre: LCD, transport to its left, count-in & co. to its right.
-    let lcd_w = 555.0;
-    let lcd_rect = Rect::from_center_size(pos2(bar.center().x + 20.0, cy), vec2(lcd_w, 44.0));
-    lcd(ui, &g, p, lcd_rect, s.cpu_load);
+    let lcd_w = if s.lcd_full { 555.0 } else { 226.0 };
+    let lcd_rect = Rect::from_center_size(pos2(bar.center().x, cy), vec2(lcd_w, 44.0));
+    if s.lcd_full {
+        lcd(ui, &g, p, lcd_rect, s.cpu_load);
+    } else {
+        lcd_compact(ui, &g, p, lcd_rect);
+    }
+    if lcd_arrow(ui, &g, lcd_rect, p.recording) {
+        s.lcd_full = !s.lcd_full;
+    }
+    // The transport buttons sit on one rounded plate, as do those to the right of the display.
+    crate::theme::glass_plate(
+        &g,
+        Rect::from_min_max(
+            pos2(lcd_rect.left() - 214.0, cy - 15.0),
+            pos2(lcd_rect.left() - 4.0, cy + 15.0),
+        ),
+        7.0,
+    );
 
     let tx = |dx: f32| pos2(lcd_rect.left() + dx, cy);
     if tbutton(ui, &g, tx(-198.0), "rew", icon_rewind, None, ICON) {
@@ -1024,7 +1179,7 @@ pub fn control_bar(
         p.low_latency = !p.low_latency;
     }
     // Count-in "1234": purple when on.
-    let ci = Rect::from_center_size(rx(110.0), vec2(28.0, 24.0));
+    let ci = Rect::from_center_size(rx(68.0), vec2(28.0, 24.0));
     g.rect_filled(ci, 5.0, if p.count_in { PURPLE } else { SEG_BG });
     g.text(
         ci.center(),
@@ -1040,7 +1195,7 @@ pub fn control_bar(
     if tbutton(
         ui,
         &g,
-        rx(140.0),
+        rx(98.0),
         "metronome",
         icon_metronome,
         met_bg,
@@ -1055,7 +1210,7 @@ pub fn control_bar(
 
     // Right: master volume, then List Editors / Note Pads / Loop Browser / Browsers.
     // The volume sits after the metronome and before the icons, narrower if it must be.
-    let (vol_left, vol_w) = volume_span(rx(156.0).x, bar.right());
+    let (vol_left, vol_w) = volume_span(rx(114.0).x, bar.right());
     if vol_w > 0.0 {
         let vol = Rect::from_min_size(pos2(vol_left, cy - 11.0), vec2(vol_w, 22.0));
         master_volume(ui, &g, p, vol, master_peaks);

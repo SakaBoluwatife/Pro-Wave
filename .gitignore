@@ -24,3 +24,6 @@ Thumbs.db
 
 # A target dir made inside crates/ by a relative CARGO_TARGET_DIR
 /crates/target
+
+# The Stem Splitter's helper and model go in the installer, not in git.
+dist/windows/stems/

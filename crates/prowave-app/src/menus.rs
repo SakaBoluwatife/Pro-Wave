@@ -514,7 +514,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         "Show Score Editor" | "Score Editor" => true,
         "Show Step Sequencer" | "Step Sequencer" => track_plays_midi(p),
-        "Show Smart Tempo" | "Smart Tempo" => selected_audio(p, s).is_some(),
+        "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" => selected_audio(p, s).is_some(),
         "Show Markers" | "Show Global Tracks" => true,
         "Record Enable" => p
             .tracks
@@ -699,6 +699,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Smart Tempo" | "Smart Tempo" => {
             if let Some((t, r)) = selected_audio(p, s) {
                 crate::smart_tempo::open_editor(p, s, t, r);
+            }
+        }
+        "Stem Splitter…" => {
+            if let Some((t, r)) = selected_audio(p, s) {
+                crate::stem_splitter::open(p, s, t, r);
             }
         }
         "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,
@@ -990,7 +995,13 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             crate::tracks_area::zoom_to_fit(p, &mut s.tracks, w);
         }
         "Create Track Stack…" => {
-            p.create_track_stack(p.selected_track);
+            let tracks = if s.tracks.picked_tracks.contains(&p.selected_track) {
+                s.tracks.picked_tracks.clone()
+            } else {
+                vec![p.selected_track]
+            };
+            p.stack_tracks(&tracks);
+            s.tracks.picked_tracks.clear();
             forget_region_selection(s);
         }
         "Bigger Interface" | "Smaller Interface" | "Actual Interface Size" => {
@@ -1226,9 +1237,13 @@ fn menu_style(light: bool) -> impl Fn(&mut egui::Style) + Send + Sync + 'static 
             Color32::from_rgb(0x55, 0x55, 0x58)
         };
         let v = &mut style.visuals;
-        v.window_fill = l.menu;
-        v.window_stroke = Stroke::new(1.0, l.separator);
-        v.menu_corner_radius = egui::CornerRadius::same(6);
+        v.window_fill = if light {
+            l.menu
+        } else {
+            crate::theme::GLASS_FILL
+        };
+        v.window_stroke = Stroke::new(1.0, crate::theme::GLASS_EDGE);
+        v.menu_corner_radius = egui::CornerRadius::same(8);
         v.override_text_color = None;
         v.widgets.noninteractive.fg_stroke.color = l.text;
         v.widgets.inactive.fg_stroke.color = l.bar_text;
@@ -1418,9 +1433,9 @@ mod tests {
     fn view_menu_checks_follow_the_panels() {
         let mut s = crate::UiState::new();
         let mut p = Project::demo();
-        assert!(checked("Show Library", &s) && checked("Show Mixer", &s));
+        assert!(!checked("Show Library", &s) && !checked("Show Mixer", &s));
         apply("Show Library", &mut p, &mut s);
-        assert!(!s.show_library && !checked("Show Library", &s));
+        assert!(s.show_library && checked("Show Library", &s));
         apply("Show Piano Roll", &mut p, &mut s);
         assert!(checked("Show Piano Roll", &s) && !checked("Show Mixer", &s));
         apply("Show Mixer", &mut p, &mut s);

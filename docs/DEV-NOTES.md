@@ -65,7 +65,16 @@ Apple's, with no Windows alternative: Song to Mobile Device, Open in Sound Libra
 
 ### Stem Splitter
 
-Not in this branch yet. Two versions were made at once, and the owner chooses which to keep. Both use demucs-rs. No explicit licence was found for the model weights: settle that before shipping them to others.
+One version is kept: `stem_splitter.rs`, with the CPU helper, as the owner chose.
+
+## Notes from the owner's testing, 2026-11-05
+
+- **Stem Splitter:** bundled, CPU helper only for now, to optimize later. The owner tests it; no split has finished on this machine yet. The model's licence is unresolved: see `dist/windows/stems-README.md`.
+- **Recording:** the owner reports left-only, distorted-sounding takes with Input 1 on an Audient iD4. Their saved input was WASAPI (`Analogue 1/2`) while output was the Audient ASIO driver. A test shows a mono input reads back the same on both sides. Not solved; the owner has tried ASIO input and the result is not in yet.
+- **Drivers:** the owner wants WASAPI, ASIO and Audient's own driver available. Audient's driver is the entry `Audient USB Audio ASIO Driver`, among the ASIO drivers.
+- **Look:** Logic's layout and feel with our own artwork, with frosted plates on floating things. Next: stop button, Ctrl+K keyboard icon.
+- **Order after this:** plugin process isolation, then the licence review before any release. Installer: Inno Setup.
+- **Skipped for now, by the owner:** Session Player, Performers, Song to Mobile Device, Sound Library Manager, Logic Remote, GarageBand, iPad, AirDrop, Music app and Voice Memos sharing, surround and binaural panning, Apple Loops library features, Live Loops, full score engraving. **Open for later:** Dolby Atmos.
 
 ## Remaining and known issues
 

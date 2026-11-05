@@ -70,6 +70,7 @@ mod smart_controls;
 mod smart_tempo;
 mod song_pattern;
 mod start_screen;
+mod stem_splitter;
 mod step_editor;
 mod sync_menu;
 mod takes;
@@ -100,6 +101,8 @@ pub enum Bottom {
 pub struct UiState {
     pub show_mixer: bool,
     pub show_library: bool,
+    /// The control bar's display shows everything, not only bar, beat, tempo, signature and key.
+    pub lcd_full: bool,
     pub show_inspector: bool,
     /// List Editors (the Event list on the right).
     pub show_lists: bool,
@@ -165,6 +168,7 @@ pub struct UiState {
     pub settings: settings::SettingsView,
     pub dialogs: quick_dialogs::QuickDialogs,
     pub smart: smart_controls::SmartControls,
+    pub stems: stem_splitter::StemSplitter,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
     pub undo_labels: Vec<String>,
@@ -205,8 +209,9 @@ pub struct UiState {
 impl UiState {
     fn new() -> Self {
         Self {
-            show_mixer: true,
-            show_library: true,
+            show_mixer: false,
+            show_library: false,
+            lcd_full: false,
             show_inspector: true,
             show_lists: false,
             lists: event_list::ListView::default(),
@@ -251,6 +256,7 @@ impl UiState {
             settings: settings::SettingsView::default(),
             dialogs: quick_dialogs::QuickDialogs::default(),
             smart: smart_controls::SmartControls::default(),
+            stems: stem_splitter::StemSplitter::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
@@ -840,7 +846,7 @@ impl eframe::App for App {
         top_bar(ui, p, s);
         egui::Panel::top("control")
             .exact_size(58.0)
-            .frame(egui::Frame::new().fill(egui::Color32::from_gray(0x47)))
+            .frame(egui::Frame::new().fill(egui::Color32::from_gray(0x5a)))
             .show(ui, |ui| transport::control_bar(ui, p, s, master_peaks));
         if s.show_library {
             egui::Panel::left("library")
@@ -911,6 +917,7 @@ impl eframe::App for App {
         }
         quick_dialogs::show(&ctx, p, s);
         smart_controls::show(&ctx, p, s);
+        stem_splitter::show(&ctx, p, s);
         mastering::show(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);

@@ -632,8 +632,9 @@ impl Default for TrackParams {
     }
 }
 
-/// How much a quiet clip's waveform is enlarged at most, to fit its region: 24 dB.
-const MAX_WAVEFORM_FIT: f32 = 16.0;
+/// How much a quiet clip's waveform is enlarged at most: 12 dB, so that a quiet recording is easy
+/// to see and still does not look as loud as one that clips. The waveform buttons do the rest.
+const MAX_WAVEFORM_FIT: f32 = 4.0;
 
 impl AudioRegion {
     /// What to multiply the overview by so the clip fills its region. Only the drawing: the
@@ -1848,6 +1849,164 @@ impl Project {
         i
     }
 
+    /// `picked`, each with what is inside it when it is a folder, in the order they are in.
+    fn with_contents(&self, picked: &[usize]) -> Vec<usize> {
+        let mut all = Vec::new();
+        for &i in picked.iter().filter(|i| **i < self.tracks.len()) {
+            let end = if self.tracks[i].kind == TrackKind::Folder {
+                self.folder_end(i)
+            } else {
+                i + 1
+            };
+            all.extend(i..end);
+        }
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
+    /// Moves `picked` (and what is inside the folders among them) together to before the track now
+    /// at `to`; the length of the list means the end. They join the stack they land in. What refers
+    /// to tracks by position goes with them: VCAs, the selected track and, as an Aux strip hears the
+    /// bus of its place among the Auxes, the buses of outputs and sends. False if nothing moved.
+    pub fn move_tracks(&mut self, picked: &[usize], to: usize) -> bool {
+        let moving = self.with_contents(picked);
+        let to = to.min(self.tracks.len());
+        let (Some(&first), Some(&last)) = (moving.first(), moving.last()) else {
+            return false;
+        };
+        let contiguous = last - first + 1 == moving.len();
+        if contiguous && (first..=last + 1).contains(&to) {
+            return false;
+        }
+        // Inside a block that moves there is nowhere to land.
+        if moving.contains(&to) && !contiguous {
+            return false;
+        }
+        let stay = |i: &usize| !moving.contains(i);
+        let mut order: Vec<usize> = (0..to).filter(stay).collect();
+        let at = order.len();
+        order.extend(&moving);
+        order.extend((to..self.tracks.len()).filter(stay));
+        let old_bus: Vec<u8> = (0..self.tracks.len()).map(|i| self.aux_bus_of(i)).collect();
+        let mut new_place = vec![0; order.len()];
+        for (new, &old) in order.iter().enumerate() {
+            new_place[old] = new;
+        }
+        // What they were in the old order, before the tracks change places.
+        let root_level = moving
+            .iter()
+            .map(|&i| self.tracks[i].indent)
+            .min()
+            .unwrap_or(0);
+        let mut slots: Vec<Option<Track>> = std::mem::take(&mut self.tracks)
+            .into_iter()
+            .map(Some)
+            .collect();
+        self.tracks = order.iter().filter_map(|&i| slots[i].take()).collect();
+        for t in &mut self.tracks {
+            if let Some(v) = t.vca.as_mut() {
+                *v = new_place.get(*v).copied().unwrap_or(*v);
+            }
+        }
+        self.selected_track = new_place
+            .get(self.selected_track)
+            .copied()
+            .unwrap_or(self.selected_track);
+        // Who hears which bus now: a bus keeps its Aux, under the number of the Aux's new place.
+        let mut bus_map = [0u8; 256];
+        for (i, slot) in bus_map.iter_mut().enumerate() {
+            *slot = i as u8;
+        }
+        for (new, &old) in order.iter().enumerate() {
+            let (was, now) = (old_bus[old], self.aux_bus_of(new));
+            if was > 0 && now > 0 {
+                bus_map[usize::from(was)] = now;
+            }
+        }
+        for t in &mut self.tracks {
+            t.output = bus_map[usize::from(t.output)];
+            for send in &mut t.sends {
+                send.bus = send.bus.map(|b| bus_map[usize::from(b)]);
+            }
+        }
+        // They take the level of the place they land in.
+        let level = match at.checked_sub(1).and_then(|i| self.tracks.get(i)) {
+            Some(t) if t.kind == TrackKind::Folder => t.indent + 1,
+            Some(t) => t.indent,
+            None => 0,
+        };
+        for t in &mut self.tracks[at..at + moving.len()] {
+            t.indent = (t.indent - root_level.min(t.indent)).saturating_add(level);
+        }
+        self.normalize_nesting();
+        self.song_rev += 1;
+        true
+    }
+
+    /// Wraps `picked` in a new stack, bringing them together under the first. Its place.
+    pub fn stack_tracks(&mut self, picked: &[usize]) -> Option<usize> {
+        let mut roots: Vec<usize> = self
+            .with_contents(picked)
+            .into_iter()
+            .filter(|i| picked.contains(i))
+            .collect();
+        roots.sort_unstable();
+        let &first = roots.first()?;
+        self.move_tracks(&roots[1..], self.folder_end(first));
+        // Everything picked now follows the first, so the stack goes round the block.
+        let count = self.with_contents(&roots).len().max(1);
+        let level = self.tracks[first].indent;
+        let end = (first + count).min(self.tracks.len());
+        for t in &mut self.tracks[first..end] {
+            t.indent = t.indent.saturating_sub(level).saturating_add(level + 1);
+        }
+        let n = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Folder)
+            .count()
+            + 1;
+        let mut folder = Track::new(format!("Folder {n}"), TrackKind::Folder);
+        folder.indent = level;
+        self.tracks.insert(first, folder);
+        self.vca_inserted(first);
+        self.selected_track = first;
+        self.normalize_nesting();
+        self.song_rev += 1;
+        Some(first)
+    }
+
+    /// A stack whose tracks all go through one Aux, which is first inside it: one fader for the
+    /// lot. The folder's place, or `None` when no bus is free.
+    pub fn summing_stack(&mut self, picked: &[usize]) -> Option<usize> {
+        let auxes = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Aux)
+            .count();
+        if auxes >= prowave_engine::MAX_BUSES {
+            return None;
+        }
+        let folder = self.stack_tracks(picked)?;
+        let end = self.folder_end(folder);
+        let aux = self.add_track(TrackKind::Aux);
+        self.move_tracks(&[aux], folder + 1);
+        let aux = folder + 1;
+        self.tracks[aux].name = format!("{} Sum", self.tracks[folder].name);
+        self.tracks[folder].name = format!("Summing {}", self.tracks[folder].name);
+        let bus = self.aux_bus_of(aux);
+        // The move put the Aux one further into the stack.
+        for t in &mut self.tracks[aux + 1..=end] {
+            if !matches!(t.kind, TrackKind::Folder | TrackKind::Vca) {
+                t.output = bus;
+            }
+        }
+        self.selected_track = folder;
+        self.song_rev += 1;
+        Some(folder)
+    }
+
     /// Track > Release Track Stack: removes folder `i` and lifts the tracks inside it one
     /// level. Returns false (and changes nothing) when `i` is not a folder.
     pub fn release_track_stack(&mut self, i: usize) -> bool {
@@ -2985,6 +3144,65 @@ mod tests {
         p.create_track_stack(0);
         p.tracks[0].folded = true;
         assert_eq!((1..4).filter(|i| p.hidden_by_fold(*i)).count(), 3);
+    }
+
+    #[test]
+    fn moved_tracks_keep_their_buses_vcas_and_contents() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let a = p.add_track(TrackKind::Audio);
+        let aux1 = p.add_track(TrackKind::Aux);
+        let aux2 = p.add_track(TrackKind::Aux);
+        let vca = p.add_track(TrackKind::Vca);
+        p.tracks[a].name = "a".into();
+        p.tracks[aux1].name = "one".into();
+        p.tracks[aux2].name = "two".into();
+        p.tracks[a].output = p.aux_bus_of(aux2);
+        p.tracks[a].vca = Some(vca);
+        p.selected_track = a;
+        assert!(p.move_tracks(&[aux2], aux1), "the second Aux goes first");
+        let two = p.tracks.iter().position(|t| t.name == "two").unwrap();
+        let track = p.tracks.iter().position(|t| t.name == "a").unwrap();
+        assert_eq!(
+            p.tracks[track].output,
+            p.aux_bus_of(two),
+            "still hears the same Aux"
+        );
+        assert_eq!(p.tracks[p.tracks[track].vca.unwrap()].kind, TrackKind::Vca);
+        assert_eq!(p.selected_track, track);
+        assert!(!p.move_tracks(&[track], track), "already there");
+        assert!(p.move_tracks(&[track], p.tracks.len()), "to the end");
+        assert_eq!(p.tracks.last().unwrap().name, "a");
+    }
+
+    #[test]
+    fn tracks_picked_anywhere_make_one_stack_and_a_summing_stack_goes_through_one_aux() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        for name in ["a", "b", "c", "d"] {
+            let t = p.add_track(TrackKind::Audio);
+            p.tracks[t].name = name.into();
+        }
+        let folder = p.stack_tracks(&[0, 2]).unwrap();
+        assert_eq!(p.tracks[folder].kind, TrackKind::Folder);
+        let inside: Vec<&str> = p.tracks[folder + 1..p.folder_end(folder)]
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(inside, ["a", "c"]);
+        let d = p.tracks.iter().position(|t| t.name == "d").unwrap();
+        let b = p.tracks.iter().position(|t| t.name == "b").unwrap();
+        let sum = p.summing_stack(&[b, d]).unwrap();
+        let aux = sum + 1;
+        assert_eq!(p.tracks[aux].kind, TrackKind::Aux);
+        let bus = p.aux_bus_of(aux);
+        assert!(bus > 0);
+        for name in ["b", "d"] {
+            let t = p.tracks.iter().find(|t| t.name == name).unwrap();
+            assert_eq!(t.output, bus, "{name}");
+        }
+        assert_eq!(p.tracks.iter().find(|t| t.name == "a").unwrap().output, 0);
+        assert_eq!(p.tracks[aux].output, 0, "the Aux does not feed itself");
     }
 
     #[test]
