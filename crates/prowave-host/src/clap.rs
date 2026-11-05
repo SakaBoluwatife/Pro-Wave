@@ -425,6 +425,23 @@ impl crate::LoadedPlugin for LoadedClap {
         self.has_side
     }
 
+    #[cfg(windows)]
+    fn show_header(&mut self, state: &crate::HeaderState) {
+        if let Some(open) = &self.editor {
+            open.window.show_header(state);
+        }
+    }
+
+    #[cfg(windows)]
+    fn take_header_click(&mut self) -> Option<crate::HeaderClick> {
+        self.editor.as_ref()?.window.take_header_click()
+    }
+
+    #[cfg(windows)]
+    fn header_menu(&mut self, items: &[String]) -> Option<usize> {
+        self.editor.as_ref()?.window.header_menu(items)
+    }
+
     fn param_value(&mut self, id: u32) -> Option<f64> {
         let at = self.ranges.binary_search_by_key(&id, |r| r.0).ok()?;
         let (_, min, max) = self.ranges[at];

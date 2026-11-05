@@ -1,31 +1,214 @@
 //! The native window a plugin's editor lives in. A plugin draws its own interface into a window the
 //! host gives it, and egui has no such thing to offer, so this is a plain Win32 window. Its messages
 //! are delivered by the message loop the main window already runs on this thread.
-use crate::HostError;
+//!
+//! The window has a bar across its top that is ours (bypass, presets, A/B compare), drawn here with
+//! GDI, and under it a child window that is what the plugin embeds itself in. The plugin only ever
+//! hears of the size of that child.
+use crate::{HeaderClick, HeaderState, HostError};
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Once;
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
+    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE,
+    DT_VCENTER, FW_NORMAL, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW,
-    GetWindowRect, IsIconic, LoadCursorW, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_MAXIMIZEBOX,
-    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_THICKFRAME,
+    AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
+    DestroyWindow, GetClientRect, GetWindowLongPtrW, GetWindowRect, IsIconic, LoadCursorW,
+    MoveWindow, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MF_SEPARATOR,
+    MF_STRING, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
+    TPM_NONOTIFY, TPM_RETURNCMD, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_ERASEBKGND,
+    WM_LBUTTONUP, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_THICKFRAME,
+    WS_VISIBLE,
 };
 
 const CLASS_NAME: PCWSTR = w!("ProWavePluginEditor");
+const CONTENT_CLASS: PCWSTR = w!("ProWavePluginContent");
+
+/// How tall the bar is, in logical pixels.
+const HEADER_HEIGHT: f64 = 28.0;
+const MARGIN: f64 = 6.0;
+const GAP: f64 = 4.0;
+const BYPASS_WIDTH: f64 = 56.0;
+const COMPARE_WIDTH: f64 = 76.0;
+const COPY_WIDTH: f64 = 70.0;
+/// The preset button takes the room that is left, between these.
+const PRESET_MIN: f64 = 72.0;
+const PRESET_MAX: f64 = 260.0;
+
+/// Where the bar's buttons go in a window `width` physical pixels wide: each with its left and right
+/// edge. In a narrow window the ones at the end give way, so the window never has to be wider than
+/// the plugin.
+fn header_cells(width: i32, scale: f64) -> Vec<(HeaderClick, i32, i32)> {
+    let px = |logical: f64| (logical * scale).round() as i32;
+    let room = |extras: &[f64]| {
+        let taken: f64 = extras.iter().map(|w| w + GAP).sum();
+        f64::from(width) / scale - MARGIN * 2.0 - BYPASS_WIDTH - GAP - taken
+    };
+    let (compare, copy) = if room(&[COMPARE_WIDTH, COPY_WIDTH]) >= PRESET_MIN {
+        (true, true)
+    } else if room(&[COMPARE_WIDTH]) >= PRESET_MIN {
+        (true, false)
+    } else {
+        (false, false)
+    };
+    let extras: &[f64] = match (compare, copy) {
+        (true, true) => &[COMPARE_WIDTH, COPY_WIDTH],
+        (true, false) => &[COMPARE_WIDTH],
+        _ => &[],
+    };
+    let presets = room(extras).clamp(0.0, PRESET_MAX);
+    let mut cells = Vec::with_capacity(4);
+    let mut x = MARGIN;
+    let mut add = |click, w: f64| {
+        cells.push((click, px(x), px(x + w)));
+        x += w + GAP;
+    };
+    add(HeaderClick::Bypass, BYPASS_WIDTH);
+    add(HeaderClick::Presets, presets);
+    if compare {
+        add(HeaderClick::Compare, COMPARE_WIDTH);
+    }
+    if copy {
+        add(HeaderClick::CopyCompare, COPY_WIDTH);
+    }
+    cells
+}
+
+/// What a button says.
+fn header_label(click: HeaderClick, state: &HeaderState) -> String {
+    match click {
+        HeaderClick::Bypass => "Bypass".to_string(),
+        HeaderClick::Presets => match &state.preset {
+            Some(name) => format!("{name} ▾"),
+            None => "Presets ▾".to_string(),
+        },
+        HeaderClick::Compare if state.on_b => "Compare: B".to_string(),
+        HeaderClick::Compare => "Compare: A".to_string(),
+        HeaderClick::CopyCompare if state.on_b => "Copy B to A".to_string(),
+        HeaderClick::CopyCompare => "Copy A to B".to_string(),
+    }
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
+    COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
+}
+
+/// Physical pixels to one logical pixel of this window.
+fn scale_of(hwnd: HWND) -> f64 {
+    // SAFETY: `hwnd` is a window of this thread that is still there.
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        1.0
+    } else {
+        f64::from(dpi) / 96.0
+    }
+}
+
+fn header_height(hwnd: HWND) -> i32 {
+    (HEADER_HEIGHT * scale_of(hwnd)).round() as i32
+}
+
+/// Draws the bar.
+///
+/// SAFETY: `hwnd` must be the editor window, handling `WM_PAINT` on its own thread.
+unsafe fn paint_header(hwnd: HWND, state: &HeaderState) {
+    let scale = scale_of(hwnd);
+    let height = header_height(hwnd);
+    let mut client = RECT::default();
+    let mut paint = PAINTSTRUCT::default();
+    // SAFETY: the handles made here are given back here, and every pointer is to a local.
+    unsafe {
+        let _ = GetClientRect(hwnd, &mut client);
+        let dc = BeginPaint(hwnd, &mut paint);
+        let fill = |rect: &RECT, color: COLORREF| {
+            let brush = CreateSolidBrush(color);
+            FillRect(dc, rect, brush);
+            let _ = DeleteObject(brush.into());
+        };
+        fill(
+            &RECT {
+                bottom: height,
+                ..client
+            },
+            rgb(0x3a, 0x3a, 0x3e),
+        );
+        let font = CreateFontW(
+            -((12.0 * scale).round() as i32),
+            0,
+            0,
+            0,
+            FW_NORMAL.0 as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            u32::from(DEFAULT_PITCH.0),
+            w!("Segoe UI"),
+        );
+        let old = SelectObject(dc, font.into());
+        SetBkMode(dc, TRANSPARENT);
+        let inset = (3.0 * scale).round() as i32;
+        for (click, left, right) in header_cells(client.right, scale) {
+            let mut cell = RECT {
+                left,
+                right,
+                top: inset,
+                bottom: height - inset,
+            };
+            let lit = match click {
+                HeaderClick::Bypass => state.bypass,
+                HeaderClick::Compare => state.on_b,
+                _ => false,
+            };
+            let (back, text) = if lit {
+                (rgb(0xd9, 0xa0, 0x2a), rgb(0x10, 0x10, 0x10))
+            } else {
+                (rgb(0x55, 0x55, 0x5a), rgb(0xf0, 0xf0, 0xf0))
+            };
+            fill(&cell, back);
+            cell.left += inset;
+            cell.right -= inset;
+            SetTextColor(dc, text);
+            let mut label: Vec<u16> = header_label(click, state).encode_utf16().collect();
+            DrawTextW(
+                dc,
+                &mut label,
+                &mut cell,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+            );
+        }
+        SelectObject(dc, old);
+        let _ = DeleteObject(font.into());
+        let _ = EndPaint(hwnd, &paint);
+    }
+}
 
 /// What the window procedure notes for the UI thread to act on, where the plugin can be reached.
 #[derive(Default)]
 struct Inbox {
     close: AtomicBool,
+    /// The size of the part the plugin has.
     width: AtomicI32,
     height: AtomicI32,
+    /// The child window the plugin embeds itself in.
+    content: Cell<isize>,
+    /// What the bar shows, and the button last pressed. Only ever touched on the window's thread.
+    header: RefCell<HeaderState>,
+    click: Cell<Option<HeaderClick>>,
 }
 
 unsafe extern "system" fn window_proc(
@@ -35,7 +218,8 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     // SAFETY: the pointer is set right after the window is made, from the Box in `EditorWindow`,
-    // which destroys this window before it is dropped. Until it is set this reads 0.
+    // which destroys this window before it is dropped. Until it is set this reads 0. The content
+    // window's class has its own procedure, so this is only ever the editor window.
     let inbox = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Inbox).as_ref() };
     match (msg, inbox) {
         (WM_CLOSE, Some(inbox)) => {
@@ -46,19 +230,61 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         (WM_SIZE, Some(inbox)) => {
+            let bar = header_height(hwnd);
             let (width, height) = (
                 (lparam.0 & 0xffff) as i32,
-                ((lparam.0 >> 16) & 0xffff) as i32,
+                ((lparam.0 >> 16) & 0xffff) as i32 - bar,
             );
             if width > 0 && height > 0 {
                 inbox.width.store(width, Ordering::Release);
                 inbox.height.store(height, Ordering::Release);
+                let content = HWND(inbox.content.get() as *mut c_void);
+                // SAFETY: the child lives as long as this window. The bar is drawn anew.
+                unsafe {
+                    let _ = MoveWindow(content, 0, bar, width, height, true);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
+            LRESULT(0)
+        }
+        (WM_ERASEBKGND, Some(_)) => LRESULT(1),
+        (WM_PAINT, Some(inbox)) => {
+            // SAFETY: this is the editor window, on its own thread, asked to paint.
+            unsafe { paint_header(hwnd, &inbox.header.borrow()) };
+            LRESULT(0)
+        }
+        (WM_LBUTTONUP, Some(inbox)) => {
+            let (x, y) = (
+                i32::from((lparam.0 & 0xffff) as u16 as i16),
+                i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16),
+            );
+            if y >= 0 && y < header_height(hwnd) {
+                let mut client = RECT::default();
+                // SAFETY: `client` is a valid local and `hwnd` is this window.
+                let _ = unsafe { GetClientRect(hwnd, &mut client) };
+                let hit = header_cells(client.right, scale_of(hwnd))
+                    .into_iter()
+                    .find(|(_, left, right)| (*left..*right).contains(&x));
+                if let Some((click, ..)) = hit {
+                    inbox.click.set(Some(click));
+                }
             }
             LRESULT(0)
         }
         // SAFETY: the arguments are the ones this procedure was called with.
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+/// The content window's procedure: nothing of ours happens there.
+unsafe extern "system" fn content_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    // SAFETY: the arguments are the ones this procedure was called with.
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
 fn register_class() {
@@ -76,12 +302,21 @@ fn register_class() {
                 ..WNDCLASSW::default()
             };
             RegisterClassW(&class);
+            // What the plugin embeds itself in: its messages need nothing from us.
+            let content = WNDCLASSW {
+                lpfnWndProc: Some(content_proc),
+                hInstance: GetModuleHandleW(None).unwrap_or_default().into(),
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                lpszClassName: CONTENT_CLASS,
+                ..WNDCLASSW::default()
+            };
+            RegisterClassW(&content);
         }
     });
 }
 
 fn style(resizable: bool) -> WINDOW_STYLE {
-    let fixed = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    let fixed = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     if resizable {
         fixed | WS_THICKFRAME | WS_MAXIMIZEBOX
     } else {
@@ -93,6 +328,8 @@ fn style(resizable: bool) -> WINDOW_STYLE {
 /// and goes away with it.
 pub(crate) struct EditorWindow {
     hwnd: HWND,
+    /// The child window under the bar, which goes with `hwnd`.
+    content: HWND,
     resizable: bool,
     inbox: Box<Inbox>,
 }
@@ -127,11 +364,40 @@ impl EditorWindow {
             )
         }
         .map_err(|e| HostError(format!("cannot make the editor window: {e}")))?;
+        // SAFETY: the class is registered and `hwnd` was just made. Destroying `hwnd` destroys this
+        // child with it.
+        let content = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                CONTENT_CLASS,
+                None,
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                0,
+                header_height(hwnd),
+                640,
+                480,
+                Some(hwnd),
+                None,
+                GetModuleHandleW(None).ok().map(Into::into),
+                None,
+            )
+        }
+        .map_err(|e| HostError(format!("cannot make the editor window: {e}")));
+        let content = match content {
+            Ok(content) => content,
+            Err(e) => {
+                // SAFETY: `hwnd` was just made here, and nothing else has it.
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return Err(e);
+            }
+        };
+        inbox.content.set(content.0 as isize);
         // SAFETY: `hwnd` was just made. The Box keeps the pointer valid until `drop` below, which
         // destroys the window first.
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*inbox as *const Inbox as isize) };
         Ok(Self {
             hwnd,
+            content,
             resizable,
             inbox,
         })
@@ -139,7 +405,61 @@ impl EditorWindow {
 
     /// The handle a plugin embeds itself in.
     pub(crate) fn handle(&self) -> *mut c_void {
-        self.hwnd.0
+        self.content.0
+    }
+
+    /// What the bar shows from now on.
+    pub(crate) fn show_header(&self, state: &HeaderState) {
+        if *self.inbox.header.borrow() != *state {
+            *self.inbox.header.borrow_mut() = state.clone();
+            // SAFETY: `self.hwnd` lives as long as `self`.
+            let _ = unsafe { InvalidateRect(Some(self.hwnd), None, false) };
+        }
+    }
+
+    /// The button pressed in the bar since last asked.
+    pub(crate) fn take_header_click(&self) -> Option<HeaderClick> {
+        self.inbox.click.take()
+    }
+
+    /// Shows a menu under the bar's preset button and waits for the choice, by its place in
+    /// `items`. An empty item is a separator.
+    pub(crate) fn header_menu(&self, items: &[String]) -> Option<usize> {
+        let mut client = RECT::default();
+        // SAFETY: the menu made here is destroyed here, every string outlives the call that takes
+        // it, and `self.hwnd` lives as long as `self`.
+        unsafe {
+            let _ = GetClientRect(self.hwnd, &mut client);
+            let left = header_cells(client.right, self.scale())
+                .into_iter()
+                .find(|cell| cell.0 == HeaderClick::Presets)
+                .map_or(0, |cell| cell.1);
+            let mut at = POINT {
+                x: left,
+                y: header_height(self.hwnd),
+            };
+            let _ = ClientToScreen(self.hwnd, &mut at);
+            let menu = CreatePopupMenu().ok()?;
+            for (i, item) in items.iter().enumerate() {
+                let _ = if item.is_empty() {
+                    AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
+                } else {
+                    AppendMenuW(menu, MF_STRING, i + 1, &HSTRING::from(item.as_str()))
+                };
+            }
+            let _ = SetForegroundWindow(self.hwnd);
+            let picked = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY,
+                at.x,
+                at.y,
+                None,
+                self.hwnd,
+                None,
+            );
+            let _ = DestroyMenu(menu);
+            (picked.0 as usize).checked_sub(1)
+        }
     }
 
     /// Physical pixels to one logical pixel on the window's screen.
@@ -153,13 +473,13 @@ impl EditorWindow {
         }
     }
 
-    /// Sizes the window so that the area inside the frame is `width` by `height`.
+    /// Sizes the window so that the part the plugin has is `width` by `height`.
     pub(crate) fn set_client_size(&self, width: u32, height: u32) {
         let mut rect = RECT {
             left: 0,
             top: 0,
             right: width as i32,
-            bottom: height as i32,
+            bottom: height as i32 + header_height(self.hwnd),
         };
         // SAFETY: `rect` is a valid local and `self.hwnd` lives as long as `self`.
         unsafe {
@@ -230,17 +550,15 @@ impl EditorWindow {
 
     #[cfg(test)]
     pub(crate) fn describe(&self) -> (bool, (i32, i32), bool) {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetClientRect, GetWindow, IsWindowVisible, GW_CHILD,
-        };
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindow, IsWindowVisible, GW_CHILD};
         let mut rect = RECT::default();
-        // SAFETY: `rect` is a valid local and `self.hwnd` lives as long as `self`.
+        // SAFETY: `rect` is a valid local and both windows live as long as `self`.
         unsafe {
-            let _ = GetClientRect(self.hwnd, &mut rect);
+            let _ = GetClientRect(self.content, &mut rect);
             (
                 IsWindowVisible(self.hwnd).as_bool(),
                 (rect.right, rect.bottom),
-                GetWindow(self.hwnd, GW_CHILD).is_ok(),
+                GetWindow(self.content, GW_CHILD).is_ok(),
             )
         }
     }

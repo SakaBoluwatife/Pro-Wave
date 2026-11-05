@@ -7,7 +7,7 @@ use crate::model::{PluginInsert, Project, TrackKind};
 use prowave_engine::{
     Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS, PLUGIN_BLOCK,
 };
-use prowave_host::{load_plugin, LoadedPlugin, PluginInfo};
+use prowave_host::{load_plugin, HeaderClick, HeaderState, LoadedPlugin, PluginInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -233,7 +233,14 @@ struct Live {
     low: bool,
     /// The side-chain source, as last told to the engine.
     side: Option<u16>,
+    /// The preset last loaded or saved, for the editor window's bar.
+    preset: Option<String>,
     loaded: Box<dyn LoadedPlugin>,
+}
+
+/// The name a preset goes by: its file's.
+fn preset_name(file: &std::path::Path) -> Option<String> {
+    Some(file.file_stem()?.to_str()?.to_string())
 }
 
 /// A/B compare of a plugin's settings: the set it is not using now. The first switch keeps A here
@@ -369,7 +376,9 @@ impl Rack {
             .save_state()
             .map_err(|e| e.to_string())?
             .ok_or("This plugin keeps no state to save")?;
-        std::fs::write(file, state).map_err(|e| e.to_string())
+        std::fs::write(file, state).map_err(|e| e.to_string())?;
+        live.preset = preset_name(file);
+        Ok(())
     }
 
     /// Puts a preset file's state into plugin `uid`.
@@ -377,8 +386,77 @@ impl Rack {
         let state = std::fs::read(file).map_err(|e| e.to_string())?;
         let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
         live.loaded.load_state(&state).map_err(|e| e.to_string())?;
+        live.preset = preset_name(file);
         self.touched = true;
         Ok(())
+    }
+
+    /// Answers the buttons in the bars of the open editor windows, and keeps those bars current.
+    fn answer_headers(&mut self, p: &mut Project, message: &mut Option<String>) {
+        let open: Vec<u64> = self
+            .live
+            .iter()
+            .filter(|(_, l)| l.loaded.editor_is_open())
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in open {
+            let click = self
+                .live
+                .get_mut(&uid)
+                .and_then(|l| l.loaded.take_header_click());
+            let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
+                continue;
+            };
+            let answer = match click {
+                Some(HeaderClick::Bypass) => {
+                    plugin.bypass = !plugin.bypass;
+                    Ok(())
+                }
+                Some(HeaderClick::Compare) => self.compare_flip(uid),
+                Some(HeaderClick::CopyCompare) => self.compare_copy(uid),
+                Some(HeaderClick::Presets) => {
+                    let (id, name) = (plugin.id.clone(), plugin.name.clone());
+                    self.preset_menu(uid, &id, &name)
+                }
+                None => Ok(()),
+            };
+            if let Err(e) = answer {
+                *message = Some(e);
+            }
+            let bypass = plugin.bypass;
+            let on_b = self.compare.get(&uid).is_some_and(|c| c.on_b);
+            if let Some(live) = self.live.get_mut(&uid) {
+                let preset = live.preset.clone();
+                live.loaded.show_header(&HeaderState {
+                    bypass,
+                    on_b,
+                    preset,
+                });
+            }
+        }
+    }
+
+    /// The presets of plugin `uid` under its window's preset button, and what was chosen there.
+    fn preset_menu(&mut self, uid: u64, id: &str, name: &str) -> Result<(), String> {
+        let presets = crate::plugin_presets::list(id);
+        let mut items = vec!["Save Preset…".to_string()];
+        if !presets.is_empty() {
+            items.push(String::new());
+        }
+        items.extend(presets.iter().map(|(name, _)| name.clone()));
+        let live = self.live.get_mut(&uid).ok_or("The plugin is not loaded")?;
+        match live.loaded.header_menu(&items) {
+            Some(0) => match crate::plugin_presets::ask_where(id, name) {
+                Some(file) => self.save_preset(uid, &file),
+                None => Ok(()),
+            },
+            // The first preset comes after the save item and the separator.
+            Some(at) => match presets.get(at.wrapping_sub(2)) {
+                Some((_, file)) => self.load_preset(uid, file),
+                None => Ok(()),
+            },
+            None => Ok(()),
+        }
     }
 
     /// A/B compare: switches plugin `uid` to its other set of settings.
@@ -635,6 +713,7 @@ impl Rack {
                 live.side = source;
             }
         }
+        self.answer_headers(p, message);
         for (plugin, place) in wanted_bypass(p) {
             let Some(live) = self.live.get_mut(&plugin.0) else {
                 continue;
@@ -760,6 +839,7 @@ impl Rack {
                     bypass: false,
                     low: false,
                     side: None,
+                    preset: None,
                     loaded,
                 },
             );

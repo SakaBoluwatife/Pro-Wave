@@ -1144,6 +1144,20 @@ impl LoadedPlugin for LoadedVst3 {
         self.side_bus.is_some() && self.side_on != on
     }
 
+    fn show_header(&mut self, state: &crate::HeaderState) {
+        if let Some(open) = &self.editor {
+            open.window.show_header(state);
+        }
+    }
+
+    fn take_header_click(&mut self) -> Option<crate::HeaderClick> {
+        self.editor.as_ref()?.window.take_header_click()
+    }
+
+    fn header_menu(&mut self, items: &[String]) -> Option<usize> {
+        self.editor.as_ref()?.window.header_menu(items)
+    }
+
     fn take_edits(&mut self) -> Vec<(u32, f64)> {
         std::mem::take(&mut *self.handler.moved.borrow_mut())
     }

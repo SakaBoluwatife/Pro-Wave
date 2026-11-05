@@ -80,6 +80,25 @@ impl std::error::Error for HostError {}
 
 /// The UI-thread half of a loaded plugin, of any format. It must outlive the audio half that came
 /// with it and stay on the UI thread. Call [`LoadedPlugin::tick`] about once a frame.
+/// A button in the bar at the top of a plugin's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderClick {
+    Bypass,
+    Presets,
+    Compare,
+    CopyCompare,
+}
+
+/// What the bar at the top of a plugin's window shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeaderState {
+    pub bypass: bool,
+    /// A/B compare is on its B side.
+    pub on_b: bool,
+    /// The preset last loaded or saved, if any.
+    pub preset: Option<String>,
+}
+
 /// A parameter a plugin lets the host move.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginParam {
@@ -126,6 +145,20 @@ pub trait LoadedPlugin {
     /// plugin's buses can only be switched while it is not running.
     fn side_needs_reload(&self, _on: bool) -> bool {
         false
+    }
+
+    /// What the bar at the top of the editor window shows, while it is open.
+    fn show_header(&mut self, _state: &HeaderState) {}
+
+    /// A button pressed in that bar since last asked.
+    fn take_header_click(&mut self) -> Option<HeaderClick> {
+        None
+    }
+
+    /// Shows a menu under the bar's preset button and waits for the choice, by its place in `items`.
+    /// An empty item is a separator.
+    fn header_menu(&mut self, _items: &[String]) -> Option<usize> {
+        None
     }
 
     /// The delay the plugin reported when it was activated, in samples.
