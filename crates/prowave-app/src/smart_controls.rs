@@ -6,16 +6,16 @@ use crate::UiState;
 use egui::{vec2, Sense};
 use std::collections::HashMap;
 
-const KNOBS: usize = 8;
+const KNOBS: usize = crate::model::SMART_KNOBS;
 /// Drag this far to go from one end of a knob to the other.
 const KNOB_TRAVEL: f32 = 150.0;
 
 #[derive(Default)]
 pub struct SmartControls {
     pub open: bool,
-    /// The plugin shown, per track, and which parameter each knob is on, per plugin.
+    /// The plugin shown, per track. Which parameter each knob is on goes with the plugin, in the
+    /// project.
     plugin_of: HashMap<usize, u64>,
-    knobs: HashMap<u64, [Option<u32>; KNOBS]>,
     /// Knob moves waiting for `App`: plugin, parameter, position.
     pub moves: Vec<(u64, u32, f64)>,
     /// Parameters whose position to read, and what was read (`App` does both).
@@ -25,17 +25,27 @@ pub struct SmartControls {
 
 /// The knobs of a plugin as the user left them, or on its first parameters.
 fn knobs_of(
-    knobs: &mut HashMap<u64, [Option<u32>; KNOBS]>,
-    uid: u64,
+    chosen: Option<[Option<u32>; KNOBS]>,
     params: &[prowave_host::PluginParam],
 ) -> [Option<u32>; KNOBS] {
-    *knobs.entry(uid).or_insert_with(|| {
+    chosen.unwrap_or_else(|| {
         let mut first = [None; KNOBS];
         for (knob, param) in first.iter_mut().zip(params) {
             *knob = Some(param.id);
         }
         first
     })
+}
+
+/// The parameters a plugin's knobs were on, kept when a knob's parameter is changed.
+fn keep_knobs(p: &mut Project, track: usize, uid: u64, knobs: [Option<u32>; KNOBS]) {
+    let plugin = p
+        .tracks
+        .get_mut(track)
+        .and_then(|t| t.hosted_mut().find(|i| i.uid == uid));
+    if let Some(plugin) = plugin {
+        plugin.smart_knobs = Some(knobs);
+    }
 }
 
 /// The window.
@@ -60,6 +70,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 .hosted()
                 .map(|i| (i.uid, i.name.clone(), i.params.clone()))
                 .collect();
+            let stored = |uid: u64| track.hosted().find(|i| i.uid == uid)?.smart_knobs;
             if plugins.is_empty() {
                 ui.label(format!("{} has no plugins.", track.name));
                 return;
@@ -88,7 +99,9 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 ui.label("This plugin offers no parameters, or has not loaded yet.");
                 return;
             }
-            let mut knobs = knobs_of(&mut v.knobs, chosen, params);
+            let stored = stored(chosen);
+            let was = knobs_of(stored, params);
+            let mut knobs = was;
             ui.add_space(6.0);
             let (beat, playing) = (p.position_beats, p.playing);
             egui::Grid::new(egui::Id::unique("smart_knobs"))
@@ -153,7 +166,10 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                         }
                     }
                 });
-            v.knobs.insert(chosen, knobs);
+            // Only a choice of the user's goes in the project.
+            if knobs != was {
+                keep_knobs(p, t, chosen, knobs);
+            }
         });
     s.smart.open = open;
 }
@@ -168,14 +184,40 @@ mod tests {
             id,
             name: format!("P{id}"),
         };
-        let mut knobs = HashMap::new();
         let params: Vec<_> = (10..13).map(param).collect();
-        let first = knobs_of(&mut knobs, 1, &params);
+        let first = knobs_of(None, &params);
         assert_eq!(first[0], Some(10));
         assert_eq!(first[2], Some(12));
         assert_eq!(first[3], None, "fewer parameters than knobs");
-        knobs.insert(1, [Some(12); KNOBS]);
-        assert_eq!(knobs_of(&mut knobs, 1, &params)[0], Some(12));
+        assert_eq!(knobs_of(Some([Some(12); KNOBS]), &params)[0], Some(12));
+        assert_eq!(knobs_of(Some([None; KNOBS]), &params)[0], None, "all off");
+    }
+
+    #[test]
+    fn a_choice_goes_with_the_plugin_it_was_made_for() {
+        let info = prowave_host::PluginInfo {
+            id: "c".into(),
+            name: "Comp".into(),
+            vendor: String::new(),
+            version: String::new(),
+            format: prowave_host::PluginFormat::Clap,
+            path: "c.clap".into(),
+            is_instrument: false,
+        };
+        let mut p = Project::empty();
+        let t = p.add_track(crate::model::TrackKind::Audio);
+        p.tracks[t]
+            .plugins
+            .push(crate::model::PluginInsert::new(&info));
+        p.tracks[t]
+            .plugins
+            .push(crate::model::PluginInsert::new(&info));
+        let (one, two) = (p.tracks[t].plugins[0].uid, p.tracks[t].plugins[1].uid);
+        keep_knobs(&mut p, t, two, [Some(5); KNOBS]);
+        keep_knobs(&mut p, t, 999, [Some(6); KNOBS]);
+        assert_eq!(p.tracks[t].plugins[0].uid, one);
+        assert_eq!(p.tracks[t].plugins[0].smart_knobs, None);
+        assert_eq!(p.tracks[t].plugins[1].smart_knobs, Some([Some(5); KNOBS]));
     }
 
     #[test]

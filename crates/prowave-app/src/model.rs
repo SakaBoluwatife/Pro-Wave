@@ -693,7 +693,12 @@ pub struct PluginInsert {
     pub sidechain: Option<usize>,
     /// It said it has a side-chain input, once it has loaded. Not saved.
     pub side_offered: bool,
+    /// The parameter on each Smart Controls knob, once the user has chosen.
+    pub smart_knobs: Option<[Option<u32>; SMART_KNOBS]>,
 }
+
+/// Knobs in the Smart Controls window.
+pub const SMART_KNOBS: usize = 8;
 
 impl PluginInsert {
     pub fn new(info: &prowave_host::PluginInfo) -> Self {
@@ -710,6 +715,7 @@ impl PluginInsert {
             params: std::sync::Arc::default(),
             sidechain: None,
             side_offered: false,
+            smart_knobs: None,
         }
     }
 }

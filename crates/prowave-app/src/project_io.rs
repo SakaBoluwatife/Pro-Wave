@@ -1352,6 +1352,7 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
         // Only when saving, as this runs after every gesture: see `save_project`.
         state: String::new(),
         sidechain: i.sidechain.map(|s| s as u32),
+        smart_knobs: i.smart_knobs.map_or_else(Vec::new, |knobs| knobs.to_vec()),
     }
 }
 
@@ -1369,7 +1370,20 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         params: std::sync::Arc::default(),
         sidechain: d.sidechain.map(|s| s as usize),
         side_offered: false,
+        smart_knobs: smart_knobs_from_doc(&d.smart_knobs),
     }
+}
+
+/// Smart Controls knobs from the file, with knobs the file has too few of off and any more ignored.
+fn smart_knobs_from_doc(knobs: &[Option<u32>]) -> Option<[Option<u32>; crate::model::SMART_KNOBS]> {
+    if knobs.is_empty() {
+        return None;
+    }
+    let mut out = [None; crate::model::SMART_KNOBS];
+    for (slot, knob) in out.iter_mut().zip(knobs) {
+        *slot = *knob;
+    }
+    Some(out)
 }
 
 /// The text of a strip's settings file. The plugins' states must have been collected first.
@@ -1487,6 +1501,7 @@ pub(crate) mod tests {
             params: std::sync::Arc::default(),
             sidechain: None,
             side_offered: false,
+            smart_knobs: None,
         };
         t.plugins.push(plugin);
         let points = vec![AutoPoint {
@@ -1583,6 +1598,7 @@ pub(crate) mod tests {
             params: std::sync::Arc::default(),
             sidechain: Some(a),
             side_offered: false,
+            smart_knobs: Some([Some(7); crate::model::SMART_KNOBS]),
         });
         let text = strip_to_text(&p.tracks[a]).unwrap();
         strip_from_text(&mut p.tracks[b], &text).unwrap();
