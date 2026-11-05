@@ -66,7 +66,7 @@ Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie 
 3. Automation on the tracks, Track Alternatives, New Take and Record Repeat.
 4. Zero crossings, Strip Silence, Project Audio Browser, selection-based processing.
 5. Sidechain, MIDI learn.
-6. Pro Tools list, on the build list by the owner's choice, once the three sessions now running are done: dynamic plugin processing first, then nudge and tab to transient, then scrub, clip groups and loops, commit, bus interrogation, mono sum and dim, beat detective.
+6. Pro Tools list, on the build list by the owner's choice, once the three sessions now running are done: dynamic plugin processing first, then nudge and tab to transient, then scrub, clip groups and loops, commit, bus interrogation, mono sum and dim.
 7. Everything else in the lists above.
 
 ## Pro Tools guide: what to note
@@ -83,11 +83,10 @@ Not found, and useful for editing and mixing:
 - **Commit:** print a track through its plugins to a new track and keep the original. Freeze exists; this goes one step further.
 - **Bus interrogation:** select a bus and see what feeds it.
 - **Monitor controls:** mono sum and dim on the output, for checking a mix.
-- **Beat detective:** find hits across tracks and fit them to the grid. Flex does part of this.
 
 Already on the list above under another name: playlists (track alternatives), AudioSuite (selection-based processing), memory locations (markers and screensets), Elastic Audio (Flex).
 
-Skip: Satellite, video, field recorders, machine control, HEAT, Track Collaboration, DSP mode, Avid Link.
+Skip: Beat Detective (the owner's choice), Satellite, video, field recorders, machine control, HEAT, Track Collaboration, DSP mode, Avid Link.
 
 ## Spatial audio, for later
 
