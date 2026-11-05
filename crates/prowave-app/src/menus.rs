@@ -1167,9 +1167,13 @@ fn menu_style(light: bool) -> impl Fn(&mut egui::Style) + Send + Sync + 'static 
             Color32::from_rgb(0x55, 0x55, 0x58)
         };
         let v = &mut style.visuals;
-        v.window_fill = l.menu;
-        v.window_stroke = Stroke::new(1.0, l.separator);
-        v.menu_corner_radius = egui::CornerRadius::same(6);
+        v.window_fill = if light {
+            l.menu
+        } else {
+            crate::theme::GLASS_FILL
+        };
+        v.window_stroke = Stroke::new(1.0, crate::theme::GLASS_EDGE);
+        v.menu_corner_radius = egui::CornerRadius::same(8);
         v.override_text_color = None;
         v.widgets.noninteractive.fg_stroke.color = l.text;
         v.widgets.inactive.fg_stroke.color = l.bar_text;

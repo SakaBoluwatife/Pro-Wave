@@ -44,16 +44,61 @@ pub const ITEM_SPACING: f32 = 6.0;
 pub const TEXT_SIZE: f32 = 12.5;
 pub const CORNER: u8 = 4;
 
+// Frosted glass: floating things let a little of what is behind them through.
+/// How opaque a floating window or menu is.
+const GLASS_ALPHA: u8 = 228;
+/// The fill of floating windows and menus.
+pub const GLASS_FILL: Color32 = Color32::from_rgba_premultiplied(
+    (0x56 * GLASS_ALPHA as u16 / 255) as u8,
+    (0x56 * GLASS_ALPHA as u16 / 255) as u8,
+    (0x58 * GLASS_ALPHA as u16 / 255) as u8,
+    GLASS_ALPHA,
+);
+/// The soft light edge of frosted things.
+pub const GLASS_EDGE: Color32 = Color32::from_rgba_premultiplied(44, 44, 44, 44);
+
+/// Paints a frosted plate: lighter at the top, with a soft highlight along its upper edge. A few
+/// flat shapes, so it costs next to nothing to draw.
+pub fn glass_plate(g: &egui::Painter, r: egui::Rect, radius: f32) {
+    let radius8 = radius.clamp(0.0, 255.0) as u8;
+    g.rect_filled(r, radius8, Color32::from_white_alpha(16));
+    let mut top = r;
+    top.set_height(r.height() * 0.5);
+    let corners = egui::CornerRadius {
+        nw: radius8,
+        ne: radius8,
+        sw: 0,
+        se: 0,
+    };
+    g.rect_filled(top, corners, Color32::from_white_alpha(12));
+    g.rect_stroke(
+        r,
+        radius8,
+        Stroke::new(1.0, GLASS_EDGE),
+        egui::StrokeKind::Inside,
+    );
+    let inset = radius + 1.0;
+    g.line_segment(
+        [
+            egui::pos2(r.left() + inset, r.top() + 1.0),
+            egui::pos2(r.right() - inset, r.top() + 1.0),
+        ],
+        Stroke::new(1.0, Color32::from_white_alpha(40)),
+    );
+}
+
 pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;
-    v.window_fill = PANEL;
+    v.window_fill = GLASS_FILL;
     v.extreme_bg_color = GRID_BG;
     v.override_text_color = Some(TEXT);
     v.warn_fg_color = SOLO;
     v.error_fg_color = DANGER;
     v.disabled_alpha = DISABLED_ALPHA;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.window_stroke = Stroke::new(1.0, GLASS_EDGE);
+    v.window_corner_radius = CornerRadius::same(10);
+    v.menu_corner_radius = CornerRadius::same(8);
     v.widgets.noninteractive.bg_fill = PANEL;
     v.widgets.inactive.bg_fill = BUTTON;
     v.widgets.inactive.weak_bg_fill = BUTTON;

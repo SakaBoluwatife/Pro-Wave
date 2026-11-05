@@ -408,7 +408,7 @@ fn segmented(
         pos2(left, cy - seg.y / 2.0),
         vec2(seg.x * items.len() as f32, seg.y),
     );
-    g.rect_filled(full, 5.0, SEG_BG);
+    crate::theme::glass_plate(g, full, 6.0);
     let mut hit = None;
     for (i, (draw, on)) in items.iter().enumerate() {
         let r = Rect::from_min_size(pos2(left + i as f32 * seg.x, full.top()), seg);
@@ -435,7 +435,6 @@ fn segmented(
             hit = Some(i);
         }
     }
-    g.rect_stroke(full, 5.0, Stroke::new(1.0, SEG_BORDER), StrokeKind::Inside);
     hit
 }
 
@@ -1088,13 +1087,13 @@ pub fn control_bar(
         s.lcd_full = !s.lcd_full;
     }
     // The transport buttons sit on one rounded plate, as do those to the right of the display.
-    g.rect_filled(
+    crate::theme::glass_plate(
+        &g,
         Rect::from_min_max(
             pos2(lcd_rect.left() - 214.0, cy - 15.0),
             pos2(lcd_rect.left() - 4.0, cy + 15.0),
         ),
-        6.0,
-        Color32::from_white_alpha(14),
+        7.0,
     );
 
     let tx = |dx: f32| pos2(lcd_rect.left() + dx, cy);
