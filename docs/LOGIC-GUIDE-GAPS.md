@@ -67,3 +67,12 @@ Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie 
 4. Zero crossings, Strip Silence, Project Audio Browser, selection-based processing.
 5. Sidechain, MIDI learn.
 6. Everything else in the lists above.
+
+## Built since this comparison (compiled, not yet tried by hand)
+
+- Automation curves on the track: A button, A key, points, groups, snap.
+- Record Repeat, Replace Mode, New Take, Delete Take, takes when recording over an audio region.
+- Track alternatives, from a button on the track header.
+- Snap to Zero Crossings, in the Snap and Edit menus.
+- Strip Silence, in the Edit and Functions menus and on the region.
+- Chord track and Arrangement track: drag a section to move it, with Ctrl to copy it.
