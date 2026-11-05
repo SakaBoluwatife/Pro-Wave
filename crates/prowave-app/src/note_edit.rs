@@ -1,6 +1,6 @@
 //! Pure note-editing operations for the Piano Roll (no UI): quantize, scale quantize,
 //! marquee selection and hit testing. Kept separate so they can be unit tested.
-use crate::model::Note;
+use crate::model::{Control, Note};
 
 /// Scale modes for Scale Quantize: name and semitone offsets from the root.
 pub const MODES: [(&str, &[u8]); 7] = [
@@ -280,6 +280,97 @@ pub fn inverted(count: usize, selection: &[usize]) -> Vec<usize> {
     (0..count).filter(|i| !selection.contains(i)).collect()
 }
 
+/// The notes that start inside a time selection (FL Studio's time selection takes these).
+pub fn in_time(notes: &[Note], from: f32, to: f32) -> Vec<usize> {
+    notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.start >= from - 1e-4 && n.start < to - 1e-4)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Takes the time from `from` to `to` out of a region (Ctrl+Delete): what is inside goes, a note
+/// across an edge keeps the part outside, and everything later moves up.
+pub fn delete_time(notes: &mut Vec<Note>, controls: &mut Vec<Control>, from: f32, to: f32) {
+    let span = to - from;
+    if span <= 0.0 {
+        return;
+    }
+    notes.retain_mut(|n| {
+        let end = n.start + n.len;
+        if n.start >= to {
+            n.start -= span;
+        } else if n.start >= from {
+            // It starts inside: only what sticks out after the selection is left.
+            if end <= to + 1e-4 {
+                return false;
+            }
+            n.start = from;
+            n.len = end - to;
+        } else if end > to {
+            n.len -= span;
+        } else if end > from {
+            n.len = from - n.start;
+        }
+        true
+    });
+    controls.retain_mut(|c| {
+        if c.start >= to {
+            c.start -= span;
+            true
+        } else {
+            c.start < from
+        }
+    });
+}
+
+/// Opens up empty time from `from` to `to` (Ctrl+Insert): what starts there or later moves back.
+pub fn insert_time(notes: &mut [Note], controls: &mut [Control], from: f32, to: f32) {
+    let span = to - from;
+    if span <= 0.0 {
+        return;
+    }
+    for n in notes.iter_mut().filter(|n| n.start >= from - 1e-4) {
+        n.start += span;
+    }
+    for c in controls.iter_mut().filter(|c| c.start >= from - 1e-4) {
+        c.start += span;
+    }
+}
+
+/// A stroke in a controller lane from `a` to `b` (beat, value): one event every `step`, in a
+/// straight line, in place of what that controller had under the stroke. Kept sorted by time.
+pub fn draw_controls(controls: &mut Vec<Control>, num: u8, a: (f32, u8), b: (f32, u8), step: f32) {
+    let step = step.max(1.0 / 64.0);
+    let ((x0, v0), (x1, v1)) = if a.0 <= b.0 { (a, b) } else { (b, a) };
+    let first = (x0.max(0.0) / step).floor() as i64;
+    let last = (x1.max(0.0) / step).floor() as i64;
+    let (lo, hi) = (first as f32 * step, last as f32 * step);
+    controls.retain(|c| c.num != num || c.start < lo - 1e-4 || c.start > hi + 1e-4);
+    for k in first..=last {
+        let at = k as f32 * step;
+        let t = if x1 > x0 {
+            ((at - x0) / (x1 - x0)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let val = f32::from(v0) + (f32::from(v1) - f32::from(v0)) * t;
+        controls.push(Control {
+            start: at,
+            num,
+            val: val.round().clamp(0.0, 127.0) as u8,
+        });
+    }
+    controls.sort_by(|p, q| p.start.total_cmp(&q.start));
+}
+
+/// Removes what a controller has between two beats, whichever way the stroke went.
+pub fn erase_controls(controls: &mut Vec<Control>, num: u8, a: f32, b: f32) {
+    let (lo, hi) = (a.min(b), a.max(b));
+    controls.retain(|c| c.num != num || c.start < lo || c.start > hi);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +568,100 @@ mod tests {
         quantize_starts(&mut notes, &[0], 0.25);
         assert_eq!((notes[0].start, notes[0].len), (1.0, 0.33));
         assert_eq!(inverted(4, &[1, 2]), [0, 3]);
+    }
+
+    fn cc(start: f32, val: u8) -> Control {
+        Control { start, num: 1, val }
+    }
+
+    #[test]
+    fn a_time_selection_takes_the_notes_that_start_in_it() {
+        let notes = vec![long(0.0, 4.0, 60), long(1.0, 1.0, 62), long(2.0, 1.0, 64)];
+        assert_eq!(in_time(&notes, 1.0, 2.0), [1], "the end is not in it");
+    }
+
+    #[test]
+    fn deleting_time_closes_the_gap_and_keeps_what_sticks_out() {
+        let mut notes = vec![
+            long(0.0, 1.0, 60), // before: stays
+            long(1.0, 2.0, 62), // crosses the start: cut at it
+            long(2.5, 0.5, 64), // inside: goes
+            long(3.5, 2.0, 65), // crosses the end: the part after it stays
+            long(6.0, 1.0, 67), // after: moves up
+            long(0.5, 6.0, 69), // over the whole of it: shorter
+        ];
+        let mut controls = vec![cc(1.0, 1), cc(2.5, 2), cc(4.0, 3)];
+        delete_time(&mut notes, &mut controls, 2.0, 4.0);
+        let got: Vec<(u8, f32, f32)> = notes.iter().map(|n| (n.pitch, n.start, n.len)).collect();
+        assert_eq!(
+            got,
+            [
+                (60, 0.0, 1.0),
+                (62, 1.0, 1.0),
+                (65, 2.0, 1.5),
+                (67, 4.0, 1.0),
+                (69, 0.5, 4.0),
+            ]
+        );
+        let times: Vec<f32> = controls.iter().map(|c| c.start).collect();
+        assert_eq!(times, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn inserting_time_moves_what_comes_later_only() {
+        let mut notes = vec![long(0.0, 4.0, 60), long(2.0, 1.0, 62)];
+        let mut controls = vec![cc(1.0, 1), cc(2.0, 2)];
+        insert_time(&mut notes, &mut controls, 2.0, 3.0);
+        assert_eq!((notes[0].start, notes[1].start), (0.0, 3.0));
+        assert_eq!((controls[0].start, controls[1].start), (1.0, 3.0));
+    }
+
+    #[test]
+    fn a_controller_stroke_replaces_what_it_crosses_and_stays_in_order() {
+        let mut controls = vec![
+            cc(0.0, 10),
+            cc(0.3, 11),
+            cc(3.0, 12),
+            Control {
+                start: 0.5,
+                num: 7,
+                val: 99,
+            },
+        ];
+        draw_controls(&mut controls, 1, (0.0, 0), (1.0, 100), 0.25);
+        let one: Vec<(f32, u8)> = controls
+            .iter()
+            .filter(|c| c.num == 1)
+            .map(|c| (c.start, c.val))
+            .collect();
+        assert_eq!(
+            one,
+            [
+                (0.0, 0),
+                (0.25, 25),
+                (0.5, 50),
+                (0.75, 75),
+                (1.0, 100),
+                (3.0, 12)
+            ]
+        );
+        assert!(controls.windows(2).all(|w| w[0].start <= w[1].start));
+        assert!(
+            controls.iter().any(|c| c.num == 7),
+            "another controller stays"
+        );
+        // Backwards is the same stroke, and it never goes before the region.
+        let mut back = Vec::new();
+        draw_controls(&mut back, 1, (0.5, 127), (-3.0, 127), 0.25);
+        assert_eq!(back.len(), 3);
+        assert_eq!(back[0].start, 0.0);
+
+        erase_controls(&mut controls, 1, 1.0, 0.25);
+        let left: Vec<f32> = controls
+            .iter()
+            .filter(|c| c.num == 1)
+            .map(|c| c.start)
+            .collect();
+        assert_eq!(left, [0.0, 3.0]);
     }
 }

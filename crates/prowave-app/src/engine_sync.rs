@@ -390,7 +390,8 @@ fn song_controls(p: &Project) -> Vec<ControlEvent> {
         .iter()
         .enumerate()
         .filter_map(|(ti, t)| Some((track_index(ti)?, t)))
-        .filter(|(_, t)| t.kind == TrackKind::ExternalMidi)
+        // Those whose instrument is outside the engine: a MIDI port or a hosted plugin.
+        .filter(|(_, t)| t.kind == TrackKind::ExternalMidi || t.instrument_plugin.is_some())
         .flat_map(|(track, t)| {
             let mut out = Vec::new();
             let (mut from, mut to) = (f64::MAX, 0.0f64);
@@ -1413,6 +1414,22 @@ mod tests {
         assert!(c.iter().all(|e| e.value <= 127), "wild values are repaired");
         p.tracks[ext].regions[0].params.mute = true;
         assert!(song_controls(&p).is_empty(), "a muted region sends nothing");
+        // A hosted instrument gets them too: the piano roll's controller lane draws for it.
+        p.tracks[plain].instrument_plugin = Some(crate::model::PluginInsert {
+            row: 0,
+            uid: 5,
+            id: "x".into(),
+            name: "x".into(),
+            vendor: String::new(),
+            path: "x.clap".into(),
+            bypass: false,
+            failed: None,
+            state: None,
+            params: std::sync::Arc::default(),
+        });
+        let c = song_controls(&p);
+        assert_eq!(c.len(), 3);
+        assert!(c.iter().all(|e| e.track == plain as u16));
     }
 
     #[test]
