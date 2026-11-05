@@ -829,6 +829,24 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 color: [m.color.r(), m.color.g(), m.color.b()],
             })
             .collect(),
+        sections: p
+            .sections
+            .iter()
+            .map(|x| prowave_project::SectionDoc {
+                beat: x.beat,
+                len: x.len,
+                name: x.name.clone(),
+                color: [x.color.r(), x.color.g(), x.color.b()],
+            })
+            .collect(),
+        chords: p
+            .chords
+            .iter()
+            .map(|c| prowave_project::ChordDoc {
+                beat: c.beat,
+                name: c.name.clone(),
+            })
+            .collect(),
         ..ProjectDoc::default()
     };
     (doc, media)
@@ -1141,6 +1159,25 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         })
         .collect();
     p.tidy_markers();
+    p.sections = doc
+        .sections
+        .iter()
+        .map(|x| crate::model::Section {
+            beat: x.beat,
+            len: x.len,
+            name: x.name.chars().take(64).collect(),
+            color: Color32::from_rgb(x.color[0], x.color[1], x.color[2]),
+        })
+        .collect();
+    p.chords = doc
+        .chords
+        .iter()
+        .map(|c| crate::model::ChordMark {
+            beat: c.beat,
+            name: c.name.chars().take(16).collect(),
+        })
+        .collect();
+    crate::arrangement_track::tidy(&mut p);
     p.sig = signature(doc.sig);
     p.sig_changes = doc
         .sig_changes
@@ -2621,6 +2658,29 @@ pub(crate) mod tests {
         let (q, _) = from_doc(&old, dir.path(), &ctx);
         assert_eq!(q.tracks[t].active_alt, 0);
         assert!(q.tracks[t].alternatives.is_empty());
+    }
+
+    #[test]
+    fn sections_and_chords_survive_saving_and_bad_ones_are_let_go() {
+        let mut p = Project::empty();
+        let i = crate::arrangement_track::add_section(&mut p, 8.0);
+        p.sections[i].name = "Chorus".into();
+        p.chords.clear();
+        crate::chord_track::add_chord(&mut p, 4.0);
+        p.chords[0].name = "Am7".into();
+        let (mut doc, _) = to_doc(&p);
+        let ctx = egui::Context::default();
+        let (q, _) = from_doc(&doc, Path::new("."), &ctx);
+        assert_eq!(q.sections, p.sections);
+        assert_eq!(q.chords, p.chords);
+        doc.sections[0].len = f64::NAN;
+        doc.chords[0].beat = f64::INFINITY;
+        let (q, _) = from_doc(&doc, Path::new("."), &ctx);
+        assert!(q.sections.is_empty() && q.chords.is_empty());
+        doc.sections.clear();
+        doc.chords.clear();
+        let (q, _) = from_doc(&doc, Path::new("."), &ctx);
+        assert!(q.sections.is_empty() && q.chords.is_empty(), "old files");
     }
 
     #[test]

@@ -305,6 +305,10 @@ pub struct TracksView {
     pub show_markers: bool,
     /// Global Signature track above the tracks (Track > Show Signature Track).
     pub show_signatures: bool,
+    /// Global Arrangement track above the tracks (Track > Show Arrangement Track).
+    pub show_arrangement: bool,
+    /// Global Chord track above the tracks (Track > Show Chord Track).
+    pub show_chords: bool,
     /// (track, region)
     pub selected: Option<(usize, usize)>,
     /// Width of the lanes at the last frame (for Navigate > Zoom to Fit).
@@ -428,6 +432,8 @@ impl Default for TracksView {
             show_tempo: false,
             show_markers: false,
             show_signatures: false,
+            show_arrangement: false,
+            show_chords: false,
             selected: None,
             grab_beats: 0.0,
             cycle_anchor: None,
@@ -3220,7 +3226,17 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     ui.allocate_rect(area, Sense::hover());
     let tb = Rect::from_min_size(area.min, vec2(area.width(), TOOLBAR_H));
     let ruler_y = tb.bottom();
-    // Global tracks between the ruler and the tracks: Marker, then Tempo, as in Logic.
+    // Global tracks between the ruler and the tracks: Arrangement, Chords, Marker, Signature, Tempo.
+    let arrangement_h = if s.tracks.show_arrangement {
+        crate::arrangement_track::HEIGHT
+    } else {
+        0.0
+    };
+    let chord_h = if s.tracks.show_chords {
+        crate::chord_track::HEIGHT
+    } else {
+        0.0
+    };
     let marker_h = if s.tracks.show_markers {
         crate::marker_track::HEIGHT
     } else {
@@ -3242,7 +3258,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     } else {
         NARROW_HEADER_W
     };
-    let tracks_y = ruler_y + ruler_h + marker_h + signature_h + tempo_h;
+    let globals_y = ruler_y + ruler_h + arrangement_h + chord_h;
+    let tracks_y = globals_y + marker_h + signature_h + tempo_h;
     let headers = Rect::from_min_max(
         pos2(area.left(), tracks_y),
         pos2(area.left() + header_w, area.bottom()),
@@ -4065,8 +4082,47 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         }
     }
 
-    if marker_h > 0.0 {
+    if arrangement_h > 0.0 {
         let top = ruler_y + ruler_h;
+        let done = crate::arrangement_track::show(
+            ui,
+            p,
+            Rect::from_min_max(
+                pos2(area.left(), top),
+                pos2(headers.right(), top + arrangement_h),
+            ),
+            Rect::from_min_max(
+                pos2(lanes.left(), top),
+                pos2(area.right(), top + arrangement_h),
+            ),
+            x_of,
+            beat_of,
+        );
+        match done {
+            Some(Ok(())) => {
+                // The region numbers now mean other regions.
+                v.select_many(Vec::new());
+                v.auto_pick = None;
+                s.piano.selected.clear();
+            }
+            Some(Err(e)) => s.status = Some(e),
+            None => {}
+        }
+    }
+    if chord_h > 0.0 {
+        let top = ruler_y + ruler_h + arrangement_h;
+        crate::chord_track::show(
+            ui,
+            p,
+            Rect::from_min_max(pos2(area.left(), top), pos2(headers.right(), top + chord_h)),
+            Rect::from_min_max(pos2(lanes.left(), top), pos2(area.right(), top + chord_h)),
+            x_of,
+            beat_of,
+            &snap_pos,
+        );
+    }
+    if marker_h > 0.0 {
+        let top = globals_y;
         crate::marker_track::show(
             ui,
             p,
@@ -4081,7 +4137,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
     if signature_h > 0.0 {
-        let top = ruler_y + ruler_h + marker_h;
+        let top = globals_y + marker_h;
         crate::signature_track::show(
             ui,
             p,
@@ -4098,7 +4154,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         );
     }
     if tempo_h > 0.0 {
-        let top = ruler_y + ruler_h + marker_h + signature_h;
+        let top = globals_y + marker_h + signature_h;
         crate::tempo_track::show(
             ui,
             p,

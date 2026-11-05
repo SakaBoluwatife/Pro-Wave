@@ -377,6 +377,8 @@ fn has_automation(p: &Project) -> bool {
 
 /// Entries that can show a check mark (see [`checked`]).
 pub(crate) const CHECKABLE: &[&str] = &[
+    "Show Chord Track",
+    "Show Arrangement Track",
     "Snap to Zero Crossings",
     "Replace Mode",
     "Show Tempo Track",
@@ -618,6 +620,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Tempo Track"
         | "Show Marker Track"
         | "Show Signature Track"
+        | "Show Chord Track"
+        | "Show Arrangement Track"
         | "MIDI File…"
         | "MIDI FX…"
         | "Selection as MIDI File…"
@@ -663,9 +667,15 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Tempo Track" => s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures,
+        "Show Chord Track" => s.tracks.show_chords,
+        "Show Arrangement Track" => s.tracks.show_arrangement,
         "Show Markers" => s.tracks.show_markers,
         "Show Global Tracks" => {
-            s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures
+            s.tracks.show_tempo
+                && s.tracks.show_markers
+                && s.tracks.show_signatures
+                && s.tracks.show_chords
+                && s.tracks.show_arrangement
         }
         _ if Lang::from_native_name(label).is_some() => {
             Lang::from_native_name(label) == Some(i18n::current())
@@ -742,10 +752,16 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Show Markers" => s.tracks.show_markers = !s.tracks.show_markers,
         "Show Global Tracks" => {
-            let on = !(s.tracks.show_tempo && s.tracks.show_markers && s.tracks.show_signatures);
+            let on = !(s.tracks.show_tempo
+                && s.tracks.show_markers
+                && s.tracks.show_signatures
+                && s.tracks.show_chords
+                && s.tracks.show_arrangement);
             s.tracks.show_tempo = on;
             s.tracks.show_markers = on;
             s.tracks.show_signatures = on;
+            s.tracks.show_chords = on;
+            s.tracks.show_arrangement = on;
         }
         "Record Enable" => {
             if let Some(t) = p.tracks.get_mut(p.selected_track) {
@@ -935,6 +951,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Tempo Track" => s.tracks.show_tempo = !s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers = !s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures = !s.tracks.show_signatures,
+        "Show Chord Track" => s.tracks.show_chords = !s.tracks.show_chords,
+        "Show Arrangement Track" => s.tracks.show_arrangement = !s.tracks.show_arrangement,
         // Logic: Create Marker puts it at the playhead, rounded to the nearest bar.
         "Create Marker" => {
             let bar = p.beats_to_bar(p.position_beats).round();

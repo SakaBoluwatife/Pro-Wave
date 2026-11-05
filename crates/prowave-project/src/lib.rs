@@ -585,6 +585,10 @@ pub struct ProjectDoc {
     pub tempo_ramp: bool,
     /// Marker track.
     pub markers: Vec<MarkerDoc>,
+    /// Arrangement track.
+    pub sections: Vec<SectionDoc>,
+    /// Chord track.
+    pub chords: Vec<ChordDoc>,
     /// Signature track: time-signature changes after bar 1 (`sig` is the first bar's).
     pub sig_changes: Vec<SigChangeDoc>,
     /// SMPTE frame rate: "24", "25", "29.97" (non-drop), "29.97df" (drop frame) or "30".
@@ -613,6 +617,24 @@ pub struct MarkerDoc {
     pub beat: f64,
     pub name: String,
     pub color: [u8; 3],
+}
+
+/// A section of the song on the Arrangement track, from `beat` for `len` quarter notes.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct SectionDoc {
+    pub beat: f64,
+    pub len: f64,
+    pub name: String,
+    pub color: [u8; 3],
+}
+
+/// A chord on the Chord track, from `beat` until the next.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct ChordDoc {
+    pub beat: f64,
+    pub name: String,
 }
 
 /// A tempo change: `bpm` from `beat` (quarter notes from the start) on.
@@ -654,6 +676,8 @@ impl Default for ProjectDoc {
             tempo_changes: Vec::new(),
             tempo_ramp: false,
             markers: Vec::new(),
+            sections: Vec::new(),
+            chords: Vec::new(),
             sig_changes: Vec::new(),
             smpte_rate: "25".into(),
             smpte_start: [1, 0, 0, 0],

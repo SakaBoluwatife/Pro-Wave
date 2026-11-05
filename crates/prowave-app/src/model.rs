@@ -929,6 +929,23 @@ pub struct Marker {
     pub color: Color32,
 }
 
+/// A named section of the song on the Arrangement track, from `beat` for `len` beats. Moving one
+/// takes everything in it along: see `arrangement_track.rs`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Section {
+    pub beat: f64,
+    pub len: f64,
+    pub name: String,
+    pub color: Color32,
+}
+
+/// A chord on the Chord track, from `beat` until the next. Only a name: it makes no sound.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ChordMark {
+    pub beat: f64,
+    pub name: String,
+}
+
 /// Colours offered for markers, in the order new markers take them.
 pub const MARKER_COLORS: [Color32; 8] = [
     Color32::from_rgb(0x3f, 0x8f, 0xd8),
@@ -963,6 +980,10 @@ pub struct Project {
     pub tempo_changes: Vec<TempoPoint>,
     /// Marker track, sorted by beat (see [`Project::tidy_markers`]).
     pub markers: Vec<Marker>,
+    /// Arrangement track, sorted by beat, not overlapping (see `arrangement_track::tidy`).
+    pub sections: Vec<Section>,
+    /// Chord track, sorted by beat.
+    pub chords: Vec<ChordMark>,
     /// Time signature of the first bar. Later changes are in `sig_changes`.
     pub sig: (u8, u8),
     /// Signature track: signature changes after bar 1, sorted by bar (see
@@ -1226,6 +1247,8 @@ impl Project {
             punch_start: 0.0,
             punch_end: 0.0,
             rec_replace: false,
+            sections: Vec::new(),
+            chords: Vec::new(),
             snap_zero: false,
             sig: (4, 4),
             key: "Cmaj",

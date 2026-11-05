@@ -6,6 +6,7 @@
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod alternatives;
+mod arrangement_track;
 mod audio_encode;
 mod audio_rec;
 mod automation;
@@ -13,6 +14,7 @@ mod autosave;
 mod bench;
 mod bounce;
 mod channel_rack;
+mod chord_track;
 mod engine_sync;
 mod event_list;
 mod file_browser;
