@@ -1097,6 +1097,7 @@ mod tests {
             folded: false,
             vca: None,
             on_timeline: false,
+            off: false,
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),

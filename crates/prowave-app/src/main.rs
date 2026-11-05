@@ -894,8 +894,8 @@ impl eframe::App for App {
         if s.show_library {
             egui::Panel::left("library")
                 .resizable(true)
-                .default_size(290.0)
-                .size_range(220.0..=520.0)
+                .default_size(420.0)
+                .size_range(330.0..=720.0)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| left_panel::show(ui, p, s));
         }
@@ -961,6 +961,9 @@ impl eframe::App for App {
         if let Some(index) = s.tracks.groove_quantize.take() {
             let n = groove_template::quantize_selected(p, s, index);
             s.status = Some(format!("Quantized {n} regions to the groove"));
+        }
+        if std::mem::take(&mut s.mixer.open_midi_fx) {
+            s.show_midi_fx = true;
         }
         if let Some(track) = s.mixer.rename.take() {
             if let Some(name) = p.tracks.get(track).map(|t| t.name.clone()) {

@@ -320,6 +320,8 @@ pub struct TrackDoc {
     pub folded: bool,
     /// An Aux that also shows in the Tracks area.
     pub on_timeline: bool,
+    /// Switched off with its power button.
+    pub off: bool,
     /// The `Vca` track (its index in `tracks`) that controls this track's level.
     pub vca: Option<usize>,
     /// External MIDI tracks: the MIDI output port (by name) and the channel, 1-16.
@@ -560,6 +562,7 @@ impl Default for TrackDoc {
             indent: 0,
             folded: false,
             on_timeline: false,
+            off: false,
             vca: None,
             midi_port: None,
             midi_channel: 1,

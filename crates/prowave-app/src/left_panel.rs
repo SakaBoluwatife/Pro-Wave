@@ -3,15 +3,13 @@
 //! - **Library:** Logic's patch browser (`library.rs`), as before.
 //! - **Browser:** your sample folders (`sample_browser.rs`).
 //! - **Plugins:** the CLAP and VST3 plugins found on this computer, ready to go on a track.
-use crate::i18n::tr;
 use crate::model::Project;
 use crate::plugin_scan::PluginScan;
-use crate::widgets::{BLUE, TEXT, TEXT_DIM};
+use crate::widgets::{TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, UiBuilder};
 use prowave_host::PluginInfo;
 
-const TAB_H: f32 = 26.0;
 const PANEL_BG: Color32 = crate::theme::PANEL_BG;
 const ROW_H: f32 = 20.0;
 
@@ -23,6 +21,7 @@ pub enum LeftTab {
     Plugins,
 }
 
+#[cfg(test)]
 impl LeftTab {
     const ALL: [LeftTab; 3] = [LeftTab::Library, LeftTab::Browser, LeftTab::Plugins];
 
@@ -99,51 +98,60 @@ impl PluginKind {
     }
 }
 
+/// The width of the list of what to browse.
+const SIDEBAR_W: f32 = 104.0;
+
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
-    let strip = Rect::from_min_size(panel.min, vec2(panel.width(), TAB_H));
-    let rest = Rect::from_min_max(pos2(panel.left(), strip.bottom()), panel.max);
+    // One panel: what to browse on the left, and the browsing beside it.
+    let side = Rect::from_min_size(panel.min, vec2(SIDEBAR_W, panel.height()));
+    let rest = Rect::from_min_max(pos2(side.right(), panel.top()), panel.max);
     {
-        let g = ui.painter_at(strip);
-        g.rect_filled(strip, 0.0, PANEL_BG);
+        let g = ui.painter_at(side);
+        g.rect_filled(side, 0.0, crate::theme::HEADER);
         g.line_segment(
-            [strip.left_bottom(), strip.right_bottom()],
-            Stroke::new(1.0, crate::theme::BORDER),
-        );
-        g.line_segment(
-            [strip.right_top(), strip.right_bottom()],
+            [side.right_top(), side.right_bottom()],
             Stroke::new(1.0, crate::theme::BORDER),
         );
     }
-    let w = strip.width() / LeftTab::ALL.len() as f32;
-    for (i, tab) in LeftTab::ALL.into_iter().enumerate() {
+    let entries = [
+        ("All Files", LeftTab::Browser, None),
+        (
+            "Instruments",
+            LeftTab::Plugins,
+            Some(PluginKind::Instruments),
+        ),
+        ("Effects", LeftTab::Plugins, Some(PluginKind::Effects)),
+        ("All Plug-ins", LeftTab::Plugins, Some(PluginKind::All)),
+        ("Patches", LeftTab::Library, None),
+    ];
+    for (i, (name, tab, kind)) in entries.into_iter().enumerate() {
         let r = Rect::from_min_size(
-            pos2(strip.left() + w * i as f32, strip.top()),
-            vec2(w, TAB_H),
+            pos2(side.left() + 4.0, side.top() + 8.0 + i as f32 * 26.0),
+            vec2(SIDEBAR_W - 8.0, 24.0),
         );
-        let resp = ui.interact(r, egui::Id::unique(("left_tab", i)), Sense::click());
+        let resp = ui.interact(r, egui::Id::unique(("browser_side", i)), Sense::click());
         if resp.clicked() {
             s.left_tab = tab;
+            if let Some(kind) = kind {
+                s.plugins.kind = kind;
+            }
         }
-        let on = s.left_tab == tab;
+        let on = s.left_tab == tab && kind.is_none_or(|k| s.plugins.kind == k);
         let g = ui.painter_at(r);
-        g.text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            tr(tab.name()),
-            FontId::proportional(13.0),
-            if on || resp.hovered() { TEXT } else { TEXT_DIM },
-        );
         if on {
-            g.line_segment(
-                [
-                    r.left_bottom() + vec2(6.0, -1.0),
-                    r.right_bottom() + vec2(-6.0, -1.0),
-                ],
-                Stroke::new(2.0, BLUE),
-            );
+            g.rect_filled(r, 5.0, crate::theme::SELECTED);
+        } else if resp.hovered() {
+            g.rect_filled(r, 5.0, crate::theme::HOVERED);
         }
+        g.text(
+            r.left_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            name,
+            FontId::proportional(12.5),
+            TEXT,
+        );
     }
     ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| match s.left_tab {
         LeftTab::Library => crate::library::show(ui, p, s),

@@ -159,10 +159,16 @@ fn wanted_bypass(p: &Project) -> Vec<((u64, bool), Place)> {
             continue;
         }
         if let Some(plugin) = &track.instrument_plugin {
-            all.push(((plugin.uid, plugin.bypass), (t as u16, INSTRUMENT_SLOT)));
+            all.push((
+                (plugin.uid, plugin.bypass || track.off),
+                (t as u16, INSTRUMENT_SLOT),
+            ));
         }
         for (k, plugin) in track.plugins.iter().enumerate().take(MAX_INSERTS) {
-            all.push(((plugin.uid, plugin.bypass), (t as u16, k as u8)));
+            all.push((
+                (plugin.uid, plugin.bypass || track.off),
+                (t as u16, k as u8),
+            ));
         }
     }
     for (k, plugin) in p.master_plugins.iter().enumerate().take(MAX_INSERTS) {

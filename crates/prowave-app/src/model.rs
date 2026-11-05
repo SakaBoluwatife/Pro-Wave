@@ -849,6 +849,8 @@ pub struct Track {
     /// An Aux shows in the Tracks area only when asked to; in the mixer it always does. Other
     /// kinds of track always show.
     pub on_timeline: bool,
+    /// Switched off with its power button: silent, and its plugins rest.
+    pub off: bool,
     /// The icon chosen with Assign Track Icon; else one follows from the patch.
     pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
@@ -935,6 +937,7 @@ impl Track {
             icon: None,
             frozen: None,
             on_timeline: false,
+            off: false,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -1133,6 +1136,7 @@ impl Project {
             icon: None,
             frozen: None,
             on_timeline: false,
+            off: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1203,6 +1207,7 @@ impl Project {
             icon: None,
             frozen: None,
             on_timeline: false,
+            off: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -2509,7 +2514,8 @@ impl Project {
 
     /// Whether track `i` is muted, by its own Mute or by its VCA's.
     pub fn is_muted(&self, i: usize) -> bool {
-        self.tracks.get(i).is_some_and(|t| t.mute) || self.vca_of(i).is_some_and(|v| v.mute)
+        self.tracks.get(i).is_some_and(|t| t.mute || t.off)
+            || self.vca_of(i).is_some_and(|v| v.mute)
     }
 
     /// Whether track `i` is soloed, by its own Solo or by its VCA's. A VCA track is never

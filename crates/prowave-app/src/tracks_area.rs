@@ -2941,6 +2941,7 @@ fn header(
     peaks: (f32, f32),
     silenced: bool,
     opts: HeaderOpts,
+    picked: &mut Option<CtxAction>,
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
@@ -2955,12 +2956,13 @@ fn header(
     let num_w = if opts.number { NUM_W } else { 0.0 };
     if opts.number {
         let num = Rect::from_min_size(hdr.min, vec2(NUM_W, hdr.height()));
+        g.rect_filled(num, 0.0, p.tracks[i].color);
         g.text(
             num.center(),
             Align2::CENTER_CENTER,
             (i + 1).to_string(),
             FontId::proportional(12.0),
-            TEXT_DIM,
+            Color32::WHITE,
         );
     }
     let resp = ui.interact(hdr, id(("hdr", i)), Sense::click_and_drag());
@@ -3050,6 +3052,32 @@ fn header(
         let by = hdr.center().y + 3.0;
         let mut bx = name_x;
         let size = vec2(18.0, 15.0);
+        // Power: off makes it silent and rests its plugins.
+        let power = Rect::from_min_size(pos2(bx, by), size);
+        if header_button(
+            ui,
+            g,
+            power,
+            (i, "power"),
+            "",
+            !t.off,
+            crate::theme::ACCENT_BLUE,
+            selected,
+        ) {
+            t.off = !t.off;
+        }
+        let (c, pen) = (power.center(), Stroke::new(1.2, Color32::WHITE));
+        g.add(Shape::line(
+            (0..=12)
+                .map(|k| {
+                    let a = (-35.0 + 250.0 * k as f32 / 12.0_f32).to_radians();
+                    c + vec2(a.cos(), a.sin()) * 4.0
+                })
+                .collect(),
+            pen,
+        ));
+        g.line_segment([c + vec2(0.0, -5.0), c + vec2(0.0, -1.0)], pen);
+        bx += 21.0;
         if header_button(
             ui,
             g,
@@ -3121,7 +3149,49 @@ fn header(
         }
     }
 
+    if t.kind.has_regions() && opts.buttons && !compact {
+        // Freeze: a snowflake of three strokes.
+        let frost = Rect::from_center_size(
+            pos2(
+                hdr.right() - if opts.level { 150.0 } else { 34.0 },
+                hdr.center().y + 10.0,
+            ),
+            vec2(16.0, 15.0),
+        );
+        let frozen = t.frozen.is_some();
+        let hit = ui
+            .interact(frost, id((i, "freeze")), Sense::click())
+            .on_hover_text(if frozen { "Unfreeze" } else { "Freeze" });
+        if hit.clicked() {
+            *picked = Some(CtxAction::ToggleFreeze(i));
+        }
+        let ink = if frozen {
+            Color32::from_rgb(0x7f, 0xc8, 0xf0)
+        } else {
+            TEXT_DIM
+        };
+        for k in 0..3 {
+            let a = (k as f32 * 60.0 + 30.0).to_radians();
+            let d = vec2(a.cos(), a.sin()) * 5.0;
+            g.line_segment(
+                [frost.center() - d, frost.center() + d],
+                Stroke::new(1.1, ink),
+            );
+        }
+    }
     if !opts.level {
+        // A dot for the level, with the fader hidden.
+        let lit = peaks.0.max(peaks.1) > 0.001;
+        let dot = pos2(hdr.right() - 12.0, hdr.center().y);
+        g.circle_filled(
+            dot,
+            3.0,
+            if lit {
+                crate::theme::GOOD
+            } else {
+                Color32::from_gray(0x2a)
+            },
+        );
         return (resp, Vec::new());
     }
     // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob, on the buttons' row.
@@ -4208,7 +4278,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
         let before = p.selected_track;
-        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts);
+        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts, &mut picked);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;

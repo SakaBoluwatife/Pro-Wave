@@ -16,9 +16,7 @@ use crate::widgets::{
     back_chevron, menu_title, popup_button, stroke, todo_item, BLUE, TEXT, TEXT_DIM,
 };
 use crate::UiState;
-use egui::{
-    pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
-};
+use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, StrokeKind, Ui};
 use prowave_host::PluginInfo;
 use std::collections::{BTreeMap, HashMap};
 
@@ -116,6 +114,8 @@ pub struct MixerView {
     pub sends_on_faders: Option<u16>,
     /// A strip asked for a new Aux: its place, and whether as a send rather than its output.
     pub new_aux: Option<(usize, bool)>,
+    /// A strip's MIDI FX slot was clicked.
+    pub open_midi_fx: bool,
     /// A strip asked to be renamed.
     pub rename: Option<usize>,
     /// Edit > Copy Channel Strip.
@@ -212,6 +212,7 @@ impl Default for MixerView {
             auto_editor: Default::default(),
             sends_on_faders: None,
             new_aux: None,
+            open_midi_fx: false,
             rename: None,
             copied: None,
             inputs: crate::audio_rec::InputChoice::default(),
@@ -346,50 +347,6 @@ fn small_button(
     resp.clicked()
 }
 
-/// The strip's EQ thumbnail: the curve of its Channel EQ (`params`), or just "EQ" without one.
-fn eq_thumb(
-    g: &Painter,
-    r: Rect,
-    eq: Option<(prowave_engine::FxKind, [f32; prowave_engine::MAX_FX_PARAMS])>,
-) {
-    g.rect_filled(r, 3.0, crate::theme::BORDER);
-    g.rect_stroke(
-        r,
-        3.0,
-        Stroke::new(1.0, Color32::from_gray(0x1a)),
-        StrokeKind::Inside,
-    );
-    if let Some((kind, params)) = eq {
-        let n = 24;
-        let freqs: Vec<f32> = (0..=n)
-            .map(|i| 20.0 * 1000f32.powf(i as f32 / n as f32))
-            .collect();
-        let curve = prowave_engine::response_db(kind, params, &freqs, 48_000.0);
-        let pts: Vec<_> = curve
-            .iter()
-            .enumerate()
-            .map(|(i, db)| {
-                pos2(
-                    r.left() + 3.0 + i as f32 / n as f32 * (r.width() - 6.0),
-                    r.center().y - db.clamp(-18.0, 18.0) / 18.0 * (r.height() / 2.0 - 3.0),
-                )
-            })
-            .collect();
-        g.add(Shape::line(
-            pts,
-            Stroke::new(1.2, Color32::from_rgb(0x8a, 0xb8, 0xf0)),
-        ));
-    } else {
-        g.text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            "EQ",
-            FontId::proportional(10.0),
-            TEXT_DIM,
-        );
-    }
-}
-
 /// What a fader or knob did this frame.
 #[derive(Default, Clone, Copy)]
 struct Moved {
@@ -428,6 +385,18 @@ fn pan_knob(
         out.stopped |= resp.drag_stopped();
     }
     crate::widgets::draw_knob(g, c, 12.0, value);
+    // Off centre, the knob says how far.
+    let amount = (value * 64.0).round() as i32;
+    if amount != 0 {
+        g.circle_filled(c, 8.5, Color32::from_gray(0x8c));
+        g.text(
+            c,
+            Align2::CENTER_CENTER,
+            format!("{amount:+}"),
+            FontId::proportional(9.5),
+            Color32::BLACK,
+        );
+    }
     out
 }
 
@@ -717,7 +686,8 @@ pub struct Rows {
     fx_first: usize,
     setting: f32,
     gain_red: f32,
-    eq: f32,
+    midi_fx: f32,
+    icon: f32,
     input: f32,
     fx: f32,
     fx_rows: usize,
@@ -734,7 +704,7 @@ pub struct Rows {
 /// The height a fader is never squeezed below: the insert slots scroll first.
 const MIN_FADER_H: f32 = 110.0;
 /// What goes under the fader: the Mute and Solo buttons and the name.
-const BELOW_FADER: f32 = 48.0;
+const BELOW_FADER: f32 = 66.0;
 
 /// The rows for a strip between `top` and `bottom`. The insert slots that do not leave room for the
 /// fader are scrolled to, starting from slot `scroll`.
@@ -757,21 +727,23 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
     let send_rows = send_rows.clamp(1, MAX_SENDS);
     let setting = top + 6.0;
     let gain_red = setting + 20.0;
-    let eq = gain_red + 12.0;
-    let input = eq + 28.0;
+    let midi_fx = gain_red + 12.0;
+    let input = midi_fx + 20.0;
     let fx = input + 22.0;
     let sends = fx + fx_rows as f32 * 17.0 + 4.0;
     let output = sends + send_rows as f32 * 17.0 + 3.0;
     let group = output + 20.0;
     let automation = group + 20.0;
-    let pan = automation + 22.0;
+    let icon = automation + 22.0;
+    let pan = icon + 28.0;
     let db = pan + 30.0;
     Rows {
         fx_total: fx_rows,
         fx_first: 0,
         setting,
         gain_red,
-        eq,
+        midi_fx,
+        icon,
         input,
         fx,
         fx_rows,
@@ -1535,6 +1507,53 @@ fn plugin_menu(
     instruments: bool,
     pick: &mut Option<PluginInfo>,
 ) {
+    let search_id = egui::Id::unique(("plugin_menu_search", instruments));
+    let recent_id = egui::Id::unique(("plugin_menu_recent", instruments));
+    let mut search = ui
+        .data_mut(|d| d.get_temp::<String>(search_id))
+        .unwrap_or_default();
+    ui.add(
+        egui::TextEdit::singleline(&mut search)
+            .hint_text("Search")
+            .desired_width(170.0),
+    );
+    ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+    let wanted = search.trim().to_lowercase();
+    let before = pick.is_some();
+    if !wanted.is_empty() {
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                let found = installed.iter().filter(|i| {
+                    i.is_instrument == instruments
+                        && (i.name.to_lowercase().contains(&wanted)
+                            || i.vendor.to_lowercase().contains(&wanted))
+                });
+                for info in found {
+                    if ui.button(info.name.as_str()).clicked() {
+                        *pick = Some(info.clone());
+                        ui.close();
+                    }
+                }
+            });
+        remember_plugin(ui, recent_id, search_id, before, pick);
+        return;
+    }
+    let recent: Vec<String> = ui.data_mut(|d| d.get_temp(recent_id)).unwrap_or_default();
+    let recent: Vec<&PluginInfo> = recent
+        .iter()
+        .filter_map(|id| installed.iter().find(|i| i.id == *id))
+        .collect();
+    if !recent.is_empty() {
+        ui.weak("Recent");
+        for info in recent {
+            if ui.button(info.name.as_str()).clicked() {
+                *pick = Some(info.clone());
+                ui.close();
+            }
+        }
+        ui.separator();
+    }
     let mut makers: BTreeMap<String, Vec<&PluginInfo>> = BTreeMap::new();
     for info in installed.iter().filter(|i| i.is_instrument == instruments) {
         let maker = if info.vendor.trim().is_empty() {
@@ -1562,6 +1581,28 @@ fn plugin_menu(
                 });
             }
         });
+    remember_plugin(ui, recent_id, search_id, before, pick);
+}
+
+/// When a plugin was just picked: it goes first among the recent ones, and the search empties.
+fn remember_plugin(
+    ui: &Ui,
+    recent_id: egui::Id,
+    search_id: egui::Id,
+    before: bool,
+    pick: &Option<PluginInfo>,
+) {
+    let Some(info) = pick.as_ref().filter(|_| !before) else {
+        return;
+    };
+    ui.data_mut(|d| {
+        let mut recent: Vec<String> = d.get_temp(recent_id).unwrap_or_default();
+        recent.retain(|id| *id != info.id);
+        recent.insert(0, info.id.clone());
+        recent.truncate(5);
+        d.insert_temp(recent_id, recent);
+        d.insert_temp(search_id, String::new());
+    });
 }
 
 /// Puts what was picked in a slot's menu on track `i`.
@@ -2014,19 +2055,6 @@ pub fn channel_strip(
         StripKey::StereoOut => (tr("Stereo Out").to_string(), OUT_PURPLE, vec![], None, None),
     };
     let beat = p.position_beats;
-    let eq_params = match key {
-        StripKey::Track(i) => p.tracks[i]
-            .inserts
-            .iter()
-            .find(|x| {
-                matches!(
-                    x.kind,
-                    prowave_engine::FxKind::ChannelEq | prowave_engine::FxKind::MultiEq
-                ) && !x.bypass
-            })
-            .map(|x| (x.kind, x.params)),
-        _ => None,
-    };
     let reduction = match key {
         StripKey::Track(i) => meters.reduction.get(i).copied().unwrap_or(0.0),
         _ => 0.0,
@@ -2063,7 +2091,29 @@ pub fn channel_strip(
                 },
             );
         }
-        eq_thumb(g, row(r.eq, 24.0), eq_params);
+        if let StripKey::Track(i) = key {
+            if matches!(
+                p.tracks[i].kind,
+                TrackKind::Instrument | TrackKind::Drummer | TrackKind::ExternalMidi
+            ) {
+                let fx_r = row(r.midi_fx, 16.0);
+                let count = p.tracks[i].midi_fx.len();
+                let text = if count > 0 {
+                    format!("MIDI FX {count}")
+                } else {
+                    "MIDI FX".to_string()
+                };
+                slot(g, fx_r, &text, SLOT_EMPTY, TEXT_DIM);
+                let opened = ui
+                    .interact(fx_r, id(ns, (key, "midi_fx")), Sense::click())
+                    .on_hover_text("Open this track's MIDI FX")
+                    .clicked();
+                if opened {
+                    p.selected_track = i;
+                    v.open_midi_fx = true;
+                }
+            }
+        }
         let input_r = row(r.input, 16.0);
         let hosted = match key {
             StripKey::Track(i) => p.tracks[i].instrument_plugin.is_some().then_some(i),
@@ -2213,6 +2263,10 @@ pub fn channel_strip(
             );
         }
     }
+    if let StripKey::Track(i) = key {
+        let icon = Rect::from_center_size(pos2(strip.center().x, r.icon + 12.0), vec2(22.0, 22.0));
+        crate::track_icons::draw_icon(g, icon, crate::track_icons::track_icon(&p.tracks[i]));
+    }
     let pan_c = pos2(strip.center().x, r.pan + 12.0);
     match key {
         _ if vca_strip => {}
@@ -2297,7 +2351,12 @@ pub fn channel_strip(
     } else {
         READ_GREEN
     };
-    slot(g, pk_r, &pk_text, crate::theme::BORDER, pk_col);
+    // An over fills the readout, so it is seen from across the room.
+    if hold_db > 0.0 {
+        slot(g, pk_r, &pk_text, crate::theme::DANGER, Color32::WHITE);
+    } else {
+        slot(g, pk_r, &pk_text, crate::theme::BORDER, pk_col);
+    }
     if ui
         .interact(pk_r, id(ns, (key, "peak")), Sense::click())
         .clicked()
@@ -2310,7 +2369,7 @@ pub fn channel_strip(
     let name_h = 22.0;
     let fader_area = Rect::from_min_max(
         pos2(sx, r.fader_top),
-        pos2(strip.right() - 4.0, strip.bottom() - 26.0 - name_h),
+        pos2(strip.right() - 4.0, strip.bottom() - 44.0 - name_h),
     );
     let fader_free = match key {
         StripKey::Track(i) => {
@@ -2354,6 +2413,33 @@ pub fn channel_strip(
         let playing = p.playing;
         for j in std::iter::once(i).chain(p.group_mates(i, |g| g.volume)) {
             crate::automation::released(&mut p.tracks[j], AutoTarget::Volume, beat, playing);
+        }
+    }
+
+    // R / I, above M / S, on strips that record.
+    if let StripKey::Track(i) = key {
+        let t = &mut p.tracks[i];
+        if t.kind.has_regions() {
+            let y = strip.bottom() - 40.0 - name_h;
+            let w = (inner_w - 6.0) / 2.0;
+            let rec_r = Rect::from_min_size(pos2(sx, y), vec2(w, 15.0));
+            if small_button(
+                ui,
+                g,
+                rec_r,
+                id(ns, (key, "rec")),
+                "R",
+                t.rec,
+                crate::theme::DANGER,
+            ) {
+                t.rec = !t.rec;
+            }
+            if t.kind == TrackKind::Audio {
+                let mon_r = Rect::from_min_size(pos2(sx + w + 6.0, y), vec2(w, 15.0));
+                if small_button(ui, g, mon_r, id(ns, (key, "mon")), "I", t.monitor, SOLO_ON) {
+                    t.monitor = !t.monitor;
+                }
+            }
         }
     }
 
@@ -3135,7 +3221,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     };
     label_at(r.setting, 16.0, tr("Setting"));
     label_at(r.gain_red, 8.0, tr("Gain Reduction"));
-    label_at(r.eq, 24.0, "EQ");
+    label_at(r.midi_fx, 16.0, "MIDI FX");
     label_at(r.input, 16.0, tr("Input"));
     label_at(r.fx, 15.0, tr("Audio FX"));
     if r.fx_total > r.fx_rows {

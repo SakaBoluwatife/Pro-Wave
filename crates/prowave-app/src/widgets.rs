@@ -212,7 +212,7 @@ pub fn slider_h(
 /// Logic's rotary knob: dark bezel, light grey domed body, a white pointer, and two small tick
 /// marks flanking the bottom. `value` runs from -1 (full left) to 1 (full right), 0 = up.
 /// The colour of a knob's arc.
-const KNOB_GLOW: Color32 = Color32::from_rgb(0x4f, 0xc3, 0xf7);
+const KNOB_GLOW: Color32 = crate::theme::GOOD;
 
 /// The lit arc around a knob, from `from` to `to` (each -1..=1 of its sweep), with a soft glow, on
 /// a dim ring showing the whole sweep. It tells at a glance how far a knob is turned, and which way.
