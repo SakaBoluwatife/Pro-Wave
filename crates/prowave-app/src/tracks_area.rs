@@ -1373,6 +1373,8 @@ enum CtxAction {
     ClonePattern(usize, usize),
     ToggleRegionMute(usize, usize),
     TrackColor(usize),
+    RenameTrack(usize),
+    SplitStems(usize, usize),
     DuplicateTrack(usize, bool),
     RegionColor(usize, usize),
     ToggleReverse(usize, usize),
@@ -1514,6 +1516,15 @@ fn region_items(
         CtxAction::RegionColor(ti, ri),
         picked,
     );
+    if is_audio {
+        pick(
+            ui,
+            "Split Stems…",
+            "",
+            CtxAction::SplitStems(ti, ri),
+            picked,
+        );
+    }
     if is_audio {
         pick(
             ui,
@@ -1788,6 +1799,7 @@ fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>
 
 fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
     track_action_items(ui, t, picked);
+    pick(ui, "Rename Track", "", CtxAction::RenameTrack(t.i), picked);
     pick(ui, "Track Color…", "", CtxAction::TrackColor(t.i), picked);
     pick(
         ui,
@@ -1995,6 +2007,12 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
         CtxAction::DeleteRegion => delete_selected(p, v),
         CtxAction::TrackColor(i) => s.dialogs.color = Some(i),
+        CtxAction::RenameTrack(i) => {
+            if let Some(name) = p.tracks.get(i).map(|t| t.name.clone()) {
+                s.dialogs.open_rename(i, &name);
+            }
+        }
+        CtxAction::SplitStems(t, r) => crate::stem_splitter::open(p, s, t, r),
         CtxAction::DuplicateTrack(i, with_regions) => {
             if p.duplicate_track(i, with_regions).is_some() {
                 forget_track_indexes(s);
@@ -4638,6 +4656,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 mods.command,
                 mods.shift,
             );
+        }
+        // A double click on a track's name renames it. On the number, it is the colour.
+        if resp.double_clicked() {
+            let at = ui.input(|m| m.pointer.interact_pos());
+            if at.is_some_and(|at| at.x >= hdr.left() + NUM_W) {
+                if let Some(name) = p.tracks.get(i).map(|t| t.name.clone()) {
+                    s.dialogs.open_rename(i, &name);
+                }
+            }
         }
         if resp.drag_started() {
             s.tracks.track_drag = Some(i);

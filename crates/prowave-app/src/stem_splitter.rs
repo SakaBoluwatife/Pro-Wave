@@ -35,8 +35,22 @@ fn stage_of(line: &str) -> Option<&'static str> {
     }
 }
 
-/// The stems the bundled model makes, by the names of their files.
-const STEMS: [&str; 4] = ["drums", "bass", "vocals", "other"];
+/// What can be asked for: its name in the window, and the helper's stems with the track each makes.
+const CHOICES: [(&str, &[(&str, &str)]); 3] = [
+    ("Vocals", &[("vocals", "Vocals")]),
+    ("Drums", &[("drums", "Drums")]),
+    ("Instruments", &[("bass", "Bass"), ("other", "Instruments")]),
+];
+
+/// The stems of what is chosen: the helper's name, and the track's.
+fn stems_of(chosen: [bool; 3]) -> Vec<(&'static str, &'static str)> {
+    CHOICES
+        .iter()
+        .zip(chosen)
+        .filter(|(_, on)| *on)
+        .flat_map(|(choice, _)| choice.1.iter().copied())
+        .collect()
+}
 /// What a split that was stopped on purpose reports. Not shown as an error.
 const STOPPED: &str = "stopped";
 /// The model file, which the helper looks for in its cache.
@@ -55,8 +69,9 @@ pub struct Source {
     source_len: f32,
 }
 
-#[derive(Default)]
 pub struct StemSplitter {
+    /// What to split out: vocals, drums, instruments.
+    chosen: [bool; 3],
     /// What the window is showing: it is open while this is set.
     source: Option<Source>,
     job: Option<Receiver<Result<PathBuf, String>>>,
@@ -64,6 +79,20 @@ pub struct StemSplitter {
     began: Option<Instant>,
     thread: Option<std::thread::JoinHandle<()>>,
     error: Option<String>,
+}
+
+impl Default for StemSplitter {
+    fn default() -> Self {
+        Self {
+            chosen: [true; 3],
+            source: None,
+            job: None,
+            control: JobControl::default(),
+            began: None,
+            thread: None,
+            error: None,
+        }
+    }
 }
 
 impl Drop for StemSplitter {
@@ -123,12 +152,20 @@ fn place_model(dir: &Path) -> Result<(), String> {
 }
 
 /// Runs the helper on `input`, writing the stems to `out`. On its own thread: it takes minutes.
-fn split(dir: &Path, input: &Path, out: &Path, control: &JobControl) -> Result<(), String> {
+fn split(
+    dir: &Path,
+    input: &Path,
+    out: &Path,
+    stems: &[&str],
+    control: &JobControl,
+) -> Result<(), String> {
     place_model(dir)?;
     let mut command = std::process::Command::new(dir.join("demucs.exe"));
     command
         .arg("-m")
         .arg("htdemucs")
+        .arg("-s")
+        .arg(stems.join(","))
         .arg("-o")
         .arg(out)
         .arg(input);
@@ -201,14 +238,13 @@ fn place_stems(
     ctx: &egui::Context,
     source: &Source,
     dir: &Path,
+    chosen: [bool; 3],
 ) -> Result<(), String> {
-    for stem in STEMS {
+    for (stem, title) in stems_of(chosen) {
         let path = dir.join(format!("{stem}.wav"));
         crate::import::import_audio_at(p, &path, ctx, f64::from(source.start_bar), None)
             .map_err(|e| format!("{stem}: {e}"))?;
         if let Some(track) = p.tracks.last_mut() {
-            let mut title = stem.to_string();
-            title[..1].make_ascii_uppercase();
             track.name = format!("{} {title}", source.name);
             if let Some(region) = track.regions.last_mut() {
                 region.name.clone_from(&track.name);
@@ -217,6 +253,11 @@ fn place_stems(
                 region.params.source_len = source.source_len;
             }
         }
+    }
+    // With only part split out, the original goes on playing: nothing else has the rest.
+    if chosen != [true; 3] {
+        p.song_rev += 1;
+        return Ok(());
     }
     let original = p
         .tracks
@@ -240,7 +281,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         match job.try_recv() {
             Ok(Ok(dir)) => {
                 s.stems.job = None;
-                match place_stems(p, ctx, &source, &dir) {
+                match place_stems(p, ctx, &source, &dir, s.stems.chosen) {
                     Ok(()) => {
                         s.status = Some(format!("{} split into stems", source.name));
                         s.stems.source = None;
@@ -275,7 +316,16 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 "Split \"{}\" into drums, bass, vocals and other.",
                 source.name
             ));
-            ui.label("Each goes on a new track. The original region is muted.");
+            ui.add_space(2.0);
+            ui.label("What to split out:");
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    for (k, (name, _)) in CHOICES.iter().enumerate() {
+                        ui.checkbox(&mut s.stems.chosen[k], *name);
+                    }
+                });
+            });
+            ui.label("Each goes on a new track. With all three, the original region is muted.");
             if !ready {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
@@ -308,18 +358,26 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 if ui.button("Stop").clicked() {
                     s.stems.control.stop.store(true, Ordering::Relaxed);
                 }
-            } else if ui.add_enabled(ready, egui::Button::new("Split")).clicked() {
+            } else if ui
+                .add_enabled(
+                    ready && s.stems.chosen.contains(&true),
+                    egui::Button::new("Split"),
+                )
+                .clicked()
+            {
                 start = true;
             }
         });
     if let (true, Some(dir)) = (start, dir) {
         let (tx, rx) = channel();
         let (input, out) = (source.path.clone(), new_output_dir(&source.name));
+        let stems = stems_of(s.stems.chosen);
         let control = JobControl::default();
         s.stems.control = control.clone();
         s.stems.began = Some(Instant::now());
         s.stems.thread = Some(std::thread::spawn(move || {
-            let _ = tx.send(split(&dir, &input, &out, &control).map(|()| out));
+            let names: Vec<&str> = stems.iter().map(|(stem, _)| *stem).collect();
+            let _ = tx.send(split(&dir, &input, &out, &names, &control).map(|()| out));
         }));
         s.stems.error = None;
         s.stems.job = Some(rx);
@@ -360,7 +418,7 @@ mod tests {
     #[test]
     fn stems_land_on_new_tracks_in_place_and_the_original_is_muted() {
         let dir = tempfile::tempdir().unwrap();
-        for stem in STEMS {
+        for (stem, _) in stems_of([true; 3]) {
             wav(&dir.path().join(format!("{stem}.wav")));
         }
         let song = dir.path().join("song.wav");
@@ -373,7 +431,7 @@ mod tests {
         let mut s = UiState::new();
         open(&p, &mut s, t, 0);
         let source = s.stems.source.clone().unwrap();
-        place_stems(&mut p, &ctx, &source, dir.path()).unwrap();
+        place_stems(&mut p, &ctx, &source, dir.path(), [true; 3]).unwrap();
         assert_eq!(p.tracks.len(), tracks + 4);
         assert!(p.tracks[t].regions[0].params.mute);
         let drums = &p.tracks[tracks];
@@ -395,7 +453,7 @@ mod tests {
         let mut s = UiState::new();
         open(&p, &mut s, t, 0);
         let source = s.stems.source.clone().unwrap();
-        assert!(place_stems(&mut p, &ctx, &source, dir.path()).is_err());
+        assert!(place_stems(&mut p, &ctx, &source, dir.path(), [true; 3]).is_err());
         assert!(!p.tracks[t].regions[0].params.mute);
     }
 }
