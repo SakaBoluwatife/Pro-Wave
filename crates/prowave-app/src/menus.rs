@@ -138,6 +138,8 @@ const EDIT: &[&str] = &[
     "Join",
     "Bounce and Join",
     "-",
+    "Nudge Left",
+    "Nudge Right",
     "Snap to Zero Crossings",
     "Strip Silence…",
 ];
@@ -176,6 +178,8 @@ const NAVIGATE: &[&str] = &[
     "Go to Left Locator",
     "Go to Right Locator",
     "-",
+    "Go to Next Transient",
+    "Go to Previous Transient",
     "Go to Next Marker",
     "Go to Previous Marker",
     "Create Marker",
@@ -221,6 +225,8 @@ const MIX: &[&str] = &[
     "Routing Matrix…",
     "Create Mastering Track",
     "Stem Splitter…",
+    "Mono Sum Output",
+    "Dim Output",
     "-",
     "Bounce",
     "Export",
@@ -547,7 +553,12 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             .is_some_and(|t| t.kind.has_regions()),
         "Record Toggle" => p.playing,
         "Discard Recording" => s.rec.active() || s.audio_rec.active(),
-        "Recording Meter" => true,
+        "Recording Meter" | "Mono Sum Output" | "Dim Output" => true,
+        "Nudge Left" | "Nudge Right" => !s.tracks.all_selected().is_empty(),
+        "Go to Next Transient" | "Go to Previous Transient" => p
+            .tracks
+            .get(p.selected_track)
+            .is_some_and(|t| t.regions.iter().any(|r| r.audio.is_some())),
         "Record / Record Repeat" | "Replace Mode" | "Snap to Zero Crossings" => true,
         "New Take" => {
             s.rec.active()
@@ -705,6 +716,8 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Ruler" => s.tracks.show_ruler,
         "Show Colors" => s.tracks.show_colors,
         "Recording Meter" => s.dialogs.rec_meter,
+        "Mono Sum Output" => p.out_mono,
+        "Dim Output" => p.out_dim,
         "Show Grid" => s.tracks.show_grid,
         "Pre-Fader Metering" => s.mixer.pre_fader,
         _ => false,
@@ -1061,6 +1074,31 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New Tracks…" => s.dialogs.open_new_tracks(),
+        "Mono Sum Output" => {
+            p.out_mono = !p.out_mono;
+            let now = if p.out_mono { "on" } else { "off" };
+            s.status = Some(format!("Mono sum is {now}. Bounces are not affected."));
+        }
+        "Dim Output" => {
+            p.out_dim = !p.out_dim;
+            let now = if p.out_dim { "on" } else { "off" };
+            s.status = Some(format!("Dim is {now}. Bounces are not affected."));
+        }
+        "Nudge Left" | "Nudge Right" => {
+            let by = if label == "Nudge Left" {
+                -p.nudge_beats
+            } else {
+                p.nudge_beats
+            };
+            let regions = s.tracks.all_selected();
+            p.nudge_regions(&regions, by);
+        }
+        "Go to Next Transient" | "Go to Previous Transient" => {
+            let forward = label == "Go to Next Transient";
+            if let Some(beat) = crate::region_edit::next_transient(p, forward) {
+                p.position_beats = beat;
+            }
+        }
         "New Aux Track" => {
             let t = p.add_track(TrackKind::Aux);
             p.tracks[t].on_timeline = true;
@@ -1573,6 +1611,11 @@ mod tests {
             "{} {:?}",
             state(p, s),
             (
+                (p.out_mono, p.out_dim),
+                p.tracks
+                    .iter()
+                    .flat_map(|t| &t.regions)
+                    .fold(0u32, |all, r| all.wrapping_add(r.start_bar.to_bits())),
                 p.selected_track,
                 (p.cycle, p.metronome, p.count_in),
                 p.tracks.iter().filter(|t| t.mute).count(),
@@ -1618,8 +1661,14 @@ mod tests {
             if matches!(c.action, Action::RecallScreenset(_)) {
                 continue;
             }
-            // With nothing being recorded there is nothing to discard.
-            if matches!(c.action, Action::Menu("Discard Recording")) {
+            // With nothing being recorded there is nothing to discard, and with no audio on the
+            // track there is no sound to go through.
+            if matches!(
+                c.action,
+                Action::Menu(
+                    "Discard Recording" | "Go to Next Transient" | "Go to Previous Transient"
+                )
+            ) {
                 continue;
             }
             let (mut p, mut s) = (Project::demo(), crate::UiState::new());

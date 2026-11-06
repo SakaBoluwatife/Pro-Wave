@@ -498,6 +498,11 @@ pub enum Command {
     },
     /// The strip meters read before the fader, or after it.
     SetPreFaderMeter(bool),
+    /// What the speakers get, for checking a mix: both sides summed, and 20 dB down. Not bounces.
+    SetMonitorOut {
+        mono: bool,
+        dim: bool,
+    },
     /// Whether plugins with nothing to process stop running.
     SetPluginsMayRest(bool),
     /// Moves a parameter of the hosted plugin of a slot, as a position 0..=1 along its range.
@@ -855,6 +860,11 @@ pub struct EngineCore {
     keep_headroom: bool,
     /// Plugins with nothing to process stop running.
     plugins_may_rest: bool,
+    /// The output is summed to mono for the speakers.
+    out_mono: bool,
+    /// Where the output's dim is going, and where it is, so it does not click.
+    out_dim_target: f32,
+    out_dim: f32,
     /// Whether any strip has one, and what they are told of the song.
     any_plugin: bool,
     transport: PluginTransport,
@@ -1043,6 +1053,9 @@ impl EngineCore {
             master_tap: None,
             keep_headroom: false,
             plugins_may_rest: true,
+            out_mono: false,
+            out_dim_target: 1.0,
+            out_dim: 1.0,
             any_plugin: false,
             transport: PluginTransport::default(),
             transport_left: 0,
@@ -2150,6 +2163,10 @@ impl EngineCore {
                     }
                 }
                 Command::SetPreFaderMeter(on) => self.pre_fader_meter = on,
+                Command::SetMonitorOut { mono, dim } => {
+                    self.out_mono = mono && !self.keep_headroom;
+                    self.out_dim_target = if dim && !self.keep_headroom { 0.1 } else { 1.0 };
+                }
                 Command::SetPluginsMayRest(may) => {
                     self.plugins_may_rest = may && !self.keep_headroom;
                     let may = self.plugins_may_rest;
@@ -2689,8 +2706,15 @@ impl EngineCore {
             };
             self.span_pk_l = self.span_pk_l.max(l.abs());
             self.span_pk_r = self.span_pk_r.max(r.abs());
-            out[j * 2] = l;
-            out[j * 2 + 1] = r;
+            let (l, r) = if self.out_mono {
+                let both = (l + r) * 0.5;
+                (both, both)
+            } else {
+                (l, r)
+            };
+            self.out_dim += (self.out_dim_target - self.out_dim) * 0.002;
+            out[j * 2] = l * self.out_dim;
+            out[j * 2 + 1] = r * self.out_dim;
         }
         // Render events at the current sample position, then advance to the next one.
         if self.playing {

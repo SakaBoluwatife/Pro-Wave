@@ -472,6 +472,19 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
                         .text("Sound level"),
                 );
             }
+            ui.horizontal(|ui| {
+                ui.label("Nudge:");
+                let sizes = [
+                    ("1/64 note", 0.0625),
+                    ("1/32 note", 0.125),
+                    ("1/16 note", 0.25),
+                    ("1/8 note", 0.5),
+                    ("1/4 note", 1.0),
+                ];
+                for (name, beats) in sizes {
+                    ui.selectable_value(&mut p.nudge_beats, beats, name);
+                }
+            });
             ui.checkbox(&mut p.low_latency, "Low Latency mode");
             ui.checkbox(&mut p.keep_plugins_running, "Keep idle plugins running")
                 .on_hover_text(

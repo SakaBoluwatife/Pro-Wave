@@ -4,11 +4,41 @@
 //! out of this program and a failure in it costs only the split.
 use crate::model::Project;
 use crate::UiState;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// What the helper says it is doing, and the word to stop it.
+#[derive(Clone, Default)]
+struct JobControl {
+    stage: Arc<Mutex<String>>,
+    stop: Arc<AtomicBool>,
+}
+
+/// The words the helper prints, and what to tell the user. It prints no percentage.
+fn stage_of(line: &str) -> Option<&'static str> {
+    let line = line.trim_start();
+    if line.starts_with("Reading") {
+        Some("Reading the file")
+    } else if line.starts_with("Loading") {
+        Some("Loading the model")
+    } else if line.starts_with("Separating") {
+        Some("Separating the stems")
+    } else if line.starts_with("Wrote") {
+        Some("Writing the stems")
+    } else {
+        None
+    }
+}
 
 /// The stems the bundled model makes, by the names of their files.
 const STEMS: [&str; 4] = ["drums", "bass", "vocals", "other"];
+/// What a split that was stopped on purpose reports. Not shown as an error.
+const STOPPED: &str = "stopped";
 /// The model file, which the helper looks for in its cache.
 const MODEL: &str = "htdemucs.safetensors";
 
@@ -30,7 +60,20 @@ pub struct StemSplitter {
     /// What the window is showing: it is open while this is set.
     source: Option<Source>,
     job: Option<Receiver<Result<PathBuf, String>>>,
+    control: JobControl,
+    began: Option<Instant>,
+    thread: Option<std::thread::JoinHandle<()>>,
     error: Option<String>,
+}
+
+impl Drop for StemSplitter {
+    /// The helper does not outlive the program: it would go on using every core.
+    fn drop(&mut self) {
+        self.control.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// Opens the window on a region.
@@ -80,7 +123,7 @@ fn place_model(dir: &Path) -> Result<(), String> {
 }
 
 /// Runs the helper on `input`, writing the stems to `out`. On its own thread: it takes minutes.
-fn split(dir: &Path, input: &Path, out: &Path) -> Result<(), String> {
+fn split(dir: &Path, input: &Path, out: &Path, control: &JobControl) -> Result<(), String> {
     place_model(dir)?;
     let mut command = std::process::Command::new(dir.join("demucs.exe"));
     command
@@ -95,15 +138,49 @@ fn split(dir: &Path, input: &Path, out: &Path) -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let done = command
-        .output()
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("cannot start the splitter: {e}"))?;
-    if done.status.success() {
-        return Ok(());
+    let last_line = Arc::new(Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let (stage, last) = (control.stage.clone(), last_line.clone());
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let (Some(now), Ok(mut stage)) = (stage_of(&line), stage.lock()) {
+                    *stage = now.to_string();
+                }
+                if !line.trim().is_empty() {
+                    if let Ok(mut last) = last.lock() {
+                        *last = line;
+                    }
+                }
+            }
+        });
     }
-    let text = String::from_utf8_lossy(&done.stderr);
-    let last = text.lines().rev().find(|l| !l.trim().is_empty());
-    Err(last.unwrap_or("the splitter stopped").to_string())
+    loop {
+        if control.stop.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(out);
+            return Err(STOPPED.to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let last = last_line.lock().map(|l| l.clone()).unwrap_or_default();
+                return Err(if last.is_empty() {
+                    "the splitter stopped".to_string()
+                } else {
+                    last
+                });
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 /// A folder of its own for one split, among the session's recordings so that saving keeps them.
@@ -174,7 +251,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             }
             Ok(Err(e)) => {
                 s.stems.job = None;
-                s.stems.error = Some(e);
+                s.stems.error = (e != STOPPED).then_some(e);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -210,10 +287,27 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             }
             ui.add_space(4.0);
             if busy {
+                let stage = s
+                    .stems
+                    .control
+                    .stage
+                    .lock()
+                    .map(|t| t.clone())
+                    .unwrap_or_default();
+                let elapsed = s.stems.began.map_or(0, |b| b.elapsed().as_secs());
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Splitting. This can take a few minutes.");
+                    let shown = if stage.is_empty() {
+                        "Starting"
+                    } else {
+                        stage.as_str()
+                    };
+                    ui.label(format!("{shown}: {}:{:02}", elapsed / 60, elapsed % 60));
                 });
+                ui.label("On the CPU this is slow, often much longer than the song.");
+                if ui.button("Stop").clicked() {
+                    s.stems.control.stop.store(true, Ordering::Relaxed);
+                }
             } else if ui.add_enabled(ready, egui::Button::new("Split")).clicked() {
                 start = true;
             }
@@ -221,14 +315,18 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     if let (true, Some(dir)) = (start, dir) {
         let (tx, rx) = channel();
         let (input, out) = (source.path.clone(), new_output_dir(&source.name));
-        std::thread::spawn(move || {
-            let _ = tx.send(split(&dir, &input, &out).map(|()| out));
-        });
+        let control = JobControl::default();
+        s.stems.control = control.clone();
+        s.stems.began = Some(Instant::now());
+        s.stems.thread = Some(std::thread::spawn(move || {
+            let _ = tx.send(split(&dir, &input, &out, &control).map(|()| out));
+        }));
         s.stems.error = None;
         s.stems.job = Some(rx);
     }
-    // Closing while it works lets it finish unseen: nothing would take its result.
+    // Closing while it works stops it: nothing would take its result, and it holds the CPU.
     if !open {
+        s.stems.control.stop.store(true, Ordering::Relaxed);
         s.stems.source = None;
         s.stems.job = None;
     }

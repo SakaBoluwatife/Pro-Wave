@@ -711,10 +711,96 @@ pub fn join_selected(p: &mut Project, v: &mut TracksView) -> Result<(), String> 
     Ok(())
 }
 
+/// Where hits are in a waveform, in seconds from its start: a level jumping well above what came
+/// just before it. `seconds_per_point` is the waveform's resolution.
+pub fn transients(peaks: &[(f32, f32)], seconds_per_point: f64) -> Vec<f64> {
+    const BEFORE_SECONDS: f64 = 0.05;
+    const AT_LEAST_APART: f64 = 0.06;
+    let level: Vec<f32> = peaks.iter().map(|(lo, hi)| hi.max(-lo)).collect();
+    let top = level.iter().copied().fold(0.0f32, f32::max);
+    if top <= 0.0 || seconds_per_point <= 0.0 {
+        return Vec::new();
+    }
+    let window = ((BEFORE_SECONDS / seconds_per_point) as usize).max(1);
+    let mut found: Vec<f64> = Vec::new();
+    let mut sum = 0.0f32;
+    for (i, &now) in level.iter().enumerate() {
+        let count = i.min(window).max(1) as f32;
+        let before = sum / count;
+        let at = i as f64 * seconds_per_point;
+        if now > before * 2.0 + top * 0.02
+            && now > top * 0.05
+            && found.last().is_none_or(|last| at - last >= AT_LEAST_APART)
+        {
+            found.push(at);
+        }
+        sum += now;
+        if i >= window {
+            sum -= level[i - window];
+        }
+    }
+    found
+}
+
+/// Tab to Transient: the next or last stop for the playhead on the selected track's audio regions,
+/// a hit in the sound or a region's edge.
+pub fn next_transient(p: &Project, forward: bool) -> Option<f64> {
+    let track = p.tracks.get(p.selected_track)?;
+    let map = p.tempo_map();
+    let now = p.position_beats;
+    let mut stops: Vec<f64> = Vec::new();
+    for region in &track.regions {
+        let Some(audio) = region.audio.as_ref() else {
+            continue;
+        };
+        let start = p.region_start_beats(region);
+        let end = start + p.region_len_beats(region);
+        stops.push(start);
+        stops.push(end);
+        let Some(peaks) = audio.fine_peaks.get().or(audio.peaks.get()) else {
+            continue;
+        };
+        let seconds = audio.file.duration_secs();
+        if peaks.is_empty() || seconds <= 0.0 {
+            continue;
+        }
+        let from = f64::from(region.params.source_start);
+        let began = map.seconds_at(start);
+        for at in transients(peaks, seconds / peaks.len() as f64) {
+            let beat = map.beat_at(began + at - from);
+            if at >= from && beat < end {
+                stops.push(beat);
+            }
+        }
+    }
+    const CLOSE: f64 = 1e-4;
+    let after = stops.iter().copied().filter(|b| *b > now + CLOSE);
+    let before = stops.iter().copied().filter(|b| *b < now - CLOSE);
+    if forward {
+        after.min_by(f64::total_cmp)
+    } else {
+        before.max_by(f64::total_cmp)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_hit_is_found_where_the_level_jumps_and_not_in_a_steady_sound() {
+        let mut peaks = vec![(-0.01f32, 0.01f32); 1000];
+        for point in &mut peaks[500..520] {
+            *point = (-0.8, 0.8);
+        }
+        let hits = transients(&peaks, 0.001);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!((hits[0] - 0.5).abs() < 0.002);
+        let steady = vec![(-0.5f32, 0.5f32); 1000];
+        assert_eq!(transients(&steady, 0.001).len(), 1, "only its very start");
+        assert!(transients(&[], 0.001).is_empty());
+        assert!(transients(&vec![(0.0, 0.0); 10], 0.001).is_empty());
+    }
     use crate::model::TrackKind;
     use std::path::PathBuf;
 

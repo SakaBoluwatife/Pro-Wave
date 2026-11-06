@@ -82,23 +82,31 @@ pub fn tick(p: &mut Project) {
             if t.auto.mode == AutoMode::Latch {
                 t.auto.held = None;
             }
+            t.auto.trim = None;
             t.auto.end_pass();
             continue;
         }
         let target = match t.auto.mode {
             AutoMode::Write => Some(t.auto.shown),
-            AutoMode::Touch | AutoMode::Latch => t.auto.held,
+            AutoMode::Touch | AutoMode::Latch | AutoMode::Trim => t.auto.held,
             AutoMode::Off | AutoMode::Read => None,
         };
         // A plugin's moves are written as they come: see `plugin_moved`.
         if matches!(t.auto.held, Some(AutoTarget::Plugin { .. }))
-            && t.auto.mode == AutoMode::Touch
+            && matches!(t.auto.mode, AutoMode::Touch | AutoMode::Trim)
             && beat > t.auto.plugin_touch_until
         {
             t.auto.held = None;
             t.auto.end_pass();
         }
         if let Some(target) = target.filter(|t| !matches!(t, AutoTarget::Plugin { .. })) {
+            // Trim: the curve as it was, moved by what the control has moved.
+            if let Some((base, by)) = &t.auto.trim {
+                let by = *by;
+                if let Some(old) = prowave_engine::lane_value(base, beat) {
+                    set_control(t, target, old + by);
+                }
+            }
             let value = current(t, target);
             t.auto.write(target, beat, value, false);
         }
@@ -116,7 +124,7 @@ pub fn plugin_moved(t: &mut Track, target: AutoTarget, value: f32, beat: f64, pl
     }
     match t.auto.mode {
         AutoMode::Off | AutoMode::Read => return,
-        AutoMode::Touch | AutoMode::Latch => {
+        AutoMode::Touch | AutoMode::Latch | AutoMode::Trim => {
             t.auto.held = Some(target);
             t.auto.plugin_touch_until = beat + PLUGIN_TOUCH_BEATS;
         }
@@ -415,7 +423,20 @@ pub fn shown_value(t: &Track, target: AutoTarget, beat: f64) -> f32 {
 /// the parameter's own value for an effect. In Touch and Latch the control is now held: the
 /// strip stops playing its lane and writes.
 pub fn moved(t: &mut Track, target: AutoTarget, value: f32) {
-    if matches!(t.auto.mode, AutoMode::Touch | AutoMode::Latch) && t.auto.held != Some(target) {
+    if t.auto.mode == AutoMode::Trim {
+        if t.auto.held != Some(target) || t.auto.trim.is_none() {
+            t.auto.trim = Some((t.auto.lane(target).to_vec(), 0.0));
+        }
+        let change = value - current(t, target);
+        if let Some((_, by)) = &mut t.auto.trim {
+            *by += change;
+        }
+    }
+    if matches!(
+        t.auto.mode,
+        AutoMode::Touch | AutoMode::Latch | AutoMode::Trim
+    ) && t.auto.held != Some(target)
+    {
         t.auto.held = Some(target);
     }
     set_control(t, target, value);
@@ -442,13 +463,14 @@ fn set_control(t: &mut Track, target: AutoTarget, value: f32) {
 /// The user let go of a control. Touch returns to the lane (after writing the last value);
 /// Latch keeps writing until playback stops.
 pub fn released(t: &mut Track, target: AutoTarget, beat: f64, playing: bool) {
-    if t.auto.mode == AutoMode::Touch && t.auto.held == Some(target) {
+    if matches!(t.auto.mode, AutoMode::Touch | AutoMode::Trim) && t.auto.held == Some(target) {
         if playing {
             let value = current(t, target);
             t.auto.write(target, beat, value, true);
         }
         t.auto.end_pass();
         t.auto.held = None;
+        t.auto.trim = None;
     }
 }
 
@@ -467,6 +489,7 @@ pub fn set_mode(t: &mut Track, mode: AutoMode, beat: f64) {
     }
     t.auto.mode = mode;
     t.auto.held = None;
+    t.auto.trim = None;
     t.auto.end_pass();
 }
 

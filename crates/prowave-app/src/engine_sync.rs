@@ -53,6 +53,8 @@ pub struct EngineSync {
     /// instances outlast what the audio thread holds of them.
     rack: Rack,
     plugin_message: Option<String>,
+    /// Mono sum and dim, as last told to the engine.
+    monitor_out: (bool, bool),
     plugins_retry: bool,
     automation: Vec<AutoLane>,
     /// A command was rejected during the last `sync`.
@@ -587,6 +589,7 @@ impl EngineSync {
             pdc: Vec::new(),
             rack: Rack::default(),
             plugin_message: None,
+            monitor_out: (false, false),
             plugins_retry: false,
             automation: Vec::new(),
             retry: false,
@@ -702,6 +705,15 @@ impl EngineSync {
             })
         {
             self.cycle = cycle;
+        }
+        let monitor_out = (p.out_mono, p.out_dim);
+        if self.monitor_out != monitor_out
+            && self.send(Command::SetMonitorOut {
+                mono: monitor_out.0,
+                dim: monitor_out.1,
+            })
+        {
+            self.monitor_out = monitor_out;
         }
         if self.master != Some(p.master_vol)
             && self.send(Command::SetMasterGain {

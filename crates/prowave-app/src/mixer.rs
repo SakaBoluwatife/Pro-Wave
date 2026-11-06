@@ -949,6 +949,10 @@ enum InsertAct {
 }
 
 /// The right-click menu of a track's strip.
+fn t_is_aux(p: &Project, i: usize) -> bool {
+    p.tracks.get(i).is_some_and(|t| t.kind == TrackKind::Aux)
+}
+
 fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usize) {
     let Some(t) = p.tracks.get(i) else {
         return;
@@ -957,7 +961,23 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
     let takes_midi = matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi);
     let last = p.tracks.len() == 1;
     let can_copy = p.can_duplicate(i);
+    let feeds = p.feeds_of(i);
+    let is_aux = t_is_aux(p, i);
     crate::widgets::context_menu(resp, |ui| {
+        if is_aux {
+            ui.menu_button("Fed By", |ui| {
+                if feeds.is_empty() {
+                    ui.weak("Nothing feeds this bus");
+                }
+                for (track, how) in &feeds {
+                    if ui.button(how.as_str()).clicked() {
+                        p.selected_track = *track;
+                        v.track_clicked = true;
+                        ui.close();
+                    }
+                }
+            });
+        }
         if can_copy && ui.button("Duplicate Track").clicked() {
             v.strip_request = Some(StripRequest::Duplicate(i, true));
             ui.close();
@@ -1948,8 +1968,10 @@ fn mode_colour(mode: AutoMode, held: bool) -> Color32 {
     match mode {
         AutoMode::Off => TEXT_DIM,
         AutoMode::Read => READ_GREEN,
-        AutoMode::Touch | AutoMode::Latch if held => Color32::from_rgb(0xff, 0xa8, 0x3c),
-        AutoMode::Touch | AutoMode::Latch => Color32::from_rgb(0xe6, 0x9a, 0x2e),
+        AutoMode::Touch | AutoMode::Latch | AutoMode::Trim if held => {
+            Color32::from_rgb(0xff, 0xa8, 0x3c)
+        }
+        AutoMode::Touch | AutoMode::Latch | AutoMode::Trim => Color32::from_rgb(0xe6, 0x9a, 0x2e),
         AutoMode::Write => Color32::from_rgb(0xff, 0x5a, 0x4a),
     }
 }

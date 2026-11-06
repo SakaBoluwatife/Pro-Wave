@@ -321,15 +321,19 @@ pub enum AutoMode {
     Latch,
     /// Writes the control's value all the time while playing.
     Write,
+    /// While a control is held, moves the curve that is there by as much as the control moved,
+    /// keeping its shape. Like Touch on a plugin's parameters.
+    Trim,
 }
 
 impl AutoMode {
-    pub const ALL: [AutoMode; 5] = [
+    pub const ALL: [AutoMode; 6] = [
         AutoMode::Off,
         AutoMode::Read,
         AutoMode::Touch,
         AutoMode::Latch,
         AutoMode::Write,
+        AutoMode::Trim,
     ];
 
     pub fn label(self) -> &'static str {
@@ -339,6 +343,7 @@ impl AutoMode {
             AutoMode::Touch => "Touch",
             AutoMode::Latch => "Latch",
             AutoMode::Write => "Write",
+            AutoMode::Trim => "Trim",
         }
     }
 }
@@ -389,6 +394,8 @@ pub struct Automation {
     /// What the strip plays where regions have lanes, by control: see
     /// `automation::merged_lanes`. Made once a frame, for the fader and knob display. Not saved.
     pub region_played: Vec<(AutoTarget, Vec<AutoPoint>)>,
+    /// Trim mode with a control held: the curve as it was, and how far it has been moved. Not saved.
+    pub trim: Option<(Vec<AutoPoint>, f32)>,
     /// The beat and value last written in this pass, so the next write replaces what lies
     /// between. Not saved.
     pub last: Option<(f64, f32)>,
@@ -504,7 +511,7 @@ impl Automation {
         match self.mode {
             AutoMode::Off | AutoMode::Write => false,
             AutoMode::Read => true,
-            AutoMode::Touch | AutoMode::Latch => self.held != Some(target),
+            AutoMode::Touch | AutoMode::Latch | AutoMode::Trim => self.held != Some(target),
         }
     }
 
@@ -1119,6 +1126,11 @@ pub struct Project {
     /// Recording waits until the input passes `trigger_db`.
     pub wait_for_sound: bool,
     pub trigger_db: f32,
+    /// How far Nudge moves a region, in beats.
+    pub nudge_beats: f64,
+    /// What the speakers get, for checking a mix. Not saved, so that no one is caught out.
+    pub out_mono: bool,
+    pub out_dim: bool,
     /// Plugins go on running with nothing to process. For the few that need it. Not saved.
     pub keep_plugins_running: bool,
     /// Autopunch: recording happens only between these beats, however it is started.
@@ -1356,6 +1368,9 @@ impl Project {
             auto_monitor: false,
             wait_for_sound: false,
             trigger_db: -40.0,
+            nudge_beats: 0.25,
+            out_mono: false,
+            out_dim: false,
             keep_plugins_running: false,
             punch: false,
             punch_start: 0.0,
@@ -1794,6 +1809,46 @@ impl Project {
             aux.name = name.to_string();
         }
         self.tracks[t].name = name.to_string();
+    }
+
+    /// Moves regions along the song by `beats`, stopping at its start.
+    pub fn nudge_regions(&mut self, regions: &[(usize, usize)], beats: f64) {
+        let mut moved = false;
+        for &(t, r) in regions {
+            let Some(region) = self.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+                continue;
+            };
+            let to = (self.region_start_beats(region) + beats).max(0.0);
+            let start_bar = self.beats_to_bar(to) as f32 + 1.0;
+            self.tracks[t].regions[r].start_bar = start_bar;
+            moved = true;
+        }
+        if moved {
+            self.song_rev += 1;
+        }
+    }
+
+    /// What feeds the bus that strip `i` plays: each track and how, by its output or a send.
+    pub fn feeds_of(&self, i: usize) -> Vec<(usize, String)> {
+        let bus = self.aux_bus_of(i);
+        if bus == 0 {
+            return Vec::new();
+        }
+        let mut feeds = Vec::new();
+        for (t, track) in self.tracks.iter().enumerate() {
+            if t == i {
+                continue;
+            }
+            if track.output == bus {
+                feeds.push((t, format!("{} (output)", track.name)));
+            }
+            for send in track.sends.iter().filter(|s| s.bus == Some(bus)) {
+                let when = if send.pre { "pre" } else { "post" };
+                let percent = (send.level * 100.0).round();
+                feeds.push((t, format!("{} (send, {when}, {percent}%)", track.name)));
+            }
+        }
+        feeds
     }
 
     /// The Record button and key: starts recording now, from where the song is. While recording,
@@ -3437,6 +3492,41 @@ mod tests {
             .unwrap();
         assert!(p.delete_track(vca));
         assert!(p.tracks.iter().all(|t| t.vca.is_none()));
+    }
+
+    #[test]
+    fn a_nudge_moves_regions_by_its_beats_and_stops_at_the_start() {
+        let mut p = Project::demo();
+        let at = |p: &Project| p.region_start_beats(&p.tracks[0].regions[0]);
+        let before = at(&p);
+        p.nudge_regions(&[(0, 0)], 0.25);
+        assert!((at(&p) - before - 0.25).abs() < 1e-3);
+        p.nudge_regions(&[(0, 0)], -1000.0);
+        assert!(at(&p).abs() < 1e-3);
+        p.nudge_regions(&[(99, 0)], 1.0);
+    }
+
+    #[test]
+    fn a_bus_says_what_feeds_it() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let aux = p.add_track(TrackKind::Aux);
+        let bus = p.aux_bus_of(aux);
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        p.add_track(TrackKind::Audio);
+        p.tracks[a].output = bus;
+        p.tracks[b].sends.push(SendSlot {
+            bus: Some(bus),
+            level: 0.5,
+            pre: true,
+        });
+        let feeds = p.feeds_of(aux);
+        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds[0].0, a);
+        assert_eq!(feeds[1].0, b);
+        assert!(feeds[1].1.contains("pre") && feeds[1].1.contains("50"));
+        assert!(p.feeds_of(a).is_empty(), "only a bus is fed");
     }
 
     #[test]

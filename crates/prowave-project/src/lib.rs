@@ -615,6 +615,8 @@ pub struct ProjectDoc {
     /// Recording waits until the input passes `trigger_db`.
     pub wait_for_sound: bool,
     pub trigger_db: f32,
+    /// How far Nudge moves a region, in beats.
+    pub nudge_beats: f64,
     /// The Note Pad's text.
     pub notes: String,
     pub master_vol: f32,
@@ -787,6 +789,7 @@ impl Default for ProjectDoc {
             auto_monitor: false,
             wait_for_sound: false,
             trigger_db: -40.0,
+            nudge_beats: 0.25,
             notes: String::new(),
             master_vol: 0.8,
             selected_track: 0,
