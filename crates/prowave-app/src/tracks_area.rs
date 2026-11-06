@@ -3115,12 +3115,12 @@ fn slider_to_db(f: f32) -> f32 {
 }
 
 /// The room the mode and parameter of the curve on a track take on the name's row.
-const LANE_POPUPS_W: f32 = 170.0;
+const LANE_POPUPS_W: f32 = 196.0;
 
 /// The automation mode of track `t` and the control whose curve it shows.
 fn lane_popups(ui: &Ui, g: &Painter, t: &mut Track, i: usize, hdr: Rect, y: f32, beat: f64) {
     use crate::automation::{lane_choices, lane_label, set_mode};
-    let mode = Rect::from_min_size(pos2(hdr.right() - 58.0, y - 8.0), vec2(52.0, 16.0));
+    let mode = Rect::from_min_size(pos2(hdr.right() - 76.0, y - 9.0), vec2(70.0, 18.0));
     let resp = popup_button(ui, g, mode, id(("lane_mode", i)), tr(t.auto.mode.label()));
     egui::Popup::menu(&resp).show(|ui| {
         for m in crate::model::AutoMode::ALL {
@@ -3133,7 +3133,7 @@ fn lane_popups(ui: &Ui, g: &Painter, t: &mut Track, i: usize, hdr: Rect, y: f32,
             }
         }
     });
-    let lane = Rect::from_min_size(pos2(mode.left() - 106.0, y - 8.0), vec2(102.0, 16.0));
+    let lane = Rect::from_min_size(pos2(mode.left() - 114.0, y - 9.0), vec2(110.0, 18.0));
     let label = lane_label(t, t.auto.shown);
     let resp = popup_button(ui, g, lane, id(("lane_target", i)), &label);
     egui::Popup::menu(&resp).show(|ui| {
