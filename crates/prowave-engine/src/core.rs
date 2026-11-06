@@ -170,6 +170,8 @@ pub struct AudioClip {
     /// Next clip-relative frame to play (negative = before the region starts).
     pos: i64,
     underruns: u32,
+    /// The generation that has delivered data. Before its first block a stream is starting, not late.
+    fed_gen: Option<u16>,
 }
 
 /// Non-destructive region edits (Logic Pro: Region Inspector Gain, Fade In/Out, Reverse).
@@ -268,6 +270,7 @@ impl AudioClip {
             in_loop: true,
             pos: 0,
             underruns: 0,
+            fed_gen: None,
         }
     }
 
@@ -333,10 +336,15 @@ impl AudioClip {
                 self.cur = None;
             }
             match self.rx.pop() {
-                Ok(b) if b.gen == self.gen => self.cur = Some(b),
+                Ok(b) if b.gen == self.gen => {
+                    self.fed_gen = Some(self.gen);
+                    self.cur = Some(b);
+                }
                 Ok(_) => {}
                 Err(_) => {
-                    self.underruns += 1;
+                    if self.fed_gen == Some(self.gen) {
+                        self.underruns += 1;
+                    }
                     return None;
                 }
             }

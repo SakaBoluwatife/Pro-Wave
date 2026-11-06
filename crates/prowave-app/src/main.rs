@@ -120,6 +120,8 @@ pub struct UiState {
     pub audio_rec: audio_rec::AudioRecorder,
     /// Capture Recording was asked for.
     pub capture_cmd: bool,
+    /// The disk underruns already told of.
+    pub underruns_told: u32,
     /// Record Repeat or New Take was picked, and how far going back to record again has got.
     pub rec_cmd: Option<takes::RecCmd>,
     pub rec_restart: Option<takes::Restart>,
@@ -236,6 +238,7 @@ impl UiState {
             rec: recorder::Recorder::default(),
             audio_rec: audio_rec::AudioRecorder::default(),
             capture_cmd: false,
+            underruns_told: 0,
             rec_cmd: None,
             rec_restart: None,
             show_quick_help: false,
@@ -889,12 +892,15 @@ impl eframe::App for App {
             }
             let load = sync.take_dsp_load();
             self.ui.cpu_load = load.max(self.ui.cpu_load - dt as f32 * 0.8);
-            if sync.underruns() > 0 {
+            // Only when it happens, not on every frame from then on.
+            let underruns = sync.underruns();
+            if underruns > self.ui.underruns_told {
                 self.ui.status = Some(i18n::trf(
                     "disk too slow: {} underruns",
-                    &[&sync.underruns()],
+                    &[&(underruns - self.ui.underruns_told)],
                 ));
             }
+            self.ui.underruns_told = underruns;
         } else if self.project.playing {
             // No audio device: fall back to a UI-driven clock.
             let map = self.project.tempo_map();
@@ -1392,6 +1398,8 @@ fn main() -> eframe::Result {
     prowave_engine::set_plugin_block(settings::plugin_block());
     #[cfg(windows)]
     prowave_host::set_isolation(settings::plugin_isolation());
+    #[cfg(windows)]
+    prowave_host::set_embed_windows(settings::plugin_windows_inside());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {

@@ -667,6 +667,9 @@ impl Rack {
         for live in self.live.values_mut() {
             live.loaded.tick();
             self.touched |= live.loaded.take_dirty();
+            if let Some(why) = live.loaded.take_failure() {
+                *message = Some(why);
+            }
             if let Some(at) = live.loaded.take_closed_position() {
                 closed.push((live.id.clone(), at));
             }

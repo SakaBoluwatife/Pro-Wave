@@ -175,16 +175,17 @@ fn read_frame(from: &mut impl Read) -> Option<Vec<u8>> {
 const LOAD: u8 = 1;
 const SAVE_STATE: u8 = 2;
 const LOAD_STATE: u8 = 3;
-const OPEN_EDITOR: u8 = 4;
 const PARAM_VALUE: u8 = 5;
 const HEADER_MENU: u8 = 6;
 const DESTROY: u8 = 10;
+const OPEN_EDITOR: u8 = 14;
 const CLOSE_EDITOR: u8 = 11;
 const SHOW_PARAM: u8 = 12;
 const SHOW_HEADER: u8 = 13;
 // What the helper says.
 const REPLY: u8 = 100;
 const NOTES: u8 = 101;
+const FAILED: u8 = 102;
 
 fn click_code(click: Option<HeaderClick>) -> u8 {
     match click {
@@ -501,6 +502,8 @@ struct Notes {
     closed: Option<(i32, i32)>,
     open: bool,
     latency: usize,
+    /// Something that went wrong with no request waiting to hear it.
+    failure: Option<String>,
 }
 
 struct Helper {
@@ -575,7 +578,10 @@ impl Helper {
         self.tell(&build(id));
         let began = Instant::now();
         loop {
-            match replies.recv_timeout(Duration::from_millis(50)) {
+            // A plugin's window is tied to the program's. Messages the helper sends this thread
+            // must be answered, or it would be waiting on us while we wait on it.
+            answer_sent_messages();
+            match replies.recv_timeout(Duration::from_millis(1)) {
                 Ok(reply) => {
                     let mut r = In(&reply);
                     // An answer that came after its request gave up is not this one's.
@@ -598,6 +604,17 @@ impl Helper {
     }
 }
 
+/// Runs the messages other threads and processes have sent this thread and are waiting on. Posted
+/// ones stay in the queue, so the main loop is not re-entered with its usual work.
+fn answer_sent_messages() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PeekMessageW, MSG, PM_NOREMOVE, PM_QS_SENDMESSAGE,
+    };
+    let mut msg = MSG::default();
+    // SAFETY: `msg` is a valid local. Peeking dispatches sent messages to their own windows.
+    let _ = unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE) };
+}
+
 fn read_helper(
     stdout: &mut impl Read,
     replies: &Sender<Vec<u8>>,
@@ -615,10 +632,24 @@ fn read_helper(
             NOTES => {
                 let _ = take_notes(rest, notes);
             }
+            FAILED => {
+                let _ = take_failure(rest, notes);
+            }
             _ => {}
         }
     }
     dead.store(true, Ordering::Relaxed);
+}
+
+fn take_failure(frame: &[u8], notes: &Mutex<HashMap<u32, Arc<Mutex<Notes>>>>) -> Option<()> {
+    let mut r = In(frame);
+    let instance = r.u32()?;
+    let why = r.text()?;
+    let target = notes.lock().ok()?.get(&instance)?.clone();
+    let mut n = target.lock().ok()?;
+    n.failure = Some(why);
+    n.open = false;
+    Some(())
 }
 
 fn take_notes(frame: &[u8], notes: &Mutex<HashMap<u32, Arc<Mutex<Notes>>>>) -> Option<()> {
@@ -836,26 +867,29 @@ impl LoadedPlugin for BridgeLoaded {
         self.with_notes(|n| n.closed.take())
     }
 
+    /// Tells the helper and does not wait: a window can take seconds, and this is the UI thread.
+    /// If it fails, that comes back through `take_failure`.
     fn open_editor(
         &mut self,
         title: &str,
         owner: Option<isize>,
         position: Option<(i32, i32)>,
     ) -> Result<(), HostError> {
-        let instance = self.instance;
-        self.helper
-            .ask(SHORT_WAIT.max(Duration::from_secs(60)), |rid| {
-                let (x, y) = position.unwrap_or((0, 0));
-                Out::new(OPEN_EDITOR)
-                    .u32(rid)
-                    .u32(instance)
-                    .text(title)
-                    .bool(owner.is_some())
-                    .f64(owner.unwrap_or(0) as f64)
-                    .bool(position.is_some())
-                    .i32(x)
-                    .i32(y)
-            })?;
+        if self.helper.is_dead() {
+            return Err(HostError("the plugin's process has stopped".to_string()));
+        }
+        let (x, y) = position.unwrap_or((0, 0));
+        self.helper.tell(
+            &Out::new(OPEN_EDITOR)
+                .u32(self.instance)
+                .text(title)
+                .bool(crate::editor_window::embed_windows())
+                .bool(owner.is_some())
+                .f64(owner.unwrap_or(0) as f64)
+                .bool(position.is_some())
+                .i32(x)
+                .i32(y),
+        );
         self.with_notes(|n| n.open = true);
         Ok(())
     }
@@ -895,6 +929,10 @@ impl LoadedPlugin for BridgeLoaded {
 
     fn process_id(&self) -> Option<u32> {
         Some(self.helper.pid)
+    }
+
+    fn take_failure(&mut self) -> Option<String> {
+        self.with_notes(|n| n.failure.take())
     }
 }
 
@@ -1167,7 +1205,7 @@ fn host_command(
                 Err(why) => reply(out, id, Err(why)),
             }
         }
-        SAVE_STATE | LOAD_STATE | OPEN_EDITOR | PARAM_VALUE | HEADER_MENU => {
+        SAVE_STATE | LOAD_STATE | PARAM_VALUE | HEADER_MENU => {
             let (id, instance) = (r.u32()?, r.u32()?);
             let Some(hosted) = instances.get_mut(&instance) else {
                 reply(out, id, Err("that plugin is not here".to_string()));
@@ -1185,17 +1223,6 @@ fn host_command(
                         .load_state(&bytes)
                         .map(|()| Out::default())
                         .map_err(|e| e.0)
-                }
-                OPEN_EDITOR => {
-                    let title = r.text()?;
-                    let owner = (r.bool()?, r.f64()?);
-                    let position = (r.bool()?, r.i32()?, r.i32()?);
-                    let shown = hosted.loaded.open_editor(
-                        &title,
-                        owner.0.then_some(owner.1 as isize),
-                        position.0.then_some((position.1, position.2)),
-                    );
-                    shown.map(|()| Out::default()).map_err(|e| e.0)
                 }
                 PARAM_VALUE => {
                     let value = hosted.loaded.param_value(r.u32()?);
@@ -1215,6 +1242,24 @@ fn host_command(
                 }
             };
             reply(out, id, result);
+        }
+        OPEN_EDITOR => {
+            let instance = r.u32()?;
+            let title = r.text()?;
+            let embed = r.bool()?;
+            let owner = (r.bool()?, r.f64()?);
+            let position = (r.bool()?, r.i32()?, r.i32()?);
+            crate::editor_window::set_embed_windows(embed);
+            if let Some(hosted) = instances.get_mut(&instance) {
+                let shown = hosted.loaded.open_editor(
+                    &title,
+                    owner.0.then_some(owner.1 as isize),
+                    position.0.then_some((position.1, position.2)),
+                );
+                if let Err(e) = shown {
+                    let _ = write_frame(out, &Out::new(FAILED).u32(instance).text(&e.0).0);
+                }
+            }
         }
         DESTROY => {
             if let Some(mut hosted) = instances.remove(&r.u32()?) {
@@ -1296,13 +1341,14 @@ fn send_notes(instance: u32, hosted: &mut HostedInstance, out: &mut impl Write) 
 /// The helper's whole life: runs until the program closes its end of the pipe, which it also does
 /// by ending or crashing. Returns the exit code.
 pub fn run_plugin_host(block: usize) -> i32 {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::System::Console::{
         GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     use windows::Win32::System::Ole::OleInitialize;
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG,
-        PM_REMOVE, QS_ALLINPUT,
+        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, PostThreadMessageW,
+        TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_NULL,
     };
     prowave_engine::set_plugin_block(block);
     // Plugins print things. The pipes are kept for this program, and they get nothing, before any
@@ -1335,10 +1381,17 @@ pub fn run_plugin_host(block: usize) -> i32 {
     };
     std::mem::forget(nul);
     let (tx, rx) = channel::<Vec<u8>>();
+    // SAFETY: asks for this thread's own number, with nothing to go wrong.
+    let main_thread = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
     std::thread::spawn(move || {
         while let Some(frame) = read_frame(&mut from_program) {
             if tx.send(frame).is_err() {
                 return;
+            }
+            // Wakes the main thread now rather than at its next look.
+            // SAFETY: an empty message to a thread of this process. If it has gone, this fails.
+            unsafe {
+                let _ = PostThreadMessageW(main_thread, WM_NULL, WPARAM(0), LPARAM(0));
             }
         }
         // The program has gone: nothing is left to do. The channel closing says so.

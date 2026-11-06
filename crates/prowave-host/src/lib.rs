@@ -20,6 +20,8 @@ pub use crate::bridge::{
     set_isolation,
 };
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
+#[cfg(windows)]
+pub use crate::editor_window::{embed_windows, set_embed_windows};
 pub use crate::sampler::load_sampler;
 #[cfg(windows)]
 pub use crate::vst3_plugin::{find_vst3_files, load_vst3, scan_vst3_file, vst3_folders};
@@ -195,6 +197,11 @@ pub trait LoadedPlugin {
     /// Whether the plugin's process has ended, in the case that it has one of its own.
     fn crashed(&self) -> bool {
         false
+    }
+
+    /// Something that went wrong with no call waiting to hear it, once.
+    fn take_failure(&mut self) -> Option<String> {
+        None
     }
 
     /// The process it runs in, if that is not this one.
