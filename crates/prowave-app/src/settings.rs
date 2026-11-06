@@ -207,37 +207,6 @@ fn input_row(ui: &mut Ui, inputs: &mut crate::audio_rec::InputChoice) {
     inputs.pick(chosen);
 }
 
-fn inside_file() -> Option<std::path::PathBuf> {
-    crate::recent_files::config_dir().map(|d| d.join("plugin-windows-inside"))
-}
-
-/// Whether plugin windows open inside the main window: yes, unless turned off here.
-pub fn plugin_windows_inside() -> bool {
-    inside_file()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .is_none_or(|text| text.trim() != "0")
-}
-
-fn inside_row(ui: &mut Ui) {
-    let saved = plugin_windows_inside();
-    let mut on = saved;
-    ui.checkbox(&mut on, "Keep plugin windows inside Pro Wave")
-        .on_hover_text("Turn this off for windows of their own, which can go on another screen.");
-    ui.label(egui::RichText::new("Applies the next time Pro Wave starts.").small());
-    if on != saved {
-        let Some(file) = inside_file() else {
-            return;
-        };
-        let result = file
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&file, if on { "1" } else { "0" }));
-        if let Err(e) = result {
-            tracing::warn!("could not save the plugin window setting: {e}");
-        }
-    }
-}
-
 fn isolation_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-isolation"))
 }
@@ -550,7 +519,6 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
 
 fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
     isolation_row(ui);
-    inside_row(ui);
     ui.separator();
     let ctx = ui.ctx().clone();
     ui.label("Folders to look for plugins in, besides the usual ones:");

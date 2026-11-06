@@ -23,46 +23,27 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, GetClientRect, GetWindowLongPtrW, GetWindowRect, IsIconic, LoadCursorW,
-    MoveWindow, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HWND_TOP, IDC_ARROW,
-    MF_SEPARATOR, MF_STRING, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
-    SW_RESTORE, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
-    WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+    DestroyWindow, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, IsIconic,
+    LoadCursorW, MoveWindow, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TrackPopupMenu, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCAPTION,
+    IDC_ARROW, MF_SEPARATOR, MF_STRING, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE,
+    SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_ERASEBKGND,
+    WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP,
+    WS_THICKFRAME, WS_VISIBLE,
 };
 
-/// Whether editors live inside the main window, rather than as windows of their own.
-static EMBED: AtomicBool = AtomicBool::new(true);
 /// Moves each new editor along, so that they do not open exactly on top of each other.
 static NEXT_PLACE: AtomicI32 = AtomicI32::new(0);
-
-/// Whether plugin windows open inside the main window from now on.
-pub fn set_embed_windows(on: bool) {
-    EMBED.store(on, Ordering::Relaxed);
-}
-
-pub fn embed_windows() -> bool {
-    EMBED.load(Ordering::Relaxed)
-}
-
-/// The look of an editor inside the main window: a child with a title bar, and no minimize or
-/// maximize, which mean nothing there.
-fn embedded_style(resizable: bool) -> WINDOW_STYLE {
-    let fixed = WS_CHILD | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-    if resizable {
-        fixed | WS_THICKFRAME
-    } else {
-        fixed
-    }
-}
 
 const CLASS_NAME: PCWSTR = w!("ProWavePluginEditor");
 const CONTENT_CLASS: PCWSTR = w!("ProWavePluginContent");
 
 /// How tall the bar is, in logical pixels.
 const HEADER_HEIGHT: f64 = 28.0;
+/// The title bar over it, and the close button at its end.
+const TITLE_HEIGHT: f64 = 26.0;
+const CLOSE_WIDTH: f64 = 40.0;
 const MARGIN: f64 = 6.0;
 const GAP: f64 = 4.0;
 const BYPASS_WIDTH: f64 = 56.0;
@@ -141,16 +122,26 @@ fn scale_of(hwnd: HWND) -> f64 {
     }
 }
 
+fn title_height(hwnd: HWND) -> i32 {
+    (TITLE_HEIGHT * scale_of(hwnd)).round() as i32
+}
+
+fn close_width(hwnd: HWND) -> i32 {
+    (CLOSE_WIDTH * scale_of(hwnd)).round() as i32
+}
+
+/// The title bar and the button bar together: what is above the plugin.
 fn header_height(hwnd: HWND) -> i32 {
-    (HEADER_HEIGHT * scale_of(hwnd)).round() as i32
+    title_height(hwnd) + (HEADER_HEIGHT * scale_of(hwnd)).round() as i32
 }
 
 /// Draws the bar.
 ///
 /// SAFETY: `hwnd` must be the editor window, handling `WM_PAINT` on its own thread.
-unsafe fn paint_header(hwnd: HWND, state: &HeaderState) {
+unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
     let scale = scale_of(hwnd);
     let height = header_height(hwnd);
+    let top = title_height(hwnd);
     let mut client = RECT::default();
     let mut paint = PAINTSTRUCT::default();
     // SAFETY: the handles made here are given back here, and every pointer is to a local.
@@ -187,12 +178,47 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState) {
         );
         let old = SelectObject(dc, font.into());
         SetBkMode(dc, TRANSPARENT);
+        // The title bar: the plugin's name, and the close button at the end.
+        fill(
+            &RECT {
+                bottom: top,
+                ..client
+            },
+            rgb(0x26, 0x26, 0x2a),
+        );
+        SetTextColor(dc, rgb(0xd8, 0xd8, 0xdc));
+        let mut name = RECT {
+            left: (10.0 * scale).round() as i32,
+            right: client.right - close_width(hwnd),
+            top: 0,
+            bottom: top,
+        };
+        let mut label: Vec<u16> = title.encode_utf16().collect();
+        DrawTextW(
+            dc,
+            &mut label,
+            &mut name,
+            DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+        );
+        let mut close = RECT {
+            left: client.right - close_width(hwnd),
+            right: client.right,
+            top: 0,
+            bottom: top,
+        };
+        let mut cross: Vec<u16> = "✕".encode_utf16().collect();
+        DrawTextW(
+            dc,
+            &mut cross,
+            &mut close,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
         let inset = (3.0 * scale).round() as i32;
         for (click, left, right) in header_cells(client.right, scale) {
             let mut cell = RECT {
                 left,
                 right,
-                top: inset,
+                top: top + inset,
                 bottom: height - inset,
             };
             let lit = match click {
@@ -235,8 +261,8 @@ struct Inbox {
     /// What the bar shows, and the button last pressed. Only ever touched on the window's thread.
     header: RefCell<HeaderState>,
     click: Cell<Option<HeaderClick>>,
-    /// A child of the main window: a click brings it above the other editors.
-    embedded: Cell<bool>,
+    /// The plugin's name, in the title bar.
+    title: RefCell<String>,
 }
 
 unsafe extern "system" fn window_proc(
@@ -275,28 +301,32 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        (WM_MOUSEACTIVATE, Some(inbox)) => {
-            if inbox.embedded.get() {
-                // SAFETY: `hwnd` is this window, on its own thread.
-                let _ = unsafe {
-                    SetWindowPos(
-                        hwnd,
-                        Some(HWND_TOP),
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    )
-                };
+        (WM_NCHITTEST, Some(_)) => {
+            // The title bar is ours, so it has to say that it moves the window.
+            let mut at = POINT {
+                x: i32::from((lparam.0 & 0xffff) as u16 as i16),
+                y: i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16),
+            };
+            let mut client = RECT::default();
+            // SAFETY: both are valid locals, and `hwnd` is this window.
+            let inside = unsafe {
+                let _ = ScreenToClient(hwnd, &mut at);
+                GetClientRect(hwnd, &mut client).is_ok()
+            };
+            if inside
+                && (0..title_height(hwnd)).contains(&at.y)
+                && (0..client.right - close_width(hwnd)).contains(&at.x)
+            {
+                LRESULT(HTCAPTION as isize)
+            } else {
+                // SAFETY: the arguments are the ones this procedure was called with.
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
             }
-            // SAFETY: the arguments are the ones this procedure was called with.
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         (WM_ERASEBKGND, Some(_)) => LRESULT(1),
         (WM_PAINT, Some(inbox)) => {
             // SAFETY: this is the editor window, on its own thread, asked to paint.
-            unsafe { paint_header(hwnd, &inbox.header.borrow()) };
+            unsafe { paint_header(hwnd, &inbox.header.borrow(), &inbox.title.borrow()) };
             LRESULT(0)
         }
         (WM_LBUTTONUP, Some(inbox)) => {
@@ -304,10 +334,14 @@ unsafe extern "system" fn window_proc(
                 i32::from((lparam.0 & 0xffff) as u16 as i16),
                 i32::from(((lparam.0 >> 16) & 0xffff) as u16 as i16),
             );
-            if y >= 0 && y < header_height(hwnd) {
-                let mut client = RECT::default();
-                // SAFETY: `client` is a valid local and `hwnd` is this window.
-                let _ = unsafe { GetClientRect(hwnd, &mut client) };
+            let mut client = RECT::default();
+            // SAFETY: `client` is a valid local and `hwnd` is this window.
+            let _ = unsafe { GetClientRect(hwnd, &mut client) };
+            if (0..title_height(hwnd)).contains(&y) && x >= client.right - close_width(hwnd) {
+                // SAFETY: `hwnd` is this window, on its own thread.
+                let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
+                inbox.close.store(true, Ordering::Release);
+            } else if y >= title_height(hwnd) && y < header_height(hwnd) {
                 let hit = header_cells(client.right, scale_of(hwnd))
                     .into_iter()
                     .find(|(_, left, right)| (*left..*right).contains(&x));
@@ -340,7 +374,7 @@ fn register_class() {
         // program, and registering twice is prevented here. A failure shows when the window is made.
         unsafe {
             let class = WNDCLASSW {
-                style: CS_HREDRAW | CS_VREDRAW,
+                style: CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW,
                 lpfnWndProc: Some(window_proc),
                 hInstance: GetModuleHandleW(None).unwrap_or_default().into(),
                 hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
@@ -361,23 +395,23 @@ fn register_class() {
     });
 }
 
-fn style(resizable: bool) -> WINDOW_STYLE {
-    let fixed = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+/// No frame of the system's: the title bar is ours. A plugin that can be resized gets a thin border
+/// to drag.
+fn popup_style(resizable: bool) -> WINDOW_STYLE {
+    let fixed = WS_POPUP | WS_CLIPCHILDREN;
     if resizable {
-        fixed | WS_THICKFRAME | WS_MAXIMIZEBOX
+        fixed | WS_THICKFRAME
     } else {
         fixed
     }
 }
 
-/// A hidden top-level window for one plugin editor, owned by the main window so it stays above it
-/// and goes away with it.
+/// A hidden window for one plugin editor with Pro Wave's own title bar. Owned by the main window: it
+/// stays above it, has no place in the taskbar, and hides and goes away with it.
 pub(crate) struct EditorWindow {
     hwnd: HWND,
     /// The child window under the bar, which goes with `hwnd`.
     content: HWND,
-    /// The main window, when this is inside it.
-    parent: Option<HWND>,
     look: (WINDOW_STYLE, WINDOW_EX_STYLE),
     inbox: Box<Inbox>,
 }
@@ -392,18 +426,16 @@ impl EditorWindow {
         register_class();
         let inbox = Box::new(Inbox::default());
         let owner = owner.map(|h| HWND(h as *mut c_void));
-        let parent = owner.filter(|_| embed_windows());
-        let look = if parent.is_some() {
-            (embedded_style(resizable), WINDOW_EX_STYLE(0))
-        } else {
-            (style(resizable), WINDOW_EX_STYLE(WS_EX_APPWINDOW.0))
-        };
-        // A child's place is within the main window, under its top bars.
-        let usual = if parent.is_some() {
+        let look = (popup_style(resizable), WINDOW_EX_STYLE(0));
+        // Over the main window, each a little further along than the last.
+        let usual = {
             let step = NEXT_PLACE.fetch_add(1, Ordering::Relaxed).rem_euclid(8) * 28;
-            (120 + step, 140 + step)
-        } else {
-            (CW_USEDEFAULT, CW_USEDEFAULT)
+            let mut main = RECT::default();
+            if let Some(owner) = owner {
+                // SAFETY: `main` is a valid local. If the window is gone this only fails.
+                let _ = unsafe { GetWindowRect(owner, &mut main) };
+            }
+            (main.left + 220 + step, main.top + 140 + step)
         };
         let (x, y) = position.unwrap_or(usual);
         // SAFETY: the class is registered, the title outlives the call and `owner` came from the
@@ -453,14 +485,13 @@ impl EditorWindow {
             }
         };
         inbox.content.set(content.0 as isize);
-        inbox.embedded.set(parent.is_some());
+        *inbox.title.borrow_mut() = title.to_string();
         // SAFETY: `hwnd` was just made. The Box keeps the pointer valid until `drop` below, which
         // destroys the window first.
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*inbox as *const Inbox as isize) };
         Ok(Self {
             hwnd,
             content,
-            parent,
             look,
             inbox,
         })
@@ -510,7 +541,7 @@ impl EditorWindow {
                     AppendMenuW(menu, MF_STRING, i + 1, &HSTRING::from(item.as_str()))
                 };
             }
-            let _ = SetForegroundWindow(self.parent.unwrap_or(self.hwnd));
+            let _ = SetForegroundWindow(self.hwnd);
             let picked = TrackPopupMenu(
                 menu,
                 TPM_RETURNCMD | TPM_NONOTIFY,
@@ -565,37 +596,36 @@ impl EditorWindow {
         let _ = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
     }
 
-    /// Moves a child of the main window to where it can be seen: a place saved when the main
-    /// window was larger, or on the screen rather than in the window, may be outside it.
+    /// Moves it to where it can be seen: a place saved with another screen plugged in may be off
+    /// all of them now.
     fn keep_inside(&self) {
-        let Some(parent) = self.parent else {
-            return;
-        };
-        let (mut room, mut mine) = (RECT::default(), RECT::default());
-        // SAFETY: both are valid locals, and the windows outlive these calls or the calls fail.
+        let mut mine = RECT::default();
+        // SAFETY: `mine` is a valid local and `self.hwnd` lives as long as `self`.
         unsafe {
-            if GetClientRect(parent, &mut room).is_err()
-                || GetWindowRect(self.hwnd, &mut mine).is_err()
-            {
+            if GetWindowRect(self.hwnd, &mut mine).is_err() {
                 return;
             }
-            let mut at = POINT {
-                x: mine.left,
-                y: mine.top,
-            };
-            let _ = ScreenToClient(parent, &mut at);
-            let (width, height) = (mine.right - mine.left, mine.bottom - mine.top);
-            let x = at.x.clamp(0, (room.right - width).max(0));
-            let y = at.y.clamp(0, (room.bottom - height).max(0));
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(HWND_TOP),
-                x,
-                y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOACTIVATE,
+            let (left, top) = (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
             );
+            let (right, bottom) = (
+                left + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                top + GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            );
+            let x = mine.left.clamp(left, (right - 120).max(left));
+            let y = mine.top.clamp(top, (bottom - 60).max(top));
+            if (x, y) != (mine.left, mine.top) {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
         }
     }
 
@@ -606,12 +636,6 @@ impl EditorWindow {
 
     /// Brings an editor that is already open to the front.
     pub(crate) fn raise(&self) {
-        if self.parent.is_some() {
-            self.keep_inside();
-            // SAFETY: `self.hwnd` lives as long as `self`.
-            let _ = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
-            return;
-        }
         // SAFETY: `self.hwnd` lives as long as `self`.
         unsafe {
             if IsIconic(self.hwnd).as_bool() {
@@ -634,7 +658,7 @@ impl EditorWindow {
         (width > 0 && height > 0).then_some((width as u32, height as u32))
     }
 
-    /// Where the window is, on the screen or within the main window, to open there next time.
+    /// Where the window is on the screen, to open there next time.
     pub(crate) fn position(&self) -> Option<(i32, i32)> {
         let mut rect = RECT::default();
         // SAFETY: `rect` is a valid local and `self.hwnd` lives as long as `self`.
@@ -644,18 +668,7 @@ impl EditorWindow {
                 IsIconic(self.hwnd).as_bool(),
             )
         };
-        if !got || minimized {
-            return None;
-        }
-        let mut at = POINT {
-            x: rect.left,
-            y: rect.top,
-        };
-        if let Some(parent) = self.parent {
-            // SAFETY: `at` is a valid local. If the main window is gone this only fails.
-            let _ = unsafe { ScreenToClient(parent, &mut at) };
-        }
-        Some((at.x, at.y))
+        (got && !minimized).then_some((rect.left, rect.top))
     }
 
     #[cfg(test)]

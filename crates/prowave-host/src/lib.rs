@@ -20,8 +20,6 @@ pub use crate::bridge::{
     set_isolation,
 };
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
-#[cfg(windows)]
-pub use crate::editor_window::{embed_windows, set_embed_windows};
 pub use crate::sampler::load_sampler;
 #[cfg(windows)]
 pub use crate::vst3_plugin::{find_vst3_files, load_vst3, scan_vst3_file, vst3_folders};

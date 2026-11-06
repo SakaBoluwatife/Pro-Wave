@@ -883,7 +883,6 @@ impl LoadedPlugin for BridgeLoaded {
             &Out::new(OPEN_EDITOR)
                 .u32(self.instance)
                 .text(title)
-                .bool(crate::editor_window::embed_windows())
                 .bool(owner.is_some())
                 .f64(owner.unwrap_or(0) as f64)
                 .bool(position.is_some())
@@ -1246,7 +1245,6 @@ fn host_command(
         OPEN_EDITOR => {
             let instance = r.u32()?;
             let title = r.text()?;
-            let embed = r.bool()?;
             let owner = (r.bool()?, r.f64()?);
             let position = (r.bool()?, r.i32()?, r.i32()?);
             // Windows want this. Loading must not have it: a plugin that hands work to a thread set
@@ -1256,7 +1254,6 @@ fn host_command(
             OLE.call_once(|| unsafe {
                 let _ = windows::Win32::System::Ole::OleInitialize(None);
             });
-            crate::editor_window::set_embed_windows(embed);
             if let Some(hosted) = instances.get_mut(&instance) {
                 let shown = hosted.loaded.open_editor(
                     &title,

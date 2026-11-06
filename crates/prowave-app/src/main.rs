@@ -1407,8 +1407,6 @@ fn main() -> eframe::Result {
     prowave_engine::set_plugin_block(settings::plugin_block());
     #[cfg(windows)]
     prowave_host::set_isolation(settings::plugin_isolation());
-    #[cfg(windows)]
-    prowave_host::set_embed_windows(settings::plugin_windows_inside());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {
