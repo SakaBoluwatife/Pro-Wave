@@ -503,13 +503,19 @@ impl App {
     fn play_and_record_midi(&mut self, ctx: &egui::Context) {
         // What was typed on the computer keyboard goes the way a MIDI keyboard's notes do.
         let mut input = std::mem::take(&mut self.ui.typed);
+        let mut ages = vec![0.0; input.len()];
+        let latency_us = self
+            .sync
+            .as_mut()
+            .map_or(0, |sync| sync.engine.state().output_latency_us);
         let mut controls = Vec::new();
         if let Some(midi) = self.midi.as_mut() {
-            midi.poll(&mut input);
+            midi.poll(&mut input, &mut ages);
             midi.poll_controls(&mut controls);
         }
         let p = &mut self.project;
         let s = &mut self.ui;
+        s.rec.timing(ages, f64::from(latency_us) / 1e6);
         let said = midi_learn::apply(p, &mut s.midi_learn, &controls, &mut s.smart.moves);
         if said.is_some() {
             s.status = said;
@@ -538,7 +544,14 @@ impl App {
             });
         }
         // Record on an audio track is the audio recorder's (see `record_audio`).
-        let midi = if s.rec.active() || !audio_rec::takes_over(p) {
+        // Both record when the selected track is an instrument and an audio track is armed.
+        let on_midi = p.tracks.get(p.selected_track).is_some_and(|t| {
+            matches!(
+                t.kind,
+                model::TrackKind::Instrument | model::TrackKind::ExternalMidi
+            )
+        });
+        let midi = if s.rec.active() || on_midi || !audio_rec::takes_over(p) {
             recorder::update(&mut s.rec, p, &input)
         } else {
             recorder::Outcome::Nothing

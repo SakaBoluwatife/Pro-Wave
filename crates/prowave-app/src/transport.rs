@@ -1138,7 +1138,7 @@ pub fn control_bar(
         if p.recording { Color32::WHITE } else { REC_RED },
     );
     if clicked(ui, rec_r, "rec") {
-        p.recording = !p.recording;
+        p.press_record();
     }
     // Capture Recording: red dot inside a ring.
     let cap_r = Rect::from_center_size(tx(-48.0), vec2(30.0, 26.0));

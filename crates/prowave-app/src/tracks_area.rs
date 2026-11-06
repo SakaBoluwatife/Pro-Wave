@@ -1338,6 +1338,7 @@ enum CtxAction {
     ClonePattern(usize, usize),
     ToggleRegionMute(usize, usize),
     TrackColor(usize),
+    DuplicateTrack(usize, bool),
     RegionColor(usize, usize),
     ToggleReverse(usize, usize),
     ToggleTakeFolder(usize, usize),
@@ -1753,6 +1754,20 @@ fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>
 fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
     track_action_items(ui, t, picked);
     pick(ui, "Track Color…", "", CtxAction::TrackColor(t.i), picked);
+    pick(
+        ui,
+        "Duplicate Track",
+        "",
+        CtxAction::DuplicateTrack(t.i, true),
+        picked,
+    );
+    pick(
+        ui,
+        "New Track with Same Settings",
+        "Ctrl+D",
+        CtxAction::DuplicateTrack(t.i, false),
+        picked,
+    );
     ui.separator();
     new_track_items(ui, picked);
     ui.separator();
@@ -1945,6 +1960,11 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
         CtxAction::DeleteRegion => delete_selected(p, v),
         CtxAction::TrackColor(i) => s.dialogs.color = Some(i),
+        CtxAction::DuplicateTrack(i, with_regions) => {
+            if p.duplicate_track(i, with_regions).is_some() {
+                forget_track_indexes(s);
+            }
+        }
         CtxAction::RegionColor(t, r) => {
             let group = if v.is_selected((t, r)) {
                 v.all_selected()
@@ -4250,6 +4270,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         picked = Some(match request {
             StripRequest::PianoRoll(t) => CtxAction::OpenTrackPianoRoll(t),
             StripRequest::Color(t) => CtxAction::TrackColor(t),
+            StripRequest::Duplicate(t, regions) => CtxAction::DuplicateTrack(t, regions),
             StripRequest::Delete(t) => CtxAction::DeleteTrack(t),
         });
     }

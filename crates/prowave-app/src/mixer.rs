@@ -68,6 +68,7 @@ pub enum StripRequest {
     PianoRoll(usize),
     Delete(usize),
     Color(usize),
+    Duplicate(usize, bool),
 }
 
 pub struct MixerView {
@@ -955,7 +956,16 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
     let (mute, solo, rec) = (t.mute, t.solo, t.rec);
     let takes_midi = matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi);
     let last = p.tracks.len() == 1;
+    let can_copy = p.can_duplicate(i);
     crate::widgets::context_menu(resp, |ui| {
+        if can_copy && ui.button("Duplicate Track").clicked() {
+            v.strip_request = Some(StripRequest::Duplicate(i, true));
+            ui.close();
+        }
+        if can_copy && ui.button("New Track with Same Settings").clicked() {
+            v.strip_request = Some(StripRequest::Duplicate(i, false));
+            ui.close();
+        }
         if ui.button("Track Color…").clicked() {
             v.strip_request = Some(StripRequest::Color(i));
             ui.close();

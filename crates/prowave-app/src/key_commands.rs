@@ -96,6 +96,10 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::ArrowDown, none, Action::NextTrack),
     cmd(Key::A, ctrl_alt, Action::NewAudioTrack),
     cmd(Key::S, ctrl_alt, Action::NewInstrumentTrack),
+    cmd(Key::U, ctrl_alt, Action::Menu("New Aux Track")),
+    cmd(Key::X, ctrl_alt, Action::Menu("New External MIDI Track")),
+    cmd(Key::D, ctrl, Action::Menu("New Track with Same Settings")),
+    cmd(Key::D, ctrl_alt, Action::Menu("Duplicate Track")),
     cmd(Key::Backspace, ctrl, Action::Menu("Delete Track")),
     // Regions.
     cmd(Key::X, ctrl, Action::Edit(EditCmd::Cut)),
@@ -332,8 +336,13 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             command.action,
             Action::RecallScreenset(_) | Action::SaveScreenset(_)
         );
-        // The piano roll's keys win over it, but it has no use for the numbers.
-        if s.piano_focus && !screenset {
+        // The piano roll's keys win over it, but it has no use for the numbers, and recording
+        // has to start from there too.
+        let recording = matches!(
+            command.action,
+            Action::Menu("Record" | "Capture Recording" | "Discard Recording")
+        );
+        if s.piano_focus && !screenset && !recording {
             continue;
         }
         // While the computer keyboard plays notes, plain numbers are its own.

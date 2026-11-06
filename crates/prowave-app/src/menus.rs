@@ -144,6 +144,8 @@ const EDIT: &[&str] = &[
 const TRACK: &[&str] = &[
     "New",
     "New Aux Track",
+    "Duplicate Track",
+    "New Track with Same Settings",
     "New VCA Track",
     "New External MIDI Track",
     "New Pattern Region",
@@ -513,6 +515,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Routing Matrix…" | "General…" | "Synchronization…" | "Metronome…" | "Recording…"
         | "Audio…" | "MIDI…" => true,
         "Rename Track" | "Assign Track Color…" => !p.tracks.is_empty(),
+        "Duplicate Track" | "New Track with Same Settings" => p.can_duplicate(p.selected_track),
         "Project or Section…"
         | "Bounce"
         | "Export"
@@ -1045,6 +1048,12 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 s.tracks.selected = Some((track, ri));
             }
         }
+        "Duplicate Track" | "New Track with Same Settings" => {
+            let with_regions = label == "Duplicate Track";
+            if p.duplicate_track(p.selected_track, with_regions).is_some() {
+                crate::tracks_area::forget_track_indexes(s);
+            }
+        }
         "New Aux Track" => {
             let t = p.add_track(TrackKind::Aux);
             p.tracks[t].on_timeline = true;
@@ -1141,7 +1150,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "Go to Beginning" => p.position_beats = 0.0,
-        "Record" => p.recording = !p.recording,
+        "Record" => p.press_record(),
         _ => {
             if let Some(cmd) = FileCmd::from_menu(label) {
                 s.file_cmd = Some(cmd);

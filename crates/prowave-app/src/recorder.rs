@@ -60,6 +60,12 @@ pub struct Recorder {
     began_at: f64,
     /// Record > New Take: what this recording is played over becomes a take folder with it.
     pub as_take: bool,
+    /// How many seconds ago each note of this frame's input arrived.
+    ages: Vec<f64>,
+    /// The output's delay: a player hears the song this late, and plays to what is heard.
+    latency_secs: f64,
+    /// Keys held as the count-in runs out: a note on the downbeat is often played a little early.
+    pickup: HashMap<u8, u8>,
 }
 
 impl Recorder {
@@ -70,6 +76,12 @@ impl Recorder {
 
     pub fn active(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// When this frame's notes were played, for placing them.
+    pub fn timing(&mut self, ages: Vec<f64>, latency_secs: f64) {
+        self.ages = ages;
+        self.latency_secs = latency_secs;
     }
 
     /// Where the song was when the recording in progress began.
@@ -117,6 +129,21 @@ pub fn update(rec: &mut Recorder, p: &mut Project, input: &[LiveNote]) -> Outcom
     let want = p.recording && p.playing && !p.counting_in && p.punched_in();
     remember_played(rec, p, input, want);
     let pedal_before = rec.pedal;
+    if p.recording && p.counting_in {
+        for ev in input {
+            match *ev {
+                LiveNote::On { pitch, vel } => {
+                    rec.pickup.insert(pitch, vel);
+                }
+                LiveNote::Off { pitch } => {
+                    rec.pickup.remove(&pitch);
+                }
+                LiveNote::Sustain { .. } => {}
+            }
+        }
+    } else if !want {
+        rec.pickup.clear();
+    }
     for ev in input {
         if let LiveNote::Sustain { val } = *ev {
             rec.pedal = val;
@@ -124,7 +151,14 @@ pub fn update(rec: &mut Recorder, p: &mut Project, input: &[LiveNote]) -> Outcom
     }
     match (rec.target, want) {
         (None, false) => Outcome::Nothing,
-        (None, true) => start(rec, p, pedal_before),
+        (None, true) => {
+            let outcome = start(rec, p, pedal_before);
+            // What was played in this very frame belongs to the recording.
+            if let Some((t, r)) = rec.target {
+                record(rec, p, t, r, input);
+            }
+            outcome
+        }
         (Some(_), false) => finish(rec, p),
         (Some((t, r)), true) => {
             // The region being recorded has a name that starts with `*`. If it is not there
@@ -267,6 +301,7 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         params: RegionParams::default(),
     });
     let r = p.tracks[t].regions.len() - 1;
+    let held = std::mem::take(&mut rec.pickup);
     *rec = Recorder {
         target: Some((t, r)),
         start_beat: start,
@@ -275,8 +310,22 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         last_pos: p.position_beats,
         began_at: p.position_beats,
         as_take: rec.as_take,
+        ages: std::mem::take(&mut rec.ages),
+        latency_secs: rec.latency_secs,
         ..Recorder::default()
     };
+    let at = (p.position_beats - start).max(0.0) as f32;
+    for (pitch, vel) in held {
+        let notes = &mut p.tracks[t].regions[r].notes;
+        notes.push(Note {
+            start: at,
+            len: MIN_LEN,
+            pitch,
+            vel,
+            muted: false,
+        });
+        rec.open.insert(pitch, notes.len() - 1);
+    }
     p.selected_track = t;
     Outcome::Started(t, r)
 }
@@ -289,6 +338,15 @@ fn bars_between(p: &Project, start: f64, len: f64) -> f32 {
 
 fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[LiveNote]) {
     let raw = p.position_beats;
+    // Where each note belongs: when it was played, against the song the player heard.
+    let map = (!input.is_empty()).then(|| p.tempo_map());
+    let played_at = |k: usize| {
+        let back = rec.latency_secs + rec.ages.get(k).copied().unwrap_or(0.0);
+        match &map {
+            Some(map) if back > 0.0 => map.beat_at(map.seconds_at(raw) - back),
+            _ => raw,
+        }
+    };
     let region = &mut p.tracks[t].regions[r];
     // The cycle jumped back: the pass is over and the next one is a new take.
     if let Some(len) = rec.cycle_len {
@@ -315,14 +373,18 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
     if let Some(len) = rec.cycle_len {
         now = now.min(len);
     }
-    for ev in input {
+    for (k, ev) in input.iter().enumerate() {
+        let mut then = (played_at(k) - rec.start_beat).max(0.0);
+        if let Some(len) = rec.cycle_len {
+            then = then.min(len);
+        }
         match *ev {
             LiveNote::On { pitch, vel } => {
                 if let Some(i) = rec.open.remove(&pitch) {
-                    close(&mut region.notes[i], now);
+                    close(&mut region.notes[i], then);
                 }
                 region.notes.push(Note {
-                    start: now as f32,
+                    start: then as f32,
                     len: MIN_LEN,
                     pitch,
                     vel,
@@ -332,11 +394,11 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
             }
             LiveNote::Off { pitch } => {
                 if let Some(i) = rec.open.remove(&pitch) {
-                    close(&mut region.notes[i], now);
+                    close(&mut region.notes[i], then);
                 }
             }
             LiveNote::Sustain { val } => region.controls.push(Control {
-                start: now as f32,
+                start: then as f32,
                 num: SUSTAIN,
                 val,
             }),
@@ -798,6 +860,59 @@ mod tests {
         );
         p.tracks[1].rec = true;
         assert_eq!(record_track(&p), Some(1));
+    }
+
+    #[test]
+    fn the_record_button_starts_at_once_and_keeps_the_first_note() {
+        let mut p = project();
+        p.selected_track = 0;
+        p.press_record();
+        assert!(p.recording && p.playing);
+        let mut rec = Recorder::default();
+        let on = LiveNote::On {
+            pitch: 60,
+            vel: 100,
+        };
+        assert!(matches!(
+            update(&mut rec, &mut p, &[on]),
+            Outcome::Started(..)
+        ));
+        let (t, r) = rec.target().unwrap();
+        assert_eq!(p.tracks[t].regions[r].notes.len(), 1);
+    }
+
+    #[test]
+    fn a_key_held_as_the_count_in_ends_is_on_the_downbeat_and_notes_go_back_by_the_latency() {
+        let mut p = project();
+        p.selected_track = 0;
+        p.recording = true;
+        p.playing = true;
+        p.counting_in = true;
+        p.position_beats = 4.0;
+        let mut rec = Recorder::default();
+        let (on, off) = (
+            LiveNote::On {
+                pitch: 60,
+                vel: 100,
+            },
+            LiveNote::Off { pitch: 62 },
+        );
+        update(&mut rec, &mut p, &[on, LiveNote::On { pitch: 62, vel: 90 }]);
+        update(&mut rec, &mut p, &[off]);
+        p.counting_in = false;
+        update(&mut rec, &mut p, &[]);
+        let (t, r) = rec.target().unwrap();
+        let notes = &p.tracks[t].regions[r].notes;
+        assert_eq!(notes.len(), 1, "only the one still held");
+        assert_eq!((notes[0].pitch, notes[0].start), (60, 0.0));
+        // A second later in the song, a note heard half a second ago.
+        let beat = 4.0 + p.tempo_map().advance(0.0, 1.0);
+        p.position_beats = beat;
+        rec.timing(vec![0.25], 0.25);
+        update(&mut rec, &mut p, &[LiveNote::On { pitch: 64, vel: 80 }]);
+        let notes = &p.tracks[t].regions[r].notes;
+        let want = (p.tempo_map().advance(0.0, 0.5)) as f32;
+        assert!((notes[1].start - want).abs() < 1e-3, "{}", notes[1].start);
     }
 
     #[test]

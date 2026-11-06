@@ -39,8 +39,9 @@ pub struct MidiIn {
     /// A port another input uses (MIDI Time Code): this one leaves it alone, since some systems
     /// let only one program or connection open a port.
     avoided: Option<String>,
-    tx: SyncSender<LiveNote>,
-    rx: Receiver<LiveNote>,
+    /// Each note with when it arrived.
+    tx: SyncSender<(Instant, LiveNote)>,
+    rx: Receiver<(Instant, LiveNote)>,
     controls_tx: SyncSender<Control>,
     controls_rx: Receiver<Control>,
     last_try: Option<Instant>,
@@ -142,7 +143,7 @@ impl MidiIn {
             "prowave-in",
             move |_stamp, msg, _| {
                 if let Some(note) = parse(msg) {
-                    let _ = tx.try_send(note);
+                    let _ = tx.try_send((Instant::now(), note));
                 }
                 if let Some(control) = parse_control(msg) {
                     let _ = controls_tx.try_send(control);
@@ -165,13 +166,15 @@ impl MidiIn {
         }
     }
 
-    /// Appends the notes played since the last call to `out`.
-    pub fn poll(&mut self, out: &mut Vec<LiveNote>) {
+    /// Appends the notes played since the last call to `out`, and to `ages` how many seconds ago
+    /// each arrived.
+    pub fn poll(&mut self, out: &mut Vec<LiveNote>, ages: &mut Vec<f64>) {
         if self.last_try.is_none_or(|t| t.elapsed() >= RESCAN) {
             self.connect();
         }
-        while let Ok(note) = self.rx.try_recv() {
+        while let Ok((at, note)) = self.rx.try_recv() {
             out.push(note);
+            ages.push(at.elapsed().as_secs_f64());
         }
     }
 

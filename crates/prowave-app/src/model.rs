@@ -1367,7 +1367,7 @@ impl Project {
             recording: false,
             cycle: false,
             metronome: false,
-            count_in: true,
+            count_in: false,
             counting_in: false,
             notes: String::new(),
             cycle_start: 8.0,
@@ -1762,6 +1762,50 @@ impl Project {
 
     /// Appends a new track of `kind` (named "Aux 1", "Inst 3"...), selects it and tells the
     /// engine the song changed. Returns its index.
+    /// The Record button and key: starts recording now, from where the song is. While recording,
+    /// ends the recording and the song plays on.
+    pub fn press_record(&mut self) {
+        if self.recording && self.playing {
+            self.recording = false;
+        } else {
+            self.recording = true;
+            self.playing = true;
+        }
+    }
+
+    /// Whether a track of this kind can be copied whole. A stack's contents would have to come too.
+    pub fn can_duplicate(&self, t: usize) -> bool {
+        self.tracks.get(t).is_some_and(|track| {
+            !matches!(
+                track.kind,
+                TrackKind::Folder | TrackKind::Bus | TrackKind::Output
+            )
+        })
+    }
+
+    /// A copy of track `t` right below it, with its plugins, sends and output, and with its
+    /// regions or without. An Aux copy gets a bus of its own. Returns where it is.
+    pub fn duplicate_track(&mut self, t: usize, with_regions: bool) -> Option<usize> {
+        if !self.can_duplicate(t) {
+            return None;
+        }
+        let mut copy = self.tracks[t].clone();
+        copy.name = format!("{} copy", copy.name);
+        copy.rec = false;
+        copy.monitor = false;
+        copy.solo = false;
+        if !with_regions {
+            copy.regions.clear();
+            copy.frozen = None;
+        }
+        self.tracks.push(copy);
+        let last = self.tracks.len() - 1;
+        self.move_tracks(&[last], t + 1);
+        self.selected_track = t + 1;
+        self.song_rev += 1;
+        Some(t + 1)
+    }
+
     /// The colour for a new track: the one in the palette that the fewest tracks have.
     pub fn next_track_color(&self) -> Color32 {
         let uses = |c: &Color32| self.tracks.iter().filter(|t| t.color == *c).count();
@@ -3351,6 +3395,24 @@ mod tests {
             .unwrap();
         assert!(p.delete_track(vca));
         assert!(p.tracks.iter().all(|t| t.vca.is_none()));
+    }
+
+    #[test]
+    fn a_duplicate_sits_below_its_track_and_an_aux_keeps_its_own_bus() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let a = p.add_track(TrackKind::Aux);
+        let b = p.add_track(TrackKind::Aux);
+        let bus_b = p.aux_bus_of(b);
+        p.tracks.push(Track::new("Vox", TrackKind::Audio));
+        p.tracks[2].output = bus_b;
+        assert_eq!(p.duplicate_track(a, false), Some(a + 1));
+        assert_eq!(p.tracks[a + 1].name, "Aux 1 copy");
+        assert_eq!(p.tracks[a + 1].kind, TrackKind::Aux);
+        assert_ne!(p.aux_bus_of(a), p.aux_bus_of(a + 1));
+        // The Vox still plays into the same Aux, which has moved down one.
+        assert_eq!(p.tracks[3].output, p.aux_bus_of(2));
+        assert_eq!(p.tracks[2].name, "Aux 2");
     }
 
     #[test]
