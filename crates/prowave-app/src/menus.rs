@@ -1562,6 +1562,9 @@ mod tests {
 
     /// Everything a key command can change, including what `state` leaves out.
     fn key_state(p: &Project, s: &crate::UiState) -> String {
+        if s.dialogs.new_tracks.is_some() {
+            return "New Tracks is open".to_string();
+        }
         format!(
             "{} {:?}",
             state(p, s),
