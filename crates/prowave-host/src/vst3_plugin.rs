@@ -5,6 +5,7 @@
 //! and controller, connect them, choose the buses, set up processing, activate, then process. Edits
 //! made in a plugin's editor arrive at the host on the UI thread and go to the audio thread through
 //! a queue, because in VST3 the host carries them from the controller to the processor.
+use crate::ara::AraDocument;
 use crate::clap::{fill_main_input, fill_side_input, read_main_output};
 use crate::editor_window::EditorWindow;
 use crate::{HostError as Error, Loaded, LoadedPlugin, PluginFormat, PluginInfo};
@@ -15,7 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vst3::Steinberg::IPlugViewContentScaleSupport_::ScaleFactor;
 use vst3::Steinberg::Vst::IAttributeList_::AttrID;
@@ -910,6 +911,17 @@ unsafe fn set_up_buses(
 /// turns its side-chain bus on, which cannot be done later without loading it again. Failure is an
 /// error to show, never a panic.
 pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<Loaded, Error> {
+    load_vst3_with(path, id, sample_rate, side, false)
+}
+
+/// [`load_vst3`], with a plugin that offers ARA bound to a document of its own if `ara` says so.
+pub fn load_vst3_with(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+    ara: bool,
+) -> Result<Loaded, Error> {
     let module = load_module(path)?;
     let cid = uid_from_text(id).ok_or_else(|| err(path, "the plugin's identifier is not valid"))?;
     let dirty = Arc::new(AtomicBool::new(false));
@@ -938,6 +950,16 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<
         if component.initialize(host.as_ptr()) != kResultOk {
             return Err(err(path, "the plugin did not start"));
         }
+        // Before anything sets the plugin up, as ARA asks.
+        let document = if ara {
+            AraDocument::bind(
+                component.as_ptr().cast(),
+                &text_of_name(path),
+                dirty.clone(),
+            )
+        } else {
+            None
+        };
         let Some(processor) = component.cast::<IAudioProcessor>() else {
             component.terminate();
             return Err(err(path, "the plugin has no audio processor"));
@@ -1020,6 +1042,8 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<
             released.clone(),
         );
         audio.side_bus = side_bus.filter(|_| side);
+        audio.keeps_running = document.is_some();
+        let gate = audio.gate.clone();
         Ok((
             Box::new(LoadedVst3 {
                 params,
@@ -1037,6 +1061,9 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<
                 resize,
                 editor: None,
                 closed_at: None,
+                ara: document,
+                ara_kept: None,
+                gate,
                 _module: module,
             }),
             Box::new(audio),
@@ -1108,7 +1135,82 @@ struct LoadedVst3 {
     resize: Arc<AtomicU64>,
     editor: Option<OpenEditor>,
     closed_at: Option<(i32, i32)>,
+    /// The plugin's ARA document, if it is bound to one. Goes before the plugin file.
+    ara: Option<AraDocument>,
+    /// Saved ARA edits this load has no use for, kept for the next save.
+    ara_kept: Option<Vec<u8>>,
+    /// Keeps the audio thread out of the plugin while it is not active.
+    gate: Arc<AtomicU8>,
     _module: Arc<Module>,
+}
+
+/// How the audio half stands: free to run, running, kept out, or free again but to start over.
+const GATE_FREE: u8 = 0;
+const GATE_BUSY: u8 = 1;
+const GATE_HELD: u8 = 2;
+const GATE_RESUMED: u8 = 3;
+
+/// Waits for the audio thread to be out of the plugin, then keeps it out. The audio thread never
+/// waits: it plays silence until the gate opens. False if it is in there for too long.
+fn hold_audio(gate: &AtomicU8) -> bool {
+    for _ in 0..500 {
+        for from in [GATE_FREE, GATE_RESUMED] {
+            if gate
+                .compare_exchange(from, GATE_HELD, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    false
+}
+
+/// A name for a plugin's document: its file, without the extension.
+fn text_of_name(path: &Path) -> String {
+    path.file_stem()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Starts the settings of a plugin with ARA edits to go with them.
+const ARA_STATE_MAGIC: &[u8; 8] = b"PWARA1\0\0";
+
+/// The plugin's settings, then the saved ARA document after them.
+fn pack_ara_state(state: &[u8], tail: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + state.len() + tail.len());
+    out.extend_from_slice(ARA_STATE_MAGIC);
+    out.extend_from_slice(&(state.len() as u32).to_le_bytes());
+    out.extend_from_slice(state);
+    out.extend_from_slice(tail);
+    out
+}
+
+/// A saved ARA document in one block: the length of its identifier, the identifier, the archive.
+fn pack_ara_tail(id: &str, archive: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + id.len() + archive.len());
+    out.extend_from_slice(&(id.len() as u32).to_le_bytes());
+    out.extend_from_slice(id.as_bytes());
+    out.extend_from_slice(archive);
+    out
+}
+
+fn unpack_ara_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    let rest = bytes.strip_prefix(ARA_STATE_MAGIC)?;
+    let (length, rest) = rest.split_first_chunk::<4>()?;
+    let length = u32::from_le_bytes(*length) as usize;
+    (rest.len() >= length).then(|| rest.split_at(length))
+}
+
+fn unpack_ara_tail(tail: &[u8]) -> Option<(String, &[u8])> {
+    let (length, rest) = tail.split_first_chunk::<4>()?;
+    let length = u32::from_le_bytes(*length) as usize;
+    if rest.len() < length {
+        return None;
+    }
+    let (id, archive) = rest.split_at(length);
+    Some((String::from_utf8_lossy(id).into_owned(), archive))
 }
 
 /// Runs `fill` on a new stream and gives back what it wrote.
@@ -1140,6 +1242,39 @@ fn unpack_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 impl LoadedPlugin for LoadedVst3 {
+    fn is_ara(&self) -> bool {
+        self.ara.is_some()
+    }
+
+    fn ara_sync(&mut self, regions: &[crate::AraRegion]) -> Result<bool, Error> {
+        let Some(document) = &mut self.ara else {
+            return Ok(true);
+        };
+        let stop = document.changes_assignment(regions);
+        if stop && !hold_audio(&self.gate) {
+            return Ok(false);
+        }
+        // SAFETY: the audio thread is kept out while the plugin is not active, and the plugin is
+        // only stopped and started from this thread.
+        let result = unsafe {
+            let processor = self.component.cast::<IAudioProcessor>();
+            if stop {
+                if let Some(processor) = &processor {
+                    processor.setProcessing(0);
+                }
+                self.component.setActive(0);
+            }
+            let result = document.apply(regions);
+            if stop {
+                self.component.setActive(1);
+                // The audio thread starts processing again itself.
+                self.gate.store(GATE_RESUMED, Ordering::Release);
+            }
+            result
+        };
+        result.map(|()| true).map_err(Error)
+    }
+
     fn params(&self) -> Vec<crate::PluginParam> {
         self.params.clone()
     }
@@ -1202,6 +1337,9 @@ impl LoadedPlugin for LoadedVst3 {
     }
 
     fn tick(&mut self) {
+        if let Some(document) = &mut self.ara {
+            document.tick();
+        }
         let Some(open) = self.editor.as_mut() else {
             return;
         };
@@ -1346,11 +1484,22 @@ impl LoadedPlugin for LoadedVst3 {
                 .as_ref()
                 .and_then(|c| collect_from(|s| c.getState(s)))
                 .unwrap_or_default();
-            Ok(Some(pack_state(&component, &controller)))
+            let state = pack_state(&component, &controller);
+            let tail = match &mut self.ara {
+                Some(document) => document
+                    .store()
+                    .map(|(id, archive)| pack_ara_tail(&id, &archive)),
+                None => self.ara_kept.clone(),
+            };
+            Ok(Some(match tail {
+                Some(tail) => pack_ara_state(&state, &tail),
+                None => state,
+            }))
         }
     }
 
     fn load_state(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let (bytes, tail) = unpack_ara_state(bytes).unwrap_or((bytes, &[]));
         let (component, controller) = unpack_state(bytes)
             .ok_or_else(|| Error("the saved settings are damaged".to_string()))?;
         let stream = |bytes: &[u8]| ComWrapper::new(Stream::with(bytes.to_vec()));
@@ -1377,6 +1526,21 @@ impl LoadedPlugin for LoadedVst3 {
             }
         }
         self.dirty.store(false, Ordering::Release);
+        if tail.is_empty() {
+            return Ok(());
+        }
+        let Some(document) = &mut self.ara else {
+            self.ara_kept = Some(tail.to_vec());
+            return Ok(());
+        };
+        let Some((id, archive)) = unpack_ara_tail(tail) else {
+            return Err(Error("its saved edits are damaged".to_string()));
+        };
+        if !document.restore_later(&id, archive.to_vec()) {
+            return Err(Error(
+                "this version of the plugin cannot read its saved edits".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -1392,6 +1556,8 @@ impl Drop for LoadedVst3 {
             // The audio half is still out there: taking the plugin down under it would crash, so
             // it is left running. The rack waits for it, so this is only the program ending.
             std::mem::forget(self.component.clone());
+            // As is its document.
+            std::mem::forget(self.ara.take());
             return;
         }
         // SAFETY: nothing else uses the plugin now, and this is the order the documentation gives.
@@ -1408,6 +1574,9 @@ impl Drop for LoadedVst3 {
                 }
             }
             self.component.terminate();
+            if let Some(mut document) = self.ara.take() {
+                document.destroy();
+            }
         }
         // The handler is the plugin's until here.
         let _ = &self.handler;
@@ -1476,6 +1645,10 @@ struct Vst3Processor {
     sample_rate: f64,
     continuous: i64,
     started: bool,
+    /// See [`hold_audio`].
+    gate: Arc<AtomicU8>,
+    /// Plays its track's regions itself.
+    keeps_running: bool,
     released: Arc<AtomicBool>,
     /// The bus a side chain goes in, when it is on.
     side_bus: Option<usize>,
@@ -1512,6 +1685,8 @@ impl Vst3Processor {
             sample_rate,
             continuous: 0,
             started: false,
+            gate: Arc::new(AtomicU8::new(GATE_FREE)),
+            keeps_running: false,
             released,
             side_bus: None,
         }
@@ -1621,6 +1796,10 @@ impl PluginProcessor for Vst3Processor {
         }
     }
 
+    fn keeps_running(&self) -> bool {
+        self.keeps_running
+    }
+
     fn process(
         &mut self,
         input: [&[f32]; 2],
@@ -1628,6 +1807,32 @@ impl PluginProcessor for Vst3Processor {
         events: &[PluginEvent],
         transport: &PluginTransport,
     ) {
+        let entered =
+            self.gate
+                .compare_exchange(GATE_FREE, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire);
+        match entered {
+            Ok(_) => {}
+            Err(GATE_RESUMED) => {
+                // Only the audio thread leaves this state, unless the UI thread holds it again.
+                if self
+                    .gate
+                    .compare_exchange(GATE_RESUMED, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    let [l, r] = output;
+                    l.fill(0.0);
+                    r.fill(0.0);
+                    return;
+                }
+                self.started = false;
+            }
+            Err(_) => {
+                let [l, r] = output;
+                l.fill(0.0);
+                r.fill(0.0);
+                return;
+            }
+        }
         self.events.clear();
         self.events_out.clear();
         self.params.clear();
@@ -1679,6 +1884,7 @@ impl PluginProcessor for Vst3Processor {
             l.fill(0.0);
             r.fill(0.0);
         }
+        self.gate.store(GATE_FREE, Ordering::Release);
     }
 
     fn latency_samples(&self) -> usize {
@@ -1703,6 +1909,92 @@ mod tests {
     use crate::editor_window::pump_messages_for;
     use prowave_engine::PLUGIN_BLOCK;
     use std::time::Duration;
+
+    /// A real ARA plugin, given by `PROWAVE_TEST_ARA` (its `.vst3`) and `PROWAVE_TEST_ARA_WAV`.
+    #[test]
+    #[ignore = "needs an installed ARA plugin"]
+    fn an_installed_ara_plugin_plays_its_region_and_saves() {
+        let path = PathBuf::from(std::env::var("PROWAVE_TEST_ARA").unwrap());
+        let wav = std::env::var("PROWAVE_TEST_ARA_WAV").unwrap();
+        let file = prowave_engine::AudioFile::open(&wav).unwrap();
+        let plugins = scan_vst3_file(&path).unwrap();
+        println!(
+            "classes: {:?}",
+            plugins.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        let plugin = &plugins[0];
+        let (mut loaded, mut audio) =
+            load_vst3_with(&path, &plugin.id, 44_100, false, true).unwrap();
+        assert!(loaded.is_ara(), "the plugin did not bind");
+        assert!(audio.keeps_running());
+        let duration = file.duration_secs().min(4.0);
+        let regions = [crate::AraRegion {
+            file,
+            name: "test".to_string(),
+            start: 0.0,
+            offset: 0.0,
+            duration,
+        }];
+        assert!(loaded.ara_sync(&regions).unwrap());
+        println!("synced");
+        let block = prowave_engine::plugin_block();
+        let silence = vec![0.0f32; block];
+        let (mut left, mut right) = (vec![0.0f32; block], vec![0.0f32; block]);
+        // Time to read the file, then play it through with silence going in.
+        for _ in 0..40 {
+            loaded.tick();
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let mut peak = 0f32;
+        let mut frame = 0usize;
+        while (frame as f64) < duration * 44_100.0 {
+            let transport = PluginTransport {
+                playing: true,
+                seconds: frame as f64 / 44_100.0,
+                tempo: 120.0,
+                signature: (4, 4),
+                ..PluginTransport::default()
+            };
+            audio.process(
+                [&silence, &silence],
+                [&mut left, &mut right],
+                &[],
+                &transport,
+            );
+            peak = left.iter().chain(&right).fold(peak, |m, s| m.max(s.abs()));
+            frame += block;
+        }
+        println!("peak with silence going in: {peak}");
+        let state = loaded.save_state().unwrap().unwrap();
+        println!(
+            "saved {} bytes, with edits: {}",
+            state.len(),
+            state.starts_with(ARA_STATE_MAGIC)
+        );
+        // A region added while it plays, and moved: the gate keeps the audio thread out.
+        let mut more = regions.to_vec();
+        more[0].start = 1.0;
+        assert!(loaded.ara_sync(&more).unwrap());
+        more.push(regions[0].clone());
+        more[1].start = 10.0;
+        assert!(loaded.ara_sync(&more).unwrap());
+        audio.process(
+            [&silence, &silence],
+            [&mut left, &mut right],
+            &[],
+            &PluginTransport::default(),
+        );
+        assert!(peak > 0.0001, "the plugin played nothing");
+        // A new instance takes the saved document back.
+        drop(audio);
+        drop(loaded);
+        let (mut again, audio) = load_vst3_with(&path, &plugin.id, 44_100, false, true).unwrap();
+        again.load_state(&state).unwrap();
+        assert!(again.ara_sync(&regions).unwrap());
+        println!("restored");
+        drop(audio);
+        drop(again);
+    }
 
     #[test]
     fn class_identifiers_go_to_text_and_back() {

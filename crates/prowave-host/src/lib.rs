@@ -6,6 +6,8 @@
 //! this process unless crash isolation is on, in which case [`bridge`] puts them in another one
 //! behind these same traits.
 #[cfg(windows)]
+mod ara;
+#[cfg(windows)]
 mod bridge;
 mod clap;
 #[cfg(windows)]
@@ -202,10 +204,35 @@ pub trait LoadedPlugin {
         None
     }
 
+    /// Whether this plugin plays the audio regions of its track itself (ARA).
+    fn is_ara(&self) -> bool {
+        false
+    }
+
+    /// Tells a plugin that [`Self::is_ara`] which regions its track has. False if it could not be
+    /// done just now: try again soon. The sound of this plugin stops for a moment if regions were
+    /// added or taken away.
+    fn ara_sync(&mut self, _regions: &[AraRegion]) -> Result<bool, HostError> {
+        Ok(true)
+    }
+
     /// The process it runs in, if that is not this one.
     fn process_id(&self) -> Option<u32> {
         None
     }
+}
+
+/// An audio region on the track of a plugin that plays the track's audio itself (ARA). All times
+/// are in seconds.
+#[derive(Clone, Debug)]
+pub struct AraRegion {
+    pub file: prowave_engine::AudioFile,
+    pub name: String,
+    /// Where it starts in the project.
+    pub start: f64,
+    /// Where in the file it starts.
+    pub offset: f64,
+    pub duration: f64,
 }
 
 /// Both halves of a plugin that was just loaded.
@@ -250,6 +277,21 @@ pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
         #[cfg(not(windows))]
         PluginFormat::Vst3 => Err(HostError("VST3 needs Windows for now".to_string())),
     }
+}
+
+/// [`load_plugin_safely`] for a plugin on an audio track: one that offers ARA is then bound to the
+/// track's audio. Not for plugins in a process of their own, which run as any other.
+pub fn load_plugin_for_audio(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+) -> Result<Loaded, HostError> {
+    #[cfg(windows)]
+    if !isolation_on() && PluginFormat::of(path) == PluginFormat::Vst3 {
+        return crate::vst3_plugin::load_vst3_with(path, id, sample_rate, side, true);
+    }
+    load_plugin_safely(path, id, sample_rate, side)
 }
 
 /// Loads plugin `id` of a file of any format, for the engine's sample rate. `side` says a source for

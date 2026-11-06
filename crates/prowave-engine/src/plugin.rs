@@ -129,6 +129,11 @@ pub trait PluginProcessor: Send {
     /// Says the blocks come from an offline render, with no deadline. Called off the UI thread
     /// and must not allocate.
     fn set_offline(&mut self, _offline: bool) {}
+
+    /// Whether the plugin makes sound of its own with silence going in, so it must never rest.
+    fn keeps_running(&self) -> bool {
+        false
+    }
 }
 
 /// Running every hosted plugin's block at once, on several cores. A plugin's output reaches the mix
@@ -311,6 +316,8 @@ pub struct PluginSlot {
     /// Resting: with nothing to process, the plugin is not called, and uses no CPU.
     resting: bool,
     may_rest: bool,
+    /// Its plugin plays by itself (see [`PluginProcessor::keeps_running`]).
+    keeps_running: bool,
     /// Whether the song was playing at the last block: a plugin may follow it.
     was_playing: bool,
 }
@@ -322,6 +329,7 @@ impl PluginSlot {
     }
 
     fn sized(plugin: Box<dyn PluginProcessor>, block: usize) -> Self {
+        let keeps_running = plugin.keeps_running();
         let buffer = || vec![0.0; block].into_boxed_slice();
         let dry = vec![0.0; plugin.latency_samples()].into_boxed_slice();
         Self {
@@ -351,7 +359,8 @@ impl PluginSlot {
             side_flush: false,
             quiet_blocks: 0,
             resting: false,
-            may_rest: true,
+            may_rest: !keeps_running,
+            keeps_running,
             was_playing: false,
         }
     }
@@ -392,8 +401,8 @@ impl PluginSlot {
 
     /// Whether the plugin may rest when it has nothing to process. Waking it if not.
     pub fn set_may_rest(&mut self, may: bool) {
-        self.may_rest = may;
-        if !may {
+        self.may_rest = may && !self.keeps_running;
+        if !self.may_rest {
             self.wake();
         }
     }

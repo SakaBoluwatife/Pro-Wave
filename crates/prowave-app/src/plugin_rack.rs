@@ -5,7 +5,10 @@
 //! has a `uid` and follows its insert when tracks and slots move.
 use crate::model::{PluginInsert, Project, TrackKind};
 use prowave_engine::{Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS};
-use prowave_host::{load_plugin_safely, HeaderClick, HeaderState, LoadedPlugin, PluginInfo};
+use prowave_host::{
+    load_plugin_for_audio, load_plugin_safely, AraRegion, HeaderClick, HeaderState, LoadedPlugin,
+    PluginInfo,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -123,6 +126,39 @@ fn plan(want: &[(u64, Place)], live: &HashMap<u64, Place>) -> Vec<Step> {
 
 /// Where each plugin of the project goes in the engine. One that failed to load is left out, and
 /// so is what does not fit the engine, but the slots of those behind it stay as they are.
+/// The audio regions a track plays, for a plugin that plays them itself.
+fn ara_regions(p: &Project, t: usize) -> Vec<AraRegion> {
+    let Some(track) = p.tracks.get(t) else {
+        return Vec::new();
+    };
+    let map = p.tempo_map();
+    track
+        .regions
+        .iter()
+        .filter(|r| !r.params.mute)
+        .filter_map(|r| {
+            let audio = r.audio.as_ref()?;
+            let start = map.seconds_at(p.region_start_beats(r));
+            let end_bar = f64::from(r.start_bar) - 1.0 + f64::from(r.len_bars);
+            let end = map.seconds_at(p.bar_to_beats(end_bar));
+            let offset = f64::from(r.params.source_start);
+            let in_file = if r.params.source_len > 0.0 {
+                f64::from(r.params.source_len)
+            } else {
+                audio.file.duration_secs() - offset
+            };
+            let duration = in_file.min(end - start);
+            (duration > 0.0).then(|| AraRegion {
+                file: audio.file.clone(),
+                name: r.name.clone(),
+                start,
+                offset,
+                duration,
+            })
+        })
+        .collect()
+}
+
 fn wanted_places(p: &Project) -> Vec<(u64, Place)> {
     let mut want = Vec::new();
     for (t, track) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
@@ -232,6 +268,8 @@ const KEPT_STATES: usize = 64;
 
 struct Live {
     place: Place,
+    /// For a plugin that plays its track's audio: the project and track it was last told of.
+    ara_seen: Option<(u64, u16)>,
     /// The plugin's identifier: where its editor window was is remembered per plugin.
     id: String,
     /// As last told to the engine.
@@ -656,6 +694,31 @@ impl Rack {
     /// Returns false when the engine's queue was full, so the caller tries again next frame;
     /// `message` gets what went wrong for the status line. At most one plugin loads per call, so
     /// a project with many stays responsive while it opens.
+    /// Tells plugins that play their track's audio about changes to the regions.
+    fn sync_ara(&mut self, p: &Project, message: &mut Option<String>) {
+        for live in self.live.values_mut() {
+            if !live.loaded.is_ara() {
+                continue;
+            }
+            let now = (p.song_rev, live.place.0);
+            if live.ara_seen == Some(now) {
+                continue;
+            }
+            match live
+                .loaded
+                .ara_sync(&ara_regions(p, usize::from(live.place.0)))
+            {
+                Ok(true) => live.ara_seen = Some(now),
+                // Tried again on the next call.
+                Ok(false) => {}
+                Err(e) => {
+                    live.ara_seen = Some(now);
+                    *message = Some(e.to_string());
+                }
+            }
+        }
+    }
+
     pub fn sync(
         &mut self,
         p: &mut Project,
@@ -679,6 +742,7 @@ impl Rack {
         }
         self.restart_crashed(p, engine, message);
         self.retiring.retain(|r| !r.released());
+        self.sync_ara(p, message);
         let places: HashMap<u64, Place> = self.live.iter().map(|(u, l)| (*u, l.place)).collect();
         let mut loaded_one = false;
         let mut more = false;
@@ -868,18 +932,32 @@ impl Rack {
             crate::plugin_guard::before_load(&plugin.path);
         }
         let side = plugin.sidechain.is_some();
-        let (mut loaded, processor) =
-            match load_plugin_safely(&plugin.path, &plugin.id, engine.sample_rate(), side) {
-                Ok(both) => both,
-                Err(e) => {
-                    if guarded {
-                        crate::plugin_guard::after_load();
-                    }
-                    *message = Some(e.to_string());
-                    plugin.failed = Some(e.to_string());
-                    return true;
+        let path = plugin.path.clone();
+        let id = plugin.id.clone();
+        // Only an audio track has regions for ARA to play: elsewhere it would be silent.
+        let on_audio = place.1 != INSTRUMENT_SLOT
+            && p.tracks
+                .get(usize::from(place.0))
+                .is_some_and(|t| t.kind == TrackKind::Audio);
+        let result = if on_audio && crate::settings::use_ara() {
+            load_plugin_for_audio(&path, &id, engine.sample_rate(), side)
+        } else {
+            load_plugin_safely(&path, &id, engine.sample_rate(), side)
+        };
+        let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
+            return true;
+        };
+        let (mut loaded, processor) = match result {
+            Ok(both) => both,
+            Err(e) => {
+                if guarded {
+                    crate::plugin_guard::after_load();
                 }
-            };
+                *message = Some(e.to_string());
+                plugin.failed = Some(e.to_string());
+                return true;
+            }
+        };
         plugin.params = Arc::new(loaded.params());
         plugin.side_offered = loaded.has_side_input();
         let kept = self.kept_states.iter().find(|(u, _)| *u == uid);
@@ -924,6 +1002,7 @@ impl Rack {
                     low: false,
                     side: None,
                     preset: None,
+                    ara_seen: None,
                     loaded,
                 },
             );

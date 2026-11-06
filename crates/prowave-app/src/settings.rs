@@ -228,6 +228,41 @@ pub fn plugin_isolation() -> bool {
         .is_some_and(|text| text.trim() == "1")
 }
 
+fn ara_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("plugin-ara"))
+}
+
+/// Whether a plugin on an audio track that offers ARA plays the track's audio itself. On, unless
+/// turned off here.
+pub fn use_ara() -> bool {
+    ara_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .is_none_or(|text| text.trim() != "0")
+}
+
+fn ara_row(ui: &mut Ui) {
+    let saved = use_ara();
+    let mut on = saved;
+    ui.checkbox(&mut on, "Use ARA with plugins that offer it")
+        .on_hover_text(
+            "A plugin such as a pitch editor reads the audio regions of its track directly, with \
+             no need to play them into it first. Only on audio tracks. Applies when a plugin is \
+             next loaded.",
+        );
+    if on != saved {
+        let Some(file) = ara_file() else {
+            return;
+        };
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, if on { "1" } else { "0" }));
+        if let Err(e) = result {
+            tracing::warn!("could not save the ARA setting: {e}");
+        }
+    }
+}
+
 fn isolation_row(ui: &mut Ui) {
     let saved = plugin_isolation();
     let mut on = saved;
@@ -669,6 +704,7 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
 }
 
 fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
+    ara_row(ui);
     isolation_row(ui);
     ui.separator();
     let ctx = ui.ctx().clone();
