@@ -728,3 +728,4 @@ Recording Meter = Aufnahmepegel
 Duplicate Track = Spur duplizieren
 New Track with Same Settings = Neue Spur mit gleichen Einstellungen
 New Tracks… = Neue Spuren …
+Show Plugin Presets = Plug-in-Presets einblenden

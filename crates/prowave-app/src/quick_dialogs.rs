@@ -33,6 +33,8 @@ pub struct QuickDialogs {
     pub about: bool,
     /// View > Customize Toolbar.
     pub customize_toolbar: bool,
+    /// What the Plugin Manager is searching for.
+    pub plugin_search: String,
     /// Window > Plugin Manager.
     pub plugin_manager: bool,
     /// A track's right-click menu > Track Alternatives > Rename: the track and what has been typed.
@@ -671,16 +673,19 @@ fn plugin_manager_window(ctx: &egui::Context, s: &mut UiState) {
     let list = &mut s.plugins;
     list.clap.ensure_started(ctx);
     list.clap.drain();
+    let search = &mut s.dialogs.plugin_search;
     let mut open = true;
+    let mut change = None;
     egui::Window::new("Plugin Manager")
         .id(egui::Id::unique("plugin_manager"))
         .open(&mut open)
-        .default_size([720.0, 460.0])
+        .default_size([760.0, 500.0])
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "{} plugins, {} failed",
+                    "{} plugins, {} hidden, {} failed",
                     list.clap.plugins.len(),
+                    list.clap.hidden.len(),
                     list.clap.failed.len()
                 ));
                 if ui
@@ -695,37 +700,92 @@ fn plugin_manager_window(ctx: &egui::Context, s: &mut UiState) {
                     ui.label(format!("Scanning {done} of {of}..."));
                 }
             });
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::Grid::new(egui::Id::unique("plugin_manager_grid"))
-                    .striped(true)
+            ui.add(
+                egui::TextEdit::singleline(search)
+                    .hint_text("Search by name, maker or file")
+                    .desired_width(300.0),
+            );
+            if !list.clap.failed.is_empty() {
+                egui::CollapsingHeader::new(format!("Failed ({})", list.clap.failed.len()))
+                    .id_salt(egui::Id::unique("plugin_manager_failed"))
                     .show(ui, |ui| {
-                        for head in ["Name", "Maker", "Format", "Kind", "File"] {
-                            ui.strong(head);
-                        }
-                        ui.end_row();
-                        for info in &list.clap.plugins {
-                            ui.label(&info.name);
-                            ui.label(&info.vendor);
-                            ui.label(info.format.name());
-                            ui.label(if info.is_instrument {
-                                "Instrument"
-                            } else {
-                                "Effect"
-                            });
-                            ui.label(info.path.display().to_string());
-                            ui.end_row();
+                        for (path, why) in &list.clap.failed {
+                            ui.label(format!("{}: {why}", path.display()));
                         }
                     });
-                if !list.clap.failed.is_empty() {
-                    ui.separator();
-                    ui.strong("Failed");
-                    for (path, why) in &list.clap.failed {
-                        ui.label(format!("{}: {why}", path.display()));
-                    }
+            }
+            ui.separator();
+            let wanted = search.trim().to_lowercase();
+            let found: Vec<&prowave_host::PluginInfo> = list
+                .clap
+                .plugins
+                .iter()
+                .filter(|i| {
+                    wanted.is_empty()
+                        || i.name.to_lowercase().contains(&wanted)
+                        || i.vendor.to_lowercase().contains(&wanted)
+                        || i.path.to_string_lossy().to_lowercase().contains(&wanted)
+                })
+                .collect();
+            // A shell can offer hundreds: only the rows in sight are drawn.
+            let visible = found.iter().filter(|i| !list.clap.hidden.contains(&i.id));
+            let shown_count = visible.count();
+            ui.horizontal(|ui| {
+                ui.label(format!("{} listed", found.len()));
+                if ui.button("Show These").clicked() {
+                    change = Some((
+                        found.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+                        false,
+                    ));
+                }
+                if ui
+                    .add_enabled(shown_count > 0, egui::Button::new("Hide These"))
+                    .on_hover_text("Search first, such as for 5.1, to hide what you never use")
+                    .clicked()
+                {
+                    change = Some((found.iter().map(|i| i.id.clone()).collect::<Vec<_>>(), true));
                 }
             });
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let row = 20.0;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show_rows(ui, row, found.len(), |ui, range| {
+                    for info in &found[range] {
+                        ui.horizontal(|ui| {
+                            let mut show = !list.clap.hidden.contains(&info.id);
+                            if ui
+                                .checkbox(&mut show, "")
+                                .on_hover_text("Show in the plugin menus")
+                                .changed()
+                            {
+                                change = Some((vec![info.id.clone()], !show));
+                            }
+                            let cell = |ui: &mut egui::Ui, w: f32, text: &str| {
+                                ui.add_sized([w, row - 2.0], egui::Label::new(text).truncate());
+                            };
+                            cell(ui, 230.0, &info.name);
+                            cell(ui, 130.0, &info.vendor);
+                            cell(ui, 45.0, info.format.name());
+                            cell(
+                                ui,
+                                70.0,
+                                if info.is_instrument {
+                                    "Instrument"
+                                } else {
+                                    "Effect"
+                                },
+                            );
+                            ui.label(info.path.display().to_string());
+                        });
+                    }
+                });
         });
+    if let Some((ids, hide)) = change {
+        for id in ids {
+            list.clap.set_hidden(&id, hide);
+        }
+    }
     s.dialogs.plugin_manager = open;
 }
 

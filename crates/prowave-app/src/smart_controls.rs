@@ -48,6 +48,20 @@ fn keep_knobs(p: &mut Project, track: usize, uid: u64, knobs: [Option<u32>; KNOB
     }
 }
 
+/// Where a knob stands for a parameter at `value`, given what part of it the knob covers.
+fn knob_of(value: f64, (lo, hi): (f32, f32)) -> f64 {
+    let span = f64::from(hi - lo);
+    if span.abs() < 1e-6 {
+        return 0.0;
+    }
+    ((value - f64::from(lo)) / span).clamp(0.0, 1.0)
+}
+
+/// The parameter's value with the knob at `knob`.
+fn value_of(knob: f64, (lo, hi): (f32, f32)) -> f64 {
+    (f64::from(lo) + knob * f64::from(hi - lo)).clamp(0.0, 1.0)
+}
+
 /// The window.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     let learn = &mut s.midi_learn;
@@ -103,6 +117,12 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             let stored = stored(chosen);
             let was = knobs_of(stored, params);
             let mut knobs = was;
+            let was_ranges = track
+                .hosted()
+                .find(|i| i.uid == chosen)
+                .and_then(|i| i.smart_ranges)
+                .unwrap_or([(0.0, 1.0); KNOBS]);
+            let mut ranges = was_ranges;
             ui.add_space(6.0);
             let (beat, playing) = (p.position_beats, p.playing);
             egui::Grid::new(egui::Id::unique("smart_knobs"))
@@ -115,7 +135,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                                 ui.allocate_exact_size(vec2(100.0, 40.0), Sense::drag());
                             let id = *slot;
                             let value = id.and_then(|id| v.values.get(&(chosen, id)).copied());
-                            let shown = value.unwrap_or(0.0) as f32;
+                            let shown = knob_of(value.unwrap_or(0.0), ranges[k]) as f32;
                             crate::widgets::draw_knob(
                                 ui.painter(),
                                 rect.center(),
@@ -123,9 +143,10 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                                 shown * 2.0 - 1.0,
                             );
                             if let (Some(id), true) = (id, resp.dragged()) {
-                                let moved = (f64::from(shown)
+                                let knob = (f64::from(shown)
                                     - f64::from(resp.drag_delta().y / KNOB_TRAVEL))
                                 .clamp(0.0, 1.0);
+                                let moved = value_of(knob, ranges[k]);
                                 v.values.insert((chosen, id), moved);
                                 v.moves.push((chosen, id, moved));
                                 if let Some(track) = p.tracks.get_mut(t) {
@@ -156,6 +177,29 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                                     learn.armed = (!armed).then_some(target);
                                 }
                             }
+                            // What part of the parameter the knob's travel covers.
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                let (lo, hi) = &mut ranges[k];
+                                for end in [lo, hi] {
+                                    let mut percent = *end * 100.0;
+                                    let drag = egui::DragValue::new(&mut percent)
+                                        .range(0.0..=100.0)
+                                        .speed(0.5)
+                                        .max_decimals(0)
+                                        .suffix("%");
+                                    if ui
+                                        .add_sized([46.0, 16.0], drag)
+                                        .on_hover_text(
+                                            "Low and high end of the knob. High below low turns \
+                                             it around.",
+                                        )
+                                        .changed()
+                                    {
+                                        *end = percent / 100.0;
+                                    }
+                                }
+                            });
                             let name = id
                                 .and_then(|id| params.iter().find(|x| x.id == id))
                                 .map_or("Off", |x| x.name.as_str());
@@ -182,6 +226,15 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             if knobs != was {
                 keep_knobs(p, t, chosen, knobs);
             }
+            if ranges != was_ranges {
+                let plugin = p
+                    .tracks
+                    .get_mut(t)
+                    .and_then(|t| t.hosted_mut().find(|i| i.uid == chosen));
+                if let Some(plugin) = plugin {
+                    plugin.smart_ranges = Some(ranges);
+                }
+            }
         });
     s.smart.open = open;
 }
@@ -189,6 +242,23 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_knob_covers_the_part_of_its_parameter_it_was_given() {
+        let part = (0.25, 0.75);
+        assert_eq!(value_of(0.0, part), 0.25);
+        assert_eq!(value_of(1.0, part), 0.75);
+        assert_eq!(knob_of(0.5, part), 0.5);
+        assert_eq!(
+            knob_of(0.9, part),
+            1.0,
+            "past its end, the knob rests there"
+        );
+        let turned = (1.0, 0.0);
+        assert_eq!(value_of(0.25, turned), 0.75);
+        assert_eq!(knob_of(0.75, turned), 0.25);
+        assert_eq!(knob_of(0.5, (0.5, 0.5)), 0.0, "no travel at all");
+    }
 
     #[test]
     fn knobs_start_on_the_first_parameters_and_stay_where_the_user_put_them() {

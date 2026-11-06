@@ -1574,6 +1574,9 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> prowave_project::PluginDoc {
         state: String::new(),
         sidechain: i.sidechain.map(|s| s as u32),
         smart_knobs: i.smart_knobs.map_or_else(Vec::new, |knobs| knobs.to_vec()),
+        smart_ranges: i
+            .smart_ranges
+            .map_or_else(Vec::new, |ranges| ranges.to_vec()),
     }
 }
 
@@ -1592,6 +1595,11 @@ fn plugin_from_doc(d: &prowave_project::PluginDoc) -> crate::model::PluginInsert
         sidechain: d.sidechain.map(|s| s as usize),
         side_offered: false,
         smart_knobs: smart_knobs_from_doc(&d.smart_knobs),
+        smart_ranges: <[(f32, f32); crate::model::SMART_KNOBS]>::try_from(
+            d.smart_ranges.as_slice(),
+        )
+        .ok()
+        .filter(|all| all.iter().all(|(lo, hi)| lo.is_finite() && hi.is_finite())),
     }
 }
 
@@ -1795,6 +1803,7 @@ pub(crate) mod tests {
             sidechain: None,
             side_offered: false,
             smart_knobs: None,
+            smart_ranges: None,
         };
         t.plugins.push(plugin);
         let points = vec![AutoPoint {
@@ -1892,6 +1901,7 @@ pub(crate) mod tests {
             sidechain: Some(a),
             side_offered: false,
             smart_knobs: Some([Some(7); crate::model::SMART_KNOBS]),
+            smart_ranges: Some([(0.25, 0.75); crate::model::SMART_KNOBS]),
         });
         let text = strip_to_text(&p.tracks[a]).unwrap();
         strip_from_text(&mut p.tracks[b], &text).unwrap();

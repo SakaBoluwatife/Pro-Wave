@@ -854,7 +854,13 @@ impl eframe::App for App {
             if let Some(e) = self.ui.mixer.strip_error.take() {
                 self.ui.status = Some(e);
             }
-            if let Some(cmd) = self.ui.mixer.preset_cmd.take() {
+            if let Some(cmd) = self
+                .ui
+                .mixer
+                .preset_cmd
+                .take()
+                .or_else(|| self.ui.browser.preset_cmd.take())
+            {
                 if let Err(e) = sync.run_preset(&cmd) {
                     self.ui.status = Some(e);
                 }
@@ -943,7 +949,7 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(file_browser::WIDTH)
                 .size_range(220.0..=560.0)
-                .show(ui, |ui| file_browser::show(ui, s));
+                .show(ui, |ui| file_browser::show(ui, p, s));
         }
         if s.show_notes {
             egui::Panel::right("notes")

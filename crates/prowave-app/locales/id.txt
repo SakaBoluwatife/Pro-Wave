@@ -728,3 +728,4 @@ Recording Meter = Meter Rekaman
 Duplicate Track = Duplikat Track
 New Track with Same Settings = Track Baru dengan Pengaturan Sama
 New Tracks… = Track Baru…
+Show Plugin Presets = Tampilkan Preset Plugin

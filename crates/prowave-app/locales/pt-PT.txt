@@ -728,3 +728,4 @@ Recording Meter = Medidor de gravação
 Duplicate Track = Duplicar faixa
 New Track with Same Settings = Nova faixa com as mesmas definições
 New Tracks… = Novas faixas…
+Show Plugin Presets = Mostrar predefinições de plugins

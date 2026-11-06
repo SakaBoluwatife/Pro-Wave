@@ -252,7 +252,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             .clap
             .plugins
             .iter()
-            .filter(|info| list.kind.shows(info, &search))
+            .filter(|info| list.kind.shows(info, &search) && !list.clap.hidden.contains(&info.id))
             .collect();
         // `show_rows` places rows by this spacing, so it is set before the call.
         ui.spacing_mut().item_spacing.y = 0.0;

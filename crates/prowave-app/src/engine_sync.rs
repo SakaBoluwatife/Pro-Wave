@@ -1458,6 +1458,7 @@ mod tests {
             sidechain: None,
             side_offered: false,
             smart_knobs: None,
+            smart_ranges: None,
         });
         let c = song_controls(&p);
         assert_eq!(c.len(), 3);

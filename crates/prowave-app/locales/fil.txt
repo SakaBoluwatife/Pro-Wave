@@ -728,3 +728,4 @@ Recording Meter = Metro ng Recording
 Duplicate Track = I-duplicate ang Track
 New Track with Same Settings = Bagong Track na may Parehong Setting
 New Tracks… = Mga Bagong Track…
+Show Plugin Presets = Ipakita ang mga Preset ng Plugin

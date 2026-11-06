@@ -728,3 +728,4 @@ Recording Meter = 录音电平表
 Duplicate Track = 复制轨道
 New Track with Same Settings = 使用相同设置新建轨道
 New Tracks… = 新建轨道…
+Show Plugin Presets = 显示插件预设

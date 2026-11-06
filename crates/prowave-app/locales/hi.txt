@@ -728,3 +728,4 @@ Recording Meter = रिकॉर्डिंग मीटर
 Duplicate Track = ट्रैक डुप्लिकेट करें
 New Track with Same Settings = समान सेटिंग्स वाला नया ट्रैक
 New Tracks… = नए ट्रैक…
+Show Plugin Presets = प्लगइन प्रीसेट दिखाएं

@@ -379,6 +379,9 @@ pub struct PluginDoc {
     /// user has chosen: the knobs then start on the first parameters.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub smart_knobs: Vec<Option<u32>>,
+    /// What part of its parameter each knob covers, low and high end, 0..=1. Empty for all of it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub smart_ranges: Vec<(f32, f32)>,
 }
 
 /// A hardware control assigned with MIDI learn.

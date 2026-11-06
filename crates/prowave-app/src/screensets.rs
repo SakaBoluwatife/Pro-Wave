@@ -19,6 +19,7 @@ fn tab_name(tab: Option<Tab>) -> &'static str {
         None => "",
         Some(Tab::Loops) => "loops",
         Some(Tab::Files) => "files",
+        Some(Tab::Presets) => "presets",
     }
 }
 
@@ -26,6 +27,7 @@ fn tab_from(name: &str) -> Option<Tab> {
     match name {
         "loops" => Some(Tab::Loops),
         "files" => Some(Tab::Files),
+        "presets" => Some(Tab::Presets),
         _ => None,
     }
 }

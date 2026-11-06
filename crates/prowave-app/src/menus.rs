@@ -255,6 +255,7 @@ const VIEW: &[&str] = &[
     "Show Project Notes",
     "Show Movie",
     "Show Media Browser",
+    "Show Plugin Presets",
     "-",
     "Show Toolbar",
     "Customize Toolbar…",
@@ -626,6 +627,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Toolbar"
         | "Show Project Notes"
         | "Show Media Browser"
+        | "Show Plugin Presets"
         | "Show Piano Roll"
         | "Show Channel Rack"
         | "Show Smart Controls"
@@ -681,6 +683,7 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Toolbar" => s.show_toolbar,
         "Show Project Notes" => s.show_notes,
         "Show Media Browser" => s.browser.open == Some(crate::file_browser::Tab::Files),
+        "Show Plugin Presets" => s.browser.open == Some(crate::file_browser::Tab::Presets),
         "Check for Updates Automatically" => s.update_auto,
         "Show Tempo Track" => s.tracks.show_tempo,
         "Show Marker Track" => s.tracks.show_markers,
@@ -987,6 +990,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Toolbar" => s.show_toolbar = !s.show_toolbar,
         "Show Project Notes" => s.show_notes = !s.show_notes,
         "Show Media Browser" => s.browser.toggle(crate::file_browser::Tab::Files),
+        "Show Plugin Presets" => s.browser.toggle(crate::file_browser::Tab::Presets),
         "Capture Recording" => s.capture_cmd = true,
         "Discard Recording" => s.rec_cmd = Some(crate::takes::RecCmd::Discard),
         "Recording Meter" => s.dialogs.rec_meter = !s.dialogs.rec_meter,

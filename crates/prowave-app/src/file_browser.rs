@@ -15,6 +15,8 @@ const MAX_ENTRIES: usize = 5000;
 pub enum Tab {
     Loops,
     Files,
+    /// The saved presets of the selected track's plugins.
+    Presets,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +35,18 @@ pub struct BrowserView {
     listed: Option<(Tab, PathBuf)>,
     entries: Vec<Entry>,
     search: String,
+    /// What the Presets pane lists: each plugin with its presets, and when that was read.
+    presets: Vec<PluginPresets>,
+    presets_read: Option<(usize, std::time::Instant)>,
+    /// What the Presets pane asked for; `App` carries it out.
+    pub preset_cmd: Option<crate::plugin_presets::PresetCmd>,
+}
+
+struct PluginPresets {
+    uid: u64,
+    id: String,
+    name: String,
+    presets: Vec<(String, PathBuf)>,
 }
 
 impl BrowserView {
@@ -104,9 +118,90 @@ fn matches(name: &str, search: &str) -> bool {
     name.to_lowercase().contains(&search.trim().to_lowercase())
 }
 
-pub fn show(ui: &mut egui::Ui, s: &mut crate::UiState) {
+/// The Presets pane: every saved preset of the selected track's plugins, a click away.
+fn presets_pane(ui: &mut egui::Ui, p: &crate::model::Project, v: &mut BrowserView) {
+    use crate::plugin_presets::{ask_where, list as presets_of, PresetCmd};
+    let track = p.selected_track;
+    // The folders are read now and then, not on every frame, so a new preset shows up by itself.
+    let stale = v
+        .presets_read
+        .is_none_or(|(on, at)| on != track || at.elapsed() > std::time::Duration::from_secs(1));
+    if stale {
+        v.presets_read = Some((track, std::time::Instant::now()));
+        v.presets = p
+            .tracks
+            .get(track)
+            .into_iter()
+            .flat_map(|t| t.hosted())
+            .map(|i| PluginPresets {
+                uid: i.uid,
+                id: i.id.clone(),
+                name: i.name.clone(),
+                presets: presets_of(&i.id),
+            })
+            .collect();
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.strong("Plugin Presets");
+    });
+    if v.presets.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label("The selected track has no plugins.");
+        });
+        return;
+    }
+    let mut cmd = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for plugin in &v.presets {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(&plugin.name).strong());
+                    if ui.small_button("Save…").clicked() {
+                        if let Some(file) = ask_where(&plugin.id, &plugin.name) {
+                            cmd = Some(PresetCmd::Save {
+                                uid: plugin.uid,
+                                file,
+                            });
+                        }
+                    }
+                });
+                if plugin.presets.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.weak("No saved presets");
+                    });
+                }
+                for (name, file) in &plugin.presets {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        if ui.selectable_label(false, name).clicked() {
+                            cmd = Some(PresetCmd::Load {
+                                uid: plugin.uid,
+                                file: file.clone(),
+                            });
+                        }
+                    });
+                }
+            }
+        });
+    if cmd.is_some() {
+        v.preset_cmd = cmd;
+    }
+}
+
+pub fn show(ui: &mut egui::Ui, p: &crate::model::Project, s: &mut crate::UiState) {
     let v = &mut s.browser;
     let Some(tab) = v.open else { return };
+    if tab == Tab::Presets {
+        presets_pane(ui, p, v);
+        return;
+    }
     let dir = v.dir.get_or_insert_with(|| start_dir(tab)).clone();
     if v.listed.as_ref() != Some(&(tab, dir.clone())) {
         v.entries = list(&dir, tab);
@@ -118,6 +213,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut crate::UiState) {
         ui.strong(match tab {
             Tab::Loops => tr("Loops"),
             Tab::Files => tr("All Files"),
+            Tab::Presets => "Plugin Presets",
         });
     });
     ui.horizontal(|ui| {

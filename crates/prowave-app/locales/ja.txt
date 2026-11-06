@@ -728,3 +728,4 @@ Recording Meter = 録音メーター
 Duplicate Track = トラックを複製
 New Track with Same Settings = 同じ設定で新規トラック
 New Tracks… = 新規トラック…
+Show Plugin Presets = プラグインプリセットを表示

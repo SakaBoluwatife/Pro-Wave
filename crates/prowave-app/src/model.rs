@@ -738,7 +738,7 @@ pub struct AudioRegion {
 
 /// A hosted plugin on a channel strip: what the project knows of it. The running instance is kept
 /// by [`crate::plugin_rack::Rack`], which finds it by `uid`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PluginInsert {
     /// The insert row it was put in. 0 means the next one free after what comes before it.
     pub row: u8,
@@ -762,6 +762,9 @@ pub struct PluginInsert {
     pub side_offered: bool,
     /// The parameter on each Smart Controls knob, once the user has chosen.
     pub smart_knobs: Option<[Option<u32>; SMART_KNOBS]>,
+    /// What part of its parameter each knob covers, low and high end, 0..=1. The high end below
+    /// the low one turns the knob around. `None` is all of it for every knob.
+    pub smart_ranges: Option<[(f32, f32); SMART_KNOBS]>,
 }
 
 /// What a hardware control moves (MIDI learn).
@@ -801,6 +804,7 @@ impl PluginInsert {
             sidechain: None,
             side_offered: false,
             smart_knobs: None,
+            smart_ranges: None,
         }
     }
 }

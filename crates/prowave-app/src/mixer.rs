@@ -1505,9 +1505,11 @@ fn master_slot(
 
 /// Keeps the slots' menus up to date with the plugins found. Called every frame.
 pub fn refresh_installed(ctx: &egui::Context, s: &mut UiState) {
-    let found = s.plugins.installed(ctx);
-    if found.len() != s.mixer.installed.len() {
-        s.mixer.installed = std::sync::Arc::new(found.to_vec());
+    let _ = s.plugins.installed(ctx);
+    let list = &s.plugins.clap;
+    let shown = list.plugins.iter().filter(|i| !list.hidden.contains(&i.id));
+    if shown.clone().count() != s.mixer.installed.len() {
+        s.mixer.installed = std::sync::Arc::new(shown.cloned().collect());
     }
     if let Some(message) = s.mixer.message.take() {
         s.status = Some(message);

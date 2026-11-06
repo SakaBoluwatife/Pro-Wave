@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const SCAN_ARG: &str = "--scan-plugin";
 const CACHE_FILE: &str = "plugin-cache";
+/// The plugins the user does not want in the menus, one identifier a line.
+const HIDDEN_FILE: &str = "plugin-hidden";
 /// How long one file may take, there only to end a real hang. A shell of hundreds of plugins takes
 /// a while the first time, and its result is kept after that.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
@@ -286,11 +288,34 @@ pub struct PluginScan {
     pub failed: Vec<(PathBuf, String)>,
     /// Files read and files to read, while a scan runs.
     pub progress: Option<(usize, usize)>,
+    /// Left out of the menus, by the user's choice. They still load in a project that uses them.
+    pub hidden: std::collections::HashSet<String>,
     rx: Option<Receiver<ScanMsg>>,
     started: bool,
 }
 
 impl PluginScan {
+    /// Shows or hides a plugin in the menus, and remembers it.
+    pub fn set_hidden(&mut self, id: &str, hidden: bool) {
+        if hidden {
+            self.hidden.insert(id.to_string());
+        } else {
+            self.hidden.remove(id);
+        }
+        let Some(file) = crate::recent_files::config_dir().map(|d| d.join(HIDDEN_FILE)) else {
+            return;
+        };
+        let mut lines: Vec<&str> = self.hidden.iter().map(String::as_str).collect();
+        lines.sort_unstable();
+        let saved = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, lines.join("\n")));
+        if let Err(e) = saved {
+            tracing::warn!("could not save the hidden plugins: {e}");
+        }
+    }
+
     /// Starts the first scan. Anything already known comes from the cache at once.
     pub fn ensure_started(&mut self, ctx: &egui::Context) {
         if !self.started {
@@ -304,6 +329,11 @@ impl PluginScan {
             return;
         }
         self.started = true;
+        if let Some(file) = crate::recent_files::config_dir().map(|d| d.join(HIDDEN_FILE)) {
+            if let Ok(text) = std::fs::read_to_string(file) {
+                self.hidden = text.lines().map(str::to_string).collect();
+            }
+        }
         let cache_path = crate::recent_files::config_dir().map(|d| d.join(CACHE_FILE));
         let cache = cache_path
             .as_ref()
