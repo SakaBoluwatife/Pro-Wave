@@ -100,6 +100,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::S, ctrl_alt, Action::NewInstrumentTrack),
     cmd(Key::N, ctrl, Action::Menu("New Tracks…")),
     cmd(Key::U, ctrl_alt, Action::Menu("New Aux Track")),
+    cmd(Key::B, ctrl_alt, Action::Menu("Map Beat to Playhead")),
     cmd(Key::M, ctrl_alt, Action::Menu("Mono Sum Output")),
     cmd(Key::I, ctrl_alt, Action::Menu("Dim Output")),
     cmd(Key::X, ctrl_alt, Action::Menu("New External MIDI Track")),

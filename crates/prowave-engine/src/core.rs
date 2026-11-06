@@ -28,6 +28,9 @@ const AUTO_BLOCK: u32 = 32;
 /// The most frames rendered in one go. The mix runs strip by strip over a span, which ends where
 /// anything has to happen at an exact frame.
 const SPAN: usize = crate::plugin::PLUGIN_BLOCK;
+/// Frames Varispeed renders ahead at a time, and the room beyond them it may have left over.
+const VARI_CHUNK: usize = 256;
+const VARI_KEEP: usize = 8;
 
 /// A note scheduled on the timeline (beats are 0-based quarter notes).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -507,6 +510,8 @@ pub enum Command {
     /// The strip meters read before the fader, or after it.
     SetPreFaderMeter(bool),
     /// What the speakers get, for checking a mix: both sides summed, and 20 dB down. Not bounces.
+    /// How fast the whole song runs, 1 for normal, from 0.5 to 2. Pitch moves with it.
+    SetVarispeed(f64),
     SetMonitorOut {
         mono: bool,
         dim: bool,
@@ -868,6 +873,14 @@ pub struct EngineCore {
     keep_headroom: bool,
     /// Plugins with nothing to process stop running.
     plugins_may_rest: bool,
+    /// Varispeed: how fast the whole song runs, 1 for normal. Speed and pitch move together, as
+    /// on a tape machine. Not in offline renders.
+    varispeed: f64,
+    /// What was rendered for it and not played yet, interleaved, made off the audio thread.
+    vari_buf: Vec<f32>,
+    /// Frames held in `vari_buf`, and where the next output frame is read from.
+    vari_have: usize,
+    vari_pos: f64,
     /// The output is summed to mono for the speakers.
     out_mono: bool,
     /// Where the output's dim is going, and where it is, so it does not click.
@@ -1061,6 +1074,10 @@ impl EngineCore {
             master_tap: None,
             keep_headroom: false,
             plugins_may_rest: true,
+            varispeed: 1.0,
+            vari_buf: vec![0.0; (VARI_CHUNK + VARI_KEEP) * 2],
+            vari_have: VARI_KEEP,
+            vari_pos: 1.0,
             out_mono: false,
             out_dim_target: 1.0,
             out_dim: 1.0,
@@ -2171,6 +2188,13 @@ impl EngineCore {
                     }
                 }
                 Command::SetPreFaderMeter(on) => self.pre_fader_meter = on,
+                Command::SetVarispeed(speed) => {
+                    self.varispeed = if speed.is_finite() {
+                        speed.clamp(0.5, 2.0)
+                    } else {
+                        1.0
+                    };
+                }
                 Command::SetMonitorOut { mono, dim } => {
                     self.out_mono = mono && !self.keep_headroom;
                     self.out_dim_target = if dim && !self.keep_headroom { 0.1 } else { 1.0 };
@@ -2771,6 +2795,45 @@ impl EngineCore {
 
     /// Render interleaved stereo (`out.len() == frames * 2`).
     pub fn process(&mut self, out: &mut [f32]) {
+        if self.varispeed == 1.0 || self.keep_headroom {
+            self.render_block(out);
+        } else {
+            self.render_varispeed(out);
+        }
+    }
+
+    /// Plays the song faster or slower: renders ahead into `vari_buf` and reads it back at
+    /// another rate, with cubic interpolation. Allocates nothing.
+    fn render_varispeed(&mut self, out: &mut [f32]) {
+        let mut buf = std::mem::take(&mut self.vari_buf);
+        for frame in out.chunks_exact_mut(2) {
+            while self.vari_pos as usize + 2 >= self.vari_have {
+                // What is still needed moves to the front, and a chunk goes after it.
+                let first = (self.vari_pos as usize).saturating_sub(1);
+                buf.copy_within(first * 2..self.vari_have * 2, 0);
+                self.vari_have -= first;
+                self.vari_pos -= first as f64;
+                let room = self.vari_have * 2;
+                self.render_block(&mut buf[room..room + VARI_CHUNK * 2]);
+                self.vari_have += VARI_CHUNK;
+            }
+            let at = self.vari_pos as usize;
+            let part = (self.vari_pos - at as f64) as f32;
+            for (side, sample) in frame.iter_mut().enumerate() {
+                let get = |i: usize| buf[i * 2 + side];
+                let before = if at == 0 { get(at) } else { get(at - 1) };
+                let (a, b, after) = (get(at), get(at + 1), get(at + 2));
+                let c1 = 0.5 * (b - before);
+                let c2 = before - 2.5 * a + 2.0 * b - 0.5 * after;
+                let c3 = 0.5 * (after - before) + 1.5 * (a - b);
+                *sample = ((c3 * part + c2) * part + c1) * part + a;
+            }
+            self.vari_pos += self.varispeed;
+        }
+        self.vari_buf = buf;
+    }
+
+    fn render_block(&mut self, out: &mut [f32]) {
         self.drain_commands();
         for c in self.song.clips.iter_mut() {
             c.service();
@@ -4337,6 +4400,33 @@ mod tests {
             notes,
             vec![TrackMix::default(), TrackMix::default()],
         ))
+    }
+
+    #[test]
+    fn varispeed_runs_the_song_faster_and_allocates_nothing() {
+        let (mut e, mut tx, _s) = rig();
+        assert!(tx.push(Command::Play).is_ok());
+        let mut buf = vec![0.0f32; 512];
+        e.process(&mut buf);
+        let at_normal = e.beat;
+        assert!(tx.push(Command::SetVarispeed(2.0)).is_ok());
+        // The command is taken in by the next block; the next ones run at the new speed.
+        e.process(&mut buf);
+        let before = e.beat;
+        for _ in 0..8 {
+            assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        }
+        let per_block = (e.beat - before) / 8.0;
+        assert!(
+            per_block > at_normal * 1.5,
+            "{per_block} against {at_normal}"
+        );
+        assert!(buf.iter().all(|s| s.is_finite()));
+        assert!(tx.push(Command::SetVarispeed(f64::NAN)).is_ok());
+        for _ in 0..2 {
+            e.process(&mut buf);
+        }
+        assert_eq!(e.varispeed, 1.0, "nonsense is normal speed");
     }
 
     /// A mix of everything the mix loop does, rendered in uneven callbacks. Writes it to the file

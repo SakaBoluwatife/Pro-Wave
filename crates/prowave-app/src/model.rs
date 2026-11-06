@@ -1130,6 +1130,8 @@ pub struct Project {
     pub trigger_db: f32,
     /// How far Nudge moves a region, in beats.
     pub nudge_beats: f64,
+    /// Varispeed: percent from normal speed, -50 to +100. Pitch moves with it. Bounces ignore it.
+    pub varispeed: f32,
     /// What the speakers get, for checking a mix. Not saved, so that no one is caught out.
     pub out_mono: bool,
     pub out_dim: bool,
@@ -1371,6 +1373,7 @@ impl Project {
             wait_for_sound: false,
             trigger_db: -40.0,
             nudge_beats: 0.25,
+            varispeed: 0.0,
             out_mono: false,
             out_dim: false,
             keep_plugins_running: false,
@@ -1811,6 +1814,51 @@ impl Project {
             aux.name = name.to_string();
         }
         self.tracks[t].name = name.to_string();
+    }
+
+    /// Beat mapping: makes `beat` fall at `at_seconds` from the start of the song, by changing the
+    /// tempo since the last tempo point. Audio regions stay at the same time, so that the song's
+    /// beats come to fit a recording; MIDI stays on its beats. False if that tempo is out of range.
+    pub fn map_beat(&mut self, beat: f64, at_seconds: f64) -> bool {
+        let map = self.tempo_map();
+        let i = self.tempo_changes.partition_point(|t| t.beat < beat - 1e-6);
+        let anchor = i.checked_sub(1).map_or(0.0, |j| self.tempo_changes[j].beat);
+        let from = map.seconds_at(anchor);
+        if beat <= anchor + 1e-3 || at_seconds <= from {
+            return false;
+        }
+        let bpm = (beat - anchor) * 60.0 / (at_seconds - from);
+        if !(f64::from(MIN_BPM)..=f64::from(MAX_BPM)).contains(&bpm) {
+            return false;
+        }
+        // Where the audio is in time, before any of that moves.
+        let mut audio = Vec::new();
+        for (t, track) in self.tracks.iter().enumerate() {
+            for (r, region) in track.regions.iter().enumerate() {
+                if region.audio.is_some() {
+                    audio.push((t, r, map.seconds_at(self.region_start_beats(region))));
+                }
+            }
+        }
+        let after = self.tempo_at(beat);
+        match i.checked_sub(1) {
+            Some(j) => {
+                self.tempo_changes[j].bpm = bpm as f32;
+                self.tempo_changes[j].ramp = false;
+            }
+            None => {
+                self.tempo = bpm as f32;
+                self.tempo_ramp = false;
+            }
+        }
+        self.add_tempo_change(beat, after);
+        let map = self.tempo_map();
+        for (t, r, seconds) in audio {
+            let start_bar = self.beats_to_bar(map.beat_at(seconds)) as f32 + 1.0;
+            self.tracks[t].regions[r].start_bar = start_bar;
+        }
+        self.song_rev += 1;
+        true
     }
 
     /// Moves regions along the song by `beats`, stopping at its start.
@@ -3629,6 +3677,25 @@ mod tests {
         assert!(p.regions_in_group(group).is_empty());
         assert!(!p.group_regions(&[(0, 0)]), "one is not a group");
         assert_eq!(p.loop_region(99, 0, 3), 0);
+    }
+
+    #[test]
+    fn a_mapped_beat_falls_at_its_time_and_the_next_mapping_keeps_it() {
+        let mut p = Project::empty();
+        p.tempo = 120.0;
+        // Beat 4 is at 2 seconds. Make it fall at 2.5.
+        assert!(p.map_beat(4.0, 2.5));
+        let map = p.tempo_map();
+        assert!((map.seconds_at(4.0) - 2.5).abs() < 1e-3);
+        assert!((f64::from(p.tempo) - 96.0).abs() < 1e-2);
+        // After it, the old tempo goes on.
+        assert!((p.tempo_at(4.5) - 120.0).abs() < 1e-3);
+        assert!(p.map_beat(8.0, 4.5));
+        let map = p.tempo_map();
+        assert!((map.seconds_at(4.0) - 2.5).abs() < 1e-3, "the first stays");
+        assert!((map.seconds_at(8.0) - 4.5).abs() < 1e-3);
+        assert!(!p.map_beat(8.5, 4.4), "time cannot go back");
+        assert!(!p.map_beat(12.0, 4.5001), "no such tempo");
     }
 
     #[test]

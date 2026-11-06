@@ -178,6 +178,35 @@ pub fn worker_limit() -> usize {
         .unwrap_or(0)
 }
 
+/// Which device recording comes from, apart from the one playback goes to.
+fn input_row(ui: &mut Ui, inputs: &mut crate::audio_rec::InputChoice) {
+    ui.separator();
+    if inputs.devices.is_empty() {
+        inputs.refresh();
+    }
+    let mut chosen = inputs.device.clone();
+    ui.horizontal(|ui| {
+        ui.label("Input device");
+        let shown = match &chosen {
+            None => "System default".to_string(),
+            Some(id) => inputs
+                .devices
+                .iter()
+                .find(|d| d.id == *id)
+                .map_or_else(|| id.clone(), |d| d.name.clone()),
+        };
+        egui::ComboBox::from_id_salt(egui::Id::unique("settings_input"))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, "System default");
+                for device in &inputs.devices {
+                    ui.selectable_value(&mut chosen, Some(device.id.clone()), device.name.as_str());
+                }
+            });
+    });
+    inputs.pick(chosen);
+}
+
 fn inside_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-windows-inside"))
 }
@@ -434,6 +463,7 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
         v.setup.save();
         v.apply = Some(v.setup.clone());
     }
+    input_row(ui, &mut s.mixer.inputs);
     threads_row(ui);
     block_row(ui);
 }

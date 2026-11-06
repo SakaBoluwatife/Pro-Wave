@@ -53,6 +53,8 @@ pub struct EngineSync {
     /// instances outlast what the audio thread holds of them.
     rack: Rack,
     plugin_message: Option<String>,
+    /// The Varispeed percent, as last told to the engine.
+    varispeed: f32,
     /// Mono sum and dim, as last told to the engine.
     monitor_out: (bool, bool),
     plugins_retry: bool,
@@ -590,6 +592,7 @@ impl EngineSync {
             rack: Rack::default(),
             plugin_message: None,
             monitor_out: (false, false),
+            varispeed: 0.0,
             plugins_retry: false,
             automation: Vec::new(),
             retry: false,
@@ -705,6 +708,11 @@ impl EngineSync {
             })
         {
             self.cycle = cycle;
+        }
+        if self.varispeed != p.varispeed
+            && self.send(Command::SetVarispeed(1.0 + f64::from(p.varispeed) / 100.0))
+        {
+            self.varispeed = p.varispeed;
         }
         let monitor_out = (p.out_mono, p.out_dim);
         if self.monitor_out != monitor_out

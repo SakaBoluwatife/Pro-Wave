@@ -181,6 +181,7 @@ const NAVIGATE: &[&str] = &[
     "Go to Left Locator",
     "Go to Right Locator",
     "-",
+    "Map Beat to Playhead",
     "Go to Next Transient",
     "Go to Previous Transient",
     "Go to Next Marker",
@@ -229,6 +230,7 @@ const MIX: &[&str] = &[
     "Routing Matrix…",
     "Create Mastering Track",
     "Stem Splitter…",
+    "Varispeed…",
     "Mono Sum Output",
     "Dim Output",
     "-",
@@ -561,7 +563,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Nudge Left" | "Nudge Right" | "Group Regions" | "Ungroup Regions" | "Loop Region…" => {
             !s.tracks.all_selected().is_empty()
         }
-        "Show Flex Editor" => true,
+        "Show Flex Editor" | "Varispeed…" | "Map Beat to Playhead" => true,
         "Commit Track" => p
             .tracks
             .get(p.selected_track)
@@ -728,6 +730,7 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Colors" => s.tracks.show_colors,
         "Recording Meter" => s.dialogs.rec_meter,
         "Show Flex Editor" => s.tracks.flex_view,
+        "Varispeed…" => p.varispeed != 0.0,
         "Mono Sum Output" => p.out_mono,
         "Dim Output" => p.out_dim,
         "Show Grid" => s.tracks.show_grid,
@@ -1086,6 +1089,21 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New Tracks…" => s.dialogs.open_new_tracks(),
+        "Varispeed…" => s.dialogs.varispeed = !s.dialogs.varispeed,
+        "Map Beat to Playhead" => {
+            // The nearest beat comes to where the playhead is, in time.
+            let map = p.tempo_map();
+            let at = map.seconds_at(p.position_beats);
+            let beat = p.position_beats.round().max(1.0);
+            if (beat - p.position_beats).abs() < 1e-4 {
+                s.status = Some("The playhead is on the beat already".to_string());
+            } else if p.map_beat(beat, at) {
+                s.status = Some(format!("Beat {} is now at the playhead", beat + 1.0));
+                p.position_beats = beat;
+            } else {
+                s.status = Some("That would need a tempo out of range".to_string());
+            }
+        }
         "Show Flex Editor" => s.tracks.flex_view = !s.tracks.flex_view,
         "Commit Track" => crate::bounce::commit_track(p, s, p.selected_track),
         "Group Regions" => {
@@ -1629,7 +1647,11 @@ mod tests {
 
     /// Everything a key command can change, including what `state` leaves out.
     fn key_state(p: &Project, s: &crate::UiState) -> String {
-        if s.dialogs.new_tracks.is_some() || s.dialogs.loop_times.is_some() || s.tracks.flex_view {
+        if s.dialogs.varispeed
+            || s.dialogs.new_tracks.is_some()
+            || s.dialogs.loop_times.is_some()
+            || s.tracks.flex_view
+        {
             return "New Tracks is open".to_string();
         }
         format!(
@@ -1691,7 +1713,8 @@ mod tests {
             if matches!(
                 c.action,
                 Action::Menu(
-                    "Group Regions"
+                    "Map Beat to Playhead"
+                        | "Group Regions"
                         | "Ungroup Regions"
                         | "Discard Recording"
                         | "Go to Next Transient"

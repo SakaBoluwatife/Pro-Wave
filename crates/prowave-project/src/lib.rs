@@ -619,6 +619,8 @@ pub struct ProjectDoc {
     pub trigger_db: f32,
     /// How far Nudge moves a region, in beats.
     pub nudge_beats: f64,
+    /// Varispeed, in percent from normal speed.
+    pub varispeed: f32,
     /// The Note Pad's text.
     pub notes: String,
     pub master_vol: f32,
@@ -792,6 +794,7 @@ impl Default for ProjectDoc {
             wait_for_sound: false,
             trigger_db: -40.0,
             nudge_beats: 0.25,
+            varispeed: 0.0,
             notes: String::new(),
             master_vol: 0.8,
             selected_track: 0,

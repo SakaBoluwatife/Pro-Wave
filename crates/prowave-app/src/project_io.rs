@@ -797,6 +797,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         wait_for_sound: p.wait_for_sound,
         trigger_db: p.trigger_db,
         nudge_beats: p.nudge_beats,
+        varispeed: p.varispeed,
         notes: p.notes.clone(),
         master_vol: p.master_vol,
         selected_track: p.selected_track,
@@ -1253,6 +1254,9 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.auto_monitor = doc.auto_monitor;
     p.wait_for_sound = doc.wait_for_sound;
     p.trigger_db = doc.trigger_db.clamp(-60.0, -6.0);
+    if doc.varispeed.is_finite() {
+        p.varispeed = doc.varispeed.clamp(-50.0, 100.0);
+    }
     if doc.nudge_beats.is_finite() && doc.nudge_beats > 0.0 {
         p.nudge_beats = doc.nudge_beats;
     }

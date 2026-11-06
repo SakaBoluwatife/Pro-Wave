@@ -12,6 +12,8 @@ pub struct QuickDialogs {
     pub color: Option<usize>,
     /// New Tracks: what has been typed for how many, and of what kind.
     pub new_tracks: Option<(String, crate::model::TrackKind)>,
+    /// The Varispeed window.
+    pub varispeed: bool,
     /// Loop Region: what has been typed for how many more.
     pub loop_times: Option<String>,
     /// The regions whose colour window is open.
@@ -140,6 +142,36 @@ fn go_to_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     } else if close {
         d.go_to = None;
     }
+}
+
+/// Varispeed: the whole song faster or slower, pitch with it, as on a tape machine.
+fn varispeed_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    if !s.dialogs.varispeed {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Varispeed")
+        .id(egui::Id::unique("varispeed"))
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.add(
+                egui::Slider::new(&mut p.varispeed, -50.0..=100.0)
+                    .suffix(" %")
+                    .max_decimals(1),
+            );
+            let speed = 1.0 + f64::from(p.varispeed) / 100.0;
+            ui.label(format!(
+                "{:+.2} semitones, {:.1} bpm heard",
+                12.0 * speed.log2(),
+                f64::from(p.tempo_at(p.position_beats)) * speed
+            ));
+            if ui.button("Normal Speed").clicked() {
+                p.varispeed = 0.0;
+            }
+            ui.label(egui::RichText::new("Bounces play at normal speed. Do not record with it on: takes will not line up.").small());
+        });
+    s.dialogs.varispeed = open;
 }
 
 /// Loop Region: how many more of the selected region, end to end after it.
@@ -550,6 +582,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     rename_window(ctx, p, s);
     new_tracks_window(ctx, p, s);
     loop_region_window(ctx, p, s);
+    varispeed_window(ctx, p, s);
     color_window(ctx, p, s);
     region_color_window(ctx, p, s);
     rec_meter_window(ctx, p, s);
