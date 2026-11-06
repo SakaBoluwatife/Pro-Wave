@@ -107,6 +107,10 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::D, ctrl_alt, Action::Menu("Duplicate Track")),
     cmd(Key::Backspace, ctrl, Action::Menu("Delete Track")),
     // Regions.
+    cmd(Key::G, ctrl_alt, Action::Menu("Group Regions")),
+    cmd(Key::H, ctrl_alt, Action::Menu("Ungroup Regions")),
+    cmd(Key::L, none, Action::Menu("Loop Region…")),
+    cmd(Key::F, ctrl, Action::Menu("Show Flex Editor")),
     cmd(Key::ArrowLeft, alt, Action::Menu("Nudge Left")),
     cmd(Key::ArrowRight, alt, Action::Menu("Nudge Right")),
     cmd(Key::X, ctrl, Action::Edit(EditCmd::Cut)),

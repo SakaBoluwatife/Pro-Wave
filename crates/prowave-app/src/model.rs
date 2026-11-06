@@ -206,6 +206,8 @@ pub struct RegionParams {
     pub pattern_color: Option<Color32>,
     /// Its own colour, instead of its track's.
     pub color: Option<Color32>,
+    /// The clip group it is in, 0 for none. A click on one selects them all, so they move together.
+    pub group: u32,
     pub mute: bool,
     /// The rows under More in the Region Inspector.
     pub shape: prowave_project::RegionShape,
@@ -1849,6 +1851,85 @@ impl Project {
             }
         }
         feeds
+    }
+
+    fn new_region_group(&self) -> u32 {
+        let top = self.tracks.iter().flat_map(|t| &t.regions);
+        top.map(|r| r.params.group).max().unwrap_or(0) + 1
+    }
+
+    /// Makes one clip group of `regions`. Fewer than two make none.
+    pub fn group_regions(&mut self, regions: &[(usize, usize)]) -> bool {
+        if regions.len() < 2 {
+            return false;
+        }
+        let group = self.new_region_group();
+        for &(t, r) in regions {
+            if let Some(region) = self.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
+                region.params.group = group;
+            }
+        }
+        self.song_rev += 1;
+        true
+    }
+
+    /// Ends the clip groups that `regions` are in.
+    pub fn ungroup_regions(&mut self, regions: &[(usize, usize)]) {
+        let groups: Vec<u32> = regions
+            .iter()
+            .filter_map(|&(t, r)| self.tracks.get(t)?.regions.get(r))
+            .map(|r| r.params.group)
+            .filter(|g| *g != 0)
+            .collect();
+        for region in self.tracks.iter_mut().flat_map(|t| &mut t.regions) {
+            if groups.contains(&region.params.group) {
+                region.params.group = 0;
+            }
+        }
+        self.song_rev += 1;
+    }
+
+    /// Every region in clip group `group`.
+    pub fn regions_in_group(&self, group: u32) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        for (t, track) in self.tracks.iter().enumerate() {
+            for (r, region) in track.regions.iter().enumerate() {
+                if group != 0 && region.params.group == group {
+                    found.push((t, r));
+                }
+            }
+        }
+        found
+    }
+
+    /// A region loop: `times` more of region `r` of track `t` end to end after it, all in one clip
+    /// group with it. They are copies, which can be edited or ungrouped one by one.
+    pub fn loop_region(&mut self, t: usize, r: usize, times: usize) -> usize {
+        let Some(region) = self.tracks.get(t).and_then(|x| x.regions.get(r)).cloned() else {
+            return 0;
+        };
+        let (start, len) = (
+            self.region_start_beats(&region),
+            self.region_len_beats(&region),
+        );
+        if len <= 0.0 || times == 0 {
+            return 0;
+        }
+        let group = if region.params.group != 0 {
+            region.params.group
+        } else {
+            self.new_region_group()
+        };
+        self.tracks[t].regions[r].params.group = group;
+        for k in 1..=times {
+            let mut copy = region.clone();
+            copy.name = region.name.clone();
+            copy.params.group = group;
+            copy.start_bar = self.beats_to_bar(start + len * k as f64) as f32 + 1.0;
+            self.tracks[t].regions.push(copy);
+        }
+        self.song_rev += 1;
+        times
     }
 
     /// The Record button and key: starts recording now, from where the song is. While recording,
@@ -3527,6 +3608,27 @@ mod tests {
         assert_eq!(feeds[1].0, b);
         assert!(feeds[1].1.contains("pre") && feeds[1].1.contains("50"));
         assert!(p.feeds_of(a).is_empty(), "only a bus is fed");
+    }
+
+    #[test]
+    fn a_region_loop_goes_end_to_end_in_one_group_and_ungroups() {
+        let mut p = Project::demo();
+        let (start, len) = {
+            let r = &p.tracks[0].regions[0];
+            (p.region_start_beats(r), p.region_len_beats(r))
+        };
+        let before = p.tracks[0].regions.len();
+        assert_eq!(p.loop_region(0, 0, 3), 3);
+        assert_eq!(p.tracks[0].regions.len(), before + 3);
+        let group = p.tracks[0].regions[0].params.group;
+        assert_ne!(group, 0);
+        assert_eq!(p.regions_in_group(group).len(), 4);
+        let last = p.tracks[0].regions.last().unwrap();
+        assert!((p.region_start_beats(last) - start - len * 3.0).abs() < 1e-2);
+        p.ungroup_regions(&[(0, 0)]);
+        assert!(p.regions_in_group(group).is_empty());
+        assert!(!p.group_regions(&[(0, 0)]), "one is not a group");
+        assert_eq!(p.loop_region(99, 0, 3), 0);
     }
 
     #[test]

@@ -140,6 +140,8 @@ pub struct RegionDoc {
     pub mute: bool,
     /// Its own colour, instead of its track's.
     pub color: Option<[u8; 3]>,
+    /// The clip group it is in, 0 for none.
+    pub group: u32,
     /// Playback quantize grid in beats.
     pub quantize: Option<f32>,
     pub transpose: i8,

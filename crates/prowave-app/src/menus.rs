@@ -138,6 +138,9 @@ const EDIT: &[&str] = &[
     "Join",
     "Bounce and Join",
     "-",
+    "Group Regions",
+    "Ungroup Regions",
+    "Loop Region…",
     "Nudge Left",
     "Nudge Right",
     "Snap to Zero Crossings",
@@ -207,6 +210,7 @@ const RECORD: &[&str] = &[
     "New Take",
     "Delete Take",
     "Bounce In Place",
+    "Commit Track",
     "-",
     "Record Project Settings",
     "Project Settings",
@@ -554,7 +558,14 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Record Toggle" => p.playing,
         "Discard Recording" => s.rec.active() || s.audio_rec.active(),
         "Recording Meter" | "Mono Sum Output" | "Dim Output" => true,
-        "Nudge Left" | "Nudge Right" => !s.tracks.all_selected().is_empty(),
+        "Nudge Left" | "Nudge Right" | "Group Regions" | "Ungroup Regions" | "Loop Region…" => {
+            !s.tracks.all_selected().is_empty()
+        }
+        "Show Flex Editor" => true,
+        "Commit Track" => p
+            .tracks
+            .get(p.selected_track)
+            .is_some_and(crate::bounce::can_freeze),
         "Go to Next Transient" | "Go to Previous Transient" => p
             .tracks
             .get(p.selected_track)
@@ -716,6 +727,7 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Ruler" => s.tracks.show_ruler,
         "Show Colors" => s.tracks.show_colors,
         "Recording Meter" => s.dialogs.rec_meter,
+        "Show Flex Editor" => s.tracks.flex_view,
         "Mono Sum Output" => p.out_mono,
         "Dim Output" => p.out_dim,
         "Show Grid" => s.tracks.show_grid,
@@ -1074,6 +1086,19 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New Tracks…" => s.dialogs.open_new_tracks(),
+        "Show Flex Editor" => s.tracks.flex_view = !s.tracks.flex_view,
+        "Commit Track" => crate::bounce::commit_track(p, s, p.selected_track),
+        "Group Regions" => {
+            let regions = s.tracks.all_selected();
+            if !p.group_regions(&regions) {
+                s.status = Some("Select two or more regions to group them".to_string());
+            }
+        }
+        "Ungroup Regions" => {
+            let regions = s.tracks.all_selected();
+            p.ungroup_regions(&regions);
+        }
+        "Loop Region…" => s.dialogs.open_loop_region(),
         "Mono Sum Output" => {
             p.out_mono = !p.out_mono;
             let now = if p.out_mono { "on" } else { "off" };
@@ -1604,7 +1629,7 @@ mod tests {
 
     /// Everything a key command can change, including what `state` leaves out.
     fn key_state(p: &Project, s: &crate::UiState) -> String {
-        if s.dialogs.new_tracks.is_some() {
+        if s.dialogs.new_tracks.is_some() || s.dialogs.loop_times.is_some() || s.tracks.flex_view {
             return "New Tracks is open".to_string();
         }
         format!(
@@ -1666,7 +1691,9 @@ mod tests {
             if matches!(
                 c.action,
                 Action::Menu(
-                    "Discard Recording"
+                    "Group Regions"
+                        | "Ungroup Regions"
+                        | "Discard Recording"
                         | "Go to Next Transient"
                         | "Go to Previous Transient"
                         | "Nudge Left"

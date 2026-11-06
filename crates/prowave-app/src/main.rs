@@ -890,6 +890,15 @@ impl eframe::App for App {
             if sync.needs_retry() {
                 ctx.request_repaint();
             }
+            if let Some((track, beat)) = self.ui.tracks.scrub.take() {
+                let rate = sync.engine.sample_rate();
+                if let Some(samples) = region_edit::scrub_grain(&self.project, track, beat, rate) {
+                    sync.engine
+                        .send(prowave_engine::Command::SetPreview(Some(Box::new(
+                            prowave_engine::Preview { samples, gain: 0.8 },
+                        ))));
+                }
+            }
             let load = sync.take_dsp_load();
             self.ui.cpu_load = load.max(self.ui.cpu_load - dt as f32 * 0.8);
             // Only when it happens, not on every frame from then on.

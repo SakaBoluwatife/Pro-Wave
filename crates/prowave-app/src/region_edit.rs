@@ -711,6 +711,43 @@ pub fn join_selected(p: &mut Project, v: &mut TracksView) -> Result<(), String> 
     Ok(())
 }
 
+/// A short piece of what track `t` plays at `beat`, for the Scrub tool: stereo at `rate`, faded at
+/// both ends so that pieces do not click.
+pub fn scrub_grain(p: &Project, t: usize, beat: f64, rate: u32) -> Option<Vec<f32>> {
+    const SECONDS: f64 = 0.045;
+    let track = p.tracks.get(t)?;
+    let map = p.tempo_map();
+    let region = track.regions.iter().rev().find(|r| {
+        let start = p.region_start_beats(r);
+        r.audio.is_some()
+            && !r.params.mute
+            && (start..start + p.region_len_beats(r)).contains(&beat)
+    })?;
+    let audio = region.audio.as_ref()?;
+    let file_rate = f64::from(audio.file.sample_rate.max(1));
+    let into = map.seconds_at(beat) - map.seconds_at(p.region_start_beats(region));
+    let from = ((into + f64::from(region.params.source_start)).max(0.0) * file_rate) as u64;
+    let frames = (SECONDS * file_rate) as usize;
+    let read = audio.file.read_stereo_at(from, frames).ok()?;
+    let have = read.len() / 2;
+    if have < 2 {
+        return None;
+    }
+    let out_frames = (have as f64 * f64::from(rate) / file_rate) as usize;
+    let gain = 10f32.powf(region.params.gain_db / 20.0);
+    let mut out = Vec::with_capacity(out_frames * 2);
+    for i in 0..out_frames {
+        let at = i as f64 * (have - 1) as f64 / out_frames.max(1) as f64;
+        let (near, part) = (at as usize, at.fract() as f32);
+        let window = (std::f32::consts::PI * i as f32 / out_frames.max(1) as f32).sin();
+        for side in 0..2 {
+            let (a, b) = (read[near * 2 + side], read[(near + 1) * 2 + side]);
+            out.push((a + (b - a) * part) * window * gain);
+        }
+    }
+    Some(out)
+}
+
 /// Where hits are in a waveform, in seconds from its start: a level jumping well above what came
 /// just before it. `seconds_per_point` is the waveform's resolution.
 pub fn transients(peaks: &[(f32, f32)], seconds_per_point: f64) -> Vec<f64> {

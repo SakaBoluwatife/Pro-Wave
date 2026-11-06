@@ -202,6 +202,8 @@ pub enum After {
     },
     /// Track `track` is frozen with it.
     Freeze { track: usize },
+    /// It goes on a new track below `track`, with the same fader, and `track` is switched off.
+    Commit { track: usize, name: String },
     /// It takes the place of the stretch `from_beat..to_beat` of region `region` on track `track`,
     /// made by the effects named here. The file the region played stays as it was.
     Process {
@@ -285,7 +287,7 @@ fn render_project(p: &Project, render: &Render) -> Project {
             t.auto = crate::model::Automation::default();
         }
     }
-    if let After::Freeze { track } = render.after {
+    if let After::Freeze { track } | After::Commit { track, .. } = render.after {
         // What the strip makes before its fader: that, and what comes after it, stay live.
         copy.master_vol = 1.0;
         copy.master_plugins.clear();
@@ -676,6 +678,24 @@ pub fn place(
             }
             Ok(())
         }
+        After::Commit { track, name } => {
+            import(p, 1.0, None)?;
+            let last = p.tracks.len() - 1;
+            if let Some(old) = p.tracks.get(*track).cloned() {
+                let new = &mut p.tracks[last];
+                new.name = format!("{name} Committed");
+                new.volume_db = old.volume_db;
+                new.pan = old.pan;
+                new.output = old.output;
+                new.sends = old.sends.clone();
+                new.color = old.color;
+                p.tracks[*track].off = true;
+                p.move_tracks(&[last], *track + 1);
+                p.selected_track = *track + 1;
+            }
+            p.song_rev += 1;
+            Ok(())
+        }
         After::NewTrack { name, bar, sources } => {
             import(p, *bar, None)?;
             if let Some(t) = p.tracks.last_mut() {
@@ -792,6 +812,37 @@ pub fn can_freeze(t: &crate::model::Track) -> bool {
         t.kind,
         TrackKind::Audio | TrackKind::Instrument | TrackKind::Drummer
     ) && !t.regions.is_empty()
+}
+
+/// Commit: prints track `t` through its plugins and effects to a new audio track below it, and
+/// switches `t` off. Nothing is lost: switch `t` on again to go back.
+pub fn commit_track(p: &mut Project, s: &mut crate::UiState, t: usize) {
+    let Some(track) = p.tracks.get(t) else {
+        return;
+    };
+    if !can_freeze(track) {
+        s.status = Some("This track has nothing to commit".to_string());
+        return;
+    }
+    let name = track.name.clone();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let dir = bounce_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        s.status = Some(e.to_string());
+        return;
+    }
+    s.bounce.enqueue(vec![Render {
+        path: dir.join(format!("{} commit {stamp}.wav", file_safe(&name))),
+        format: FileFormat::Wav,
+        out_rate: 0,
+        from_beat: 0.0,
+        to_beat: project_end(p),
+        depth: BitDepth::Float32,
+        solo: Some(t),
+        after: After::Commit { track: t, name },
+    }]);
 }
 
 /// Freezes track `t`, or thaws it. A frozen track plays a file and runs none of its plugins or

@@ -12,6 +12,8 @@ pub struct QuickDialogs {
     pub color: Option<usize>,
     /// New Tracks: what has been typed for how many, and of what kind.
     pub new_tracks: Option<(String, crate::model::TrackKind)>,
+    /// Loop Region: what has been typed for how many more.
+    pub loop_times: Option<String>,
     /// The regions whose colour window is open.
     pub region_color: Vec<(usize, usize)>,
     /// The big input level window.
@@ -86,6 +88,11 @@ fn answer(ui: &mut egui::Ui, focus: &mut bool, edit: &egui::Response) -> (bool, 
 }
 
 impl QuickDialogs {
+    pub fn open_loop_region(&mut self) {
+        self.loop_times = Some(String::new());
+        self.focus = true;
+    }
+
     /// New Tracks, asking for Aux tracks unless the kind is changed.
     pub fn open_new_tracks(&mut self) {
         self.new_tracks = Some((String::new(), crate::model::TrackKind::Aux));
@@ -132,6 +139,33 @@ fn go_to_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         }
     } else if close {
         d.go_to = None;
+    }
+}
+
+/// Loop Region: how many more of the selected region, end to end after it.
+fn loop_region_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let d = &mut s.dialogs;
+    let Some(text) = d.loop_times.as_mut() else {
+        return;
+    };
+    let mut result = (false, false);
+    let mut focus = std::mem::take(&mut d.focus);
+    egui::Modal::new(egui::Id::unique("loop_region")).show(ctx, |ui| {
+        ui.set_width(280.0);
+        ui.label("How many more times?");
+        let edit = ui.add(egui::TextEdit::singleline(text).hint_text("1"));
+        text.retain(|c| c.is_ascii_digit());
+        result = answer(ui, &mut focus, &edit);
+    });
+    let (ok, close) = result;
+    if ok {
+        let times: usize = text.parse().unwrap_or(1).min(512);
+        d.loop_times = None;
+        if let Some((t, r)) = s.tracks.selected {
+            p.loop_region(t, r, times);
+        }
+    } else if close {
+        d.loop_times = None;
     }
 }
 
@@ -515,6 +549,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
     new_tracks_window(ctx, p, s);
+    loop_region_window(ctx, p, s);
     color_window(ctx, p, s);
     region_color_window(ctx, p, s);
     rec_meter_window(ctx, p, s);

@@ -101,7 +101,7 @@ const FADE_TOOL: usize = 9;
 const SCISSORS_TOOL: usize = 4;
 const GLUE_TOOL: usize = 5;
 
-pub(crate) const TOOLS: [&str; 14] = [
+pub(crate) const TOOLS: [&str; 15] = [
     "Pointer Tool",
     "Pencil Tool",
     "Eraser Tool",
@@ -116,6 +116,7 @@ pub(crate) const TOOLS: [&str; 14] = [
     "Automation Curve Tool",
     "Marquee Tool",
     "Flex Tool",
+    "Scrub Tool",
 ];
 
 /// A Normalize Region Gain scan running on its own thread: reading a long recording to find
@@ -156,6 +157,8 @@ pub enum TrackTool {
     Marquee,
     /// Click an audio region to turn Flex on for it.
     Flex,
+    /// Drag over audio to hear it where the pointer is.
+    Scrub,
 }
 
 impl TrackTool {
@@ -174,6 +177,7 @@ impl TrackTool {
             10 | 11 => Self::Automation,
             12 => Self::Marquee,
             13 => Self::Flex,
+            14 => Self::Scrub,
             _ => Self::Pointer,
         }
     }
@@ -192,6 +196,7 @@ impl TrackTool {
             Self::Automation => "A",
             Self::Marquee => "Q",
             Self::Flex => "X",
+            Self::Scrub => "U",
             Self::Pointer | Self::Fade => return None,
         })
     }
@@ -334,6 +339,13 @@ pub struct TracksView {
     pub show_grid: bool,
     /// View > Show Colors: off draws the regions in gray.
     pub show_colors: bool,
+    /// Flex markers are shown on the regions that have them, to drag.
+    pub flex_view: bool,
+    /// A Flex marker being dragged: track, region, marker, where it would land in seconds.
+    flex_drag: Option<(usize, usize, usize, f64)>,
+    /// What to hear of the Scrub tool: track and beat. `App` plays it.
+    pub scrub: Option<(usize, f64)>,
+    scrub_at: Option<(f32, std::time::Instant)>,
     /// Track > Configure Track Header.
     pub header_opts: HeaderOpts,
     /// Tracks picked besides the selected one, with Ctrl or Shift on their headers.
@@ -449,6 +461,10 @@ impl Default for TracksView {
             show_ruler: true,
             show_grid: true,
             show_colors: true,
+            flex_view: false,
+            flex_drag: None,
+            scrub: None,
+            scrub_at: None,
             header_opts: HeaderOpts::default(),
             pending_menu: None,
             groove_quantize: None,
@@ -2806,6 +2822,97 @@ fn played_part<'a>(region: &Region, peaks: &'a [(f32, f32)]) -> &'a [(f32, f32)]
     &peaks[bin(start)..bin(end)]
 }
 
+/// The Flex markers of a region on the region itself: drag one to move that moment of the sound,
+/// right-click one to remove it, and double-click the region to add one.
+#[allow(clippy::too_many_arguments)]
+fn flex_markers(
+    ui: &Ui,
+    g: &Painter,
+    p: &mut Project,
+    v: &mut TracksView,
+    (ti, ri): (usize, usize),
+    rr: Rect,
+    full: Rect,
+    region_resp: &egui::Response,
+) {
+    let Some(audio) = p.tracks[ti].regions[ri].audio.as_mut() else {
+        return;
+    };
+    let seconds = audio.file.duration_secs().max(1e-3);
+    let Some(flex) = audio.flex.as_mut() else {
+        return;
+    };
+    let x_of = |dst: f64| full.left() + (dst / seconds) as f32 * full.width();
+    let mut remove = None;
+    let mut changed = false;
+    for k in 0..flex.markers.len() {
+        let dragged = v.flex_drag.filter(|d| (d.0, d.1, d.2) == (ti, ri, k));
+        let dst = dragged.map_or(flex.markers[k].dst, |d| d.3);
+        let x = x_of(dst);
+        let handle = Rect::from_center_size(pos2(x, rr.top() + 6.0), vec2(9.0, 12.0));
+        let resp = ui
+            .interact(
+                handle,
+                id(("flex_marker", ti, ri, k)),
+                Sense::click_and_drag(),
+            )
+            .on_hover_text("Drag to move this moment. Right-click to remove it.");
+        let colour = Color32::from_rgb(0xff, 0xb0, 0x30);
+        g.line_segment(
+            [pos2(x, rr.top()), pos2(x, rr.bottom())],
+            Stroke::new(1.0, colour),
+        );
+        g.rect_filled(handle.shrink(1.0), 1.0, colour);
+        if resp.dragged() {
+            let low = k.checked_sub(1).map_or(0.0, |i| flex.markers[i].dst) + 0.01;
+            let high = flex.markers.get(k + 1).map_or(seconds * 4.0, |m| m.dst) - 0.01;
+            let moved = dst + f64::from(resp.drag_delta().x) * seconds / f64::from(full.width());
+            v.flex_drag = Some((ti, ri, k, moved.clamp(low, high.max(low))));
+        }
+        if resp.drag_stopped() {
+            if let Some(done) = dragged {
+                flex.markers[k].dst = done.3;
+                changed = true;
+            }
+            v.flex_drag = None;
+        }
+        if resp.secondary_clicked() {
+            remove = Some(k);
+        }
+    }
+    if let Some(k) = remove {
+        flex.markers.remove(k);
+        changed = true;
+    }
+    if region_resp.double_clicked() {
+        if let Some(at) = ui.input(|i| i.pointer.latest_pos()) {
+            let dst = f64::from((at.x - full.left()) / full.width().max(1.0)) * seconds;
+            // The moment of the recording that plays there now.
+            let next = flex.markers.iter().position(|m| m.dst > dst);
+            let src = match next {
+                Some(0) | None if flex.markers.is_empty() => dst,
+                Some(0) => dst * flex.markers[0].src / flex.markers[0].dst.max(1e-6),
+                None => {
+                    let last = &flex.markers[flex.markers.len() - 1];
+                    last.src + (dst - last.dst)
+                }
+                Some(n) => {
+                    let (a, b) = (&flex.markers[n - 1], &flex.markers[n]);
+                    let along = (dst - a.dst) / (b.dst - a.dst).max(1e-6);
+                    a.src + along * (b.src - a.src)
+                }
+            };
+            let at = next.unwrap_or(flex.markers.len());
+            flex.markers
+                .insert(at, prowave_engine::WarpPoint { src, dst });
+            changed = true;
+        }
+    }
+    if changed {
+        p.song_rev += 1;
+    }
+}
+
 /// How a waveform's height follows the level: below 1, quiet parts are drawn taller.
 const WAVE_CURVE: f32 = 0.6;
 
@@ -3387,6 +3494,21 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     let bpb = p.bar_len(0);
     let v = &mut s.tracks;
     v.lanes_w = lanes.width();
+    // A selected region brings its clip group with it.
+    let grouped: Vec<u32> = v
+        .all_selected()
+        .iter()
+        .filter_map(|&(t, r)| p.tracks.get(t)?.regions.get(r))
+        .map(|r| r.params.group)
+        .filter(|g| *g != 0)
+        .collect();
+    for group in grouped {
+        for member in p.regions_in_group(group) {
+            if !v.is_selected(member) {
+                v.also.push(member);
+            }
+        }
+    }
 
     // ---- wheel: along the song; over the headers, or with Shift or Alt, through the tracks;
     // Ctrl/Cmd = horizontal zoom around the pointer
@@ -3424,6 +3546,34 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     let (scroll_x, scroll_y) = (v.scroll_x, v.scroll_y);
     let x_of = |beat: f64| lanes.left() + beat as f32 * beat_px - scroll_x;
     let beat_of = |x: f32| ((x - lanes.left() + scroll_x) / beat_px).max(0.0) as f64;
+    if v.tool == TrackTool::Scrub {
+        let (down, origin, at) = ui.input(|i| {
+            (
+                i.pointer.primary_down(),
+                i.pointer.press_origin(),
+                i.pointer.latest_pos(),
+            )
+        });
+        let held = down && origin.is_some_and(|o| lanes.contains(o));
+        match at.filter(|_| held) {
+            Some(at) => {
+                let due = v.scrub_at.is_none_or(|(x, when)| {
+                    (x - at.x).abs() >= 1.0
+                        && when.elapsed() >= std::time::Duration::from_millis(30)
+                });
+                if due {
+                    let beat = beat_of(at.x);
+                    let row = origin.and_then(|o| row_at(&rows, o.y - lanes.top() + scroll_y));
+                    v.scrub = Some((row.unwrap_or(p.selected_track), beat));
+                    v.scrub_at = Some((at.x, std::time::Instant::now()));
+                    if !p.playing {
+                        p.position_beats = beat;
+                    }
+                }
+            }
+            None => v.scrub_at = None,
+        }
+    }
 
     // ---- lanes background + grid
     let g = ui.painter_at(lanes);
@@ -3997,6 +4147,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 v.wave_zoom,
             );
             crate::automation::draw_region_lanes(&g, full, &tr.regions[ri], beat_px);
+            if v.flex_view {
+                flex_markers(ui, &g, p, v, (ti, ri), rr, full, &resp);
+            }
         }
     }
     // The curves of the tracks that show theirs, on top of the regions: registered after them, so
@@ -4170,7 +4323,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     Err("Flex is for audio regions".to_string())
                 }
             }
-            TrackTool::Pointer | TrackTool::Fade | TrackTool::Pencil | TrackTool::Marquee => Ok(()),
+            TrackTool::Pointer
+            | TrackTool::Fade
+            | TrackTool::Pencil
+            | TrackTool::Marquee
+            | TrackTool::Scrub => Ok(()),
         };
         let keeps_selection = matches!(
             tool,
