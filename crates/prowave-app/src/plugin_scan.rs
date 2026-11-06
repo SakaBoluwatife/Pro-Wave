@@ -14,8 +14,14 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 const SCAN_ARG: &str = "--scan-plugin";
 const CACHE_FILE: &str = "plugin-cache";
-/// How long one file may take. Some plugins check licenses or read big libraries when loaded.
-const SCAN_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one file may take, there only to end a real hang. A shell of hundreds of plugins takes
+/// a while the first time, and its result is kept after that.
+const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// The scanner's last line: the list above it is whole, whatever happens as the process ends.
+const SCAN_DONE: &str = "scan-done";
+/// The first line of the cache. Files in a cache without it get another chance if they failed:
+/// the scanner has since learned to wait longer and to survive a crash on the way out.
+const CACHE_VERSION: &str = "version\t2";
 /// Files read at the same time. A big collection takes minutes otherwise, one by one.
 const SCAN_WORKERS: usize = 4;
 
@@ -69,6 +75,8 @@ pub fn scan_and_print(path: &Path) -> i32 {
             for info in &found {
                 println!("{}", plugin_line(info));
             }
+            println!("{SCAN_DONE}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
             0
         }
         Err(e) => {
@@ -124,16 +132,18 @@ fn run_scanner(
             Err(e) => return Err(e.to_string()),
         }
     };
-    if !status.success() {
+    let text = rx
+        .recv_timeout(Duration::from_secs(5))
+        .map(|t| String::from_utf8_lossy(&t).into_owned())
+        .unwrap_or_default();
+    // Some plugins crash while the process ends, with their list already out.
+    let whole = text.lines().any(|l| l.trim() == SCAN_DONE);
+    if !status.success() && !whole {
         return Err(match status.code() {
             Some(1) => "could not be loaded".to_string(),
             _ => "crashed while loading".to_string(),
         });
     }
-    let text = rx
-        .recv_timeout(Duration::from_secs(1))
-        .map(|t| String::from_utf8_lossy(&t).into_owned())
-        .unwrap_or_default();
     Ok(text
         .lines()
         .filter_map(|l| parse_plugin_line(l, path))
@@ -159,7 +169,7 @@ fn stamp_of(path: &Path) -> u64 {
 
 /// The cache as text: a `file` line for each file, then the lines of its plugins.
 fn cache_text(all: &[Scanned]) -> String {
-    let mut text = String::new();
+    let mut text = format!("{CACHE_VERSION}\n");
     for s in all {
         let failure = s.result.as_ref().err().map_or("", String::as_str);
         text.push_str(&format!(
@@ -178,6 +188,10 @@ fn cache_text(all: &[Scanned]) -> String {
 
 fn parse_cache(text: &str) -> Vec<Scanned> {
     let mut all: Vec<Scanned> = Vec::new();
+    let current = text
+        .lines()
+        .next()
+        .is_some_and(|l| l.trim() == CACHE_VERSION);
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("file\t") {
             let mut parts = rest.split('\t');
@@ -188,6 +202,9 @@ fn parse_cache(text: &str) -> Vec<Scanned> {
             let Ok(stamp) = stamp.parse() else {
                 continue;
             };
+            if !current && failure.is_some_and(|f| !f.is_empty()) {
+                continue;
+            }
             all.push(Scanned {
                 path: PathBuf::from(path),
                 stamp,
@@ -542,6 +559,24 @@ mod tests {
             run_scanner(crash, path, SCAN_TIMEOUT).unwrap_err(),
             "crashed while loading"
         );
+
+        let mut crash_at_the_end = Command::new("cmd");
+        crash_at_the_end
+            .args([
+                "/c",
+                "echo plugin\ta\tA\tMaker\t1\t0& echo scan-done& exit -1073741819",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let kept = run_scanner(crash_at_the_end, path, SCAN_TIMEOUT).unwrap();
+        assert_eq!(kept.len(), 1, "the list was whole before the crash");
+
+        let old = parse_cache("file\tx\t1\tcrashed while loading\nfile\ty\t2\t\n");
+        assert_eq!(old.len(), 1, "an old failure gets another chance");
+        let new = parse_cache(&format!(
+            "{CACHE_VERSION}\nfile\tx\t1\tcrashed while loading\n"
+        ));
+        assert!(new[0].result.is_err(), "a failure since then is remembered");
 
         let mut ok = Command::new("cmd");
         ok.args(["/c", "echo noise& echo plugin\ta\tA\tMaker\t1\t0"])

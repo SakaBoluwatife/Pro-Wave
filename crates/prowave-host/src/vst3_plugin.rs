@@ -743,9 +743,17 @@ fn load_module(path: &Path) -> Result<Arc<Module>, Error> {
             .map_err(|_| err(path, "it is not a VST3 plugin"))?;
         let factory =
             ComPtr::from_raw(get()).ok_or_else(|| err(path, "it has no plugin factory"))?;
+        let host = ComWrapper::new(HostApp);
+        // Some plugin files want to know their host before they make anything.
+        if let (Some(third), Some(context)) = (
+            factory.cast::<IPluginFactory3>(),
+            host.to_com_ptr::<FUnknown>(),
+        ) {
+            third.setHostContext(context.as_ptr());
+        }
         Arc::new(Module {
             factory,
-            host: ComWrapper::new(HostApp),
+            host,
             _library: library,
         })
     };
@@ -1866,13 +1874,19 @@ mod tests {
         });
         for file in chosen.split(';') {
             let file = PathBuf::from(file);
-            for info in scan_vst3_file(&file).unwrap() {
+            let only = std::env::var("PROWAVE_TEST_VST3_NAME").unwrap_or_default();
+            let began = std::time::Instant::now();
+            let found = scan_vst3_file(&file).unwrap();
+            println!("{} plugins listed in {:?}", found.len(), began.elapsed());
+            for info in found.into_iter().filter(|i| i.name.contains(&only)) {
+                let began = std::time::Instant::now();
                 println!(
                     "{} / {} ({}) instrument {}",
                     info.vendor, info.name, info.id, info.is_instrument
                 );
                 let (mut loaded, mut audio) =
                     load_vst3(&info.path, &info.id, 48_000, false).unwrap();
+                println!("loaded in {:?}", began.elapsed());
                 println!("  latency {}", loaded.latency_samples());
                 let (mut l, mut r) = (vec![9.0; PLUGIN_BLOCK], vec![9.0; PLUGIN_BLOCK]);
                 let mut peak = 0f32;
