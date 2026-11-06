@@ -31,6 +31,8 @@ const SPAN: usize = crate::plugin::PLUGIN_BLOCK;
 /// Frames Varispeed renders ahead at a time, and the room beyond them it may have left over.
 const VARI_CHUNK: usize = 256;
 const VARI_KEEP: usize = 8;
+/// Frames of one block for the outputs past the first two: the most `Renderer` asks for at once.
+pub(crate) const HARDWARE_FRAMES: usize = 8192;
 
 /// A note scheduled on the timeline (beats are 0-based quarter notes).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -709,6 +711,8 @@ pub struct Shared {
     pub xruns: AtomicU32,
     /// Callbacks in which a streamed clip had no data ready (disk too slow).
     pub underruns: AtomicU32,
+    /// Channels the output device has.
+    pub output_channels: AtomicU32,
     /// Highest DSP load (f32 bits, 1.0 = the whole callback budget) since the UI last read it.
     dsp_load_max: AtomicU32,
 }
@@ -718,6 +722,7 @@ impl Shared {
         Self {
             xruns: AtomicU32::new(0),
             underruns: AtomicU32::new(0),
+            output_channels: AtomicU32::new(2),
             dsp_load_max: AtomicU32::new(0),
         }
     }
@@ -881,6 +886,13 @@ pub struct EngineCore {
     /// Frames held in `vari_buf`, and where the next output frame is read from.
     vari_have: usize,
     vari_pos: f64,
+    /// What strips send to the device's outputs past the first two, a block at a time for each
+    /// pair: `HARDWARE_FRAMES` frames of stereo per pair. Made before the stream starts.
+    hardware: Vec<f32>,
+    /// Pairs of outputs past the first, on this device.
+    hardware_pairs: usize,
+    /// How far into the block the span being rendered is.
+    block_frame: usize,
     /// The output is summed to mono for the speakers.
     out_mono: bool,
     /// Where the output's dim is going, and where it is, so it does not click.
@@ -1078,6 +1090,9 @@ impl EngineCore {
             vari_buf: vec![0.0; (VARI_CHUNK + VARI_KEEP) * 2],
             vari_have: VARI_KEEP,
             vari_pos: 1.0,
+            hardware: Vec::new(),
+            hardware_pairs: 0,
+            block_frame: 0,
             out_mono: false,
             out_dim_target: 1.0,
             out_dim: 1.0,
@@ -1521,7 +1536,7 @@ impl EngineCore {
                 self.instruments[i].is_some() || self.plugins[i].iter().any(Option::is_some);
             self.any_plugin |= has_plugin;
             let has_pdc = self.pdc[i].as_ref().is_some_and(|p| !p.is_empty());
-            let to_bus = self.routes[i].output > 0;
+            let to_bus = self.routes[i].output > 0 || self.routes[i].hardware_out > 0;
             self.strip_kind[i] = if self.routes[i].bus_in > 0 {
                 self.aux.push(i as u16);
                 2
@@ -1778,7 +1793,18 @@ impl EngineCore {
                 self.add_to_bus(s.bus, j, l, r);
             }
             let (yl, yr) = (self.done_l[t][j], self.done_r[t][j]);
-            if route.output > 0 {
+            let pair = usize::from(route.hardware_out);
+            // Offline there are no such outputs, and Varispeed reads only the first two back. It
+            // goes to Stereo Out then, so that nothing goes missing.
+            if pair > 0
+                && pair <= self.hardware_pairs
+                && !self.keep_headroom
+                && self.varispeed == 1.0
+            {
+                let at = ((pair - 1) * HARDWARE_FRAMES + self.block_frame + j) * 2;
+                self.hardware[at] += yl as f32;
+                self.hardware[at + 1] += yr as f32;
+            } else if route.output > 0 && pair == 0 {
                 self.add_to_bus(route.output, j, yl, yr);
             } else {
                 self.mix_l[j] += yl;
@@ -2833,7 +2859,24 @@ impl EngineCore {
         self.vari_buf = buf;
     }
 
+    /// Readies the outputs past the first two. Call before the stream starts: this allocates.
+    pub(crate) fn set_output_channels(&mut self, channels: usize) {
+        self.hardware_pairs = channels.saturating_sub(2) / 2;
+        self.hardware = vec![0.0; self.hardware_pairs * HARDWARE_FRAMES * 2];
+    }
+
+    /// The last block's sound for device channel `channel` (2 and up), at `frame`.
+    #[inline]
+    pub(crate) fn hardware_sample(&self, channel: usize, frame: usize) -> f32 {
+        let (pair, side) = ((channel - 2) / 2, (channel - 2) % 2);
+        if pair >= self.hardware_pairs || frame >= HARDWARE_FRAMES {
+            return 0.0;
+        }
+        finite_or_zero(self.hardware[(pair * HARDWARE_FRAMES + frame) * 2 + side]).clamp(-1.0, 1.0)
+    }
+
     fn render_block(&mut self, out: &mut [f32]) {
+        self.hardware.fill(0.0);
         self.drain_commands();
         for c in self.song.clips.iter_mut() {
             c.service();
@@ -2853,6 +2896,7 @@ impl EngineCore {
         let total = out.len();
         let mut done = 0;
         while done < total {
+            self.block_frame = done / 2;
             done += self.render_span(&mut out[done..total], callback_frames) * 2;
         }
         let mut underruns = 0;
@@ -4427,6 +4471,31 @@ mod tests {
             e.process(&mut buf);
         }
         assert_eq!(e.varispeed, 1.0, "nonsense is normal speed");
+    }
+
+    #[test]
+    fn a_strip_sent_to_outputs_3_4_leaves_stereo_out_and_comes_back_if_there_are_none() {
+        let route = Route {
+            hardware_out: 1,
+            ..Route::default()
+        };
+        let (mut e, mut tx, _s) = rig();
+        e.set_output_channels(4);
+        e.routes[0] = route;
+        e.done_l[0][3] = 0.5;
+        e.done_r[0][3] = 0.25;
+        e.track_audible[0] = true;
+        e.block_frame = 10;
+        e.strip_route(0, 8);
+        assert_eq!(e.hardware_sample(2, 13), 0.5);
+        assert_eq!(e.hardware_sample(3, 13), 0.25);
+        assert_eq!(e.mix_l[3], 0.0, "not in Stereo Out as well");
+        assert_eq!(e.hardware_sample(4, 13), 0.0, "no such output");
+        // With no such outputs it is heard in Stereo Out rather than lost.
+        e.set_output_channels(2);
+        e.strip_route(0, 8);
+        assert_eq!(e.mix_l[3], 0.5);
+        let _ = &mut tx;
     }
 
     /// A mix of everything the mix loop does, rendered in uneven callbacks. Writes it to the file

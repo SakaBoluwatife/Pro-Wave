@@ -2671,7 +2671,11 @@ fn output_slot(
     id: egui::Id,
 ) {
     let current = p.tracks[i].output;
-    let text = if current == 0 {
+    let hardware = p.tracks[i].hardware_out;
+    let text = if hardware > 0 {
+        let first = u16::from(hardware) * 2 + 1;
+        format!("Output {}-{}", first, first + 1)
+    } else if current == 0 {
         stereo_out.to_string()
     } else {
         trf("Bus {}", &[&current])
@@ -2681,11 +2685,21 @@ fn output_slot(
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(150.0);
         if ui
-            .selectable_label(current == 0, tr("Stereo Out"))
+            .selectable_label(current == 0 && hardware == 0, tr("Stereo Out"))
             .clicked()
         {
             p.tracks[i].output = 0;
+            p.tracks[i].hardware_out = 0;
             ui.close();
+        }
+        for pair in 1..=p.hardware_pairs() {
+            let first = u16::from(pair) * 2 + 1;
+            let name = format!("Output {}-{}", first, first + 1);
+            if ui.selectable_label(hardware == pair, name).clicked() {
+                p.tracks[i].output = 0;
+                p.tracks[i].hardware_out = pair;
+                ui.close();
+            }
         }
         if ui.button("New Aux").clicked() {
             p.new_aux_for(i, false);
@@ -2703,6 +2717,7 @@ fn output_slot(
                         .clicked()
                     {
                         p.tracks[i].output = *bus;
+                        p.tracks[i].hardware_out = 0;
                         ui.close();
                     }
                 }
@@ -2936,7 +2951,23 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             p.add_track(TrackKind::Aux);
             ui.close();
         }
-        todo_item(ui, tr("Create New Output Channel Strip"));
+        let pairs = p.hardware_pairs();
+        if pairs == 0 {
+            todo_item(ui, tr("Create New Output Channel Strip"));
+        } else {
+            ui.menu_button(tr("Create New Output Channel Strip"), |ui| {
+                for pair in 1..=pairs {
+                    let first = u16::from(pair) * 2 + 1;
+                    if ui
+                        .button(format!("Output {}-{}", first, first + 1))
+                        .clicked()
+                    {
+                        p.new_output_strip(pair);
+                        ui.close();
+                    }
+                }
+            });
+        }
         if ui.button(tr("Create New VCA")).clicked() {
             p.add_track(TrackKind::Vca);
             ui.close();

@@ -885,6 +885,8 @@ pub struct Track {
     pub input: prowave_engine::InputSource,
     /// The bus the strip plays into; 0 is Stereo Out (the mixer's Output slot).
     pub output: u16,
+    /// The device's outputs it plays to, instead of Stereo Out or a bus: 1 is 3-4, 2 is 5-6. 0 for none.
+    pub hardware_out: u8,
     pub volume_db: f32,
     pub pan: f32,
     pub inserts: Vec<Insert>,
@@ -979,6 +981,7 @@ impl Track {
             monitor: false,
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
+            hardware_out: 0,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
@@ -1130,6 +1133,8 @@ pub struct Project {
     pub trigger_db: f32,
     /// How far Nudge moves a region, in beats.
     pub nudge_beats: f64,
+    /// The channels of the output device, for the Output menus. Not saved.
+    pub output_channels: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Varispeed: percent from normal speed, -50 to +100. Pitch moves with it. Bounces ignore it.
     pub varispeed: f32,
     /// What the speakers get, for checking a mix. Not saved, so that no one is caught out.
@@ -1195,6 +1200,7 @@ impl Project {
             monitor: false,
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
+            hardware_out: 0,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
@@ -1251,6 +1257,7 @@ impl Project {
             monitor: false,
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
+            hardware_out: 0,
             volume_db: vol,
             pan: 0.0,
             inserts: inserts_from_names(&ins),
@@ -1374,6 +1381,7 @@ impl Project {
             trigger_db: -40.0,
             nudge_beats: 0.25,
             varispeed: 0.0,
+            output_channels: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(2)),
             out_mono: false,
             out_dim: false,
             keep_plugins_running: false,
@@ -1814,6 +1822,23 @@ impl Project {
             aux.name = name.to_string();
         }
         self.tracks[t].name = name.to_string();
+    }
+
+    /// The pairs of outputs past the first two on this device, by number: 1 is outputs 3-4.
+    pub fn hardware_pairs(&self) -> u8 {
+        let channels = self
+            .output_channels
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (channels.saturating_sub(2) / 2).min(u32::from(u8::MAX)) as u8
+    }
+
+    /// An output strip: an Aux with its own fader that plays to a pair of the device's outputs.
+    pub fn new_output_strip(&mut self, pair: u8) -> usize {
+        let t = self.add_track(TrackKind::Aux);
+        let first = u16::from(pair) * 2 + 1;
+        self.tracks[t].name = format!("Output {}-{}", first, first + 1);
+        self.tracks[t].hardware_out = pair;
+        t
     }
 
     /// Beat mapping: makes `beat` fall at `at_seconds` from the start of the song, by changing the
@@ -3696,6 +3721,19 @@ mod tests {
         assert!((map.seconds_at(8.0) - 4.5).abs() < 1e-3);
         assert!(!p.map_beat(8.5, 4.4), "time cannot go back");
         assert!(!p.map_beat(12.0, 4.5001), "no such tempo");
+    }
+
+    #[test]
+    fn an_output_strip_is_an_aux_on_its_pair_of_outputs() {
+        let mut p = Project::empty();
+        assert_eq!(p.hardware_pairs(), 0, "a stereo device has none");
+        p.output_channels
+            .store(6, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(p.hardware_pairs(), 2);
+        let t = p.new_output_strip(2);
+        assert_eq!(p.tracks[t].name, "Output 5-6");
+        assert_eq!(p.tracks[t].kind, TrackKind::Aux);
+        assert_eq!(p.tracks[t].hardware_out, 2);
     }
 
     #[test]

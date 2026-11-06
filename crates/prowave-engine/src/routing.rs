@@ -39,6 +39,9 @@ pub struct Route {
     /// The bus the strip plays into instead of Stereo Out (Logic: the Output slot); 0 is
     /// Stereo Out.
     pub output: u16,
+    /// The pair of outputs of the device the strip plays to instead of Stereo Out or a bus: 1 is
+    /// outputs 3-4, 2 is 5-6, and so on. 0 for none.
+    pub hardware_out: u8,
     /// For an Aux strip: its place in the running order. One that feeds another runs first.
     pub rank: u16,
     pub sends: [SendSpec; MAX_SENDS],
@@ -290,6 +293,7 @@ mod tests {
         let r = Route {
             bus_in: MAX_BUSES as u16 + 1,
             output: 0,
+            hardware_out: 0,
             rank: 0,
             sends,
         }

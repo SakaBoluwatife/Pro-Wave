@@ -63,6 +63,12 @@ pub struct EngineSync {
     retry: bool,
 }
 
+/// The channels of the device, for the Output menus. The project holds it only to show it.
+fn p_output_channels(p: &Project, channels: u32) {
+    p.output_channels
+        .store(channels, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Play, or with Record and Count-in on, one bar of clicks first.
 fn start_command(p: &Project) -> Command {
     if !(p.recording && p.count_in) {
@@ -108,6 +114,7 @@ fn route_of(p: &Project, i: usize) -> Route {
     let mut route = Route {
         bus_in: p.aux_bus_of(i),
         output: t.output,
+        hardware_out: t.hardware_out,
         rank: p.aux_rank(i),
         ..Route::default()
     };
@@ -709,6 +716,7 @@ impl EngineSync {
         {
             self.cycle = cycle;
         }
+        p_output_channels(p, self.engine.output_channels());
         if self.varispeed != p.varispeed
             && self.send(Command::SetVarispeed(1.0 + f64::from(p.varispeed) / 100.0))
         {
@@ -1086,6 +1094,7 @@ mod tests {
             solo: false,
             rec: false,
             monitor: false,
+            hardware_out: 0,
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
             volume_db: 0.0,

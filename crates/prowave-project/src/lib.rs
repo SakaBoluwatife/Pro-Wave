@@ -337,6 +337,8 @@ pub struct TrackDoc {
     pub input_stereo: bool,
     /// The bus the track plays into; 0 is Stereo Out.
     pub output: u16,
+    /// The device's outputs the strip plays to: 1 is 3-4, 2 is 5-6. 0 for none.
+    pub hardware_out: u8,
     /// MIDI FX, first to last.
     pub midi_fx: Vec<MidiFxDoc>,
     /// The Groove Track, and the tracks that follow it.
@@ -576,6 +578,7 @@ impl Default for TrackDoc {
             input: 0,
             input_stereo: false,
             output: 0,
+            hardware_out: 0,
             midi_fx: Vec::new(),
             groove: false,
             follow_groove: false,

@@ -722,6 +722,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             },
             input_stereo: matches!(t.input, InputSource::Stereo(_)),
             output: t.output,
+            hardware_out: t.hardware_out,
             groove: t.params.groove,
             follow_groove: t.params.follow_groove,
             midi_fx: t
@@ -1113,6 +1114,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             midi_port: port_name(&t.midi_port),
             midi_channel: t.midi_channel.clamp(1, 16),
             input: input_source(t.input, t.input_stereo),
+            hardware_out: t.hardware_out,
             output: if usize::from(t.output) <= prowave_engine::MAX_BUSES {
                 t.output
             } else {

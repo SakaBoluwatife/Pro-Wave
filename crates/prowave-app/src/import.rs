@@ -233,6 +233,7 @@ pub fn import_audio_at(
         solo: false,
         rec: false,
         monitor: false,
+        hardware_out: 0,
         input: prowave_engine::InputSource::Mono(0),
         output: 0,
         volume_db: 0.0,

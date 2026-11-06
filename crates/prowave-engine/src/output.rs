@@ -172,7 +172,11 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
-    fn new(core: EngineCore, shared: Arc<Shared>, channels: usize, sample_rate: u32) -> Self {
+    fn new(mut core: EngineCore, shared: Arc<Shared>, channels: usize, sample_rate: u32) -> Self {
+        core.set_output_channels(channels);
+        shared
+            .output_channels
+            .store(channels as u32, std::sync::atomic::Ordering::Relaxed);
         Self {
             core,
             shared,
@@ -206,7 +210,7 @@ impl Renderer {
                     *s = T::from_sample(match c {
                         0 => l,
                         1 => r,
-                        _ => 0.0,
+                        _ => core.hardware_sample(c, i),
                     });
                 }
             }
@@ -605,6 +609,13 @@ impl Engine {
     pub fn state(&mut self) -> &EngineState {
         self.state.read()
     }
+    /// How many channels the output device has.
+    pub fn output_channels(&self) -> u32 {
+        self.shared
+            .output_channels
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
