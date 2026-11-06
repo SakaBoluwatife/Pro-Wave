@@ -580,6 +580,9 @@ fn tempo_field(ui: &mut Ui, p: &mut Project, open: bool, field: Rect) -> bool {
 
 /// The display in its everyday form: bar, beat, tempo, signature and key. The arrow at its right
 /// end changes to the full display and back.
+/// The saved default that means the Custom form.
+pub(crate) const CUSTOM_LCD: u8 = 9;
+
 fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
     let pal = LcdColors::new(p.recording);
     g.rect_filled(rect, 6.0, pal.bg);
@@ -726,7 +729,7 @@ fn signature_drag(ui: &Ui, p: &mut Project, areas: [Rect; 2]) {
 }
 
 /// The arrow at the right end of the display, which changes its form. True when clicked.
-fn lcd_arrow(ui: &Ui, g: &Painter, rect: Rect, recording: bool) -> bool {
+fn lcd_arrow(ui: &Ui, g: &Painter, rect: Rect, recording: bool) -> egui::Response {
     let pal = LcdColors::new(recording);
     let area = Rect::from_min_max(pos2(rect.right() - 22.0, rect.top()), rect.max);
     let resp = ui
@@ -735,7 +738,7 @@ fn lcd_arrow(ui: &Ui, g: &Painter, rect: Rect, recording: bool) -> bool {
             egui::Id::unique(("control_bar", "lcd_form")),
             Sense::click(),
         )
-        .on_hover_text("Show more or less in the display");
+        .on_hover_text("What the display shows");
     let c = area.center();
     g.add(Shape::line(
         vec![
@@ -745,7 +748,91 @@ fn lcd_arrow(ui: &Ui, g: &Painter, rect: Rect, recording: bool) -> bool {
         ],
         Stroke::new(1.6, pal.mid),
     ));
-    resp.clicked()
+    resp
+}
+
+/// Where the song is, as bar, beat, sixteenth and tick.
+pub(crate) fn beats_text(p: &Project) -> String {
+    let at = p.position_beats.max(0.0);
+    let bar = p.beats_to_bar(at + 1e-9).floor().max(0.0) as u32;
+    let (_, unit) = p.signature_of_bar(bar);
+    let unit = 4.0 / f64::from(unit.max(1));
+    let into = (at - p.bar_to_beats(f64::from(bar))).max(0.0);
+    let beat = (into / unit).floor();
+    let rest = (into - beat * unit).max(0.0);
+    let sixteenth = (rest / 0.25).floor();
+    let tick = ((rest - sixteenth * 0.25) * 960.0).floor() as u32;
+    format!(
+        "{} {} {} {:03}",
+        bar + 1,
+        beat as u32 + 1,
+        sixteenth as u32 + 1,
+        tick + 1
+    )
+}
+
+/// Where the song is in time, from its start.
+pub(crate) fn time_text(p: &Project) -> String {
+    let seconds = p.tempo_map().seconds_at(p.position_beats.max(0.0)).max(0.0);
+    let whole = seconds as u64;
+    format!(
+        "{:02}:{:02}:{:02}.{:02}",
+        whole / 3600,
+        whole / 60 % 60,
+        whole % 60,
+        ((seconds - whole as f64) * 100.0) as u32
+    )
+}
+
+/// The display's simpler forms: beats, time, or both.
+fn lcd_text(g: &Painter, p: &Project, rect: Rect, mode: u8) {
+    g.rect_filled(rect, 5.0, Color32::from_rgb(0x12, 0x12, 0x14));
+    let ink = if p.recording {
+        Color32::from_rgb(0xff, 0x70, 0x60)
+    } else {
+        Color32::from_gray(0xe8)
+    };
+    let text = |at: egui::Pos2, what: String, size: f32| {
+        g.text(
+            at,
+            Align2::CENTER_CENTER,
+            what,
+            FontId::monospace(size),
+            ink,
+        );
+    };
+    let c = rect.center();
+    let room = vec2(-11.0, 0.0);
+    match mode {
+        1 => {
+            text(c + room + vec2(0.0, -8.0), beats_text(p), 13.0);
+            text(c + room + vec2(0.0, 8.0), time_text(p), 13.0);
+        }
+        2 => text(c + room, beats_text(p), 18.0),
+        _ => text(c + room, time_text(p), 18.0),
+    }
+}
+
+/// The display form kept as the default.
+pub(crate) fn lcd_default() -> Option<u8> {
+    if cfg!(test) {
+        return None;
+    }
+    let file = crate::recent_files::config_dir()?.join("lcd-default");
+    std::fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
+fn save_lcd_default(mode: u8) {
+    let Some(file) = crate::recent_files::config_dir().map(|d| d.join("lcd-default")) else {
+        return;
+    };
+    let saved = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&file, mode.to_string()));
+    if let Err(e) = saved {
+        tracing::warn!("could not save the display form: {e}");
+    }
 }
 
 fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
@@ -1081,11 +1168,54 @@ pub fn control_bar(
     if s.lcd_full {
         lcd(ui, &g, p, lcd_rect, s.cpu_load);
     } else {
-        lcd_compact(ui, &g, p, lcd_rect);
+        match s.lcd_mode {
+            0 => lcd_compact(ui, &g, p, lcd_rect),
+            mode => lcd_text(&g, p, lcd_rect, mode),
+        }
     }
-    if lcd_arrow(ui, &g, lcd_rect, p.recording) {
-        s.lcd_full = !s.lcd_full;
-    }
+    let form = lcd_arrow(ui, &g, lcd_rect, p.recording);
+    egui::Popup::menu(&form).show(|ui| {
+        ui.set_min_width(190.0);
+        for (name, mode) in [
+            ("Beats & Project", 0u8),
+            ("Beats & Time", 1),
+            ("Beats", 2),
+            ("Time", 3),
+        ] {
+            if ui
+                .selectable_label(!s.lcd_full && s.lcd_mode == mode, name)
+                .clicked()
+            {
+                s.lcd_full = false;
+                s.lcd_mode = mode;
+                ui.close();
+            }
+        }
+        if ui.selectable_label(s.lcd_full, "Custom").clicked() {
+            s.lcd_full = true;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Open Giant Beats Display").clicked() {
+            s.dialogs.giant_beats = true;
+            ui.close();
+        }
+        if ui.button("Open Giant Time Display").clicked() {
+            s.dialogs.giant_time = true;
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Apply Defaults").clicked() {
+            let chosen = lcd_default().unwrap_or(0);
+            s.lcd_full = chosen == CUSTOM_LCD;
+            s.lcd_mode = if s.lcd_full { 0 } else { chosen };
+            ui.close();
+        }
+        if ui.button("Save As Defaults").clicked() {
+            save_lcd_default(if s.lcd_full { CUSTOM_LCD } else { s.lcd_mode });
+            ui.close();
+        }
+    });
     // The transport buttons sit on one rounded plate, as do those to the right of the display.
     crate::theme::glass_plate(
         &g,

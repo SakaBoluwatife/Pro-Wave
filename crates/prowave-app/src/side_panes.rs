@@ -43,6 +43,17 @@ pub const TOOLBAR_CHOICES: &[&str] = &[
     "Zoom In",
     "Zoom Out",
     "Zoom to Fit",
+    "Repeat Section Between Locators",
+    "Cut Section Between Locators",
+    "Insert Cut Section",
+    "Insert Silence Between Locators",
+    "Split by Locators",
+    "Spot Erase",
+    "Track Zoom",
+    "Move to Playhead",
+    "Nudge Left",
+    "Nudge Right",
+    "Assign Track Color…",
 ];
 
 /// Puts an entry on the Toolbar or takes it off. It keeps the order of [`TOOLBAR_CHOICES`].

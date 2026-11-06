@@ -12,6 +12,9 @@ pub struct QuickDialogs {
     pub color: Option<usize>,
     /// New Tracks: what has been typed for how many, and of what kind.
     pub new_tracks: Option<(String, crate::model::TrackKind)>,
+    /// The giant displays.
+    pub giant_beats: bool,
+    pub giant_time: bool,
     /// The Varispeed window.
     pub varispeed: bool,
     /// Loop Region: what has been typed for how many more.
@@ -141,6 +144,43 @@ fn go_to_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         }
     } else if close {
         d.go_to = None;
+    }
+}
+
+/// A big clock, to read from across the room.
+fn giant_windows(ctx: &egui::Context, p: &Project, s: &mut UiState) {
+    let ink = if p.recording {
+        egui::Color32::from_rgb(0xff, 0x70, 0x60)
+    } else {
+        egui::Color32::from_gray(0xee)
+    };
+    for (beats, shown, title) in [
+        (true, s.dialogs.giant_beats, "Beats"),
+        (false, s.dialogs.giant_time, "Time"),
+    ] {
+        if !shown {
+            continue;
+        }
+        let text = if beats {
+            crate::transport::beats_text(p)
+        } else {
+            crate::transport::time_text(p)
+        };
+        let mut open = true;
+        egui::Window::new(title)
+            .id(egui::Id::unique(("giant", beats)))
+            .open(&mut open)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                let size =
+                    (ui.available_width() / text.len().max(1) as f32 * 1.6).clamp(48.0, 220.0);
+                ui.label(egui::RichText::new(&text).monospace().size(size).color(ink));
+            });
+        if beats {
+            s.dialogs.giant_beats = open;
+        } else {
+            s.dialogs.giant_time = open;
+        }
     }
 }
 
@@ -583,6 +623,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     new_tracks_window(ctx, p, s);
     loop_region_window(ctx, p, s);
     varispeed_window(ctx, p, s);
+    giant_windows(ctx, p, s);
     color_window(ctx, p, s);
     region_color_window(ctx, p, s);
     rec_meter_window(ctx, p, s);

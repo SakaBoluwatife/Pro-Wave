@@ -177,6 +177,192 @@ fn can_rearrange(p: &Project) -> Result<(), String> {
     Ok(())
 }
 
+/// What Cut Section took: how long it was, and each region with its track and its place in it.
+#[derive(Clone)]
+pub struct SectionClip {
+    len: f64,
+    regions: Vec<(usize, crate::model::Region, f64)>,
+}
+
+/// Opens a gap of `by` beats at `at`, moving all that comes after along.
+fn shift_from(q: &mut Project, at: f64, by: f64) -> Result<(), String> {
+    let f = move |x: f64| if x >= at - NEAR { x + by } else { x };
+    for t in 0..q.tracks.len() {
+        each_version(q, t, &mut |q| {
+            cut_at(q, t, at)?;
+            moved_regions(q, t, &f);
+            Ok(())
+        })?;
+        for target in targets(q, t) {
+            let lane = q.tracks[t].auto.lane_mut(target);
+            pin_lane(lane, &[at]);
+            for point in lane.iter_mut() {
+                point.beat = f(point.beat);
+            }
+            lane.sort_by(|x, y| x.beat.total_cmp(&y.beat));
+        }
+    }
+    for marker in &mut q.markers {
+        marker.beat = f(marker.beat);
+    }
+    q.tidy_markers();
+    for chord in &mut q.chords {
+        chord.beat = f(chord.beat);
+    }
+    for section in &mut q.sections {
+        section.beat = f(section.beat);
+    }
+    tidy(q);
+    Ok(())
+}
+
+/// Insert Silence: the stretch `a..b` of every track is pushed along, leaving nothing there.
+pub fn insert_silence(p: &mut Project, a: f64, b: f64) -> Result<(), String> {
+    can_rearrange(p)?;
+    let mut q = p.clone();
+    shift_from(&mut q, a, b - a)?;
+    q.song_rev += 1;
+    *p = q;
+    Ok(())
+}
+
+/// Cut Section: takes the stretch `a..b` out of every track and closes the gap.
+pub fn cut_section(p: &mut Project, a: f64, b: f64) -> Result<SectionClip, String> {
+    can_rearrange(p)?;
+    let (mut q, len) = (p.clone(), b - a);
+    let mut regions = Vec::new();
+    let inside = move |x: f64| x >= a - NEAR && x < b - NEAR;
+    for t in 0..q.tracks.len() {
+        cut_at(&mut q, t, a)?;
+        cut_at(&mut q, t, b)?;
+        for region in &q.tracks[t].regions {
+            let start = q.region_start_beats(region);
+            if inside(start) {
+                regions.push((t, region.clone(), start - a));
+            }
+        }
+        each_version(&mut q, t, &mut |q| {
+            cut_at(q, t, a)?;
+            cut_at(q, t, b)?;
+            let keep: Vec<bool> = q.tracks[t]
+                .regions
+                .iter()
+                .map(|x| !inside(q.region_start_beats(x)))
+                .collect();
+            let mut kept = keep.iter();
+            q.tracks[t]
+                .regions
+                .retain(|_| *kept.next().unwrap_or(&true));
+            moved_regions(q, t, &|x| if x >= b - NEAR { x - len } else { x });
+            Ok(())
+        })?;
+        for target in targets(&q, t) {
+            let lane = q.tracks[t].auto.lane_mut(target);
+            pin_lane(lane, &[a, b]);
+            lane.retain(|point| !(point.beat > a + NEAR && point.beat < b - NEAR));
+            for point in lane.iter_mut() {
+                if point.beat >= b - NEAR {
+                    point.beat -= len;
+                }
+            }
+            lane.sort_by(|x, y| x.beat.total_cmp(&y.beat));
+        }
+    }
+    q.markers.retain(|m| !inside(m.beat));
+    q.chords.retain(|c| !inside(c.beat));
+    let close = move |x: f64| if x >= b - NEAR { x - len } else { x };
+    for marker in &mut q.markers {
+        marker.beat = close(marker.beat);
+    }
+    q.tidy_markers();
+    for chord in &mut q.chords {
+        chord.beat = close(chord.beat);
+    }
+    q.sections.retain(|s| !inside(s.beat));
+    for section in &mut q.sections {
+        section.beat = close(section.beat);
+    }
+    tidy(&mut q);
+    q.song_rev += 1;
+    *p = q;
+    Ok(SectionClip { len, regions })
+}
+
+/// Insert Cut Section: puts what was cut back in at `at`, moving what comes after along. Its
+/// automation stays out: only regions come back.
+pub fn insert_clip(p: &mut Project, clip: &SectionClip, at: f64) -> Result<(), String> {
+    can_rearrange(p)?;
+    let mut q = p.clone();
+    shift_from(&mut q, at, clip.len)?;
+    for (t, region, rel) in &clip.regions {
+        let start_bar = q.beats_to_bar(at + rel) as f32 + 1.0;
+        if let Some(track) = q.tracks.get_mut(*t) {
+            let mut region = region.clone();
+            region.start_bar = start_bar;
+            track.regions.push(region);
+        }
+    }
+    q.song_rev += 1;
+    *p = q;
+    Ok(())
+}
+
+/// Repeat Section: `a..b` of every track comes again straight after itself, regions and curves.
+pub fn repeat_section(p: &mut Project, a: f64, b: f64) -> Result<(), String> {
+    can_rearrange(p)?;
+    let (mut q, len) = (p.clone(), b - a);
+    shift_from(&mut q, b, len)?;
+    for t in 0..q.tracks.len() {
+        cut_at(&mut q, t, a)?;
+        let copies: Vec<crate::model::Region> = q.tracks[t]
+            .regions
+            .iter()
+            .filter(|x| {
+                let start = q.region_start_beats(x);
+                start >= a - NEAR && start < b - NEAR
+            })
+            .map(|x| {
+                let mut copy = x.clone();
+                copy.start_bar = q.beats_to_bar(q.region_start_beats(x) + len) as f32 + 1.0;
+                copy
+            })
+            .collect();
+        q.tracks[t].regions.extend(copies);
+        for target in targets(&q, t) {
+            let lane = q.tracks[t].auto.lane_mut(target);
+            let again: Vec<_> = lane
+                .iter()
+                .filter(|point| point.beat >= a - NEAR && point.beat < b - NEAR)
+                .map(|point| {
+                    let mut point = *point;
+                    point.beat += len;
+                    point
+                })
+                .collect();
+            lane.extend(again);
+            lane.sort_by(|x, y| x.beat.total_cmp(&y.beat));
+        }
+    }
+    q.song_rev += 1;
+    *p = q;
+    Ok(())
+}
+
+/// Split by Locators: cuts the regions of these tracks at `a` and `b`.
+pub fn split_by_locators(p: &mut Project, tracks: &[usize], a: f64, b: f64) -> Result<(), String> {
+    can_rearrange(p)?;
+    let mut q = p.clone();
+    for &t in tracks {
+        if t < q.tracks.len() {
+            cut_at(&mut q, t, a)?;
+            cut_at(&mut q, t, b)?;
+        }
+    }
+    q.song_rev += 1;
+    *p = q;
+    Ok(())
+}
+
 /// What moving the stretch `a..b` to `d` does to a beat: it goes along, or what lay between the two
 /// places moves over to close the gap and make room.
 fn rotated(x: f64, a: f64, b: f64, d: f64) -> f64 {
@@ -606,6 +792,42 @@ pub fn show(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sections_open_close_repeat_and_come_back() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let t = p.add_track(crate::model::TrackKind::Instrument);
+        p.add_midi_region(t, 0.0);
+        p.add_midi_region(t, 8.0);
+        let starts = |p: &Project| {
+            let mut all: Vec<i64> = p.tracks[0]
+                .regions
+                .iter()
+                .map(|r| p.region_start_beats(r).round() as i64)
+                .collect();
+            all.sort_unstable();
+            all
+        };
+        let second = starts(&p)[1];
+        insert_silence(&mut p, 16.0, 24.0).unwrap();
+        assert_eq!(starts(&p)[1], second + 8);
+        let clip = cut_section(&mut p, 16.0, 24.0).unwrap();
+        assert_eq!(starts(&p)[1], second, "the gap closes");
+        assert!(clip.regions.is_empty(), "nothing was in the gap");
+        let clip = cut_section(
+            &mut p,
+            f64::from(second as i32),
+            f64::from(second as i32) + 4.0,
+        )
+        .unwrap();
+        assert_eq!(clip.regions.len(), 1);
+        insert_clip(&mut p, &clip, f64::from(second as i32)).unwrap();
+        assert!(starts(&p).contains(&second), "it comes back");
+        let before = p.tracks[0].regions.len();
+        repeat_section(&mut p, 0.0, 4.0).unwrap();
+        assert!(p.tracks[0].regions.len() > before);
+    }
     use crate::automation::lane_label;
 
     /// The automation lanes that have points.

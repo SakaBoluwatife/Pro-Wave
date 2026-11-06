@@ -138,6 +138,12 @@ const EDIT: &[&str] = &[
     "Join",
     "Bounce and Join",
     "-",
+    "Repeat Section Between Locators",
+    "Cut Section Between Locators",
+    "Insert Cut Section",
+    "Insert Silence Between Locators",
+    "Split by Locators",
+    "Spot Erase",
     "Group Regions",
     "Ungroup Regions",
     "Loop Region…",
@@ -268,6 +274,7 @@ const VIEW: &[&str] = &[
     "Show Movie",
     "Show Media Browser",
     "Show Plugin Presets",
+    "Track Zoom",
     "-",
     "Show Toolbar",
     "Customize Toolbar…",
@@ -564,6 +571,12 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             !s.tracks.all_selected().is_empty()
         }
         "Show Flex Editor" | "Varispeed…" | "Map Beat to Playhead" => true,
+        "Repeat Section Between Locators"
+        | "Cut Section Between Locators"
+        | "Insert Silence Between Locators"
+        | "Split by Locators" => p.cycle_end > p.cycle_start,
+        "Insert Cut Section" => s.tracks.section_clip.is_some(),
+        "Spot Erase" | "Track Zoom" => !p.tracks.is_empty(),
         "Commit Track" => p
             .tracks
             .get(p.selected_track)
@@ -1089,6 +1102,57 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New Tracks…" => s.dialogs.open_new_tracks(),
+        "Repeat Section Between Locators"
+        | "Insert Silence Between Locators"
+        | "Split by Locators" => {
+            use crate::arrangement_track as sections;
+            let (from, to) = (p.cycle_start, p.cycle_end);
+            let done = match label {
+                "Repeat Section Between Locators" => sections::repeat_section(p, from, to),
+                "Insert Silence Between Locators" => sections::insert_silence(p, from, to),
+                _ => {
+                    let mut tracks: Vec<usize> =
+                        s.tracks.all_selected().iter().map(|(t, _)| *t).collect();
+                    if tracks.is_empty() {
+                        tracks.push(p.selected_track);
+                    }
+                    tracks.sort_unstable();
+                    tracks.dedup();
+                    sections::split_by_locators(p, &tracks, from, to)
+                }
+            };
+            crate::tracks_area::forget_track_indexes(s);
+            if let Err(e) = done {
+                s.status = Some(e);
+            }
+        }
+        "Cut Section Between Locators" => {
+            let (from, to) = (p.cycle_start, p.cycle_end);
+            crate::tracks_area::forget_track_indexes(s);
+            match crate::arrangement_track::cut_section(p, from, to) {
+                Ok(clip) => s.tracks.section_clip = Some(clip),
+                Err(e) => s.status = Some(e),
+            }
+        }
+        "Insert Cut Section" => {
+            if let Some(clip) = s.tracks.section_clip.clone() {
+                let at = p.cycle_start;
+                crate::tracks_area::forget_track_indexes(s);
+                if let Err(e) = crate::arrangement_track::insert_clip(p, &clip, at) {
+                    s.status = Some(e);
+                }
+            }
+        }
+        "Spot Erase" => {
+            let gone = crate::region_edit::spot_erase(p, p.selected_track);
+            s.status = Some(format!("Spot Erase: {gone} notes"));
+        }
+        "Track Zoom" => {
+            if let Some(t) = p.tracks.get_mut(p.selected_track) {
+                t.height = if t.height > 1.5 { 1.0 } else { 3.0 };
+                p.song_rev += 1;
+            }
+        }
         "Varispeed…" => s.dialogs.varispeed = !s.dialogs.varispeed,
         "Map Beat to Playhead" => {
             // The nearest beat comes to where the playhead is, in time.

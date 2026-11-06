@@ -711,6 +711,38 @@ pub fn join_selected(p: &mut Project, v: &mut TracksView) -> Result<(), String> 
     Ok(())
 }
 
+/// Spot Erase: takes out the notes of track `t` that sound at the playhead. Returns how many.
+pub fn spot_erase(p: &mut Project, t: usize) -> usize {
+    let at = p.position_beats;
+    let starts: Vec<f64> = p
+        .tracks
+        .get(t)
+        .map(|track| {
+            track
+                .regions
+                .iter()
+                .map(|r| p.region_start_beats(r))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(track) = p.tracks.get_mut(t) else {
+        return 0;
+    };
+    let mut gone = 0;
+    for (region, start) in track.regions.iter_mut().zip(starts) {
+        let rel = (at - start) as f32;
+        let before = region.notes.len();
+        region
+            .notes
+            .retain(|n| !(n.start <= rel && rel < n.start + n.len));
+        gone += before - region.notes.len();
+    }
+    if gone > 0 {
+        p.song_rev += 1;
+    }
+    gone
+}
+
 /// A short piece of what track `t` plays at `beat`, for the Scrub tool: stereo at `rate`, faded at
 /// both ends so that pieces do not click.
 pub fn scrub_grain(p: &Project, t: usize, beat: f64, rate: u32) -> Option<Vec<f32>> {

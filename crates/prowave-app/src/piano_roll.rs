@@ -429,7 +429,7 @@ fn is_black(pitch: i32) -> bool {
 
 /// Logic octave naming: pitch 60 is C3.
 fn c_label(pitch: i32) -> String {
-    format!("C{}", pitch / 12 - 2)
+    format!("C{}", pitch / 12 + crate::settings::octave_naming())
 }
 
 /// The region the editor shows: the selected MIDI region, else the first one of the track.

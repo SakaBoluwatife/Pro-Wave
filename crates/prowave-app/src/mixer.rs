@@ -101,6 +101,10 @@ pub struct MixerView {
     pub scroll_x: f32,
     /// Peak hold per strip (linear), shared with the Inspector strips.
     pub peak_hold: HashMap<StripKey, f32>,
+    /// When each of those was last reached, for a hold that lets go after a while.
+    pub peak_hold_at: HashMap<StripKey, std::time::Instant>,
+    /// The output strip's Bnc was pressed.
+    pub want_bounce: bool,
     /// The effect whose window is open: (track, slot).
     pub fx_window: Option<(usize, usize)>,
     /// A hosted plugin whose editor was asked for: its uid and its name. Run by `App`, which has
@@ -207,6 +211,8 @@ impl Default for MixerView {
             wide: false,
             scroll_x: 0.0,
             peak_hold: HashMap::new(),
+            peak_hold_at: HashMap::new(),
+            want_bounce: false,
             fx_window: None,
             open_plugin: None,
             track_clicked: false,
@@ -1581,7 +1587,7 @@ fn plugin_menu(
         .iter()
         .filter_map(|id| installed.iter().find(|i| i.id == *id))
         .collect();
-    if !recent.is_empty() {
+    if !recent.is_empty() && crate::settings::show_recent_plugins() {
         ui.weak("Recent");
         for info in recent {
             if ui.button(info.name.as_str()).clicked() {
@@ -2197,6 +2203,28 @@ pub fn channel_strip(
                     trf("Bus {}", &[&n])
                 };
                 slot(g, input_r, &text, plug, plug_text);
+                if let StripKey::Track(i) = key {
+                    let resp = ui.interact(input_r, id(ns, (key, "aux_bus")), Sense::click());
+                    egui::Popup::menu(&resp).show(|ui| {
+                        ui.set_min_width(170.0);
+                        let names = p.aux_buses();
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .show(ui, |ui| {
+                                for bus in 1..=64u16 {
+                                    let taken = names.iter().find(|(b, _)| *b == bus && bus != n);
+                                    let text = match taken {
+                                        Some((_, name)) => format!("Bus {bus}: {name}"),
+                                        None => format!("Bus {bus}"),
+                                    };
+                                    if ui.selectable_label(bus == n, text).clicked() {
+                                        p.set_aux_bus(i, bus);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                    });
+                }
             }
             // An external MIDI strip shows where its notes go: the port and the channel.
             (Some(TrackKind::ExternalMidi), _) => {
@@ -2304,6 +2332,7 @@ pub fn channel_strip(
     }
     if let StripKey::Track(i) = key {
         let icon = Rect::from_center_size(pos2(strip.center().x, r.icon + 12.0), vec2(22.0, 22.0));
+        g.rect_filled(icon, 4.0, color.gamma_multiply(0.55));
         crate::track_icons::draw_icon(g, icon, crate::track_icons::track_icon(&p.tracks[i]));
     }
     let pan_c = pos2(strip.center().x, r.pan + 12.0);
@@ -2368,7 +2397,16 @@ pub fn channel_strip(
         _ => (ClipReset::Master, meters.master_clip),
     };
     let hold = v.peak_hold.entry(key).or_insert(0.0);
-    *hold = hold.max(peaks.0.max(peaks.1));
+    let peak_now = peaks.0.max(peaks.1);
+    let since = v
+        .peak_hold_at
+        .entry(key)
+        .or_insert_with(std::time::Instant::now);
+    let lets_go = crate::settings::peak_hold_ms();
+    if peak_now >= *hold || (lets_go > 0 && since.elapsed().as_millis() >= u128::from(lets_go)) {
+        *hold = peak_now;
+        *since = std::time::Instant::now();
+    }
     let half = (inner_w - 4.0) / 2.0;
     let vol_r = Rect::from_min_size(pos2(sx, r.db), vec2(half, 14.0));
     let pk_r = Rect::from_min_size(pos2(sx + half + 4.0, r.db), vec2(half, 14.0));
@@ -2498,9 +2536,22 @@ pub fn channel_strip(
             }
         }
         _ => {
-            slot(g, m_r, "M", SLOT_GRAY, TEXT_DIM);
             if key == StripKey::StereoOut {
-                slot(g, s_r, tr("Bnc"), SLOT_GRAY, TEXT_DIM);
+                // Dim and mono sum, for the speakers, and the bounce.
+                let half = m_r.width() / 2.0;
+                let dim = Rect::from_min_size(m_r.min, vec2(half - 1.0, m_r.height()));
+                let mono = Rect::from_min_size(m_r.min + vec2(half + 1.0, 0.0), dim.size());
+                if small_button(ui, g, dim, id(ns, (key, "dim")), "D", p.out_dim, SOLO_ON) {
+                    p.out_dim = !p.out_dim;
+                }
+                if small_button(ui, g, mono, id(ns, (key, "mono")), "1", p.out_mono, SOLO_ON) {
+                    p.out_mono = !p.out_mono;
+                }
+                if small_button(ui, g, s_r, id(ns, (key, "bnc")), tr("Bnc"), false, SOLO_ON) {
+                    v.want_bounce = true;
+                }
+            } else {
+                slot(g, m_r, "M", SLOT_GRAY, TEXT_DIM);
             }
         }
     }
@@ -3218,6 +3269,9 @@ fn strip_visible(kind: TrackKind, filters: &[bool; 8]) -> bool {
 }
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
+    if std::mem::take(&mut s.mixer.want_bounce) {
+        crate::menus::apply("Bounce", p, s);
+    }
     let area = ui.available_rect_before_wrap();
     ui.allocate_rect(area, Sense::hover());
     let bar = Rect::from_min_size(area.min, vec2(area.width(), TOOLBAR_H));

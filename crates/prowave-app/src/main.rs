@@ -110,6 +110,8 @@ pub struct UiState {
     pub show_library: bool,
     /// The control bar's display shows everything, not only bar, beat, tempo, signature and key.
     pub lcd_full: bool,
+    /// The display when not Custom: 0 beats and project, 1 beats and time, 2 beats, 3 time.
+    pub lcd_mode: u8,
     pub show_inspector: bool,
     /// List Editors (the Event list on the right).
     pub show_lists: bool,
@@ -231,7 +233,10 @@ impl UiState {
         Self {
             show_mixer: false,
             show_library: false,
-            lcd_full: false,
+            lcd_full: transport::lcd_default() == Some(transport::CUSTOM_LCD),
+            lcd_mode: transport::lcd_default()
+                .filter(|m| *m != transport::CUSTOM_LCD)
+                .unwrap_or(0),
             show_inspector: true,
             show_lists: false,
             lists: event_list::ListView::default(),
@@ -1428,6 +1433,7 @@ fn leave_now(code: i32) -> ! {
 fn main() -> eframe::Result {
     prowave_engine::Engine::set_worker_limit(settings::worker_limit());
     prowave_engine::set_plugin_block(settings::plugin_block());
+    settings::load_view();
     #[cfg(windows)]
     prowave_host::set_isolation(settings::plugin_isolation());
     bench::mark_start();

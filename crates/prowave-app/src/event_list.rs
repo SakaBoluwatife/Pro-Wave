@@ -154,7 +154,7 @@ fn note_name(pitch: u8) -> String {
     format!(
         "{}{}",
         NAMES[(pitch % 12) as usize],
-        (pitch / 12) as i32 - 2
+        (pitch / 12) as i32 + crate::settings::octave_naming()
     )
 }
 

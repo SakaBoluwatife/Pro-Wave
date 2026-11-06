@@ -349,8 +349,8 @@ pub struct TracksView {
     pub show_colors: bool,
     /// Flex markers are shown on the regions that have them, to drag.
     pub flex_view: bool,
-    /// The playhead is drawn wider, from Settings.
-    pub wide_playhead: bool,
+    /// What Cut Section took, for Insert Cut Section.
+    pub section_clip: Option<crate::arrangement_track::SectionClip>,
     /// The zoom when last drawn, and what to say about its last move, since when.
     zoom_seen: Option<(f32, f32)>,
     zoom_note: Option<(String, std::time::Instant)>,
@@ -475,7 +475,7 @@ impl Default for TracksView {
             show_grid: true,
             show_colors: true,
             flex_view: false,
-            wide_playhead: false,
+            section_clip: None,
             zoom_seen: None,
             zoom_note: None,
             flex_drag: None,
@@ -3227,6 +3227,7 @@ fn header(
         vec2(icon_size, icon_size),
     );
     if opts.icon {
+        g.rect_filled(icon, 4.0, p.tracks[i].color.gamma_multiply(0.55));
         draw_icon(g, icon, track_icon(&p.tracks[i]));
     }
 
@@ -5096,7 +5097,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let gp = ui.painter_at(Rect::from_min_max(ruler.min, area.max));
         gp.line_segment(
             [pos2(px, ruler.top() + 6.0), pos2(px, area.bottom())],
-            Stroke::new(if v.wide_playhead { 2.5 } else { 1.0 }, line_c),
+            Stroke::new(
+                if crate::settings::wide_playhead() {
+                    2.5
+                } else {
+                    1.0
+                },
+                line_c,
+            ),
         );
         let head = vec![
             pos2(px - 6.0, ruler.top() + 2.0),

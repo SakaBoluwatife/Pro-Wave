@@ -887,6 +887,8 @@ pub struct Track {
     pub output: u16,
     /// The device's outputs it plays to, instead of Stereo Out or a bus: 1 is 3-4, 2 is 5-6. 0 for none.
     pub hardware_out: u8,
+    /// The bus an Aux listens to, when it was chosen. 0: the next one free.
+    pub aux_bus: u16,
     pub volume_db: f32,
     pub pan: f32,
     pub inserts: Vec<Insert>,
@@ -982,6 +984,7 @@ impl Track {
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
             hardware_out: 0,
+            aux_bus: 0,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
@@ -1203,6 +1206,7 @@ impl Project {
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
             hardware_out: 0,
+            aux_bus: 0,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
@@ -1260,6 +1264,7 @@ impl Project {
             input: prowave_engine::InputSource::Mono(0),
             output: 0,
             hardware_out: 0,
+            aux_bus: 0,
             volume_db: vol,
             pan: 0.0,
             inserts: inserts_from_names(&ins),
@@ -2037,6 +2042,7 @@ impl Project {
         }
         let mut copy = self.tracks[t].clone();
         copy.name = format!("{} copy", copy.name);
+        copy.aux_bus = 0;
         copy.rec = false;
         copy.monitor = false;
         copy.solo = false;
@@ -2865,20 +2871,56 @@ impl Project {
     /// The bus an Aux strip listens to: Aux 1 takes Bus 1, the next Aux Bus 2, and so on up to
     /// Bus 8. 0 for any other strip, and for an Aux strip past the eighth.
     pub fn aux_bus_of(&self, i: usize) -> u16 {
-        match self.tracks.get(i) {
-            Some(t) if t.kind == TrackKind::Aux => {
-                let n = self.tracks[..=i]
-                    .iter()
-                    .filter(|t| t.kind == TrackKind::Aux)
-                    .count();
-                if n <= prowave_engine::MAX_BUSES {
-                    n as u16
-                } else {
-                    0
-                }
-            }
-            _ => 0,
+        let is_aux = |t: &Track| t.kind == TrackKind::Aux;
+        let Some(t) = self.tracks.get(i).filter(|t| is_aux(t)) else {
+            return 0;
+        };
+        let max = prowave_engine::MAX_BUSES;
+        if t.aux_bus > 0 {
+            return t.aux_bus.min(max as u16);
         }
+        // Those not chosen by hand take the buses left, in the order of the tracks.
+        let nth = self.tracks[..=i]
+            .iter()
+            .filter(|t| is_aux(t) && t.aux_bus == 0)
+            .count();
+        let chosen: Vec<u16> = self
+            .tracks
+            .iter()
+            .filter(|t| is_aux(t))
+            .map(|t| t.aux_bus)
+            .collect();
+        if chosen.iter().all(|b| *b == 0) {
+            return if nth <= max { nth as u16 } else { 0 };
+        }
+        (1..=max as u16)
+            .filter(|b| !chosen.contains(b))
+            .nth(nth - 1)
+            .unwrap_or(0)
+    }
+
+    /// Has the Aux at `i` listen to `bus`. What plays into a bus stays on it, so the Aux hears what
+    /// plays there now. An Aux already on that bus takes this one's, and every other Aux keeps its
+    /// number from here on, so that none changes by this.
+    pub fn set_aux_bus(&mut self, i: usize, bus: u16) {
+        if bus == 0 || usize::from(bus) > prowave_engine::MAX_BUSES || self.aux_bus_of(i) == 0 {
+            return;
+        }
+        let now: Vec<u16> = (0..self.tracks.len()).map(|t| self.aux_bus_of(t)).collect();
+        let old = now[i];
+        for (t, number) in now.iter().enumerate() {
+            let track = &mut self.tracks[t];
+            if track.kind == TrackKind::Aux {
+                track.aux_bus = if t == i {
+                    bus
+                } else if *number == bus {
+                    old
+                } else {
+                    *number
+                };
+            }
+        }
+        self.song_rev += 1;
     }
 
     /// Whether track `i` is muted, by its own Mute or by its VCA's.
@@ -3737,6 +3779,27 @@ mod tests {
         assert_eq!(p.tracks[t].name, "Output 5-6");
         assert_eq!(p.tracks[t].kind, TrackKind::Aux);
         assert_eq!(p.tracks[t].hardware_out, 2);
+    }
+
+    #[test]
+    fn an_aux_takes_the_bus_chosen_and_no_other_changes_by_it() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let (a, b) = (p.add_track(TrackKind::Aux), p.add_track(TrackKind::Aux));
+        assert_eq!((p.aux_bus_of(a), p.aux_bus_of(b)), (1, 2));
+        p.set_aux_bus(a, 16);
+        assert_eq!((p.aux_bus_of(a), p.aux_bus_of(b)), (16, 2));
+        let c = p.add_track(TrackKind::Aux);
+        assert_eq!(p.aux_bus_of(c), 1, "the next free one");
+        p.set_aux_bus(b, 16);
+        assert_eq!(
+            (p.aux_bus_of(a), p.aux_bus_of(b)),
+            (2, 16),
+            "they swap rather than share"
+        );
+        let audio = p.add_track(TrackKind::Audio);
+        p.set_aux_bus(audio, 3);
+        assert_eq!(p.aux_bus_of(audio), 0);
     }
 
     #[test]

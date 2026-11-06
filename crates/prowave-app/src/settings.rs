@@ -5,6 +5,7 @@
 //! others take effect at once.
 use crate::UiState;
 use egui::Ui;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 
 const AUDIO_FILE: &str = "audio-setup";
@@ -89,15 +90,17 @@ enum Tab {
     Keys,
     Plugins,
     General,
+    Display,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [
+    const ALL: [Tab; 6] = [
         Tab::Audio,
         Tab::Keyboard,
         Tab::Keys,
         Tab::Plugins,
         Tab::General,
+        Tab::Display,
     ];
 
     fn name(self) -> &'static str {
@@ -107,6 +110,7 @@ impl Tab {
             Tab::Keys => "Key Commands",
             Tab::Plugins => "Plugins",
             Tab::General => "General",
+            Tab::Display => "Display",
         }
     }
 }
@@ -245,6 +249,127 @@ fn isolation_row(ui: &mut Ui) {
         if let Err(e) = result {
             tracing::warn!("could not save the plugin process setting: {e}");
         }
+    }
+}
+
+static WIDE_PLAYHEAD: AtomicBool = AtomicBool::new(false);
+/// What is added to the octave of a note to name it: -2 calls middle C (pitch 60) C3.
+static OCTAVE_NAMING: AtomicI32 = AtomicI32::new(-2);
+/// How long a strip's peak readout holds, 0 until it is clicked.
+static PEAK_HOLD_MS: AtomicU32 = AtomicU32::new(0);
+static OPEN_ON_INSERT: AtomicBool = AtomicBool::new(true);
+static SHOW_RECENT: AtomicBool = AtomicBool::new(true);
+
+pub fn wide_playhead() -> bool {
+    WIDE_PLAYHEAD.load(Ordering::Relaxed)
+}
+
+pub fn octave_naming() -> i32 {
+    OCTAVE_NAMING.load(Ordering::Relaxed)
+}
+
+pub fn peak_hold_ms() -> u32 {
+    PEAK_HOLD_MS.load(Ordering::Relaxed)
+}
+
+pub fn open_on_insert() -> bool {
+    OPEN_ON_INSERT.load(Ordering::Relaxed)
+}
+
+pub fn show_recent_plugins() -> bool {
+    SHOW_RECENT.load(Ordering::Relaxed)
+}
+
+fn view_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("display-settings"))
+}
+
+/// Takes in the Display settings. Call once, at the start.
+pub fn load_view() {
+    let Some(text) = view_file().and_then(|f| std::fs::read_to_string(f).ok()) else {
+        return;
+    };
+    let mut lines = text.lines().map(str::trim);
+    let mut next = || lines.next().and_then(|l| l.parse::<i64>().ok());
+    if let Some(v) = next() {
+        WIDE_PLAYHEAD.store(v != 0, Ordering::Relaxed);
+    }
+    if let Some(v) = next() {
+        OCTAVE_NAMING.store((v as i32).clamp(-2, 0), Ordering::Relaxed);
+    }
+    if let Some(v) = next() {
+        PEAK_HOLD_MS.store(v.clamp(0, 60_000) as u32, Ordering::Relaxed);
+    }
+    if let Some(v) = next() {
+        OPEN_ON_INSERT.store(v != 0, Ordering::Relaxed);
+    }
+    if let Some(v) = next() {
+        SHOW_RECENT.store(v != 0, Ordering::Relaxed);
+    }
+}
+
+fn save_view() {
+    let Some(file) = view_file() else {
+        return;
+    };
+    let text = format!(
+        "{}\n{}\n{}\n{}\n{}\n",
+        i32::from(wide_playhead()),
+        octave_naming(),
+        peak_hold_ms(),
+        i32::from(open_on_insert()),
+        i32::from(show_recent_plugins()),
+    );
+    let saved = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&file, text));
+    if let Err(e) = saved {
+        tracing::warn!("could not save the display settings: {e}");
+    }
+}
+
+fn display_tab(ui: &mut Ui) {
+    let mut changed = false;
+    let mut wide = wide_playhead();
+    changed |= ui.checkbox(&mut wide, "Wide playhead").changed();
+    WIDE_PLAYHEAD.store(wide, Ordering::Relaxed);
+    ui.add_space(6.0);
+    let mut naming = octave_naming();
+    ui.horizontal(|ui| {
+        ui.label("Display middle C as");
+        for (name, value) in [("C3 (Yamaha)", -2), ("C4 (Roland)", -1), ("C5", 0)] {
+            changed |= ui.selectable_value(&mut naming, value, name).changed();
+        }
+    });
+    OCTAVE_NAMING.store(naming, Ordering::Relaxed);
+    ui.add_space(6.0);
+    let mut hold = peak_hold_ms();
+    ui.horizontal(|ui| {
+        ui.label("Peak hold time");
+        for (name, value) in [
+            ("Until clicked", 0),
+            ("800 ms", 800),
+            ("2 s", 2000),
+            ("6 s", 6000),
+        ] {
+            changed |= ui.selectable_value(&mut hold, value, name).changed();
+        }
+    });
+    PEAK_HOLD_MS.store(hold, Ordering::Relaxed);
+    ui.add_space(6.0);
+    let mut insert = open_on_insert();
+    changed |= ui
+        .checkbox(&mut insert, "Open plugin window on insertion")
+        .changed();
+    OPEN_ON_INSERT.store(insert, Ordering::Relaxed);
+    let mut recent = show_recent_plugins();
+    changed |= ui
+        .checkbox(&mut recent, "Show recent plugins in the plugin menu")
+        .changed();
+    SHOW_RECENT.store(recent, Ordering::Relaxed);
+    if changed {
+        save_view();
     }
 }
 
@@ -627,6 +752,7 @@ pub fn show(ctx: &egui::Context, s: &mut UiState) {
                 Tab::Keys => keys_tab(ui, s),
                 Tab::Plugins => plugins_tab(ui, s),
                 Tab::General => general_tab(ui, s),
+                Tab::Display => display_tab(ui),
             }
         });
     s.settings.open = open;

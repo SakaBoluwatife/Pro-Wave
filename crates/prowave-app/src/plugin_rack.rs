@@ -886,6 +886,10 @@ impl Rack {
         let state = kept
             .map(|(_, s)| s.clone())
             .or_else(|| plugin.state.clone());
+        // Newly inserted, so nothing kept: its window comes up, if that is the setting.
+        if state.is_none() && self.owner.is_some() && crate::settings::open_on_insert() {
+            self.reopen.push(uid);
+        }
         if let Some(state) = state {
             if let Err(e) = loaded.load_state(&state) {
                 // It runs from its defaults. Its old settings stay in the project.
