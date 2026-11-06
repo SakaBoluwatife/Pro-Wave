@@ -31,7 +31,9 @@ pub const MAX_INPUT_CHANNELS: usize = 32;
 /// How much audio the ring holds when the writer thread is held up.
 const RING_SECONDS: usize = 4;
 /// How far back a recording can reach when the writer thread was a moment late to start it.
-const HISTORY_SECONDS: usize = 1;
+const HISTORY_SECONDS: usize = 60;
+/// The most samples of history kept, about 128 MB, for a device with many channels.
+const MAX_HISTORY_SAMPLES: usize = 32_000_000;
 /// How often the header of a growing file is brought up to date.
 const HEADER_REFRESH: Duration = Duration::from_secs(1);
 /// A WAV file cannot hold more audio than its 32-bit sizes can count.
@@ -352,6 +354,14 @@ enum Ctl {
         id: u32,
         reply: Sender<Result<Recorded, CaptureError>>,
     },
+    /// Writes a stretch of the history to a file.
+    Grab {
+        path: PathBuf,
+        source: InputSource,
+        from_frame: u64,
+        to_frame: u64,
+        reply: Sender<Result<(Recorded, u64), CaptureError>>,
+    },
 }
 
 /// The writer thread: takes the audio from the ring and feeds each running recording.
@@ -367,7 +377,8 @@ fn writer_loop(
     let mut scratch: Vec<f32> = Vec::new();
     // The latest audio, for a recording that starts a moment before the thread hears of it.
     let mut history: VecDeque<f32> = VecDeque::new();
-    let history_samples = sample_rate as usize * channels * HISTORY_SECONDS;
+    let one_second = sample_rate as usize * channels;
+    let history_samples = (one_second * HISTORY_SECONDS).min(MAX_HISTORY_SAMPLES.max(one_second));
     let mut overruns_seen = 0u64;
     let mut refreshed = Instant::now();
     let mut closing = false;
@@ -437,10 +448,34 @@ fn writer_loop(
                     start_rec(&path, source, from_frame, channels, sample_rate).map(|mut rec| {
                         // The part that went by before this message was handled.
                         let have = (history.len() / channels) as u64;
-                        history.make_contiguous();
-                        rec.feed(consumed - have, history.as_slices().0, channels);
+                        let (a, b) = history.as_slices();
+                        rec.feed(consumed - have, a, channels);
+                        rec.feed(consumed - have + (a.len() / channels) as u64, b, channels);
                         recs.push((id, rec));
                     });
+                let _ = reply.send(result);
+            }
+            Some(Ctl::Grab {
+                path,
+                source,
+                from_frame,
+                to_frame,
+                reply,
+            }) => {
+                let result = start_rec(&path, source, from_frame, channels, sample_rate).and_then(
+                    |mut rec| {
+                        let first = consumed - (history.len() / channels) as u64;
+                        let (a, b) = history.as_slices();
+                        let second = first + (a.len() / channels) as u64;
+                        for (base, part) in [(first, a), (second, b)] {
+                            let frames = (part.len() / channels) as u64;
+                            let wanted = to_frame.saturating_sub(base).min(frames) as usize;
+                            rec.feed(base, &part[..wanted * channels], channels);
+                        }
+                        rec.finish()
+                            .map(|done| (done, first.saturating_sub(from_frame)))
+                    },
+                );
                 let _ = reply.send(result);
             }
             Some(Ctl::Stop { id, reply }) => {
@@ -718,10 +753,54 @@ impl Capture {
         source: InputSource,
         latency_us: u32,
     ) -> Result<u32, CaptureError> {
+        self.start_early(path, source, latency_us, 0)
+    }
+
+    /// Writes to a file what the input took between `ago_start` and `ago_end` seconds ago, as far
+    /// as the history reaches. Also returns how many frames at the start were too old to have.
+    pub fn grab(
+        &mut self,
+        path: &Path,
+        source: InputSource,
+        (ago_start, ago_end): (f64, f64),
+        latency_us: u32,
+    ) -> Result<(Recorded, u64), CaptureError> {
+        let total_us =
+            u64::from(latency_us) + u64::from(self.shared.latency_us.load(Ordering::Relaxed));
+        let rate = u64::from(self.sample_rate);
+        let now = self.shared.frames_pushed.load(Ordering::Acquire) + total_us * rate / 1_000_000;
+        let frames_ago = |seconds: f64| (seconds.max(0.0) * rate as f64) as u64;
+        let back = frames_ago(ago_start);
+        let (reply, answer) = mpsc::channel();
+        self.ctl
+            .as_ref()
+            .ok_or(CaptureError::Closed)?
+            .send(Ctl::Grab {
+                path: path.to_path_buf(),
+                source,
+                from_frame: now.saturating_sub(back),
+                to_frame: now.saturating_sub(frames_ago(ago_end)),
+                reply,
+            })
+            .map_err(|_| CaptureError::Closed)?;
+        let (done, old) = answer.recv().map_err(|_| CaptureError::Closed)??;
+        Ok((done, old + back.saturating_sub(now)))
+    }
+
+    /// As [`Capture::start`], with the file beginning `lead_us` before now, from the history.
+    pub fn start_early(
+        &mut self,
+        path: &Path,
+        source: InputSource,
+        latency_us: u32,
+        lead_us: u32,
+    ) -> Result<u32, CaptureError> {
         let total_us =
             u64::from(latency_us) + u64::from(self.shared.latency_us.load(Ordering::Relaxed));
         let skip = total_us * u64::from(self.sample_rate) / 1_000_000;
-        let from_frame = self.shared.frames_pushed.load(Ordering::Acquire) + skip;
+        let lead = u64::from(lead_us) * u64::from(self.sample_rate) / 1_000_000;
+        let from_frame =
+            (self.shared.frames_pushed.load(Ordering::Acquire) + skip).saturating_sub(lead);
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let (reply, answer) = mpsc::channel();

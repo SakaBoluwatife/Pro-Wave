@@ -227,7 +227,7 @@ pub fn import_audio_at(
     p.tracks.push(Track {
         name,
         kind: TrackKind::Audio,
-        color: egui::Color32::from_rgb(0x3f, 0x5f, 0xc0),
+        color: p.next_track_color(),
         mute: false,
         solo: false,
         rec: false,

@@ -351,6 +351,8 @@ pub fn delete_take(p: &mut Project, t: usize, r: usize, take: usize) -> Vec<usiz
 pub enum RecCmd {
     /// Throw the recording in progress away and record again from where it began.
     Repeat,
+    /// Throw the recording in progress away, stop, and go back to where it began.
+    Discard,
     /// Keep the recording in progress as a take and record another over the same stretch. Stopped:
     /// record a new take over the selected region.
     NewTake,
@@ -378,6 +380,15 @@ pub fn record_commands(p: &mut Project, s: &mut crate::UiState) {
                 p.playing = true;
             }
         },
+        Some(RecCmd::Discard) => {
+            if let Some(beat) = began {
+                crate::recorder::discard(&mut s.rec, p);
+                s.audio_rec.discard(p);
+                p.playing = false;
+                p.recording = false;
+                p.position_beats = beat;
+            }
+        }
         Some(RecCmd::NewTake) => {
             s.rec.as_take = true;
             if let Some(beat) = began {

@@ -67,6 +67,7 @@ pub enum MixerMode {
 pub enum StripRequest {
     PianoRoll(usize),
     Delete(usize),
+    Color(usize),
 }
 
 pub struct MixerView {
@@ -955,6 +956,10 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
     let takes_midi = matches!(t.kind, TrackKind::Instrument | TrackKind::ExternalMidi);
     let last = p.tracks.len() == 1;
     crate::widgets::context_menu(resp, |ui| {
+        if ui.button("Track Color…").clicked() {
+            v.strip_request = Some(StripRequest::Color(i));
+            ui.close();
+        }
         if takes_midi && ui.button(tr("Open in Piano Roll")).clicked() {
             v.strip_request = Some(StripRequest::PianoRoll(i));
             ui.close();

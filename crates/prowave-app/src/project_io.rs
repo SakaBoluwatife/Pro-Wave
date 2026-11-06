@@ -583,6 +583,7 @@ fn region_to_doc(
             }),
         shape: r.params.shape,
         mute: r.params.mute,
+        color: r.params.color.map(|c| [c.r(), c.g(), c.b()]),
         quantize: r.params.quantize,
         transpose: r.params.transpose,
         velocity: r.params.velocity,
@@ -791,6 +792,9 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         cycle_end: p.cycle_end,
         metronome: p.metronome,
         count_in: p.count_in,
+        auto_monitor: p.auto_monitor,
+        wait_for_sound: p.wait_for_sound,
+        trigger_db: p.trigger_db,
         notes: p.notes.clone(),
         master_vol: p.master_vol,
         selected_track: p.selected_track,
@@ -1023,6 +1027,7 @@ fn regions_from_doc(
                 pattern: 0,
                 pattern_len: 0.0,
                 pattern_color: None,
+                color: r.color.map(|c| Color32::from_rgb(c[0], c[1], c[2])),
                 shape: shape_from_doc(r.shape),
                 mute: r.mute,
                 quantize: r.quantize.filter(|q| q.is_finite() && *q > 0.0),
@@ -1242,6 +1247,9 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.cycle_end = doc.cycle_end.max(p.cycle_start);
     p.metronome = doc.metronome;
     p.count_in = doc.count_in;
+    p.auto_monitor = doc.auto_monitor;
+    p.wait_for_sound = doc.wait_for_sound;
+    p.trigger_db = doc.trigger_db.clamp(-60.0, -6.0);
     p.notes = doc
         .notes
         .chars()

@@ -16,6 +16,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// See [`Engine::set_worker_limit`].
+static WORKER_LIMIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 const MAX_BLOCK_FRAMES: usize = 8192;
 const GARBAGE_CAPACITY: usize = 32;
 
@@ -284,6 +287,12 @@ impl Engine {
         Err(last)
     }
 
+    /// How many threads help run plugins, 0 for the usual number. Call before audio starts: the
+    /// pool is made once.
+    pub fn set_worker_limit(workers: usize) {
+        WORKER_LIMIT.store(workers, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// What plugins need to run on several cores, ready to send as [`Command::SetPluginRound`]. The
     /// program has one pool of workers, made the first time this is asked for. Half the physical
     /// cores, at least one: more made every project measured slower in Lemon Studio.
@@ -292,7 +301,13 @@ impl Engine {
         static POOL: OnceLock<Arc<crate::parallel::Pool>> = OnceLock::new();
         let pool = POOL.get_or_init(|| {
             let init: crate::parallel::ThreadInit = Arc::new(worker_setup);
-            crate::parallel::Pool::new(crate::parallel::default_workers(None), Some(init))
+            let limit = WORKER_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
+            let workers = if limit > 0 {
+                limit
+            } else {
+                crate::parallel::default_workers(None)
+            };
+            crate::parallel::Pool::new(workers, Some(init))
         });
         Box::new(crate::plugin::PluginRound::new(pool.clone(), capacity))
     }

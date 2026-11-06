@@ -558,7 +558,22 @@ impl App {
             recorder::Outcome::Nothing => {}
         }
         if std::mem::take(&mut s.capture_cmd) {
-            match recorder::capture(&mut s.rec, p) {
+            let on_audio = p
+                .tracks
+                .get(p.selected_track)
+                .is_some_and(|t| t.kind == model::TrackKind::Audio);
+            let made = if on_audio {
+                match s.audio_rec.capture_played(p, ctx) {
+                    Some(region) => Some(region),
+                    None => recorder::capture(&mut s.rec, p),
+                }
+            } else {
+                match recorder::capture(&mut s.rec, p) {
+                    Some(region) => Some(region),
+                    None => s.audio_rec.capture_played(p, ctx),
+                }
+            };
+            match made {
                 Some(region) => s.tracks.selected = Some(region),
                 None => s.status = Some(i18n::tr("Capture Recording: nothing was played").into()),
             }
@@ -1336,6 +1351,7 @@ fn main_window_handle(frame: &eframe::Frame) -> Option<isize> {
 }
 
 fn main() -> eframe::Result {
+    prowave_engine::Engine::set_worker_limit(settings::worker_limit());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {

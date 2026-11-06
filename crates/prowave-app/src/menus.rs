@@ -194,6 +194,8 @@ const RECORD: &[&str] = &[
     "Record Enable",
     "-",
     "Capture Recording",
+    "Discard Recording",
+    "Recording Meter",
     "-",
     "New Take",
     "Delete Take",
@@ -539,6 +541,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             .get(p.selected_track)
             .is_some_and(|t| t.kind.has_regions()),
         "Record Toggle" => p.playing,
+        "Discard Recording" => s.rec.active() || s.audio_rec.active(),
+        "Recording Meter" => true,
         "Record / Record Repeat" | "Replace Mode" | "Snap to Zero Crossings" => true,
         "New Take" => {
             s.rec.active()
@@ -692,6 +696,7 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Track Header" => s.tracks.show_header,
         "Show Ruler" => s.tracks.show_ruler,
         "Show Colors" => s.tracks.show_colors,
+        "Recording Meter" => s.dialogs.rec_meter,
         "Show Grid" => s.tracks.show_grid,
         "Pre-Fader Metering" => s.mixer.pre_fader,
         _ => false,
@@ -978,6 +983,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Show Project Notes" => s.show_notes = !s.show_notes,
         "Show Media Browser" => s.browser.toggle(crate::file_browser::Tab::Files),
         "Capture Recording" => s.capture_cmd = true,
+        "Discard Recording" => s.rec_cmd = Some(crate::takes::RecCmd::Discard),
+        "Recording Meter" => s.dialogs.rec_meter = !s.dialogs.rec_meter,
         "Check for Updates…" => s.update_check = true,
         "Check for Updates Automatically" => {
             s.update_auto = !s.update_auto;
@@ -1478,7 +1485,7 @@ mod tests {
                     !s.tracks.clipboard.is_empty()
                 ),
                 (
-                    (s.capture_cmd, s.rec_cmd),
+                    (s.capture_cmd, s.rec_cmd, s.dialogs.rec_meter,),
                     s.show_quick_help,
                     s.show_toolbar,
                     s.show_notes,
@@ -1590,6 +1597,10 @@ mod tests {
             }
             // A screenset that was never saved has nothing to call back.
             if matches!(c.action, Action::RecallScreenset(_)) {
+                continue;
+            }
+            // With nothing being recorded there is nothing to discard.
+            if matches!(c.action, Action::Menu("Discard Recording")) {
                 continue;
             }
             let (mut p, mut s) = (Project::demo(), crate::UiState::new());

@@ -162,6 +162,36 @@ impl Generated {
     }
 }
 
+/// The colours offered for tracks and regions: strong ones, then the same lighter, then grey.
+pub const TRACK_COLORS: [Color32; 24] = [
+    Color32::from_rgb(0xd9, 0x4f, 0x4f),
+    Color32::from_rgb(0xe0, 0x82, 0x3a),
+    Color32::from_rgb(0xd9, 0xb4, 0x3a),
+    Color32::from_rgb(0x8f, 0xb8, 0x3f),
+    Color32::from_rgb(0x3f, 0xa8, 0x5a),
+    Color32::from_rgb(0x2f, 0xa8, 0x9a),
+    Color32::from_rgb(0x3f, 0x9f, 0xd0),
+    Color32::from_rgb(0x3f, 0x5f, 0xc0),
+    Color32::from_rgb(0x7a, 0x4f, 0xc0),
+    Color32::from_rgb(0xb0, 0x4f, 0xb8),
+    Color32::from_rgb(0xd0, 0x5a, 0x8f),
+    Color32::from_rgb(0xec, 0x8f, 0x8f),
+    Color32::from_rgb(0xf0, 0xb2, 0x82),
+    Color32::from_rgb(0xec, 0xd5, 0x82),
+    Color32::from_rgb(0xbf, 0xd9, 0x85),
+    Color32::from_rgb(0x85, 0xcf, 0x98),
+    Color32::from_rgb(0x7c, 0xcf, 0xc5),
+    Color32::from_rgb(0x8a, 0xc6, 0xe5),
+    Color32::from_rgb(0x8a, 0x9f, 0xe0),
+    Color32::from_rgb(0xae, 0x92, 0xdf),
+    Color32::from_rgb(0xd3, 0x92, 0xd8),
+    Color32::from_rgb(0xe6, 0x9b, 0xbd),
+    Color32::from_rgb(0x8a, 0x8a, 0x8a),
+    Color32::from_rgb(0x5a, 0x5a, 0x5a),
+];
+/// New tracks take from the colours before the greys.
+const AUTO_TRACK_COLORS: usize = 22;
+
 /// Most bars the notes of a generated region are made for.
 const MAX_GENERATED_BARS: usize = 1024;
 
@@ -174,6 +204,8 @@ pub struct RegionParams {
     pub pattern_len: f32,
     /// Its pattern's color, which it is drawn in. Not saved.
     pub pattern_color: Option<Color32>,
+    /// Its own colour, instead of its track's.
+    pub color: Option<Color32>,
     pub mute: bool,
     /// The rows under More in the Region Inspector.
     pub shape: prowave_project::RegionShape,
@@ -1078,6 +1110,11 @@ pub struct Project {
     pub patterns: Vec<crate::song_pattern::SongPattern>,
     /// Plugins with a long delay step aside, for playing and recording with less delay. Not saved.
     pub low_latency: bool,
+    /// Armed audio tracks are heard while stopped and while recording, not on playback.
+    pub auto_monitor: bool,
+    /// Recording waits until the input passes `trigger_db`.
+    pub wait_for_sound: bool,
+    pub trigger_db: f32,
     /// Plugins go on running with nothing to process. For the few that need it. Not saved.
     pub keep_plugins_running: bool,
     /// Autopunch: recording happens only between these beats, however it is started.
@@ -1312,6 +1349,9 @@ impl Project {
             grooves: Vec::new(),
             screensets: Vec::new(),
             low_latency: false,
+            auto_monitor: false,
+            wait_for_sound: false,
+            trigger_db: -40.0,
             keep_plugins_running: false,
             punch: false,
             punch_start: 0.0,
@@ -1722,6 +1762,18 @@ impl Project {
 
     /// Appends a new track of `kind` (named "Aux 1", "Inst 3"...), selects it and tells the
     /// engine the song changed. Returns its index.
+    /// The colour for a new track: the one in the palette that the fewest tracks have.
+    pub fn next_track_color(&self) -> Color32 {
+        let uses = |c: &Color32| self.tracks.iter().filter(|t| t.color == *c).count();
+        let mut best = TRACK_COLORS[0];
+        for color in TRACK_COLORS.iter().take(AUTO_TRACK_COLORS) {
+            if uses(color) < uses(&best) {
+                best = *color;
+            }
+        }
+        best
+    }
+
     pub fn add_track(&mut self, kind: TrackKind) -> usize {
         let n = self.tracks.iter().filter(|t| t.kind == kind).count() + 1;
         let name = match kind {
@@ -1735,7 +1787,11 @@ impl Project {
             TrackKind::Bus => format!("Bus {n}"),
             TrackKind::Output => format!("Output {n}"),
         };
-        self.tracks.push(Track::new(name, kind));
+        let mut track = Track::new(name, kind);
+        if !matches!(kind, TrackKind::Bus | TrackKind::Output) {
+            track.color = self.next_track_color();
+        }
+        self.tracks.push(track);
         self.selected_track = self.tracks.len() - 1;
         self.song_rev += 1;
         self.selected_track

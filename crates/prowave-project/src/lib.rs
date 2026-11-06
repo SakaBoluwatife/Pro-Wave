@@ -138,6 +138,8 @@ pub struct RegionDoc {
     /// Path inside the archive (`media/…`) for audio regions.
     pub audio: Option<String>,
     pub mute: bool,
+    /// Its own colour, instead of its track's.
+    pub color: Option<[u8; 3]>,
     /// Playback quantize grid in beats.
     pub quantize: Option<f32>,
     pub transpose: i8,
@@ -605,6 +607,11 @@ pub struct ProjectDoc {
     pub cycle_end: f64,
     pub metronome: bool,
     pub count_in: bool,
+    /// Armed audio tracks are heard while stopped and while recording.
+    pub auto_monitor: bool,
+    /// Recording waits until the input passes `trigger_db`.
+    pub wait_for_sound: bool,
+    pub trigger_db: f32,
     /// The Note Pad's text.
     pub notes: String,
     pub master_vol: f32,
@@ -774,6 +781,9 @@ impl Default for ProjectDoc {
             cycle_end: 16.0,
             metronome: false,
             count_in: true,
+            auto_monitor: false,
+            wait_for_sound: false,
+            trigger_db: -40.0,
             notes: String::new(),
             master_vol: 0.8,
             selected_track: 0,

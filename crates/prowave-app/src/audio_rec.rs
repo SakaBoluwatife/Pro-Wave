@@ -10,10 +10,78 @@
 use crate::i18n::{tr, trf};
 use crate::model::{Project, Region, RegionParams, TrackKind};
 use prowave_engine::{input_devices, AudioFile, Capture, InputInfo, InputSource};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// How much of a level meter's value is left at the next frame.
 const METER_FALL: f32 = 0.85;
+/// Less free disk than this: recording does not start, and one in progress stops and is kept.
+const STOP_FREE_BYTES: u64 = 200 * 1024 * 1024;
+/// Less room than this is pointed out when recording starts.
+const WARN_FREE_SECONDS: u64 = 10 * 60;
+/// Recording that waits for sound starts this far before it was noticed, to keep the attack.
+const LEAD_SECONDS: f64 = 0.1;
+/// A playhead moving further than this in one frame was moved by hand.
+const JUMP_BEATS: f64 = 4.0;
+
+/// The free space where recordings go, looked up off the UI thread: asking can take a moment.
+struct DiskWatch {
+    free: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+}
+
+impl DiskWatch {
+    fn start(dir: PathBuf) -> Self {
+        let free = Arc::new(AtomicU64::new(u64::MAX));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (out, end) = (free.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !end.load(Ordering::Relaxed) {
+                if let Some(bytes) = free_bytes(&dir) {
+                    out.store(bytes, Ordering::Relaxed);
+                }
+                for _ in 0..50 {
+                    if end.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        Self { free, stop }
+    }
+
+    /// `None` until it is known.
+    fn free(&self) -> Option<u64> {
+        Some(self.free.load(Ordering::Relaxed)).filter(|b| *b != u64::MAX)
+    }
+}
+
+impl Drop for DiskWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn free_bytes(dir: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|d| dir.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
+}
+
+/// The stretch of playback the input last heard, for Capture Recording.
+struct Played {
+    began: Instant,
+    from_beat: f64,
+    last_beat: f64,
+    ended: Option<Instant>,
+}
 
 /// The audio input device of this computer that Pro Wave records from (Logic: Settings >
 /// Audio > Input Device). It belongs to the computer, not to a project. `default()` never
@@ -120,6 +188,10 @@ pub struct AudioRecorder {
     /// Level of each input channel, for the meters.
     levels: Vec<f32>,
     fresh: Vec<f32>,
+    /// The delay of the output, as of the last update.
+    latency_us: u32,
+    played: Option<Played>,
+    disk: Option<DiskWatch>,
 }
 
 /// The audio tracks that record: the armed ones, or else the selected one.
@@ -259,6 +331,118 @@ impl AudioRecorder {
         self.takes.iter().map(|t| (t.track, t.region))
     }
 
+    /// What the Recording Meter shows: each recording track's name and input levels. The second
+    /// level is for the right side of a stereo input.
+    pub fn input_levels(&self, p: &Project) -> Vec<(String, f32, Option<f32>)> {
+        if self.capture.is_none() {
+            return Vec::new();
+        }
+        let at = |c: u16| self.levels.get(usize::from(c)).copied().unwrap_or(0.0);
+        targets(p)
+            .into_iter()
+            .map(|t| {
+                let track = &p.tracks[t];
+                match track.input {
+                    InputSource::Mono(c) => (track.name.clone(), at(c), None),
+                    InputSource::Stereo(c) => (track.name.clone(), at(c), Some(at(c + 1))),
+                }
+            })
+            .collect()
+    }
+
+    /// Whether an input a track would record from is louder than the project's trigger level.
+    fn sound_arrived(&self, p: &Project) -> bool {
+        let level = 10f32.powf(p.trigger_db / 20.0);
+        self.input_levels(p)
+            .iter()
+            .any(|(_, l, r)| *l >= level || r.is_some_and(|r| r >= level))
+    }
+
+    /// Keeps track of the playback that Capture Recording would take.
+    fn note_playing(&mut self, p: &Project) {
+        if self.capture.is_none() || p.recording {
+            self.played = None;
+            return;
+        }
+        let now = Instant::now();
+        if !p.playing || p.counting_in {
+            if let Some(played) = &mut self.played {
+                played.ended.get_or_insert(now);
+            }
+            return;
+        }
+        let at = p.position_beats;
+        match &mut self.played {
+            Some(played)
+                if played.ended.is_none()
+                    && at >= played.last_beat - 1e-6
+                    && at - played.last_beat < JUMP_BEATS =>
+            {
+                played.last_beat = at;
+            }
+            _ => {
+                self.played = Some(Played {
+                    began: now,
+                    from_beat: at,
+                    last_beat: at,
+                    ended: None,
+                });
+            }
+        }
+    }
+
+    /// Capture Recording: makes regions of what the input heard during the last playback, on
+    /// the tracks that would record, in their places in the song. Returns the last of them.
+    pub fn capture_played(
+        &mut self,
+        p: &mut Project,
+        ctx: &egui::Context,
+    ) -> Option<(usize, usize)> {
+        let played = self.played.take()?;
+        let dir = crate::project_io::recordings_dir();
+        std::fs::create_dir_all(&dir).ok()?;
+        let now = Instant::now();
+        let ago_start = (now - played.began).as_secs_f64();
+        let ago_end = played.ended.map_or(0.0, |end| (now - end).as_secs_f64());
+        let latency_us = self.latency_us;
+        let mut kept = None;
+        for t in targets(p) {
+            let capture = self.capture.as_mut()?;
+            let rate = f64::from(capture.sample_rate());
+            self.count += 1;
+            let (name, input) = (p.tracks[t].name.clone(), p.tracks[t].input);
+            let path = dir.join(file_name(&name, self.count));
+            let grabbed = capture.grab(&path, input, (ago_start, ago_end), latency_us);
+            let file = match &grabbed {
+                Ok((done, _)) if done.frames > 0 => AudioFile::open(&done.path).ok(),
+                _ => None,
+            };
+            let (Ok((_, old)), Some(file)) = (grabbed, file) else {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            };
+            let map = p.tempo_map();
+            let start = map.beat_at(map.seconds_at(played.from_beat) + old as f64 / rate);
+            let start_bar = p.beats_to_bar(start) as f32 + 1.0;
+            let track = &mut p.tracks[t];
+            track.regions.push(Region {
+                name: format!("*{name}"),
+                start_bar,
+                len_bars: 0.01,
+                notes: Vec::new(),
+                controls: Vec::new(),
+                folder: None,
+                auto: Vec::new(),
+                generated: None,
+                audio: None,
+                params: RegionParams::default(),
+            });
+            let region = track.regions.len() - 1;
+            kept = Some((t, apply_take(p, t, region, start, None, file, ctx)));
+        }
+        kept
+    }
+
     /// While a track is armed or recording its meter shows its input, as in Logic.
     pub fn show_levels(&self, p: &Project, meters: &mut [(f32, f32)]) {
         if self.capture.is_none() {
@@ -297,6 +481,7 @@ impl AudioRecorder {
         latency_us: u32,
         ctx: &egui::Context,
     ) -> Outcome {
+        self.latency_us = latency_us;
         let changed = std::mem::take(&mut choice.changed);
         let wanted = needs_input(p);
         if self.takes.is_empty() && (changed || !wanted) {
@@ -322,18 +507,33 @@ impl AudioRecorder {
                 }
             }
         }
+        if self.capture.is_none() {
+            self.disk = None;
+        } else if self.disk.is_none() {
+            self.disk = Some(DiskWatch::start(crate::project_io::recordings_dir()));
+        }
         self.read_levels();
+        self.note_playing(p);
         let record = p.recording && p.playing && !p.counting_in && p.punched_in();
+        let waiting = p.wait_for_sound && !self.sound_arrived(p);
         if self.takes.is_empty() {
             if self.failed && takes_over(p) {
                 p.recording = false;
-            } else if record && !targets(p).is_empty() {
+            } else if record && !waiting && !targets(p).is_empty() {
                 let outcome = self.start(p, latency_us);
                 if outcome != Outcome::Nothing {
                     return outcome;
                 }
             }
         } else if record {
+            let free = self.disk.as_ref().and_then(DiskWatch::free);
+            if free.is_some_and(|bytes| bytes < STOP_FREE_BYTES) {
+                let warning = "Recording stopped: the disk is nearly full".to_string();
+                return match self.finish(p, ctx) {
+                    Outcome::Finished(kept, _) => Outcome::Finished(kept, Some(warning)),
+                    other => other,
+                };
+            }
             self.grow(p);
         } else {
             return self.finish(p, ctx);
@@ -360,21 +560,47 @@ impl AudioRecorder {
             p.recording = false;
             return Outcome::Failed(trf("Cannot record: {}", &[&e]));
         }
+        let free = self.disk.as_ref().and_then(DiskWatch::free);
+        if free.is_some_and(|bytes| bytes < STOP_FREE_BYTES) {
+            p.recording = false;
+            return Outcome::Failed("Cannot record: the disk is nearly full".to_string());
+        }
+        // 32-bit stereo at most, for every track that will record.
+        let per_second = u64::from(capture.sample_rate()) * 8 * (targets(p).len() as u64).max(1);
+        let low_space = free
+            .map(|bytes| bytes / per_second.max(1))
+            .filter(|seconds| *seconds < WARN_FREE_SECONDS)
+            .map(|seconds| {
+                format!(
+                    "Disk space for only about {} minutes of recording",
+                    seconds / 60 + 1
+                )
+            });
         let start = p.position_beats.max(0.0);
         // With the Cycle on, recording from inside it goes round: each pass is a take.
         let cycle = (p.cycle
             && p.cycle_end > p.cycle_start
             && (p.cycle_start..p.cycle_end).contains(&start))
         .then_some((p.cycle_start, p.cycle_end));
+        // Waiting for sound: the take starts just before the sound was noticed.
+        let (start, lead) = if p.wait_for_sound && cycle.is_none() {
+            let map = p.tempo_map();
+            let at = map.seconds_at(start);
+            let lead = LEAD_SECONDS.min(at.max(0.0));
+            (map.beat_at(at - lead), lead)
+        } else {
+            (start, 0.0)
+        };
+        let lead_us = (lead * 1e6) as u32;
         let shown_from = cycle.map_or(start, |(from, _)| from);
-        let (start_bar, mut error) = (p.beats_to_bar(shown_from) as f32 + 1.0, None);
+        let (start_bar, mut error) = (p.beats_to_bar(shown_from) as f32 + 1.0, low_space);
         for t in targets(p) {
             self.count += 1;
             let cycle_bars =
                 cycle.map(|(from, to)| (p.beats_to_bar(to) - p.beats_to_bar(from)) as f32);
             let track = &mut p.tracks[t];
             let path = dir.join(file_name(&track.name, self.count));
-            match capture.start(&path, track.input, latency_us) {
+            match capture.start_early(&path, track.input, latency_us, lead_us) {
                 Ok(id) => {
                     track.regions.push(Region {
                         name: format!("*{}", track.name),

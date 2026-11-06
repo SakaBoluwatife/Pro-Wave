@@ -10,6 +10,10 @@ pub struct QuickDialogs {
     pub rename: Option<(usize, String)>,
     /// Track > Assign Track Color: the track.
     pub color: Option<usize>,
+    /// The regions whose colour window is open.
+    pub region_color: Vec<(usize, usize)>,
+    /// The big input level window.
+    pub rec_meter: bool,
     pub undo_history: bool,
     pub routing: bool,
     pub project_settings: bool,
@@ -146,60 +150,182 @@ fn rename_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
 }
 
-const TRACK_COLORS: [egui::Color32; 12] = [
-    egui::Color32::from_rgb(0xd9, 0x4f, 0x4f),
-    egui::Color32::from_rgb(0xe0, 0x82, 0x3a),
-    egui::Color32::from_rgb(0xd9, 0xb4, 0x3a),
-    egui::Color32::from_rgb(0x8f, 0xb8, 0x3f),
-    egui::Color32::from_rgb(0x3f, 0xa8, 0x5a),
-    egui::Color32::from_rgb(0x2f, 0xa8, 0x9a),
-    egui::Color32::from_rgb(0x3f, 0x9f, 0xd0),
-    egui::Color32::from_rgb(0x3f, 0x5f, 0xc0),
-    egui::Color32::from_rgb(0x7a, 0x4f, 0xc0),
-    egui::Color32::from_rgb(0xb0, 0x4f, 0xb8),
-    egui::Color32::from_rgb(0xd0, 0x5a, 0x8f),
-    egui::Color32::from_rgb(0x8a, 0x8a, 0x8a),
-];
+/// The colours to choose from, and the one clicked.
+fn palette(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<egui::Color32> {
+    let mut chosen = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.set_max_width(12.0 * 30.0);
+        for color in crate::model::TRACK_COLORS {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+            ui.painter().rect_filled(rect, 3.0, color);
+            if current == Some(color) {
+                ui.painter().rect_stroke(
+                    rect,
+                    3.0,
+                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if resp.clicked() {
+                chosen = Some(color);
+            }
+        }
+    });
+    chosen
+}
 
 fn color_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     let Some(track) = s.dialogs.color else {
         return;
     };
-    let Some(t) = p.tracks.get_mut(track) else {
+    let Some(t) = p.tracks.get(track) else {
         s.dialogs.color = None;
         return;
     };
+    // With several tracks picked, they change together if this one is among them.
+    let tracks = if s.tracks.picked_tracks.contains(&track) {
+        s.tracks.picked_tracks.clone()
+    } else {
+        vec![track]
+    };
+    let title = if tracks.len() > 1 {
+        format!("Track Color: {} tracks", tracks.len())
+    } else {
+        format!("Track Color: {}", t.name)
+    };
+    let before = t.color;
+    let mut color = before;
     let mut open = true;
-    egui::Window::new(format!("Track Color: {}", t.name))
+    egui::Window::new(title)
         .id(egui::Id::unique("track_color"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.set_max_width(190.0);
-                for color in TRACK_COLORS {
-                    let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-                    ui.painter().rect_filled(rect, 3.0, color);
-                    if t.color == color {
-                        ui.painter().rect_stroke(
-                            rect,
-                            3.0,
-                            egui::Stroke::new(2.0, egui::Color32::WHITE),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
-                    if resp.clicked() {
-                        t.color = color;
-                    }
-                }
-            });
-            ui.color_edit_button_srgba(&mut t.color);
+            if let Some(chosen) = palette(ui, Some(color)) {
+                color = chosen;
+            }
+            ui.color_edit_button_srgba(&mut color);
         });
+    if color != before {
+        for t in tracks {
+            if let Some(t) = p.tracks.get_mut(t) {
+                t.color = color;
+            }
+        }
+    }
     if !open {
         s.dialogs.color = None;
     }
+}
+
+fn region_color_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    if s.dialogs.region_color.is_empty() {
+        return;
+    }
+    let first = s.dialogs.region_color.iter().find_map(|&(t, r)| {
+        let track = p.tracks.get(t)?;
+        let region = track.regions.get(r)?;
+        Some(region.params.color.unwrap_or(track.color))
+    });
+    let Some(mut color) = first else {
+        s.dialogs.region_color.clear();
+        return;
+    };
+    let (mut open, mut own, mut changed) = (true, true, false);
+    egui::Window::new("Region Color")
+        .id(egui::Id::unique("region_color"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if let Some(chosen) = palette(ui, Some(color)) {
+                color = chosen;
+                changed = true;
+            }
+            ui.horizontal(|ui| {
+                changed |= ui.color_edit_button_srgba(&mut color).changed();
+                if ui.button("Use Track Color").clicked() {
+                    own = false;
+                    changed = true;
+                }
+            });
+        });
+    if changed {
+        for &(t, r) in &s.dialogs.region_color {
+            if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
+                region.params.color = own.then_some(color);
+            }
+        }
+    }
+    if !open {
+        s.dialogs.region_color.clear();
+    }
+}
+
+/// One level as a wide bar, from -60 to 0 dB, with marks each 12 dB.
+fn big_meter(ui: &mut egui::Ui, level: f32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(240.0), 22.0),
+        egui::Sense::hover(),
+    );
+    let g = ui.painter();
+    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x18));
+    let db = 20.0 * level.max(1e-6).log10();
+    let x_of = |db: f32| rect.left() + rect.width() * ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+    let fill = if db >= -0.1 {
+        egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+    } else if db >= -6.0 {
+        egui::Color32::from_rgb(0xe0, 0xb0, 0x40)
+    } else {
+        egui::Color32::from_rgb(0x50, 0xc0, 0x60)
+    };
+    let bar = egui::Rect::from_min_max(rect.min, egui::pos2(x_of(db), rect.bottom()));
+    g.rect_filled(bar, 2.0, fill);
+    for mark in [-48.0, -36.0, -24.0, -12.0] {
+        let x = x_of(mark);
+        g.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0x60)),
+        );
+    }
+    g.text(
+        rect.right_center() - egui::vec2(6.0, 0.0),
+        egui::Align2::RIGHT_CENTER,
+        if db <= -60.0 {
+            "-inf".to_string()
+        } else {
+            format!("{db:.1} dB")
+        },
+        egui::FontId::proportional(13.0),
+        egui::Color32::WHITE,
+    );
+}
+
+fn rec_meter_window(ctx: &egui::Context, p: &Project, s: &mut UiState) {
+    if !s.dialogs.rec_meter {
+        return;
+    }
+    let rows = s.audio_rec.input_levels(p);
+    let mut open = true;
+    egui::Window::new("Recording Meter")
+        .id(egui::Id::unique("recording_meter"))
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(360.0)
+        .show(ctx, |ui| {
+            if rows.is_empty() {
+                ui.label("Arm an audio track to see its input here.");
+            }
+            for (name, left, right) in rows {
+                ui.label(egui::RichText::new(name).size(16.0));
+                big_meter(ui, left);
+                if let Some(right) = right {
+                    big_meter(ui, right);
+                }
+            }
+        });
+    s.dialogs.rec_meter = open;
 }
 
 fn history_window(ctx: &egui::Context, s: &mut UiState) {
@@ -273,6 +399,22 @@ fn project_settings_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState
                 &mut p.rec_replace,
                 "Replace mode: a new recording takes away what it covers",
             );
+            ui.checkbox(&mut p.auto_monitor, "Automatic input monitoring")
+                .on_hover_text(
+                    "Armed audio tracks are heard while stopped and while recording, and not when \
+                     playing back. Use headphones with a microphone: speakers can feed back.",
+                );
+            ui.checkbox(&mut p.wait_for_sound, "Start recording when sound arrives")
+                .on_hover_text(
+                    "With Record and Play on, the take starts when the input passes this level.",
+                );
+            if p.wait_for_sound {
+                ui.add(
+                    egui::Slider::new(&mut p.trigger_db, -60.0..=-6.0)
+                        .suffix(" dB")
+                        .text("Sound level"),
+                );
+            }
             ui.checkbox(&mut p.low_latency, "Low Latency mode");
             ui.checkbox(&mut p.keep_plugins_running, "Keep idle plugins running")
                 .on_hover_text(
@@ -303,6 +445,8 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
     color_window(ctx, p, s);
+    region_color_window(ctx, p, s);
+    rec_meter_window(ctx, p, s);
     history_window(ctx, s);
     project_settings_window(ctx, p, s);
     crate::routing_matrix::show(ctx, p, s);

@@ -166,6 +166,56 @@ impl SettingsView {
     }
 }
 
+fn worker_limit_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("audio-threads"))
+}
+
+/// How many threads help run plugins, as chosen here: 0 is automatic.
+pub fn worker_limit() -> usize {
+    worker_limit_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn threads_row(ui: &mut Ui) {
+    let saved = worker_limit();
+    let mut chosen = saved;
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label("Plugin threads");
+        let shown = if chosen == 0 {
+            "Automatic".to_string()
+        } else {
+            chosen.to_string()
+        };
+        egui::ComboBox::from_id_salt(egui::Id::unique("settings_threads"))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, 0, "Automatic");
+                for n in 1..=cores {
+                    ui.selectable_value(&mut chosen, n, n.to_string());
+                }
+            });
+    })
+    .response
+    .on_hover_text("Fewer leaves more for plugins that use several cores themselves.");
+    ui.label(egui::RichText::new("Applies the next time Pro Wave starts.").small());
+    if chosen != saved {
+        let Some(file) = worker_limit_file() else {
+            return;
+        };
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, chosen.to_string()));
+        if let Err(e) = result {
+            tracing::warn!("could not save the plugin threads: {e}");
+        }
+    }
+}
+
 fn audio_tab(ui: &mut Ui, s: &mut UiState) {
     let ctx = ui.ctx().clone();
     let v = &mut s.settings;
@@ -272,6 +322,7 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
         v.setup.save();
         v.apply = Some(v.setup.clone());
     }
+    threads_row(ui);
 }
 
 fn keyboard_tab(ui: &mut Ui, s: &mut UiState) {

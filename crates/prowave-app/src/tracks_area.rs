@@ -1337,6 +1337,8 @@ enum CtxAction {
     MakeUnique(usize, usize),
     ClonePattern(usize, usize),
     ToggleRegionMute(usize, usize),
+    TrackColor(usize),
+    RegionColor(usize, usize),
     ToggleReverse(usize, usize),
     ToggleTakeFolder(usize, usize),
     FlattenTakeFolder(usize, usize),
@@ -1469,6 +1471,13 @@ fn region_items(
         tr("Mute Region")
     };
     pick(ui, mute, "", CtxAction::ToggleRegionMute(ti, ri), picked);
+    pick(
+        ui,
+        "Region Color…",
+        "",
+        CtxAction::RegionColor(ti, ri),
+        picked,
+    );
     if is_audio {
         pick(
             ui,
@@ -1743,6 +1752,7 @@ fn track_action_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>
 
 fn track_items(ui: &mut Ui, t: &TrackInfo, picked: &mut Option<CtxAction>) {
     track_action_items(ui, t, picked);
+    pick(ui, "Track Color…", "", CtxAction::TrackColor(t.i), picked);
     ui.separator();
     new_track_items(ui, picked);
     ui.separator();
@@ -1934,6 +1944,15 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::RepeatRegion => repeat_selected(p, v),
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
         CtxAction::DeleteRegion => delete_selected(p, v),
+        CtxAction::TrackColor(i) => s.dialogs.color = Some(i),
+        CtxAction::RegionColor(t, r) => {
+            let group = if v.is_selected((t, r)) {
+                v.all_selected()
+            } else {
+                vec![(t, r)]
+            };
+            s.dialogs.region_color = group;
+        }
         CtxAction::CreateStack(i) => {
             let tracks = picked_or(&s.tracks.picked_tracks, i);
             p.stack_tracks(&tracks);
@@ -2253,7 +2272,11 @@ fn draw_take_folder(
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
     } else if colored {
-        region.params.pattern_color.unwrap_or(track.color)
+        region
+            .params
+            .pattern_color
+            .or(region.params.color)
+            .unwrap_or(track.color)
     } else {
         NO_COLOR
     };
@@ -2493,7 +2516,11 @@ fn draw_region(
     let base = if region.params.mute {
         Color32::from_gray(0x6a)
     } else if colored {
-        region.params.pattern_color.unwrap_or(track.color)
+        region
+            .params
+            .pattern_color
+            .or(region.params.color)
+            .unwrap_or(track.color)
     } else {
         NO_COLOR
     };
@@ -2949,6 +2976,7 @@ fn header(
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
+    g.rect_filled(hdr, 0.0, p.tracks[i].color.gamma_multiply(0.14));
     if selected {
         let mark = Rect::from_min_size(hdr.min, vec2(3.0, hdr.height()));
         g.rect_filled(mark, 0.0, crate::theme::ACCENT_BLUE);
@@ -4233,6 +4261,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         use crate::mixer::StripRequest;
         picked = Some(match request {
             StripRequest::PianoRoll(t) => CtxAction::OpenTrackPianoRoll(t),
+            StripRequest::Color(t) => CtxAction::TrackColor(t),
             StripRequest::Delete(t) => CtxAction::DeleteTrack(t),
         });
     }
@@ -4282,11 +4311,18 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let peaks = meters.tracks.get(i).copied().unwrap_or((0.0, 0.0));
         let silenced = silenced_by_solo(p, i);
         let before = p.selected_track;
+        let has_number = opts.number;
         let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts, &mut picked);
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;
             let mods = ui.input(|m| m.modifiers);
+            // A plain click on the coloured number is for its colour.
+            let at = ui.input(|m| m.pointer.interact_pos());
+            let on_number = at.is_some_and(|at| at.x < hdr.left() + NUM_W);
+            if has_number && on_number && !mods.command && !mods.shift {
+                s.dialogs.color = Some(i);
+            }
             pick_track(
                 &mut s.tracks.picked_tracks,
                 before,

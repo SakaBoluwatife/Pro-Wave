@@ -77,7 +77,10 @@ fn monitors_of(p: &Project) -> Vec<MonitorTrack> {
     p.tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.kind == TrackKind::Audio && t.monitor)
+        .filter(|(_, t)| {
+            let automatic = p.auto_monitor && t.rec && (!p.playing || p.recording);
+            t.kind == TrackKind::Audio && (t.monitor || automatic)
+        })
         .take(MAX_MONITORS)
         .map(|(i, t)| {
             let (channel, stereo) = match t.input {

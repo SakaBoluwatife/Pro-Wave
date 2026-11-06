@@ -87,6 +87,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::K, none, Action::Metronome),
     cmd(Key::Comma, none, Action::BarBack),
     cmd(Key::Period, none, Action::BarForward),
+    cmd(Key::Period, ctrl, Action::Menu("Discard Recording")),
     // Tracks.
     cmd(Key::A, none, Action::Menu("Show Track Automation")),
     cmd(Key::M, none, Action::MuteTrack),

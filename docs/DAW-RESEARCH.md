@@ -51,6 +51,29 @@ Tracktion prepares a pool of audio buffers sized from the graph before playback,
 - **Swapping the graph (Ardour).** A new graph is built away from the audio thread and swapped in. Pro Wave's Command and Garbage queues already do this.
 - **Quantize kinds (Rosegarden).** Separate basic, legato and notation quantizers exist. Located only, not read.
 
+## Recording: Tracktion Engine and Reason
+
+Tracktion Engine's recording source was read. Reason is closed source, so only its Reason 12 manual pages were read, and they may be out of date. Ideas only, in our own code.
+
+| Idea | Seen in | Pro Wave |
+|---|---|---|
+| Monitoring that follows record arm | Tracktion, Reason | Added: Automatic input monitoring |
+| Capture what the input heard without Record on | Tracktion | Added: Capture Recording now covers audio, up to 60 seconds |
+| Check disk space around recording | Tracktion | Added: warns, refuses, or stops and keeps the take |
+| Big input meter to read from across the room | Reason | Added: Recording Meter |
+| Throw a take away and go back | Tracktion | Added: Discard Recording |
+| Start a take when sound arrives | Tracktion | Added: Start recording when sound arrives |
+| New take with the old one muted, or layered | Reason (Alt, Dub) | Already covered by take folders and New Take |
+
+Reason's manual says it applies recording latency compensation only when not monitoring through Reason. Pro Wave always compensates. Not changed: the choice was not studied further.
+
+## CPU: Reason
+
+From the manual's performance page. Its DSP meter and load balancing are not described there.
+
+- **Max audio threads.** Added as Plugin threads in Settings > Audio.
+- **Render at the card's buffer size.** Reason offers this or a fixed 64 frames, and recommends the first for plugin-heavy work: larger batches are often more efficient. **Pro Wave always runs plugins in fixed blocks of 64 frames**, so a plugin is called many times per card buffer. This is the largest CPU item found and is not done. A plugin block adds one block of delay today, so the change needs that delay removed as well, or larger blocks would add latency.
+
 ## Not studied yet
 
 The piano roll and pattern code in LMMS, MIDI timing in MuSE, score code in Rosegarden, plugin sandboxing in Zrythm, session recovery in Ardour, and Giada's real-time scheduling.
