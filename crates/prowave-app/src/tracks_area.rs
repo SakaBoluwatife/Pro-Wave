@@ -21,6 +21,14 @@ const TOOLBAR_H: f32 = 30.0;
 const RULER_H: f32 = 26.0;
 const HEADER_W: f32 = 340.0;
 const NUM_W: f32 = 24.0;
+/// How far the horizontal zoom goes, in points per bar: at the top, about two samples a point.
+pub(crate) const MIN_BAR_W: f32 = 6.0;
+pub(crate) const MAX_BAR_W: f32 = 40000.0;
+/// How far the vertical zoom goes, in points per track.
+const MIN_ROW_H: f32 = 14.0;
+const MAX_ROW_H: f32 = 300.0;
+/// How long the zoom's readout and the overview stay after the zoom last moved.
+const ZOOM_NOTE_SECONDS: f32 = 1.5;
 /// How far each folder nesting level moves a track header's contents to the right.
 const INDENT_W: f32 = 14.0;
 
@@ -341,6 +349,11 @@ pub struct TracksView {
     pub show_colors: bool,
     /// Flex markers are shown on the regions that have them, to drag.
     pub flex_view: bool,
+    /// The playhead is drawn wider, from Settings.
+    pub wide_playhead: bool,
+    /// The zoom when last drawn, and what to say about its last move, since when.
+    zoom_seen: Option<(f32, f32)>,
+    zoom_note: Option<(String, std::time::Instant)>,
     /// A Flex marker being dragged: track, region, marker, where it would land in seconds.
     flex_drag: Option<(usize, usize, usize, f64)>,
     /// What to hear of the Scrub tool: track and beat. `App` plays it.
@@ -462,6 +475,9 @@ impl Default for TracksView {
             show_grid: true,
             show_colors: true,
             flex_view: false,
+            wide_playhead: false,
+            zoom_seen: None,
+            zoom_note: None,
             flex_drag: None,
             scrub: None,
             scrub_at: None,
@@ -531,7 +547,7 @@ fn row_layout(p: &Project, row_h: f32) -> Vec<(f32, f32)> {
             let h = if p.hidden_by_fold(i) || p.mixer_only(i) {
                 0.0
             } else {
-                (row_h * t.height).round().max(1.0) + take_rows_height(t)
+                (row_h * t.height).round().max(MIN_ROW_H) + take_rows_height(t)
             };
             let row = (top, h);
             top += h;
@@ -1097,7 +1113,9 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
         }
     }
     let r = Rect::from_center_size(pos2(x + 41.0, cy), vec2(26.0, 20.0));
-    let _ = icon_button(ui, &g, r, "flex", false, draw_flex_icon);
+    if icon_button(ui, &g, r, "flex", v.flex_view, draw_flex_icon).clicked() {
+        v.flex_view = !v.flex_view;
+    }
     let r = Rect::from_center_size(pos2(x + 69.0, cy), vec2(26.0, 20.0));
     if icon_button(ui, &g, r, "catch", v.catch, draw_catch_icon).clicked() {
         v.catch = !v.catch;
@@ -1105,21 +1123,22 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect, lanes_w: f32) {
     let left_end = x + 90.0;
 
     // Right-hand side, laid out from the right edge.
-    // Horizontal zoom (log scale, 6..600 points per bar).
+    // Horizontal zoom, on a log scale.
     let hz = Rect::from_min_size(pos2(bar.right() - 72.0, cy - 6.0), vec2(64.0, 12.0));
-    let (lo, hi) = (6f32.ln(), 600f32.ln());
+    let (lo, hi) = (MIN_BAR_W.ln(), MAX_BAR_W.ln());
     let t = ((v.bar_w.ln() - lo) / (hi - lo)).clamp(0.0, 1.0);
     let t2 = mini_slider(ui, &g, hz, "hzoom", t);
     if t2 != t {
         v.bar_w = (lo + t2 * (hi - lo)).exp();
     }
     draw_zoom_icon(&g, pos2(hz.left() - 13.0, cy), TEXT, false);
-    // Vertical zoom (track height 36..140).
+    // Vertical zoom, on a log scale: from a row with one line of text to a very tall one.
     let vz = Rect::from_min_size(pos2(hz.left() - 26.0 - 54.0, cy - 6.0), vec2(54.0, 12.0));
-    let t = ((v.row_h - 36.0) / (140.0 - 36.0)).clamp(0.0, 1.0);
+    let (lo, hi) = (MIN_ROW_H.ln(), MAX_ROW_H.ln());
+    let t = ((v.row_h.ln() - lo) / (hi - lo)).clamp(0.0, 1.0);
     let t2 = mini_slider(ui, &g, vz, "vzoom", t);
     if t2 != t {
-        v.row_h = 36.0 + t2 * (140.0 - 36.0);
+        v.row_h = (lo + t2 * (hi - lo)).exp();
     }
     draw_zoom_icon(&g, pos2(vz.left() - 13.0, cy), TEXT, true);
     // What fits between the two sides; the rest is left out rather than drawn on top.
@@ -2182,7 +2201,7 @@ pub(crate) fn zoom_to_fit(p: &Project, v: &mut TracksView, lanes_w: f32) {
         .map(|r| r.start_bar - 1.0 + r.len_bars)
         .fold(0.0f32, f32::max);
     if end > 0.0 {
-        v.bar_w = ((lanes_w - 20.0) / end).clamp(6.0, 600.0);
+        v.bar_w = ((lanes_w - 20.0) / end).clamp(MIN_BAR_W, MAX_BAR_W);
         v.scroll_x = 0.0;
     }
 }
@@ -2822,6 +2841,60 @@ fn played_part<'a>(region: &Region, peaks: &'a [(f32, f32)]) -> &'a [(f32, f32)]
     &peaks[bin(start)..bin(end)]
 }
 
+/// The whole project small in a corner, with a frame on the part in view.
+fn draw_overview(
+    g: &Painter,
+    p: &Project,
+    rows: &[(f32, f32)],
+    lanes: Rect,
+    (scroll_x, scroll_y): (f32, f32),
+    beat_px: f32,
+    end_beat: f64,
+) {
+    let map = Rect::from_min_size(
+        lanes.right_bottom() - vec2(198.0, 118.0),
+        vec2(190.0, 110.0),
+    );
+    g.rect_filled(
+        map,
+        3.0,
+        Color32::from_rgba_unmultiplied(0x1a, 0x1a, 0x1e, 235),
+    );
+    let height = rows
+        .last()
+        .map_or(1.0, |(top, h)| top + h)
+        .max(lanes.height())
+        .max(1.0);
+    let last_in_view = f64::from((scroll_x + lanes.width()) / beat_px.max(1e-3));
+    let beats = end_beat.max(last_in_view).max(1.0) as f32;
+    let (sx, sy) = (map.width() / beats, map.height() / height);
+    for (t, &(top, row)) in p.tracks.iter().zip(rows) {
+        if row <= 0.0 {
+            continue;
+        }
+        for r in &t.regions {
+            let from = p.region_start_beats(r) as f32;
+            let to = p.region_end_beats(r) as f32;
+            let block = Rect::from_min_size(
+                map.min + vec2(from * sx, top * sy),
+                vec2(((to - from) * sx).max(1.0), (row * sy).max(1.0)),
+            );
+            g.rect_filled(block.intersect(map), 0.0, t.color);
+        }
+    }
+    let view = Rect::from_min_size(
+        map.min + vec2(scroll_x / beat_px.max(1e-3) * sx, scroll_y * sy),
+        vec2(lanes.width() / beat_px.max(1e-3) * sx, lanes.height() * sy),
+    )
+    .intersect(map);
+    g.rect_stroke(
+        view,
+        0.0,
+        Stroke::new(1.0, Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
+}
+
 /// The Flex markers of a region on the region itself: drag one to move that moment of the sound,
 /// right-click one to remove it, and double-click the region to add one.
 #[allow(clippy::too_many_arguments)]
@@ -3126,7 +3199,12 @@ fn header(
     }
 
     let h = hdr.height();
-    let icon_size = (h - 14.0).clamp(22.0, 40.0);
+    // It grows with the row, and on a thin row fills what there is.
+    let icon_size = if h < 36.0 {
+        (h - 2.0).max(8.0)
+    } else {
+        (h - 14.0).min(120.0)
+    };
     let indent = f32::from(p.tracks[i].indent) * INDENT_W;
     let folder = p.tracks[i].kind == TrackKind::Folder;
     let content_x = hdr.left() + num_w + 6.0 + indent;
@@ -3158,6 +3236,13 @@ fn header(
         icon.left()
     };
     let compact = h < 46.0;
+    // On a compact row M and S stay, ahead of the name.
+    let inline_buttons = compact && opts.buttons && !folder;
+    let name_x = if inline_buttons {
+        name_x + 42.0
+    } else {
+        name_x
+    };
     let name_y = if compact {
         hdr.center().y
     } else {
@@ -3177,7 +3262,11 @@ fn header(
     } else {
         p.tracks[i].name.clone()
     };
-    let name_galley = g.layout_no_wrap(shown_name, FontId::proportional(13.0), TEXT);
+    let name_galley = g.layout_no_wrap(
+        shown_name,
+        FontId::proportional((h - 2.0).clamp(9.0, 13.0)),
+        TEXT,
+    );
     let clip = g.with_clip_rect(
         Rect::from_min_size(pos2(name_x, hdr.top()), vec2(name_w.max(20.0), h))
             .intersect(g.clip_rect()),
@@ -3203,6 +3292,34 @@ fn header(
     // M S R (I) buttons under the name (compact tracks: hidden, like Logic at small heights).
     let audio = p.tracks[i].kind == TrackKind::Audio;
     let t = &mut p.tracks[i];
+    if inline_buttons {
+        let size = vec2(18.0, (h - 2.0).min(15.0));
+        let by = hdr.center().y - size.y / 2.0;
+        if header_button(
+            ui,
+            g,
+            Rect::from_min_size(pos2(name_x - 42.0, by), size),
+            (i, "m"),
+            "M",
+            t.mute,
+            MUTE_ON,
+            selected,
+        ) {
+            t.mute = !t.mute;
+        }
+        if header_button(
+            ui,
+            g,
+            Rect::from_min_size(pos2(name_x - 21.0, by), size),
+            (i, "s"),
+            "S",
+            t.solo,
+            SOLO_ON,
+            selected,
+        ) {
+            t.solo = !t.solo;
+        }
+    }
     if !compact && opts.buttons {
         let by = hdr.center().y + 3.0;
         let mut bx = name_x;
@@ -3347,6 +3464,10 @@ fn header(
                 Color32::from_gray(0x2a)
             },
         );
+        return (resp, Vec::new());
+    }
+    // A row this thin has room for no more than its name.
+    if h < 20.0 {
         return (resp, Vec::new());
     }
     // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob, on the buttons' row.
@@ -3518,7 +3639,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         if mods.command && delta.y != 0.0 {
             let pointer_x = hover.map_or(lanes.left(), |p| p.x);
             let beat_at = (pointer_x - lanes.left() + v.scroll_x) / (v.bar_w / bpb as f32);
-            v.bar_w = (v.bar_w * (1.0 + delta.y * 0.003)).clamp(6.0, 600.0);
+            v.bar_w = (v.bar_w * (1.0 + delta.y * 0.003)).clamp(MIN_BAR_W, MAX_BAR_W);
             v.scroll_x = beat_at * (v.bar_w / bpb as f32) - (pointer_x - lanes.left());
         } else if mods.shift || mods.alt || hover.is_some_and(|pt| headers.contains(pt)) {
             // Up and down through the tracks: over their headers, or when asked for.
@@ -4780,13 +4901,38 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 Stroke::new(1.0, col.gamma_multiply(0.6)),
             );
         }
-        if beat_px * bar.unit as f32 >= 10.0 {
-            for k in 1..bar.num {
-                let xb = x_of(bar.start + k as f64 * bar.unit);
+        let unit_px = beat_px * bar.unit as f32;
+        if unit_px >= 10.0 {
+            // Beats, and halves of them for as far as there is room, down to single ticks' worth.
+            let mut parts = 1u32;
+            while unit_px / (parts * 2) as f32 >= 12.0 && parts < 256 {
+                parts *= 2;
+            }
+            for k in 0..bar.num as u32 * parts {
+                let on_beat = k % parts == 0;
+                if k == 0 {
+                    continue;
+                }
+                let at = bar.start + f64::from(k) * bar.unit / f64::from(parts);
+                let xb = x_of(at);
+                if xb < ruler.left() || xb > ruler.right() {
+                    continue;
+                }
+                let tall = if on_beat { 4.0 } else { 2.5 };
                 gr.line_segment(
-                    [pos2(xb, ruler.bottom() - 4.0), pos2(xb, ruler.bottom())],
-                    Stroke::new(1.0, col.gamma_multiply(0.45)),
+                    [pos2(xb, ruler.bottom() - tall), pos2(xb, ruler.bottom())],
+                    Stroke::new(1.0, col.gamma_multiply(if on_beat { 0.45 } else { 0.3 })),
                 );
+                // Zoomed in, a bar's number may be out of sight: each beat says where it is.
+                if on_beat && unit_px >= 60.0 {
+                    gr.text(
+                        pos2(xb + 3.0, ruler.top() + 4.0),
+                        Align2::LEFT_TOP,
+                        format!("{}.{}", b + 1, k / parts + 1),
+                        FontId::proportional(10.5),
+                        col.gamma_multiply(0.8),
+                    );
+                }
             }
         }
     }
@@ -4843,12 +4989,114 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
     }
+    // The end of the project: a marker to drag. Past it is dimmed, and playback stops there.
+    let shown_end = p
+        .end_beat
+        .unwrap_or_else(|| crate::bounce::project_end(p).max(p.bar_to_beats(8.0)));
+    let end_x = x_of(shown_end);
+    if end_x < lanes.right() {
+        let past = Rect::from_min_max(pos2(end_x.max(lanes.left()), lanes.top()), lanes.max);
+        ui.painter_at(lanes)
+            .rect_filled(past, 0.0, Color32::from_black_alpha(70));
+    }
+    let grip = Rect::from_center_size(pos2(end_x, ruler.center().y), vec2(12.0, ruler.height()));
+    let end_resp = ui
+        .interact(grip, id("project_end"), Sense::drag())
+        .on_hover_text("The end of the project");
+    gr.add(Shape::convex_polygon(
+        vec![
+            pos2(end_x, ruler.top() + 3.0),
+            pos2(end_x, ruler.bottom() - 3.0),
+            pos2(end_x - 7.0, ruler.center().y),
+        ],
+        if p.end_beat.is_some() {
+            Color32::from_gray(0xd8)
+        } else {
+            Color32::from_gray(0x90)
+        },
+        Stroke::NONE,
+    ));
+    if end_resp.dragged() {
+        if let Some(pt) = end_resp.interact_pointer_pos() {
+            let bar_line = p
+                .sigs()
+                .nearest_bar_line(beat_of(pt.x))
+                .max(p.bar_to_beats(1.0));
+            p.end_beat = Some(bar_line);
+        }
+    }
+    if end_resp.dragged() || end_resp.hovered() {
+        let bar = p.beats_to_bar(shown_end).round() as i64 + 1;
+        ui.painter_at(area).text(
+            pos2(end_x - 10.0, ruler.bottom() + 14.0),
+            Align2::RIGHT_CENTER,
+            format!("End {bar} 1 1 1"),
+            FontId::proportional(11.5),
+            Color32::from_rgb(0xe8, 0xcf, 0x70),
+        );
+    }
+    if p.playing
+        && !p.recording
+        && !p.cycle
+        && p.end_beat.is_some_and(|end| p.position_beats >= end)
+    {
+        p.playing = false;
+    }
+    // While the zoom moves: what it is at, and where the view is in the whole project.
+    let zoom_now = (v.bar_w, v.row_h);
+    if v.zoom_seen != Some(zoom_now) {
+        if let Some(was) = v.zoom_seen {
+            let text = if was.0 == zoom_now.0 {
+                let (lo, hi) = (MIN_ROW_H.ln(), MAX_ROW_H.ln());
+                format!("{:.0}", (v.row_h.ln() - lo) / (hi - lo) * 100.0)
+            } else {
+                let bars = lanes.width() / v.bar_w;
+                if bars >= 1.0 {
+                    format!("{bars:.1} bars in view")
+                } else {
+                    format!("{:.2} beats in view", bars * bpb as f32)
+                }
+            };
+            v.zoom_note = Some((text, std::time::Instant::now()));
+        }
+        v.zoom_seen = Some(zoom_now);
+    }
+    if let Some((text, at)) = v.zoom_note.clone() {
+        if at.elapsed().as_secs_f32() < ZOOM_NOTE_SECONDS {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+            let gz = ui.painter_at(area);
+            let tag = Rect::from_min_size(
+                pos2(area.right() - 150.0, ruler.top() + 2.0),
+                vec2(142.0, 22.0),
+            );
+            gz.rect_filled(tag, 4.0, Color32::from_black_alpha(220));
+            gz.text(
+                tag.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+            draw_overview(
+                &gz,
+                p,
+                &rows,
+                lanes,
+                (v.scroll_x, v.scroll_y),
+                beat_px,
+                shown_end,
+            );
+        } else {
+            v.zoom_note = None;
+        }
+    }
     if visible {
         let (line_c, head_c, edge_c) = playhead_colors(p.recording);
         let gp = ui.painter_at(Rect::from_min_max(ruler.min, area.max));
         gp.line_segment(
             [pos2(px, ruler.top() + 6.0), pos2(px, area.bottom())],
-            Stroke::new(1.0, line_c),
+            Stroke::new(if v.wide_playhead { 2.5 } else { 1.0 }, line_c),
         );
         let head = vec![
             pos2(px - 6.0, ruler.top() + 2.0),

@@ -800,6 +800,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         nudge_beats: p.nudge_beats,
         varispeed: p.varispeed,
         notes: p.notes.clone(),
+        end_beat: p.end_beat,
         master_vol: p.master_vol,
         selected_track: p.selected_track,
         tracks,
@@ -1262,6 +1263,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     if doc.nudge_beats.is_finite() && doc.nudge_beats > 0.0 {
         p.nudge_beats = doc.nudge_beats;
     }
+    p.end_beat = doc.end_beat.filter(|b| b.is_finite() && *b > 0.0);
     p.notes = doc
         .notes
         .chars()

@@ -90,7 +90,9 @@ pub fn recall(s: &mut UiState, set: &ScreensetDoc) {
     s.tracks.show_markers = set.show_markers;
     s.tracks.show_signatures = set.show_signatures;
     if set.bar_w.is_finite() && set.bar_w > 0.0 {
-        s.tracks.bar_w = set.bar_w.clamp(6.0, 600.0);
+        s.tracks.bar_w = set
+            .bar_w
+            .clamp(crate::tracks_area::MIN_BAR_W, crate::tracks_area::MAX_BAR_W);
     }
 }
 

@@ -1112,6 +1112,8 @@ pub struct Project {
     pub counting_in: bool,
     /// The Note Pad's text.
     pub notes: String,
+    /// Where the end marker was put, in beats. None: at the end of what is there.
+    pub end_beat: Option<f64>,
     /// Cycle (left/right) locators, in beats.
     pub cycle_start: f64,
     pub cycle_end: f64,
@@ -1402,6 +1404,7 @@ impl Project {
             count_in: false,
             counting_in: false,
             notes: String::new(),
+            end_beat: None,
             cycle_start: 8.0,
             cycle_end: 88.0,
             position_beats: 16.0,

@@ -234,6 +234,9 @@ pub struct Render {
 
 /// The last beat anything plays on.
 pub fn project_end(p: &Project) -> f64 {
+    if let Some(end) = p.end_beat {
+        return end;
+    }
     p.tracks
         .iter()
         .flat_map(|t| &t.regions)

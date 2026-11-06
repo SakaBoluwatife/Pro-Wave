@@ -626,6 +626,8 @@ pub struct ProjectDoc {
     pub varispeed: f32,
     /// The Note Pad's text.
     pub notes: String,
+    /// Where the end marker was put, in beats. None: at the end of what is there.
+    pub end_beat: Option<f64>,
     pub master_vol: f32,
     pub selected_track: usize,
     pub tracks: Vec<TrackDoc>,
@@ -799,6 +801,7 @@ impl Default for ProjectDoc {
             nudge_beats: 0.25,
             varispeed: 0.0,
             notes: String::new(),
+            end_beat: None,
             master_vol: 0.8,
             selected_track: 0,
             tracks: Vec::new(),

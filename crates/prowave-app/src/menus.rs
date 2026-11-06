@@ -1202,8 +1202,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 p.position_beats = b;
             }
         }
-        "Zoom In" => s.tracks.bar_w = (s.tracks.bar_w * 1.25).min(600.0),
-        "Zoom Out" => s.tracks.bar_w = (s.tracks.bar_w / 1.25).max(6.0),
+        "Zoom In" => s.tracks.bar_w = (s.tracks.bar_w * 1.25).min(crate::tracks_area::MAX_BAR_W),
+        "Zoom Out" => s.tracks.bar_w = (s.tracks.bar_w / 1.25).max(crate::tracks_area::MIN_BAR_W),
         "Zoom to Fit" => {
             let w = s.tracks.lanes_w;
             crate::tracks_area::zoom_to_fit(p, &mut s.tracks, w);
