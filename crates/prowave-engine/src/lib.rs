@@ -59,8 +59,9 @@ pub use crate::mtc::{
 };
 pub use crate::output::{peak_of, Engine, EngineError};
 pub use crate::plugin::{
-    PluginEvent, PluginEventKind, PluginProcessor, PluginRound, PluginSlot, PluginTransport,
-    INSTRUMENT_SLOT, MASTER_STRIP, MAX_PLUGIN_EVENTS, PLUGIN_BLOCK,
+    plugin_block, plugins_chained, set_plugin_block, PluginEvent, PluginEventKind, PluginProcessor,
+    PluginRound, PluginSlot, PluginTransport, INSTRUMENT_SLOT, MASTER_STRIP, MAX_PLUGIN_EVENTS,
+    PLUGIN_BLOCK,
 };
 pub use crate::routing::{
     curve_shape, lane_value, send_gain, AutoLane, AutoPoint, AutoTarget, Route, SendSpec,

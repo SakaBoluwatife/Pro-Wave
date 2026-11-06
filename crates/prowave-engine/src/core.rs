@@ -1104,6 +1104,11 @@ impl EngineCore {
     }
 
     /// For a render: levels above full scale stay in the output instead of being cut there.
+    /// Gives an offline render the rounds a chain of plugins runs in.
+    pub fn use_plugin_round(&mut self, round: Box<crate::plugin::PluginRound>) {
+        self.plugin_round = Some(round);
+    }
+
     pub fn keep_headroom(&mut self) {
         self.keep_headroom = true;
         // A render is not in a hurry, and must not lose a tail after a long silence.
@@ -1449,12 +1454,15 @@ impl EngineCore {
         self.any_plugin = false;
         self.master_any = self.master_plugins.iter().any(Option::is_some);
         if let Some(round) = self.plugin_round.as_mut() {
-            let effects = self.plugins.iter_mut().flat_map(|s| s.iter_mut());
-            let others = self
-                .instruments
-                .iter_mut()
-                .chain(self.master_plugins.iter_mut());
-            round.set_slots(effects.chain(others).flatten().map(|slot| &mut **slot));
+            let effects = self.plugins.iter_mut().flat_map(|strip| {
+                let slots = strip.iter_mut().flatten().enumerate();
+                slots.map(|(k, slot)| (k > 0, &mut **slot))
+            });
+            let instruments = self.instruments.iter_mut().flatten();
+            let instruments = instruments.map(|slot| (false, &mut **slot));
+            let master = self.master_plugins.iter_mut().flatten().enumerate();
+            let master = master.map(|(k, slot)| (k > 0, &mut **slot));
+            round.set_slots(effects.chain(instruments).chain(master));
         }
         self.side_source.fill(false);
         let effects = self.plugins.iter().flat_map(|s| s.iter());
@@ -2409,11 +2417,11 @@ impl EngineCore {
         let frame_secs = 1.0 / self.sr as f64;
         let mut limit = (out.len() / 2).min(SPAN);
         if let Some(round) = self.plugin_round.as_mut() {
-            if round.phase == crate::plugin::PLUGIN_BLOCK {
+            if round.phase == round.block {
                 round.phase = 0;
                 round.run(&self.transport);
             }
-            limit = limit.min(crate::plugin::PLUGIN_BLOCK - round.phase);
+            limit = limit.min(round.block - round.phase);
         }
         if self.counting {
             self.tick_count_in();

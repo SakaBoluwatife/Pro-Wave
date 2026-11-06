@@ -1352,6 +1352,7 @@ fn main_window_handle(frame: &eframe::Frame) -> Option<isize> {
 
 fn main() -> eframe::Result {
     prowave_engine::Engine::set_worker_limit(settings::worker_limit());
+    prowave_engine::set_plugin_block(settings::plugin_block());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {

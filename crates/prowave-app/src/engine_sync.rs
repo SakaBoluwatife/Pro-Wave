@@ -217,7 +217,8 @@ fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
         .filter(|i| !i.bypass)
         .map(|i| i.kind.latency_samples(sample_rate))
         .sum();
-    let plugins: usize = t.hosted().map(|i| rack.latency_of(i.uid)).sum();
+    let plugins =
+        rack.chain_latency(t.instrument_plugin.iter()) + rack.chain_latency(t.plugins.iter());
     built_in + plugins
 }
 
@@ -903,10 +904,7 @@ impl EngineSync {
             .map(|(plan, t)| plan.0 + plan.1 + latency_of(t, sr, &self.rack))
             .max()
             .unwrap_or(0)
-            + p.master_plugins
-                .iter()
-                .map(|i| self.rack.latency_of(i.uid))
-                .sum::<usize>()
+            + self.rack.chain_latency(p.master_plugins.iter())
     }
 
     /// Where the strip meters read, when it changed. Tried again next frame if the queue is full.

@@ -72,7 +72,7 @@ Reason's manual says it applies recording latency compensation only when not mon
 From the manual's performance page. Its DSP meter and load balancing are not described there.
 
 - **Max audio threads.** Added as Plugin threads in Settings > Audio.
-- **Render at the card's buffer size.** Reason offers this or a fixed 64 frames, and recommends the first for plugin-heavy work: larger batches are often more efficient. **Pro Wave always runs plugins in fixed blocks of 64 frames**, so a plugin is called many times per card buffer. This is the largest CPU item found and is not done. A plugin block adds one block of delay today, so the change needs that delay removed as well, or larger blocks would add latency.
+- **Render at the card's buffer size.** Reason offers this or a fixed 64 frames, and recommends the first for plugin-heavy work: larger batches are often more efficient. Pro Wave ran plugins in fixed blocks of 64 frames, one block of delay per plugin. Added: Plugin block size in Settings > Audio, read at start. Above 64, a strip's plugins run in series inside one block, so a strip is delayed by one block however many plugins it has (an instrument adds one more, and so does the output strip). 64 stays the default and behaves as before. Unlike Reason, a block of delay remains. Removing it would mean running plugins inside the mix itself. The gain has not been measured.
 
 ## Not studied yet
 

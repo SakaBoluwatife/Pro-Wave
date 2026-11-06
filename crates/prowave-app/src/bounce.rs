@@ -554,6 +554,12 @@ impl Job {
         let mut writer = WavWriter::create(&wav, BitDepth::Float32, rate)
             .map_err(|e| format!("cannot write {}: {e}", render.path.display()))?;
         core.keep_headroom();
+        // Chained plugins need rounds, for the delay to be what the compensation expects.
+        if prowave_engine::plugins_chained() {
+            let capacity = (prowave_engine::MAX_INSERTS + 1) * prowave_engine::MAX_TRACKS
+                + prowave_engine::MAX_INSERTS;
+            core.use_plugin_round(prowave_engine::Engine::plugin_round(capacity));
+        }
         let start = render.from_beat;
         let send = |sync: &mut EngineSync, cmd| sync.engine.send(cmd);
         if !send(&mut sync, Command::SetPosition { beat: start }) {

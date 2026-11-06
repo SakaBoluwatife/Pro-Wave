@@ -6,9 +6,7 @@
 //! A short sample plays to its end whatever the note's length, as a drum hit should. A longer one
 //! stops, with a short fade, when the note does.
 use crate::{HostError, Loaded, LoadedPlugin};
-use prowave_engine::{
-    AudioFile, PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, PLUGIN_BLOCK,
-};
+use prowave_engine::{AudioFile, PluginEvent, PluginEventKind, PluginProcessor, PluginTransport};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -125,7 +123,7 @@ impl PluginProcessor for SamplerProcessor {
     ) {
         let [out_l, out_r] = output;
         let mut next = 0;
-        for frame in 0..out_l.len().min(PLUGIN_BLOCK) {
+        for frame in 0..out_l.len() {
             while let Some(e) = events.get(next).filter(|e| e.frame as usize <= frame) {
                 match e.kind {
                     PluginEventKind::NoteOn { key, velocity } => self.note_on(key, velocity),
@@ -229,6 +227,7 @@ pub fn load_sampler(path: &Path, sample_rate: u32) -> Result<Loaded, HostError> 
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use prowave_engine::PLUGIN_BLOCK;
 
     const RATE: u32 = 48_000;
 

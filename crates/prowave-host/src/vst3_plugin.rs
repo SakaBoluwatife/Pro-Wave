@@ -9,7 +9,7 @@ use crate::clap::{fill_main_input, fill_side_input, read_main_output};
 use crate::editor_window::EditorWindow;
 use crate::{HostError as Error, Loaded, LoadedPlugin, PluginFormat, PluginInfo};
 use prowave_engine::{
-    PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, MAX_PLUGIN_EVENTS, PLUGIN_BLOCK,
+    PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, MAX_PLUGIN_EVENTS,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -979,7 +979,7 @@ pub fn load_vst3(path: &Path, id: &str, sample_rate: u32, side: bool) -> Result<
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-            maxSamplesPerBlock: PLUGIN_BLOCK as int32,
+            maxSamplesPerBlock: prowave_engine::plugin_block() as int32,
             sampleRate: f64::from(sample_rate),
         };
         if processor.setupProcessing(&mut setup) != kResultOk {
@@ -1420,7 +1420,11 @@ impl Buses {
     fn new(layout: &[usize]) -> Self {
         let mut channels: Vec<Vec<Vec<f32>>> = layout
             .iter()
-            .map(|&n| (0..n).map(|_| vec![0.0; PLUGIN_BLOCK]).collect())
+            .map(|&n| {
+                (0..n)
+                    .map(|_| vec![0.0; prowave_engine::plugin_block()])
+                    .collect()
+            })
             .collect();
         let mut pointers: Vec<Vec<*mut f32>> = channels
             .iter_mut()
@@ -1632,7 +1636,7 @@ impl PluginProcessor for Vst3Processor {
             fill_main_input(&mut self.inputs.channels, input);
         }
         let mut context = process_context(transport, self.sample_rate, self.continuous);
-        self.continuous += PLUGIN_BLOCK as i64;
+        self.continuous += input[0].len() as i64;
         let params = self.params.as_com_ref::<IParameterChanges>();
         let params_out = self.params_out.as_com_ref::<IParameterChanges>();
         let events_in = self.events.as_com_ref::<IEventList>();
@@ -1640,7 +1644,7 @@ impl PluginProcessor for Vst3Processor {
         let mut data = ProcessData {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-            numSamples: PLUGIN_BLOCK as int32,
+            numSamples: input[0].len() as int32,
             numInputs: self.inputs.buses.len() as int32,
             numOutputs: self.outputs.buses.len() as int32,
             inputs: self.inputs.buses.as_mut_ptr(),
@@ -1689,6 +1693,7 @@ impl Drop for Vst3Processor {
 mod tests {
     use super::*;
     use crate::editor_window::pump_messages_for;
+    use prowave_engine::PLUGIN_BLOCK;
     use std::time::Duration;
 
     #[test]

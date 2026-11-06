@@ -7,14 +7,41 @@
 //! full and plays out the result. That delays the sound by one block, which
 //! [`PluginSlot::latency_samples`] reports for delay compensation.
 
-/// Frames a plugin gets at a time: 1.3 ms at 48 kHz.
+/// Frames a plugin gets at a time unless a larger block was chosen: 1.3 ms at 48 kHz.
 pub const PLUGIN_BLOCK: usize = 64;
+/// The chosen block, 0 for [`PLUGIN_BLOCK`].
+static CHOSEN_BLOCK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Chooses the block plugins work in. Call before any plugin is loaded: each is told its block
+/// when it is set up. Larger blocks are often cheaper for heavy plugins and cost delay.
+pub fn set_plugin_block(frames: usize) {
+    let frames = if frames > PLUGIN_BLOCK {
+        frames.min(4096)
+    } else {
+        0
+    };
+    CHOSEN_BLOCK.store(frames, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Frames a plugin gets at a time.
+pub fn plugin_block() -> usize {
+    match CHOSEN_BLOCK.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => PLUGIN_BLOCK,
+        frames => frames,
+    }
+}
+
+/// Whether a strip's plugins run in series within one block, so that the strip is delayed by one
+/// block rather than one for each plugin. On with any block larger than the usual one.
+pub fn plugins_chained() -> bool {
+    plugin_block() > PLUGIN_BLOCK
+}
 /// The strip number that means the output: Stereo Out, after everything is mixed.
 pub const MASTER_STRIP: u16 = u16::MAX;
 /// The slot number that means a strip's instrument, in the commands that take a plugin's place.
 pub const INSTRUMENT_SLOT: u8 = u8::MAX;
 /// Events one block can carry; past this they are dropped rather than allocating.
-pub const MAX_PLUGIN_EVENTS: usize = 256;
+pub const MAX_PLUGIN_EVENTS: usize = 1024;
 
 /// A MIDI message for a plugin, at a frame of the block it is handed over with.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -109,8 +136,13 @@ pub struct PluginRound {
     pool: std::sync::Arc<crate::parallel::Pool>,
     graph: crate::parallel::Graph,
     slots: Vec<SlotHandle>,
+    /// The jobs of a round: where each one's slots start in `slots`, and how many, run in series.
+    chains: Vec<(u32, u32)>,
     /// Frames since the last round.
     pub(crate) phase: usize,
+    /// Frames between rounds.
+    pub(crate) block: usize,
+    chained: bool,
 }
 
 /// Quieter than this counts as silence: about -100 dB.
@@ -139,23 +171,36 @@ impl PluginRound {
             pool,
             graph: crate::parallel::Graph::with_capacity(capacity),
             slots: Vec::with_capacity(capacity),
+            chains: Vec::with_capacity(capacity),
             phase: 0,
+            block: plugin_block(),
+            chained: plugins_chained(),
         }
     }
 
     /// The slots a round runs from now on, each put in step.
-    pub(crate) fn set_slots<'a>(&mut self, slots: impl Iterator<Item = &'a mut PluginSlot>) {
+    pub(crate) fn set_slots<'a>(
+        &mut self,
+        slots: impl Iterator<Item = (bool, &'a mut PluginSlot)>,
+    ) {
         self.slots.clear();
+        self.chains.clear();
         let phase = self.phase;
-        for slot in slots {
+        for (after_another, slot) in slots {
             if self.slots.len() < self.slots.capacity() {
                 if !slot.in_rounds {
                     slot.join_rounds(phase);
                 }
+                let follows = self.chained && after_another && !self.chains.is_empty();
+                slot.follows = follows;
+                match self.chains.last_mut() {
+                    Some(chain) if follows => chain.1 += 1,
+                    _ => self.chains.push((self.slots.len() as u32, 1)),
+                }
                 self.slots.push(SlotHandle(slot));
             }
         }
-        self.graph.set(self.slots.len(), &mut Vec::new());
+        self.graph.set(self.chains.len(), &mut Vec::new());
     }
 
     pub(crate) fn pool(&self) -> &crate::parallel::Pool {
@@ -165,21 +210,35 @@ impl PluginRound {
     /// Runs every slot's block, here and on the workers. If the pool is busy (a bounce is rendering
     /// while the program plays), on this thread alone, with the same result.
     pub(crate) fn run(&self, transport: &PluginTransport) {
-        let slots = &self.slots;
+        let (slots, chains) = (&self.slots, &self.chains);
         let one = |j: usize, _lane: usize| {
-            let SlotHandle(slot) = slots[j];
-            // SAFETY: see `SlotHandle`. The graph hands each job out once, and the engine waits for
-            // the run to finish before it touches a slot again.
-            unsafe { (*slot).run_round(transport) }
+            let (first, count) = chains[j];
+            let (first, count) = (first as usize, count as usize);
+            for k in first..first + count {
+                let SlotHandle(slot) = slots[k];
+                // SAFETY: see `SlotHandle`. The graph hands each job out once, each slot is in one
+                // job, and the engine waits for the run to finish before it touches a slot again.
+                unsafe {
+                    if k > first {
+                        (*slot).take_input(&*slots[k - 1].0);
+                    }
+                    (*slot).run_round(transport);
+                }
+            }
         };
         // Waking the workers costs more than a resting plugin does.
         // SAFETY: as above: nothing else touches the slots between runs.
-        let working = slots
+        let working = chains
             .iter()
-            .filter(|s| unsafe { (*s.0).has_work() })
+            .filter(|(first, count)| {
+                let (first, count) = (*first as usize, *count as usize);
+                slots[first..first + count]
+                    .iter()
+                    .any(|s| unsafe { (*s.0).has_work() })
+            })
             .count();
         if working < 2 || !self.pool.run_wanting(&self.graph, &one, working - 1) {
-            for j in 0..slots.len() {
+            for j in 0..chains.len() {
                 one(j, 0);
             }
         }
@@ -222,6 +281,12 @@ pub struct PluginSlot {
     low_latency: bool,
     /// The engine runs a block when it runs all the others, on several cores ([`PluginRound`]).
     in_rounds: bool,
+    /// Frames in its block.
+    block: usize,
+    /// In a chain and not its first: its input comes from the slot before it, at the round.
+    follows: bool,
+    /// Blocks of silence before it rests.
+    rest_after: u32,
     /// A block is collected, waiting for that.
     full: bool,
     /// While on, the plugin is not run and the sound passes by it, delayed as much as the plugin
@@ -249,7 +314,11 @@ pub struct PluginSlot {
 impl PluginSlot {
     /// Call off the audio thread: this allocates.
     pub fn new(plugin: Box<dyn PluginProcessor>) -> Self {
-        let buffer = || vec![0.0; PLUGIN_BLOCK].into_boxed_slice();
+        Self::sized(plugin, plugin_block())
+    }
+
+    fn sized(plugin: Box<dyn PluginProcessor>, block: usize) -> Self {
+        let buffer = || vec![0.0; block].into_boxed_slice();
         let dry = vec![0.0; plugin.latency_samples()].into_boxed_slice();
         Self {
             uid: 0,
@@ -264,6 +333,9 @@ impl PluginSlot {
             pos: 0,
             low_latency: false,
             in_rounds: false,
+            block,
+            follows: false,
+            rest_after: (REST_AFTER_BLOCKS as usize * PLUGIN_BLOCK / block).max(1) as u32,
             full: false,
             bypass: false,
             dry_l: dry.clone(),
@@ -306,7 +378,7 @@ impl PluginSlot {
     }
 
     pub fn latency_samples(&self) -> usize {
-        self.plugin.latency_samples() + PLUGIN_BLOCK
+        self.plugin.latency_samples() + self.block
     }
 
     /// Whether the plugin may rest when it has nothing to process. Waking it if not.
@@ -382,10 +454,12 @@ impl PluginSlot {
     pub fn process(&mut self, l: f32, r: f32, transport: &PluginTransport) -> (f32, f32) {
         let i = self.pos;
         let out = (self.out_l[i], self.out_r[i]);
-        self.in_l[i] = l;
-        self.in_r[i] = r;
+        if !self.follows {
+            self.in_l[i] = l;
+            self.in_r[i] = r;
+        }
         self.pos += 1;
-        if self.pos == PLUGIN_BLOCK {
+        if self.pos == self.block {
             self.pos = 0;
             if self.in_rounds {
                 self.full = true;
@@ -400,8 +474,16 @@ impl PluginSlot {
     /// block a slot collects: the slots of a round all finish a block together.
     pub fn join_rounds(&mut self, phase: usize) {
         self.in_rounds = true;
-        self.pos = phase % PLUGIN_BLOCK;
+        self.pos = phase % self.block;
         self.full = false;
+    }
+
+    /// Takes the sound the slot before it in a chain just made.
+    fn take_input(&mut self, from: &PluginSlot) {
+        if self.full {
+            self.in_l.copy_from_slice(&from.out_l);
+            self.in_r.copy_from_slice(&from.out_r);
+        }
     }
 
     /// Runs the block, if one is ready.
@@ -444,7 +526,7 @@ impl PluginSlot {
             );
             if quiet && is_quiet(&self.out_l) && is_quiet(&self.out_r) {
                 self.quiet_blocks = self.quiet_blocks.saturating_add(1);
-                if self.may_rest && self.quiet_blocks >= REST_AFTER_BLOCKS {
+                if self.may_rest && self.quiet_blocks >= self.rest_after {
                     self.resting = true;
                     self.out_l.fill(0.0);
                     self.out_r.fill(0.0);
@@ -466,7 +548,7 @@ impl PluginSlot {
     /// to the output while bypassed.
     fn pass_by(&mut self) {
         let length = self.dry_l.len();
-        for i in 0..PLUGIN_BLOCK {
+        for i in 0..self.block {
             let (l, r) = (self.in_l[i], self.in_r[i]);
             let (dry_l, dry_r) = if length == 0 {
                 (l, r)
@@ -490,6 +572,41 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use std::sync::Arc;
+
+    #[test]
+    fn plugins_in_a_chain_share_one_block_of_delay() {
+        const BLOCK: usize = 256;
+        let pool = crate::parallel::Pool::new(1, None);
+        let mut round = PluginRound::new(pool, 8);
+        round.block = BLOCK;
+        round.chained = true;
+        let plugin = || {
+            Box::new(FakePlugin {
+                gain: 0.5,
+                ..FakePlugin::default()
+            })
+        };
+        let (mut a, mut b) = (
+            PluginSlot::sized(plugin(), BLOCK),
+            PluginSlot::sized(plugin(), BLOCK),
+        );
+        round.set_slots([(false, &mut a), (true, &mut b)].into_iter());
+        let t = PluginTransport::default();
+        let mut heard = Vec::new();
+        for i in 0..BLOCK * 4 {
+            if round.phase == BLOCK {
+                round.phase = 0;
+                round.run(&t);
+            }
+            let x = if i == 10 { 1.0 } else { 0.0 };
+            let (l, r) = a.process(x, x, &t);
+            heard.push(b.process(l, r, &t).0);
+            round.phase += 1;
+        }
+        let at = heard.iter().position(|s| *s != 0.0);
+        assert_eq!(at, Some(10 + BLOCK), "one block, not two");
+        assert_eq!(heard[10 + BLOCK], 0.25, "through both");
+    }
 
     #[test]
     fn a_plugin_with_nothing_to_do_rests_and_wakes_on_sound_or_a_note() {

@@ -178,6 +178,52 @@ pub fn worker_limit() -> usize {
         .unwrap_or(0)
 }
 
+fn plugin_block_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("plugin-block"))
+}
+
+/// The block plugins work in, as chosen here: 0 is the usual one.
+pub fn plugin_block() -> usize {
+    plugin_block_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn block_row(ui: &mut Ui) {
+    let saved = prowave_engine::PLUGIN_BLOCK.max(plugin_block());
+    let mut chosen = saved;
+    ui.horizontal(|ui| {
+        ui.label("Plugin block size");
+        egui::ComboBox::from_id_salt(egui::Id::unique("settings_plugin_block"))
+            .selected_text(chosen.to_string())
+            .show_ui(ui, |ui| {
+                for n in [64, 128, 256, 512, 1024] {
+                    ui.selectable_value(&mut chosen, n, n.to_string());
+                }
+            });
+    })
+    .response
+    .on_hover_text(
+        "Larger blocks often use less CPU with heavy plugins. Each strip with plugins is then \
+         later by one block: tracks stay in time, but what you monitor through plugins is late. \
+         Try the same size as your buffer. 64 is the lowest delay.",
+    );
+    ui.label(egui::RichText::new("Applies the next time Pro Wave starts.").small());
+    if chosen != saved {
+        let Some(file) = plugin_block_file() else {
+            return;
+        };
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, chosen.to_string()));
+        if let Err(e) = result {
+            tracing::warn!("could not save the plugin block size: {e}");
+        }
+    }
+}
+
 fn threads_row(ui: &mut Ui) {
     let saved = worker_limit();
     let mut chosen = saved;
@@ -323,6 +369,7 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
         v.apply = Some(v.setup.clone());
     }
     threads_row(ui);
+    block_row(ui);
 }
 
 fn keyboard_tab(ui: &mut Ui, s: &mut UiState) {

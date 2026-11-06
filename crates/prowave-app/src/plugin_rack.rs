@@ -4,9 +4,7 @@
 //! anything else. Live instances cannot be cloned or rebuilt without losing their state, so each
 //! has a `uid` and follows its insert when tracks and slots move.
 use crate::model::{PluginInsert, Project, TrackKind};
-use prowave_engine::{
-    Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS, PLUGIN_BLOCK,
-};
+use prowave_engine::{Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS};
 use prowave_host::{load_plugin, HeaderClick, HeaderState, LoadedPlugin, PluginInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -519,8 +517,21 @@ impl Rack {
     pub fn latency_of(&self, uid: u64) -> usize {
         self.live.get(&uid).map_or(0, |l| {
             let own = if l.low { 0 } else { l.loaded.latency_samples() };
-            own + PLUGIN_BLOCK
+            own + prowave_engine::plugin_block()
         })
+    }
+
+    /// The delay of plugins in series: each one's own, and the blocks they are collected in.
+    pub fn chain_latency<'a>(&self, plugins: impl Iterator<Item = &'a PluginInsert>) -> usize {
+        let block = prowave_engine::plugin_block();
+        let total: Vec<usize> = plugins.map(|i| self.latency_of(i.uid)).collect();
+        let live = total.iter().filter(|l| **l >= block).count();
+        let sum: usize = total.iter().sum();
+        if prowave_engine::plugins_chained() && live > 1 {
+            sum - (live - 1) * block
+        } else {
+            sum
+        }
     }
 
     /// Runs what the plugins asked for on this thread.
@@ -867,6 +878,7 @@ impl Rack {
 mod tests {
     use super::*;
     use crate::model::Track;
+    use prowave_engine::PLUGIN_BLOCK;
     use std::path::PathBuf;
 
     fn effect(name: &str) -> PluginInfo {

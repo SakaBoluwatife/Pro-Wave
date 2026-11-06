@@ -14,7 +14,7 @@ use clack_host::events::{EventFlags, Match};
 use clack_host::prelude::*;
 use clack_host::utils::{BeatTime, SecondsTime};
 use prowave_engine::{
-    PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, MAX_PLUGIN_EVENTS, PLUGIN_BLOCK,
+    PluginEvent, PluginEventKind, PluginProcessor, PluginTransport, MAX_PLUGIN_EVENTS,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -586,8 +586,8 @@ pub fn load_clap(
     let side = side_port(&mut instance);
     let config = PluginAudioConfiguration {
         sample_rate: f64::from(sample_rate),
-        min_frames_count: PLUGIN_BLOCK as u32,
-        max_frames_count: PLUGIN_BLOCK as u32,
+        min_frames_count: prowave_engine::plugin_block() as u32,
+        max_frames_count: prowave_engine::plugin_block() as u32,
     };
     let stopped = instance
         .activate(|_, _| (), config)
@@ -644,7 +644,11 @@ impl PortBuffers {
         Self {
             ports: layout
                 .iter()
-                .map(|&n| (0..n).map(|_| vec![0.0; PLUGIN_BLOCK]).collect())
+                .map(|&n| {
+                    (0..n)
+                        .map(|_| vec![0.0; prowave_engine::plugin_block()])
+                        .collect()
+                })
                 .collect(),
             handles: AudioPorts::with_capacity(channels, layout.len()),
         }
@@ -965,6 +969,7 @@ impl PluginProcessor for ClapProcessor {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use prowave_engine::PLUGIN_BLOCK;
 
     #[test]
     fn clap_files_are_found_in_vendor_folders_and_nothing_else_is() {
