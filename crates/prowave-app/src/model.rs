@@ -689,7 +689,7 @@ impl Default for TrackParams {
 
 /// How much a quiet clip's waveform is enlarged at most: 12 dB, so that a quiet recording is easy
 /// to see and still does not look as loud as one that clips. The waveform buttons do the rest.
-const MAX_WAVEFORM_FIT: f32 = 4.0;
+pub const MAX_WAVEFORM_FIT: f32 = 4.0;
 
 impl AudioRegion {
     /// The level to draw the whole clip with at `width` points: the overview, until the clip is

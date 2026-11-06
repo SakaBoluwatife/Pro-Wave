@@ -288,6 +288,12 @@ impl WavFile {
 }
 
 /// One recording on the writer thread.
+/// Frames per point of a recording's live waveform.
+pub const LIVE_HOP: u32 = 256;
+/// The waveform of a recording so far, lowest and highest sample per [`LIVE_HOP`] frames. The
+/// writer thread adds to it and the UI reads it; the audio callback never touches it.
+pub type LivePeaks = std::sync::Arc<std::sync::Mutex<Vec<(f32, f32)>>>;
+
 struct Rec {
     path: PathBuf,
     source: InputSource,
@@ -299,6 +305,9 @@ struct Rec {
     lost: bool,
     /// The file can take no more (full, or the disk failed).
     closed: bool,
+    live: LivePeaks,
+    /// The point being collected: lowest, highest, frames.
+    live_point: (f32, f32, u32),
 }
 
 impl Rec {
@@ -324,6 +333,17 @@ impl Rec {
                 return;
             }
             self.frames += 1;
+            for s in out {
+                self.live_point.0 = self.live_point.0.min(*s);
+                self.live_point.1 = self.live_point.1.max(*s);
+            }
+            self.live_point.2 += 1;
+            if self.live_point.2 == LIVE_HOP {
+                if let Ok(mut live) = self.live.lock() {
+                    live.push((self.live_point.0, self.live_point.1));
+                }
+                self.live_point = (0.0, 0.0, 0);
+            }
         }
     }
 
@@ -348,6 +368,7 @@ enum Ctl {
         path: PathBuf,
         source: InputSource,
         from_frame: u64,
+        live: LivePeaks,
         reply: Sender<Result<(), CaptureError>>,
     },
     Stop {
@@ -442,10 +463,12 @@ fn writer_loop(
                 path,
                 source,
                 from_frame,
+                live,
                 reply,
             }) => {
                 let result =
                     start_rec(&path, source, from_frame, channels, sample_rate).map(|mut rec| {
+                        rec.live = live;
                         // The part that went by before this message was handled.
                         let have = (history.len() / channels) as u64;
                         let (a, b) = history.as_slices();
@@ -527,6 +550,8 @@ fn start_rec(
         side_peaks: (0.0, 0.0),
         lost: false,
         closed: false,
+        live: LivePeaks::default(),
+        live_point: (0.0, 0.0, 0),
     })
 }
 
@@ -754,6 +779,7 @@ impl Capture {
         latency_us: u32,
     ) -> Result<u32, CaptureError> {
         self.start_early(path, source, latency_us, 0)
+            .map(|(id, _)| id)
     }
 
     /// Writes to a file what the input took between `ago_start` and `ago_end` seconds ago, as far
@@ -794,7 +820,8 @@ impl Capture {
         source: InputSource,
         latency_us: u32,
         lead_us: u32,
-    ) -> Result<u32, CaptureError> {
+    ) -> Result<(u32, LivePeaks), CaptureError> {
+        let live = LivePeaks::default();
         let total_us =
             u64::from(latency_us) + u64::from(self.shared.latency_us.load(Ordering::Relaxed));
         let skip = total_us * u64::from(self.sample_rate) / 1_000_000;
@@ -812,11 +839,12 @@ impl Capture {
                 path: path.to_path_buf(),
                 source,
                 from_frame,
+                live: live.clone(),
                 reply,
             })
             .map_err(|_| CaptureError::Closed)?;
         answer.recv().map_err(|_| CaptureError::Closed)??;
-        Ok(id)
+        Ok((id, live))
     }
 
     /// Ends recording `id` and closes its file. Waits for the audio already captured to be
@@ -988,6 +1016,7 @@ mod tests {
                     path: path.clone(),
                     source: InputSource::Mono(0),
                     from_frame: 150,
+                    live: LivePeaks::default(),
                     reply,
                 })
                 .unwrap();
@@ -1074,6 +1103,7 @@ mod tests {
                 path: path.clone(),
                 source: InputSource::Mono(0),
                 from_frame: 150,
+                live: LivePeaks::default(),
                 reply,
             })
             .unwrap();

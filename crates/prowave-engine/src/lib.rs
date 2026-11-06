@@ -35,7 +35,8 @@ mod wasapi;
 pub use crate::analysis::{tempo_curve, Analysis, Analyzer, TempoEstimate, STRENGTH_RATE};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::capture::{
-    input_devices, Capture, CaptureError, InputInfo, InputSource, Recorded, MAX_INPUT_CHANNELS,
+    input_devices, Capture, CaptureError, InputInfo, InputSource, LivePeaks, Recorded, LIVE_HOP,
+    MAX_INPUT_CHANNELS,
 };
 pub use crate::core::{
     dsp_load, AudioClip, ClipEdit, Command, ControlEvent, EngineCore, EngineState, FadeCurve,

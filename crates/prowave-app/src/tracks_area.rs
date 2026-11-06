@@ -2507,7 +2507,7 @@ fn draw_region(
     selected: bool,
     recording: bool,
     silenced: bool,
-    seed: u32,
+    live: Option<crate::audio_rec::LiveWave<'_>>,
     colored: bool,
     wave_zoom: f32,
 ) {
@@ -2615,7 +2615,19 @@ fn draw_region(
         body.lerp_to_gamma(Color32::WHITE, if selected { 0.75 } else { 0.6 })
     };
     let edit = region.audio.is_some() || track.kind == TrackKind::Audio;
-    if let Some(peaks) = region
+    if let Some(wave) = live {
+        let from = full.left() + wave.from_beats as f32 * beat_px;
+        let width = wave.len_beats as f32 * beat_px;
+        draw_peaks(
+            g,
+            inner,
+            (from, width),
+            wave.peaks,
+            wave.fit * wave_zoom,
+            false,
+            ink,
+        );
+    } else if let Some(peaks) = region
         .audio
         .as_ref()
         .and_then(|a| a.peaks_for(full.width()))
@@ -2624,7 +2636,7 @@ fn draw_region(
         let full_x = (full.left(), full.width());
         let part = played_part(region, peaks);
         draw_peaks(g, inner, full_x, part, gain, region.params.reverse, ink);
-    } else if region.audio.is_some() {
+    } else if region.audio.is_some() || track.kind == TrackKind::Audio {
         g.line_segment(
             [
                 pos2(inner.left(), inner.center().y),
@@ -2632,8 +2644,6 @@ fn draw_region(
             ],
             Stroke::new(1.0, ink),
         );
-    } else if track.kind == TrackKind::Audio {
-        fake_waveform(g, inner, full.left(), beat_px, ink, seed);
     } else if !region.notes.is_empty() {
         let lo = region.notes.iter().map(|n| n.pitch).min().unwrap_or(48) as f32;
         let hi = region.notes.iter().map(|n| n.pitch).max().unwrap_or(72) as f32;
@@ -2701,32 +2711,6 @@ fn draw_generated_mark(g: &Painter, head: Rect, drummer: bool, color: Color32) {
                 g.rect_filled(Rect::from_center_size(at, vec2(2.6, 2.6)), 0.5, color);
             }
         }
-    }
-}
-
-/// Height (0.3..1.0) of a demo audio track's pseudo-waveform `beats` into its region. It
-/// depends only on the position in the region, so the waveform moves with the region when the
-/// view scrolls or zooms.
-fn fake_level(seed: u32, beats: f32) -> f32 {
-    let step = (beats * 16.0).floor() as u32;
-    let mut s = seed ^ step.wrapping_mul(0x9e37_79b9);
-    s = s.wrapping_mul(1664525).wrapping_add(1013904223);
-    s ^= s >> 15;
-    s = s.wrapping_mul(0x2c1b_3c6d);
-    s ^= s >> 12;
-    ((beats * 1.6).sin().abs() * 0.6 + 0.3) * ((s >> 24) as f32 / 255.0 * 0.6 + 0.4)
-}
-
-/// Demo audio tracks without a file get a stable pseudo-waveform. `rect` is the visible part
-/// of the region; `x0` is where the whole region starts on screen.
-fn fake_waveform(g: &Painter, rect: Rect, x0: f32, beat_px: f32, col: Color32, seed: u32) {
-    let mid = rect.center().y;
-    // Start on the same 2-px grid as the region's left edge, so columns do not shimmer.
-    let mut x = x0 + ((rect.left() - x0) / 2.0).floor().max(0.0) * 2.0;
-    while x < rect.right() {
-        let h = fake_level(seed, (x - x0) / beat_px.max(1e-3)) * rect.height() * 0.45;
-        g.line_segment([pos2(x, mid - h), pos2(x, mid + h)], Stroke::new(1.0, col));
-        x += 2.0;
     }
 }
 
@@ -2836,7 +2820,11 @@ fn draw_peaks(
         g.line_segment(
             [
                 pos2(x, mid - hi.min(1.0) * half),
-                pos2(x, mid - lo.max(-1.0) * half),
+                // Silence is still a thin line.
+                pos2(
+                    x,
+                    (mid - lo.max(-1.0) * half).max(mid - hi.min(1.0) * half + 1.0),
+                ),
             ],
             Stroke::new(1.0, col),
         );
@@ -3974,7 +3962,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 selected,
                 rec_targets.contains(&(ti, ri)),
                 silenced_by_solo(p, ti),
-                ti as u32 * 77 + ri as u32 * 13 + 3,
+                s.audio_rec.live_wave(p, ti, ri),
                 v.show_colors,
                 v.wave_zoom,
             );
@@ -4725,23 +4713,6 @@ mod row_tests {
                 tools: false,
                 wave: false
             }
-        );
-    }
-
-    #[test]
-    fn fake_waveforms_are_tied_to_the_region_not_the_screen() {
-        // Same place in the region, same height, however the view is scrolled.
-        assert_eq!(fake_level(7, 3.25), fake_level(7, 3.25));
-        let levels: Vec<f32> = (0..64).map(|k| fake_level(7, k as f32 / 16.0)).collect();
-        assert!(levels.iter().all(|l| (0.0..=1.0).contains(l)));
-        assert!(
-            levels.windows(2).any(|w| w[0] != w[1]),
-            "the waveform varies"
-        );
-        assert_ne!(
-            fake_level(5, 1.0),
-            fake_level(6, 1.0),
-            "each track has its own"
         );
     }
 

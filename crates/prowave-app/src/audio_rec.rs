@@ -174,6 +174,20 @@ struct Take {
     path: PathBuf,
     /// Recording inside the Cycle: where it runs, as each pass becomes a take.
     cycle: Option<(f64, f64)>,
+    live: prowave_engine::LivePeaks,
+    /// The waveform so far, and its loudest sample.
+    peaks: Vec<(f32, f32)>,
+    top: f32,
+}
+
+/// The real waveform of a recording in progress, to draw in its region.
+pub struct LiveWave<'a> {
+    pub peaks: &'a [(f32, f32)],
+    /// Where it starts in the region, and how long it is, in beats.
+    pub from_beats: f64,
+    pub len_beats: f64,
+    /// The same fit to the region's height as the finished clip gets.
+    pub fit: f32,
 }
 
 /// The recording in progress, and the open input.
@@ -329,6 +343,60 @@ impl AudioRecorder {
     /// The regions being recorded now (drawn red).
     pub fn regions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.takes.iter().map(|t| (t.track, t.region))
+    }
+
+    /// Takes what the recorder has added to each waveform.
+    fn read_live(&mut self) {
+        for take in &mut self.takes {
+            let Ok(live) = take.live.lock() else {
+                continue;
+            };
+            let new = live.get(take.peaks.len()..).unwrap_or_default();
+            for point in new {
+                take.top = take.top.max(point.1).max(-point.0);
+            }
+            take.peaks.extend_from_slice(new);
+        }
+    }
+
+    /// The waveform of region `r` of track `t`, if it is being recorded. Round the Cycle, the
+    /// pass in progress.
+    pub fn live_wave(&self, p: &Project, t: usize, r: usize) -> Option<LiveWave<'_>> {
+        let take = self.takes.iter().find(|k| k.track == t && k.region == r)?;
+        let rate = f64::from(self.capture.as_ref()?.sample_rate());
+        let point = f64::from(prowave_engine::LIVE_HOP) / rate;
+        let map = p.tempo_map();
+        let begun = map.seconds_at(take.start);
+        let (shown_from, first, offset) = match take.cycle {
+            Some((from, to)) => {
+                let from_at = map.seconds_at(from);
+                let pass = (map.seconds_at(to) - from_at).max(1e-3);
+                let lead = begun - from_at;
+                let so_far = lead + take.peaks.len() as f64 * point;
+                let pass_begun = (so_far / pass).floor() * pass;
+                let first = ((pass_begun - lead).max(0.0) / point) as usize;
+                (
+                    from,
+                    first.min(take.peaks.len()),
+                    (lead - pass_begun).max(0.0),
+                )
+            }
+            None => (take.start, 0, 0.0),
+        };
+        let peaks = &take.peaks[first..];
+        let at = map.seconds_at(shown_from) + offset;
+        let start = map.beat_at(at);
+        let end = map.beat_at(at + peaks.len() as f64 * point);
+        Some(LiveWave {
+            peaks,
+            from_beats: start - shown_from,
+            len_beats: end - start,
+            fit: if take.top > 0.0 {
+                (0.95 / take.top).clamp(1.0, crate::model::MAX_WAVEFORM_FIT)
+            } else {
+                1.0
+            },
+        })
     }
 
     /// What the Recording Meter shows: each recording track's name and input levels. The second
@@ -513,6 +581,7 @@ impl AudioRecorder {
             self.disk = Some(DiskWatch::start(crate::project_io::recordings_dir()));
         }
         self.read_levels();
+        self.read_live();
         self.note_playing(p);
         let record = p.recording && p.playing && !p.counting_in && p.punched_in();
         let waiting = p.wait_for_sound && !self.sound_arrived(p);
@@ -601,7 +670,7 @@ impl AudioRecorder {
             let track = &mut p.tracks[t];
             let path = dir.join(file_name(&track.name, self.count));
             match capture.start_early(&path, track.input, latency_us, lead_us) {
-                Ok(id) => {
+                Ok((id, live)) => {
                     track.regions.push(Region {
                         name: format!("*{}", track.name),
                         start_bar,
@@ -621,6 +690,9 @@ impl AudioRecorder {
                         start,
                         path,
                         cycle,
+                        live,
+                        peaks: Vec::new(),
+                        top: 0.0,
                     });
                 }
                 Err(e) => error = Some(trf("Cannot record: {}", &[&e])),
