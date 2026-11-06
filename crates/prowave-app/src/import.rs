@@ -4,7 +4,114 @@ use prowave_engine::{AudioError, AudioFile};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
+/// Points in a file's overview, for when it is seen whole.
 const PEAK_BINS: usize = 4096;
+/// Frames per point in the fine level, for when it is zoomed in. Long files have many.
+const FINE_HOP: u64 = 256;
+/// Saved levels kept before the oldest go.
+const MAX_SAVED_PEAKS: usize = 500;
+
+/// Where the fine level of `file` is saved. The file's size and date are in the name, so a file
+/// that changes is read again.
+fn saved_peaks_path(file: &AudioFile) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::metadata(&file.path).ok()?;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    file.path.hash(&mut hash);
+    meta.len().hash(&mut hash);
+    meta.modified().ok()?.hash(&mut hash);
+    file.frames.hash(&mut hash);
+    let dir = crate::recent_files::config_dir()?.join("peak-cache");
+    Some(dir.join(format!("{:016x}.peaks", hash.finish())))
+}
+
+fn read_saved_peaks(path: &Path) -> Option<Vec<(f32, f32)>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() % 8 != 0 || bytes.is_empty() {
+        return None;
+    }
+    let number = |b: &[u8]| f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    Some(
+        bytes
+            .chunks_exact(8)
+            .map(|p| (number(&p[..4]), number(&p[4..])))
+            .collect(),
+    )
+}
+
+/// By way of a temporary name, so that a write cut short never passes for the peaks.
+fn save_peaks(path: &Path, peaks: &[(f32, f32)]) -> std::io::Result<()> {
+    let dir = path.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    std::fs::create_dir_all(dir)?;
+    let mut bytes = Vec::with_capacity(peaks.len() * 8);
+    for (lo, hi) in peaks {
+        bytes.extend_from_slice(&lo.to_le_bytes());
+        bytes.extend_from_slice(&hi.to_le_bytes());
+    }
+    let partial = path.with_extension("part");
+    std::fs::write(&partial, bytes)?;
+    std::fs::rename(&partial, path)?;
+    prune_saved_peaks(dir);
+    Ok(())
+}
+
+/// Leaves the newest [`MAX_SAVED_PEAKS`] files.
+fn prune_saved_peaks(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() <= MAX_SAVED_PEAKS {
+        return;
+    }
+    files.sort();
+    let extra = files.len() - MAX_SAVED_PEAKS;
+    for (_, path) in files.into_iter().take(extra) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The whole of `fine` in at most `bins` points, each the widest of those it covers.
+fn overview_of(fine: &[(f32, f32)], bins: usize) -> Vec<(f32, f32)> {
+    if fine.len() <= bins {
+        return fine.to_vec();
+    }
+    (0..bins)
+        .map(|b| {
+            let from = b * fine.len() / bins;
+            let to = (b + 1) * fine.len() / bins;
+            fine[from..to]
+                .iter()
+                .fold((0.0f32, 0.0f32), |(lo, hi), p| (lo.min(p.0), hi.max(p.1)))
+        })
+        .collect()
+}
+
+/// The fine level of `file`: from where it was saved, else read from the file and saved.
+fn fine_peaks(file: &AudioFile) -> Result<Vec<(f32, f32)>, AudioError> {
+    let saved = if cfg!(test) {
+        None
+    } else {
+        saved_peaks_path(file)
+    };
+    if let Some(peaks) = saved.as_deref().and_then(read_saved_peaks) {
+        return Ok(peaks);
+    }
+    let bins = file.frames.div_ceil(FINE_HOP).max(1) as usize;
+    let peaks = file.peaks(bins)?;
+    if let Some(path) = saved {
+        if let Err(e) = save_peaks(&path, &peaks) {
+            tracing::warn!(
+                "could not save the waveform of {}: {e}",
+                file.path.display()
+            );
+        }
+    }
+    Ok(peaks)
+}
 
 pub fn is_audio_path(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
@@ -30,11 +137,14 @@ pub fn is_audio_path(path: &Path) -> bool {
 /// background thread (the region shows a flat line until it is ready).
 pub fn audio_region(file: AudioFile, ctx: &egui::Context) -> AudioRegion {
     let peaks = Arc::new(OnceLock::new());
+    let fine_level = Arc::new(OnceLock::new());
     {
-        let (file, peaks, ctx) = (file.clone(), peaks.clone(), ctx.clone());
-        std::thread::spawn(move || match file.peaks(PEAK_BINS) {
+        let (file, peaks, fine, ctx) =
+            (file.clone(), peaks.clone(), fine_level.clone(), ctx.clone());
+        std::thread::spawn(move || match fine_peaks(&file) {
             Ok(v) => {
-                let _ = peaks.set(v);
+                let _ = peaks.set(overview_of(&v, PEAK_BINS));
+                let _ = fine.set(v);
                 ctx.request_repaint();
             }
             Err(e) => tracing::warn!("waveform overview failed for {}: {e}", file.path.display()),
@@ -43,6 +153,7 @@ pub fn audio_region(file: AudioFile, ctx: &egui::Context) -> AudioRegion {
     AudioRegion {
         file,
         peaks,
+        fine_peaks: fine_level,
         peak_top: Default::default(),
         flex: None,
         follow_bpm: None,
@@ -159,6 +270,30 @@ pub fn import_audio_at(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_overview_keeps_the_widest_of_what_it_covers_and_saved_peaks_read_back() {
+        let fine: Vec<(f32, f32)> = (0..1000)
+            .map(|i| (-(i as f32) / 1000.0, i as f32 / 1000.0))
+            .collect();
+        let small = overview_of(&fine, 10);
+        assert_eq!(small.len(), 10);
+        assert_eq!(small[9].1, 0.999);
+        assert_eq!(
+            overview_of(&fine[..5], 10).len(),
+            5,
+            "short files stay as they are"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.peaks");
+        save_peaks(&path, &fine).unwrap();
+        assert_eq!(read_saved_peaks(&path).unwrap(), fine);
+        std::fs::write(&path, [1u8, 2, 3]).unwrap();
+        assert!(
+            read_saved_peaks(&path).is_none(),
+            "a broken file is read again"
+        );
+    }
 
     #[test]
     fn a_dropped_sample_lands_on_the_audio_track_under_it_or_on_a_new_one() {

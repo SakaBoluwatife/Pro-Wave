@@ -609,6 +609,7 @@ mod tests {
         let own = crate::model::AudioRegion {
             file: audio_file("own.wav", 10.0),
             peaks: std::sync::Arc::default(),
+            fine_peaks: std::sync::Arc::default(),
             peak_top: std::sync::Arc::default(),
             flex: None,
             follow_bpm: None,
@@ -685,6 +686,7 @@ mod tests {
         let main = crate::model::AudioRegion {
             file: audio_file("main.wav", 4.0),
             peaks: std::sync::Arc::default(),
+            fine_peaks: std::sync::Arc::default(),
             peak_top: std::sync::Arc::default(),
             flex: None,
             follow_bpm: None,

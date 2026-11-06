@@ -660,6 +660,16 @@ impl Default for TrackParams {
 const MAX_WAVEFORM_FIT: f32 = 4.0;
 
 impl AudioRegion {
+    /// The level to draw the whole clip with at `width` points: the overview, until the clip is
+    /// wider than it has points.
+    pub fn peaks_for(&self, width: f32) -> Option<&[(f32, f32)]> {
+        let overview = self.peaks.get()?;
+        match self.fine_peaks.get() {
+            Some(fine) if width > overview.len() as f32 => Some(fine),
+            _ => Some(overview),
+        }
+    }
+
     /// What to multiply the overview by so the clip fills its region. Only the drawing: the
     /// sound stays as it is.
     pub fn waveform_fit(&self) -> f32 {
@@ -683,6 +693,8 @@ pub struct AudioRegion {
     pub file: AudioFile,
     /// Min/max overview, filled by a background thread after import.
     pub peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
+    /// The same at a point per 256 frames, for when the clip is zoomed in past the overview.
+    pub fine_peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
     /// The loudest point of `peaks`, worked out once.
     pub peak_top: Arc<OnceLock<f32>>,
     /// Flex Time and Flex Pitch: when set, `file` is the sound made from this edit.
@@ -3125,6 +3137,7 @@ mod tests {
         AudioRegion {
             file: prowave_engine::AudioFile::open(dir.join("tone.caf")).unwrap(),
             peaks: Default::default(),
+            fine_peaks: Default::default(),
             peak_top: Default::default(),
             flex: None,
             follow_bpm: None,

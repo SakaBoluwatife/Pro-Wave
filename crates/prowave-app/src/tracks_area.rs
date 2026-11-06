@@ -2358,7 +2358,7 @@ fn draw_take_folder(
         };
         let audio = take.file.as_ref().map(|f| &f.0).or(main_audio);
         let Some((peaks, duration)) =
-            audio.and_then(|a| Some((a.peaks.get()?.as_slice(), a.file.duration_secs() as f32)))
+            audio.and_then(|a| Some((a.peaks_for(full.width())?, a.file.duration_secs() as f32)))
         else {
             return;
         };
@@ -2588,7 +2588,11 @@ fn draw_region(
         body.lerp_to_gamma(Color32::WHITE, if selected { 0.75 } else { 0.6 })
     };
     let edit = region.audio.is_some() || track.kind == TrackKind::Audio;
-    if let Some(peaks) = region.audio.as_ref().and_then(|a| a.peaks.get()) {
+    if let Some(peaks) = region
+        .audio
+        .as_ref()
+        .and_then(|a| a.peaks_for(full.width()))
+    {
         let gain = 10f32.powf(region.params.gain_db / 20.0) * wave_fit;
         let full_x = (full.left(), full.width());
         let part = played_part(region, peaks);
