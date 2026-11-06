@@ -149,11 +149,16 @@ fn timing_of_a_real_plugin() {
             worst
         );
     };
-    let began = Instant::now();
-    let (_loaded, mut direct) =
-        prowave_host::load_plugin(Path::new(file), id, 48_000, false).unwrap();
-    println!("in this process: loaded in {:?}", began.elapsed());
-    measure("in this process", &mut direct);
+    // `PROWAVE_TEST_BRIDGE_ONLY`: not in this process as well, for a plugin that may mind that.
+    let mut kept = None;
+    if std::env::var_os("PROWAVE_TEST_BRIDGE_ONLY").is_none() {
+        let began = Instant::now();
+        let (loaded, mut direct) =
+            prowave_host::load_plugin(Path::new(file), id, 48_000, false).unwrap();
+        println!("in this process: loaded in {:?}", began.elapsed());
+        measure("in this process", &mut direct);
+        kept = Some((loaded, direct));
+    }
     let began = Instant::now();
     let (mut bridged_ui, mut bridged) = load_isolated(Path::new(file), id, 48_000, false).unwrap();
     println!("bridge: loaded in {:?}", began.elapsed());
@@ -170,5 +175,6 @@ fn timing_of_a_real_plugin() {
     println!("bridge: editor open {}", bridged_ui.editor_is_open());
     std::thread::sleep(Duration::from_secs(2));
     bridged_ui.close_editor();
+    std::mem::forget(kept);
     std::process::exit(0);
 }

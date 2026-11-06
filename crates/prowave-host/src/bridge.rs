@@ -1249,6 +1249,13 @@ fn host_command(
             let embed = r.bool()?;
             let owner = (r.bool()?, r.f64()?);
             let position = (r.bool()?, r.i32()?, r.i32()?);
+            // Windows want this. Loading must not have it: a plugin that hands work to a thread set
+            // up this way, while that thread is busy loading it, waits for ever.
+            static OLE: std::sync::Once = std::sync::Once::new();
+            // SAFETY: on this process's main thread, once.
+            OLE.call_once(|| unsafe {
+                let _ = windows::Win32::System::Ole::OleInitialize(None);
+            });
             crate::editor_window::set_embed_windows(embed);
             if let Some(hosted) = instances.get_mut(&instance) {
                 let shown = hosted.loaded.open_editor(
@@ -1345,7 +1352,6 @@ pub fn run_plugin_host(block: usize) -> i32 {
     use windows::Win32::System::Console::{
         GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
-    use windows::Win32::System::Ole::OleInitialize;
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, PostThreadMessageW,
         TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT, WM_NULL,
@@ -1373,7 +1379,6 @@ pub fn run_plugin_host(block: usize) -> i32 {
         let _ = SetStdHandle(STD_INPUT_HANDLE, stand_in);
         let _ = SetStdHandle(STD_OUTPUT_HANDLE, stand_in);
         let _ = SetStdHandle(STD_ERROR_HANDLE, stand_in);
-        let _ = OleInitialize(None);
         (
             std::fs::File::from_raw_handle(input.0 as _),
             std::fs::File::from_raw_handle(output.0 as _),

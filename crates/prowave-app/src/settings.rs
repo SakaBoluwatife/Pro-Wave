@@ -213,11 +213,11 @@ fn isolation_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-isolation"))
 }
 
-/// Whether plugins run in processes of their own: yes, unless turned off here.
+/// Whether plugins run in processes of their own: no, unless turned on here. They run inside Pro Wave.
 pub fn plugin_isolation() -> bool {
     isolation_file()
         .and_then(|f| std::fs::read_to_string(f).ok())
-        .is_none_or(|text| text.trim() != "0")
+        .is_some_and(|text| text.trim() == "1")
 }
 
 fn isolation_row(ui: &mut Ui) {
