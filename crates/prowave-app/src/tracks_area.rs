@@ -3388,7 +3388,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     let v = &mut s.tracks;
     v.lanes_w = lanes.width();
 
-    // ---- wheel: scroll; Shift = horizontal; Ctrl/Cmd = horizontal zoom around the pointer
+    // ---- wheel: along the song; over the headers, or with Shift or Alt, through the tracks;
+    // Ctrl/Cmd = horizontal zoom around the pointer
     let hover = ui.input(|i| i.pointer.hover_pos());
     if hover.is_some_and(|pt| lanes.contains(pt) || headers.contains(pt) || ruler.contains(pt)) {
         let (delta, mods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
@@ -3397,11 +3398,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             let beat_at = (pointer_x - lanes.left() + v.scroll_x) / (v.bar_w / bpb as f32);
             v.bar_w = (v.bar_w * (1.0 + delta.y * 0.003)).clamp(6.0, 600.0);
             v.scroll_x = beat_at * (v.bar_w / bpb as f32) - (pointer_x - lanes.left());
-        } else if mods.shift {
-            v.scroll_x -= delta.y + delta.x;
+        } else if mods.shift || mods.alt || hover.is_some_and(|pt| headers.contains(pt)) {
+            // Up and down through the tracks: over their headers, or when asked for.
+            v.scroll_y -= delta.y + delta.x;
         } else {
-            v.scroll_x -= delta.x;
-            v.scroll_y -= delta.y;
+            // Along the song. The tracks stay where they are.
+            v.scroll_x -= delta.y + delta.x;
         }
     }
     let rows = row_layout(p, v.row_h);

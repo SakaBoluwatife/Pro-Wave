@@ -125,6 +125,10 @@ pub trait PluginProcessor: Send {
     /// audio thread just before [`Self::process`]: it must not allocate. Each slice is
     /// `PLUGIN_BLOCK` frames long. Not called while no source is chosen, after one call with silence.
     fn set_side_input(&mut self, _side: [&[f32]; 2]) {}
+
+    /// Says the blocks come from an offline render, with no deadline. Called off the UI thread
+    /// and must not allocate.
+    fn set_offline(&mut self, _offline: bool) {}
 }
 
 /// Running every hosted plugin's block at once, on several cores. A plugin's output reaches the mix
@@ -379,6 +383,11 @@ impl PluginSlot {
 
     pub fn latency_samples(&self) -> usize {
         self.plugin.latency_samples() + self.block
+    }
+
+    /// Tells the plugin whether it is in an offline render.
+    pub fn set_offline(&mut self, offline: bool) {
+        self.plugin.set_offline(offline);
     }
 
     /// Whether the plugin may rest when it has nothing to process. Waking it if not.

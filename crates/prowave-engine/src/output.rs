@@ -287,6 +287,11 @@ impl Engine {
         Err(last)
     }
 
+    /// Readies the calling thread for audio work, as the engine's own workers are.
+    pub fn prepare_worker_thread() {
+        worker_setup();
+    }
+
     /// How many threads help run plugins, 0 for the usual number. Call before audio starts: the
     /// pool is made once.
     pub fn set_worker_limit(workers: usize) {

@@ -5,10 +5,13 @@
 //! has a `uid` and follows its insert when tracks and slots move.
 use crate::model::{PluginInsert, Project, TrackKind};
 use prowave_engine::{Command, Engine, PluginSlot, INSTRUMENT_SLOT, MAX_INSERTS, MAX_TRACKS};
-use prowave_host::{load_plugin, HeaderClick, HeaderState, LoadedPlugin, PluginInfo};
+use prowave_host::{load_plugin_safely, HeaderClick, HeaderState, LoadedPlugin, PluginInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// Crashes of one plugin in a session before it stays off.
+const MAX_RESTARTS: u32 = 3;
 
 /// A plugin's place in the engine: track and insert slot.
 pub type Place = (u16, u8);
@@ -294,6 +297,8 @@ fn windows_file() -> Option<std::path::PathBuf> {
 /// The plugins running in one engine. Dropped after the engine, so instances go last.
 #[derive(Default)]
 pub struct Rack {
+    /// How many times each plugin's process has ended this session.
+    crashes: HashMap<u64, u32>,
     /// The engine runs plugins on several cores.
     rounds_sent: bool,
     live: HashMap<u64, Live>,
@@ -669,6 +674,7 @@ impl Rack {
         for (id, at) in closed {
             self.remember_position(&id, at);
         }
+        self.restart_crashed(p, engine, message);
         self.retiring.retain(|r| !r.released());
         let places: HashMap<u64, Place> = self.live.iter().map(|(u, l)| (*u, l.place)).collect();
         let mut loaded_one = false;
@@ -795,6 +801,44 @@ impl Rack {
         true
     }
 
+    /// Plugins whose process ended come out of the engine. The next step loads them again from
+    /// their last saved settings, unless they keep doing it.
+    fn restart_crashed(
+        &mut self,
+        p: &mut Project,
+        engine: &mut Engine,
+        message: &mut Option<String>,
+    ) {
+        let crashed: Vec<u64> = self
+            .live
+            .iter()
+            .filter(|(_, l)| l.loaded.crashed())
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in crashed {
+            if !self.take_out(uid, engine) {
+                return;
+            }
+            let times = self.crashes.entry(uid).or_insert(0);
+            *times += 1;
+            let times = *times;
+            let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
+                continue;
+            };
+            if times >= MAX_RESTARTS {
+                let why = "It keeps crashing, so it is off. The rest of the project is fine.";
+                *message = Some(format!("{} crashed again. {why}", plugin.name));
+                plugin.failed = Some(why.to_string());
+            } else {
+                *message = Some(format!(
+                    "{} crashed. Pro Wave is fine: the plugin is being started again from its \
+                     last saved settings.",
+                    plugin.name
+                ));
+            }
+        }
+    }
+
     /// Loads one plugin into the engine. A plugin that will not load is marked in the project,
     /// and shown as such; false only when the engine could not take it now.
     fn load(
@@ -808,20 +852,26 @@ impl Rack {
         let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
             return true;
         };
-        if crate::plugin_guard::is_blocked(&plugin.path) {
+        // In a process of its own a crash while loading is only a failed load.
+        let guarded = !prowave_host::isolation_on();
+        if guarded && crate::plugin_guard::is_blocked(&plugin.path) {
             let why = "Pro Wave closed while loading this last time. \
                        Press Rescan on the Plugins tab to allow it again.";
             *message = Some(format!("{}: {why}", plugin.name));
             plugin.failed = Some(why.to_string());
             return true;
         }
-        crate::plugin_guard::before_load(&plugin.path);
+        if guarded {
+            crate::plugin_guard::before_load(&plugin.path);
+        }
         let side = plugin.sidechain.is_some();
         let (mut loaded, processor) =
-            match load_plugin(&plugin.path, &plugin.id, engine.sample_rate(), side) {
+            match load_plugin_safely(&plugin.path, &plugin.id, engine.sample_rate(), side) {
                 Ok(both) => both,
                 Err(e) => {
-                    crate::plugin_guard::after_load();
+                    if guarded {
+                        crate::plugin_guard::after_load();
+                    }
                     *message = Some(e.to_string());
                     plugin.failed = Some(e.to_string());
                     return true;
@@ -839,7 +889,9 @@ impl Rack {
                 *message = Some(format!("{}: settings not restored: {e}", plugin.name));
             }
         }
-        crate::plugin_guard::after_load();
+        if guarded {
+            crate::plugin_guard::after_load();
+        }
         let sent = engine.send(Command::SetPlugin {
             track: place.0,
             slot: place.1,

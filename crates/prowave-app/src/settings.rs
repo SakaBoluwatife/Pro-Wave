@@ -178,6 +178,41 @@ pub fn worker_limit() -> usize {
         .unwrap_or(0)
 }
 
+fn isolation_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("plugin-isolation"))
+}
+
+/// Whether plugins run in processes of their own: yes, unless turned off here.
+pub fn plugin_isolation() -> bool {
+    isolation_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .is_none_or(|text| text.trim() != "0")
+}
+
+fn isolation_row(ui: &mut Ui) {
+    let saved = plugin_isolation();
+    let mut on = saved;
+    ui.checkbox(&mut on, "Run plugins in their own process")
+        .on_hover_text(
+        "A plugin that crashes does not close Pro Wave, and is started again. Plugins from one \
+             file share a process, so a crash stops the others from that file too. This protects \
+             against crashes only, and uses more CPU and memory than running inside Pro Wave.",
+    );
+    ui.label(egui::RichText::new("Applies the next time Pro Wave starts.").small());
+    if on != saved {
+        let Some(file) = isolation_file() else {
+            return;
+        };
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, if on { "1" } else { "0" }));
+        if let Err(e) = result {
+            tracing::warn!("could not save the plugin process setting: {e}");
+        }
+    }
+}
+
 fn plugin_block_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-block"))
 }
@@ -453,6 +488,8 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
 }
 
 fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
+    isolation_row(ui);
+    ui.separator();
     let ctx = ui.ctx().clone();
     ui.label("Folders to look for plugins in, besides the usual ones:");
     let mut rescan = false;

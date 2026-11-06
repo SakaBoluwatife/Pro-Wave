@@ -1384,6 +1384,8 @@ fn leave_now(code: i32) -> ! {
 fn main() -> eframe::Result {
     prowave_engine::Engine::set_worker_limit(settings::worker_limit());
     prowave_engine::set_plugin_block(settings::plugin_block());
+    #[cfg(windows)]
+    prowave_host::set_isolation(settings::plugin_isolation());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {
@@ -1391,6 +1393,10 @@ fn main() -> eframe::Result {
     }
     let all_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Started by the Plugins tab to read one plugin file, where a crash costs nothing.
+    #[cfg(windows)]
+    if let Some(block) = prowave_host::host_request(&all_args) {
+        leave_now(prowave_host::run_plugin_host(block));
+    }
     if let Some(file) = plugin_scan::scan_request(&all_args) {
         leave_now(plugin_scan::scan_and_print(&file));
     }

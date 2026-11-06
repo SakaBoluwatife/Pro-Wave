@@ -2128,6 +2128,7 @@ impl EngineCore {
                     let mut plugin = plugin;
                     if let Some(new) = plugin.as_mut() {
                         new.set_may_rest(self.plugins_may_rest);
+                        new.set_offline(self.keep_headroom);
                     }
                     let old = match self.plugin_place((track, slot)) {
                         Some(place) => std::mem::replace(place, plugin),

@@ -3,8 +3,10 @@
 //! This crate runs on the UI thread, apart from the [`PluginProcessor`] each load returns, which
 //! goes to the engine in a `PluginSlot`. CLAP and VST3 look the same from outside: a
 //! [`LoadedPlugin`] on the UI thread and a [`PluginProcessor`] on the audio thread. Plugins run in
-//! this process for now, so a plugin that crashes takes the program with it; these traits are where
-//! a bridge to another process would go.
+//! this process unless crash isolation is on, in which case [`bridge`] puts them in another one
+//! behind these same traits.
+#[cfg(windows)]
+mod bridge;
 mod clap;
 #[cfg(windows)]
 mod editor_window;
@@ -12,6 +14,11 @@ mod sampler;
 #[cfg(windows)]
 mod vst3_plugin;
 
+#[cfg(windows)]
+pub use crate::bridge::{
+    host_request, isolation_on, load_isolated, load_plugin_safely, run_plugin_host, set_host_exe,
+    set_isolation,
+};
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
 pub use crate::sampler::load_sampler;
 #[cfg(windows)]
@@ -184,10 +191,35 @@ pub trait LoadedPlugin {
     fn load_state(&mut self, bytes: &[u8]) -> Result<(), HostError>;
     /// Whether the plugin said its state changed, since last asked.
     fn take_dirty(&mut self) -> bool;
+
+    /// Whether the plugin's process has ended, in the case that it has one of its own.
+    fn crashed(&self) -> bool {
+        false
+    }
+
+    /// The process it runs in, if that is not this one.
+    fn process_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Both halves of a plugin that was just loaded.
 pub type Loaded = (Box<dyn LoadedPlugin>, Box<dyn PluginProcessor>);
+
+#[cfg(not(windows))]
+pub fn load_plugin_safely(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+) -> Result<Loaded, HostError> {
+    load_plugin(path, id, sample_rate, side)
+}
+
+#[cfg(not(windows))]
+pub fn isolation_on() -> bool {
+    false
+}
 
 /// Where plugins of every format are installed, plus the folders `extra`, and the files there.
 /// Nothing is loaded.
