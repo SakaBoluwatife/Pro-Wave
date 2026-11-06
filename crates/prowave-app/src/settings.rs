@@ -124,12 +124,18 @@ pub struct SettingsView {
     pub open: bool,
     tab: Tab,
     /// The setup being chosen, until Apply.
-    setup: AudioSetup,
+    pub setup: AudioSetup,
     loaded: bool,
     systems: Vec<String>,
     devices: Vec<String>,
     /// The devices of the driver chosen, being looked for off the UI thread: a driver can be slow.
     looking: Option<Receiver<Vec<String>>>,
+    /// The driver whose control panel was asked for: `App` stops the sound and opens it.
+    pub panel_wanted: Option<String>,
+    /// The panel that is open, with the sound off until Done.
+    pub panel: Option<prowave_engine::AsioPanel>,
+    /// Done was pressed on the panel.
+    pub panel_done: bool,
     /// Apply was pressed: `App` restarts the sound and takes this.
     pub apply: Option<AudioSetup>,
     /// What is playing now, as `App` says.
@@ -431,6 +437,26 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
     {
         v.setup.save();
         v.apply = Some(v.setup.clone());
+    }
+    if v.setup.system.eq_ignore_ascii_case("asio") {
+        ui.separator();
+        if v.panel.is_some() {
+            ui.label(
+                "The driver's control panel is open, and the sound is off until you are done.",
+            );
+            if ui.button("Done").clicked() {
+                v.panel_done = true;
+            }
+        } else {
+            let chosen = !v.setup.device.is_empty();
+            let button = ui
+                .add_enabled(chosen, egui::Button::new("Driver Control Panel"))
+                .on_hover_text("The sound stops while it is open")
+                .on_disabled_hover_text("Choose a device above first");
+            if button.clicked() {
+                v.panel_wanted = Some(v.setup.device.clone());
+            }
+        }
     }
     input_row(ui, &mut s.mixer.inputs);
     threads_row(ui);

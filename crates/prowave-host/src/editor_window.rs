@@ -22,15 +22,15 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-    DestroyWindow, GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, IsIconic,
-    LoadCursorW, MoveWindow, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TrackPopupMenu, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCAPTION,
-    IDC_ARROW, MF_SEPARATOR, MF_STRING, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE,
-    SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_ERASEBKGND,
-    WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP,
-    WS_THICKFRAME, WS_VISIBLE,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    GetClientRect, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, IsIconic, LoadCursorW,
+    MoveWindow, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TrackPopupMenu, CS_DROPSHADOW, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTBOTTOM, HTBOTTOMRIGHT,
+    HTCAPTION, HTRIGHT, IDC_ARROW, MF_SEPARATOR, MF_STRING, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_RESTORE, SW_SHOW, TPM_NONOTIFY, TPM_RETURNCMD, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLOSE, WM_ERASEBKGND, WM_LBUTTONUP, WM_NCCALCSIZE, WM_NCHITTEST, WM_PAINT, WM_SIZE,
+    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
 };
 
 /// Moves each new editor along, so that they do not open exactly on top of each other.
@@ -44,6 +44,8 @@ const HEADER_HEIGHT: f64 = 28.0;
 /// The title bar over it, and the close button at its end.
 const TITLE_HEIGHT: f64 = 26.0;
 const CLOSE_WIDTH: f64 = 40.0;
+/// The strip along the right and bottom of a resizable window, to drag.
+const GRIP: f64 = 6.0;
 const MARGIN: f64 = 6.0;
 const GAP: f64 = 4.0;
 const BYPASS_WIDTH: f64 = 56.0;
@@ -126,6 +128,14 @@ fn title_height(hwnd: HWND) -> i32 {
     (TITLE_HEIGHT * scale_of(hwnd)).round() as i32
 }
 
+fn grip_of(hwnd: HWND, inbox: &Inbox) -> i32 {
+    if inbox.resizable.get() {
+        (GRIP * scale_of(hwnd)).round() as i32
+    } else {
+        0
+    }
+}
+
 fn close_width(hwnd: HWND) -> i32 {
     (CLOSE_WIDTH * scale_of(hwnd)).round() as i32
 }
@@ -158,7 +168,7 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
                 bottom: height,
                 ..client
             },
-            rgb(0x3a, 0x3a, 0x3e),
+            rgb(0x12, 0x12, 0x14),
         );
         let font = CreateFontW(
             -((12.0 * scale).round() as i32),
@@ -184,7 +194,7 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
                 bottom: top,
                 ..client
             },
-            rgb(0x26, 0x26, 0x2a),
+            rgb(0x12, 0x12, 0x14),
         );
         SetTextColor(dc, rgb(0xd8, 0xd8, 0xdc));
         let mut name = RECT {
@@ -229,7 +239,7 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
             let (back, text) = if lit {
                 (rgb(0xd9, 0xa0, 0x2a), rgb(0x10, 0x10, 0x10))
             } else {
-                (rgb(0x55, 0x55, 0x5a), rgb(0xf0, 0xf0, 0xf0))
+                (rgb(0x2a, 0x2a, 0x2e), rgb(0xe8, 0xe8, 0xea))
             };
             fill(&cell, back);
             cell.left += inset;
@@ -241,6 +251,28 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
                 &mut label,
                 &mut cell,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+            );
+        }
+        // The strips to drag, where a resizable window has them: black like the rest.
+        let mut client_all = RECT::default();
+        let _ = GetClientRect(hwnd, &mut client_all);
+        let grip = (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Inbox)
+            .as_ref()
+            .map_or(0, |inbox| grip_of(hwnd, inbox));
+        if grip > 0 {
+            fill(
+                &RECT {
+                    left: client_all.right - grip,
+                    ..client_all
+                },
+                rgb(0x12, 0x12, 0x14),
+            );
+            fill(
+                &RECT {
+                    top: client_all.bottom - grip,
+                    ..client_all
+                },
+                rgb(0x12, 0x12, 0x14),
             );
         }
         SelectObject(dc, old);
@@ -261,6 +293,8 @@ struct Inbox {
     /// What the bar shows, and the button last pressed. Only ever touched on the window's thread.
     header: RefCell<HeaderState>,
     click: Cell<Option<HeaderClick>>,
+    /// It can be resized, so it keeps a strip to drag along two edges.
+    resizable: Cell<bool>,
     /// The plugin's name, in the title bar.
     title: RefCell<String>,
 }
@@ -285,9 +319,10 @@ unsafe extern "system" fn window_proc(
         }
         (WM_SIZE, Some(inbox)) => {
             let bar = header_height(hwnd);
+            let grip = grip_of(hwnd, inbox);
             let (width, height) = (
-                (lparam.0 & 0xffff) as i32,
-                ((lparam.0 >> 16) & 0xffff) as i32 - bar,
+                (lparam.0 & 0xffff) as i32 - grip,
+                ((lparam.0 >> 16) & 0xffff) as i32 - bar - grip,
             );
             if width > 0 && height > 0 {
                 inbox.width.store(width, Ordering::Release);
@@ -301,7 +336,10 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        (WM_NCHITTEST, Some(_)) => {
+        // The whole window is ours: without this the system draws a white line along the top of any
+        // window that can be resized.
+        (WM_NCCALCSIZE, Some(_)) if wparam.0 != 0 => LRESULT(0),
+        (WM_NCHITTEST, Some(inbox)) => {
             // The title bar is ours, so it has to say that it moves the window.
             let mut at = POINT {
                 x: i32::from((lparam.0 & 0xffff) as u16 as i16),
@@ -313,7 +351,15 @@ unsafe extern "system" fn window_proc(
                 let _ = ScreenToClient(hwnd, &mut at);
                 GetClientRect(hwnd, &mut client).is_ok()
             };
-            if inside
+            let grip = grip_of(hwnd, inbox);
+            let (right, bottom) = (at.x >= client.right - grip, at.y >= client.bottom - grip);
+            if inside && grip > 0 && (right || bottom) {
+                LRESULT(match (right, bottom) {
+                    (true, true) => HTBOTTOMRIGHT,
+                    (true, false) => HTRIGHT,
+                    _ => HTBOTTOM,
+                } as isize)
+            } else if inside
                 && (0..title_height(hwnd)).contains(&at.y)
                 && (0..client.right - close_width(hwnd)).contains(&at.x)
             {
@@ -412,7 +458,6 @@ pub(crate) struct EditorWindow {
     hwnd: HWND,
     /// The child window under the bar, which goes with `hwnd`.
     content: HWND,
-    look: (WINDOW_STYLE, WINDOW_EX_STYLE),
     inbox: Box<Inbox>,
 }
 
@@ -485,6 +530,7 @@ impl EditorWindow {
             }
         };
         inbox.content.set(content.0 as isize);
+        inbox.resizable.set(resizable);
         *inbox.title.borrow_mut() = title.to_string();
         // SAFETY: `hwnd` was just made. The Box keeps the pointer valid until `drop` below, which
         // destroys the window first.
@@ -492,7 +538,6 @@ impl EditorWindow {
         Ok(Self {
             hwnd,
             content,
-            look,
             inbox,
         })
     }
@@ -569,15 +614,15 @@ impl EditorWindow {
 
     /// Sizes the window so that the part the plugin has is `width` by `height`.
     pub(crate) fn set_client_size(&self, width: u32, height: u32) {
-        let mut rect = RECT {
+        let grip = grip_of(self.hwnd, &self.inbox);
+        let rect = RECT {
             left: 0,
             top: 0,
-            right: width as i32,
-            bottom: height as i32 + header_height(self.hwnd),
+            right: width as i32 + grip,
+            bottom: height as i32 + header_height(self.hwnd) + grip,
         };
-        // SAFETY: `rect` is a valid local and `self.hwnd` lives as long as `self`.
+        // SAFETY: `self.hwnd` lives as long as `self`.
         unsafe {
-            let _ = AdjustWindowRectEx(&mut rect, self.look.0, false, self.look.1);
             let _ = SetWindowPos(
                 self.hwnd,
                 None,

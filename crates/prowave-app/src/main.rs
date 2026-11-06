@@ -1040,6 +1040,29 @@ impl eframe::App for App {
         if let Some(setup) = self.ui.settings.apply.take() {
             self.restart_audio(&setup);
         }
+        if let Some(driver) = self.ui.settings.panel_wanted.take() {
+            // The driver has to be free before its panel can have it.
+            if let Some(sync) = self.sync.as_mut() {
+                sync.collect_plugin_states(&mut self.project);
+            }
+            self.project.playing = false;
+            self.midi_out = None;
+            self.ui.mastering.tap = None;
+            self.sync = None;
+            match prowave_engine::AsioPanel::open(&driver, main_window_handle(frame)) {
+                Ok(panel) => self.ui.settings.panel = Some(panel),
+                Err(e) => {
+                    let setup = self.ui.settings.setup.clone();
+                    self.restart_audio(&setup);
+                    self.ui.status = Some(e);
+                }
+            }
+        }
+        if std::mem::take(&mut self.ui.settings.panel_done) {
+            self.ui.settings.panel = None;
+            let setup = self.ui.settings.setup.clone();
+            self.restart_audio(&setup);
+        }
         self.connect_mastering();
         if self.ui.settings.open {
             self.ui.settings.current = self.sync.as_ref().map_or("nothing".to_string(), |s| {

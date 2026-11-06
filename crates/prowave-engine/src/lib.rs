@@ -12,6 +12,7 @@ static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisab
 
 mod analysis;
 #[cfg(not(target_arch = "wasm32"))]
+mod asio_panel;
 mod capture;
 mod core;
 mod disk;
@@ -33,6 +34,7 @@ mod triple;
 mod wasapi;
 
 pub use crate::analysis::{tempo_curve, Analysis, Analyzer, TempoEstimate, STRENGTH_RATE};
+pub use crate::asio_panel::AsioPanel;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::capture::{
     input_devices, Capture, CaptureError, InputInfo, InputSource, LivePeaks, Recorded, LIVE_HOP,
