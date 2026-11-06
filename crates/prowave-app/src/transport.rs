@@ -472,7 +472,7 @@ fn lcd_seg(
     dim_color: Color32,
 ) {
     let split = text.char_indices().nth(dim).map_or(text.len(), |(i, _)| i);
-    let font = FontId::proportional(size);
+    let font = crate::theme::digit_font(size);
     if split > 0 {
         job.append(
             &text[..split],
@@ -620,7 +620,7 @@ fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
         pos2(x0 + 72.0, top + 3.0),
         Align2::CENTER_TOP,
         beat.to_string(),
-        FontId::proportional(25.0),
+        crate::theme::digit_font(25.0),
         pal.text,
     );
     g.text(
@@ -905,7 +905,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
             pos2(tempo_rect.center().x, top),
             Align2::CENTER_TOP,
             format!("{:.4}", p.tempo_at(p.position_beats)),
-            FontId::proportional(18.0),
+            crate::theme::digit_font(18.0),
             pal.text,
         );
     }

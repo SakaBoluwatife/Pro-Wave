@@ -1501,6 +1501,7 @@ fn main() -> eframe::Result {
         "Pro Wave",
         opts,
         Box::new(|cc| {
+            theme::install_fonts(&cc.egui_ctx);
             theme::apply(&cc.egui_ctx);
             // Cmd/Ctrl + = / - / 0 resize the interface through `ui_scale` instead, which
             // also keeps the fit for small windows.

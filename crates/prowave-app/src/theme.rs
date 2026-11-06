@@ -87,6 +87,51 @@ pub fn glass_plate(g: &egui::Painter, r: egui::Rect, radius: f32) {
     );
 }
 
+/// Whether the fonts below are in place. Tests draw without them.
+static FONTS_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The family for numbers that change as they play.
+const DIGITS: &str = "digits";
+
+/// Inter for all text, with egui's own fonts behind it for what Inter does not cover. Inter's
+/// digits differ in width and egui cannot ask for its even ones, so the numbers that run in the
+/// display keep the old font: see [`digit_font`]. Inter is under the SIL Open Font License, which is
+/// beside the file.
+pub fn install_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
+    let mut fonts = FontDefinitions::default();
+    let inter = FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.ttf")).tweak(
+        FontTweak {
+            // Inter is drawn larger than the size it is asked for, next to the old font.
+            scale: 0.93,
+            ..FontTweak::default()
+        },
+    );
+    fonts.font_data.insert("Inter".to_owned(), inter.into());
+    let old = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    fonts.families.insert(FontFamily::Name(DIGITS.into()), old);
+    if let Some(all) = fonts.families.get_mut(&FontFamily::Proportional) {
+        all.insert(0, "Inter".to_owned());
+    }
+    if let Some(all) = fonts.families.get_mut(&FontFamily::Monospace) {
+        all.push("Inter".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    FONTS_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A font whose digits are all one width, so that a running number stands still.
+pub fn digit_font(size: f32) -> egui::FontId {
+    if FONTS_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        egui::FontId::new(size, egui::FontFamily::Name(DIGITS.into()))
+    } else {
+        egui::FontId::proportional(size)
+    }
+}
+
 pub fn apply(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;

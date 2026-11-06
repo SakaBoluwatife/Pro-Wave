@@ -13,11 +13,11 @@ use std::sync::Once;
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, InvalidateRect, ScreenToClient, SelectObject, SetBkMode, SetTextColor,
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
-    DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-    TRANSPARENT,
+    AddFontMemResourceEx, BeginPaint, ClientToScreen, CreateFontW, CreateSolidBrush, DeleteObject,
+    DrawTextW, EndPaint, FillRect, InvalidateRect, ScreenToClient, SelectObject, SetBkMode,
+    SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
+    DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, OUT_DEFAULT_PRECIS,
+    PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -184,7 +184,7 @@ unsafe fn paint_header(hwnd: HWND, state: &HeaderState, title: &str) {
             CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY,
             u32::from(DEFAULT_PITCH.0),
-            w!("Segoe UI"),
+            w!("Inter"),
         );
         let old = SelectObject(dc, font.into());
         SetBkMode(dc, TRANSPARENT);
@@ -416,6 +416,19 @@ unsafe extern "system" fn content_proc(
 fn register_class() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
+        // The bar's text is in the program's font. For this process only, not the whole system. If
+        // it could not be added, the system picks another.
+        static INTER: &[u8] = include_bytes!("../../prowave-app/assets/fonts/Inter-Regular.ttf");
+        let mut added = 0u32;
+        // SAFETY: the bytes are static, the length is theirs, and `added` is a valid local.
+        let _ = unsafe {
+            AddFontMemResourceEx(
+                INTER.as_ptr().cast(),
+                INTER.len() as u32,
+                None,
+                std::ptr::addr_of_mut!(added),
+            )
+        };
         // SAFETY: the class is made of a static name and a procedure that lives as long as the
         // program, and registering twice is prevented here. A failure shows when the window is made.
         unsafe {
