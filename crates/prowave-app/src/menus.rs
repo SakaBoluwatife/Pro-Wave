@@ -1661,12 +1661,15 @@ mod tests {
             if matches!(c.action, Action::RecallScreenset(_)) {
                 continue;
             }
-            // With nothing being recorded there is nothing to discard, and with no audio on the
-            // track there is no sound to go through.
+            // With nothing being recorded there is nothing to discard, with no audio on the track
+            // there is no sound to go through, and a region at the very start can go no further left.
             if matches!(
                 c.action,
                 Action::Menu(
-                    "Discard Recording" | "Go to Next Transient" | "Go to Previous Transient"
+                    "Discard Recording"
+                        | "Go to Next Transient"
+                        | "Go to Previous Transient"
+                        | "Nudge Left"
                 )
             ) {
                 continue;
