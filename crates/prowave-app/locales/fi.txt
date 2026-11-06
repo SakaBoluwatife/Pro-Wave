@@ -727,3 +727,4 @@ Discard Recording = Hylkää äänitys
 Recording Meter = Äänitysmittari
 Duplicate Track = Monista raita
 New Track with Same Settings = Uusi raita samoilla asetuksilla
+New Tracks… = Uudet raidat…

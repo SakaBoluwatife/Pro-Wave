@@ -727,3 +727,4 @@ Discard Recording = Відкинути запис
 Recording Meter = Індикатор запису
 Duplicate Track = Дублювати доріжку
 New Track with Same Settings = Нова доріжка з тими ж налаштуваннями
+New Tracks… = Нові доріжки…

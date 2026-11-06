@@ -96,6 +96,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::ArrowDown, none, Action::NextTrack),
     cmd(Key::A, ctrl_alt, Action::NewAudioTrack),
     cmd(Key::S, ctrl_alt, Action::NewInstrumentTrack),
+    cmd(Key::N, ctrl, Action::Menu("New Tracks…")),
     cmd(Key::U, ctrl_alt, Action::Menu("New Aux Track")),
     cmd(Key::X, ctrl_alt, Action::Menu("New External MIDI Track")),
     cmd(Key::D, ctrl, Action::Menu("New Track with Same Settings")),

@@ -727,3 +727,4 @@ Discard Recording = Descartar gravação
 Recording Meter = Medidor de gravação
 Duplicate Track = Duplicar faixa
 New Track with Same Settings = Nova faixa com as mesmas definições
+New Tracks… = Novas faixas…

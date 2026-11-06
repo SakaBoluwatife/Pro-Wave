@@ -725,7 +725,7 @@ pub struct AudioRegion {
     pub file: AudioFile,
     /// Min/max overview, filled by a background thread after import.
     pub peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
-    /// The same at a point per 256 frames, for when the clip is zoomed in past the overview.
+    /// The same at a point per 64 frames, for when the clip is zoomed in past the overview.
     pub fine_peaks: Arc<OnceLock<Vec<(f32, f32)>>>,
     /// The loudest point of `peaks`, worked out once.
     pub peak_top: Arc<OnceLock<f32>>,
@@ -1762,6 +1762,36 @@ impl Project {
 
     /// Appends a new track of `kind` (named "Aux 1", "Inst 3"...), selects it and tells the
     /// engine the song changed. Returns its index.
+    /// `count` new tracks of `kind`, as many as there is room for. Returns how many were made.
+    pub fn add_tracks(&mut self, kind: TrackKind, count: usize) -> usize {
+        let mut room = prowave_engine::MAX_TRACKS.saturating_sub(self.tracks.len());
+        if kind == TrackKind::Aux {
+            let auxes = self.tracks.iter().filter(|t| t.kind == kind).count();
+            room = room.min(prowave_engine::MAX_BUSES.saturating_sub(auxes));
+        }
+        let made = count.min(room);
+        for _ in 0..made {
+            self.add_track(kind);
+        }
+        made
+    }
+
+    /// Renames a track. A summing stack and its Aux are one thing and keep one name.
+    pub fn rename_track(&mut self, t: usize, name: &str) {
+        let Some(old) = self.tracks.get(t).map(|track| track.name.clone()) else {
+            return;
+        };
+        let stack = self.tracks[t].kind == TrackKind::Folder;
+        if let Some(aux) = self
+            .tracks
+            .get_mut(t + 1)
+            .filter(|next| stack && next.kind == TrackKind::Aux && next.name == old)
+        {
+            aux.name = name.to_string();
+        }
+        self.tracks[t].name = name.to_string();
+    }
+
     /// The Record button and key: starts recording now, from where the song is. While recording,
     /// ends the recording and the song plays on.
     pub fn press_record(&mut self) {
@@ -2353,9 +2383,17 @@ impl Project {
         let aux = self.add_track(TrackKind::Aux);
         self.move_tracks(&[aux], folder + 1);
         let aux = folder + 1;
-        self.tracks[aux].name = format!("{} Sum", self.tracks[folder].name);
-        self.tracks[aux].on_timeline = true;
-        self.tracks[folder].name = format!("Summing {}", self.tracks[folder].name);
+        // The stack in the Tracks area and the Aux in the mixer are one thing: one name, one row.
+        let n = self
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Folder && t.name.starts_with("Summing "))
+            .count()
+            + 1;
+        let name = format!("Summing {n}");
+        self.tracks[aux].name = name.clone();
+        self.tracks[aux].on_timeline = false;
+        self.tracks[folder].name = name;
         let bus = self.aux_bus_of(aux);
         // The move put the Aux one further into the stack.
         for t in &mut self.tracks[aux + 1..=end] {
@@ -3395,6 +3433,30 @@ mod tests {
             .unwrap();
         assert!(p.delete_track(vca));
         assert!(p.tracks.iter().all(|t| t.vca.is_none()));
+    }
+
+    #[test]
+    fn new_tracks_come_in_the_number_asked_for_and_a_summing_stack_has_one_name() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        assert_eq!(p.add_tracks(TrackKind::Aux, 20), 20);
+        assert_eq!(p.tracks.len(), 20);
+        assert_eq!(p.aux_bus_of(19), 20);
+        assert!(p.mixer_only(19), "an Aux waits in the mixer");
+        assert_eq!(
+            p.add_tracks(TrackKind::Audio, usize::MAX),
+            prowave_engine::MAX_TRACKS - 20
+        );
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let a = p.add_track(TrackKind::Audio);
+        let stack = p.summing_stack(&[a]).unwrap();
+        assert_eq!(p.tracks[stack].name, "Summing 1");
+        assert_eq!(p.tracks[stack + 1].name, "Summing 1");
+        assert!(p.mixer_only(stack + 1));
+        assert_eq!(p.aux_buses(), [(1, "Summing 1".to_string())]);
+        p.rename_track(stack, "Drums");
+        assert_eq!(p.aux_buses(), [(1, "Drums".to_string())]);
     }
 
     #[test]

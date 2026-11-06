@@ -727,3 +727,4 @@ Discard Recording = Aufnahme verwerfen
 Recording Meter = Aufnahmepegel
 Duplicate Track = Spur duplizieren
 New Track with Same Settings = Neue Spur mit gleichen Einstellungen
+New Tracks… = Neue Spuren …

@@ -727,3 +727,4 @@ Discard Recording = Atmesti įrašą
 Recording Meter = Įrašymo matuoklis
 Duplicate Track = Dubliuoti takelį
 New Track with Same Settings = Naujas takelis su tais pačiais nustatymais
+New Tracks… = Nauji takeliai…

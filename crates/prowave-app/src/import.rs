@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 /// Points in a file's overview, for when it is seen whole.
 const PEAK_BINS: usize = 4096;
 /// Frames per point in the fine level, for when it is zoomed in. Long files have many.
-const FINE_HOP: u64 = 256;
+const FINE_HOP: u64 = 64;
 /// Saved levels kept before the oldest go.
 const MAX_SAVED_PEAKS: usize = 500;
 
@@ -21,6 +21,7 @@ fn saved_peaks_path(file: &AudioFile) -> Option<std::path::PathBuf> {
     meta.len().hash(&mut hash);
     meta.modified().ok()?.hash(&mut hash);
     file.frames.hash(&mut hash);
+    FINE_HOP.hash(&mut hash);
     let dir = crate::recent_files::config_dir()?.join("peak-cache");
     Some(dir.join(format!("{:016x}.peaks", hash.finish())))
 }

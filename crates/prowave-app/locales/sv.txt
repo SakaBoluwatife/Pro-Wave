@@ -727,3 +727,4 @@ Discard Recording = Släng inspelning
 Recording Meter = Inspelningsmätare
 Duplicate Track = Duplicera spår
 New Track with Same Settings = Nytt spår med samma inställningar
+New Tracks… = Nya spår …

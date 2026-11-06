@@ -37,7 +37,7 @@ impl FileCmd {
     /// other commands are menu-only.
     pub fn shortcut(self) -> Option<KeyboardShortcut> {
         let (modifiers, key) = match self {
-            FileCmd::New => (Modifiers::COMMAND, Key::N),
+            FileCmd::New => (Modifiers::COMMAND | Modifiers::SHIFT, Key::N),
             FileCmd::Open => (Modifiers::COMMAND, Key::O),
             FileCmd::Save => (Modifiers::COMMAND, Key::S),
             FileCmd::SaveAs => (Modifiers::COMMAND | Modifiers::SHIFT, Key::S),

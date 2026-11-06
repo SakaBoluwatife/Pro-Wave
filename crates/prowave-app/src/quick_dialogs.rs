@@ -10,6 +10,8 @@ pub struct QuickDialogs {
     pub rename: Option<(usize, String)>,
     /// Track > Assign Track Color: the track.
     pub color: Option<usize>,
+    /// New Tracks: what has been typed for how many, and of what kind.
+    pub new_tracks: Option<(String, crate::model::TrackKind)>,
     /// The regions whose colour window is open.
     pub region_color: Vec<(usize, usize)>,
     /// The big input level window.
@@ -82,6 +84,12 @@ fn answer(ui: &mut egui::Ui, focus: &mut bool, edit: &egui::Response) -> (bool, 
 }
 
 impl QuickDialogs {
+    /// New Tracks, asking for Aux tracks unless the kind is changed.
+    pub fn open_new_tracks(&mut self) {
+        self.new_tracks = Some((String::new(), crate::model::TrackKind::Aux));
+        self.focus = true;
+    }
+
     pub fn open_rename_region(&mut self, t: usize, r: usize, name: &str) {
         self.rename_region = Some((t, r, name.to_string()));
         self.focus = true;
@@ -125,6 +133,53 @@ fn go_to_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
 }
 
+/// New Tracks: how many, and what kind. They are made together, in order.
+fn new_tracks_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    use crate::model::TrackKind;
+    let d = &mut s.dialogs;
+    let Some((text, kind)) = d.new_tracks.as_mut() else {
+        return;
+    };
+    let mut result = (false, false);
+    let mut focus = std::mem::take(&mut d.focus);
+    egui::Modal::new(egui::Id::unique("new_tracks")).show(ctx, |ui| {
+        ui.set_width(280.0);
+        ui.horizontal(|ui| {
+            ui.label("Kind:");
+            for (shown, this) in [
+                ("Aux", TrackKind::Aux),
+                ("Audio", TrackKind::Audio),
+                ("Instrument", TrackKind::Instrument),
+            ] {
+                ui.selectable_value(kind, this, shown);
+            }
+        });
+        ui.label("How many?");
+        let edit = ui.add(egui::TextEdit::singleline(text).hint_text("1"));
+        text.retain(|c| c.is_ascii_digit());
+        result = answer(ui, &mut focus, &edit);
+    });
+    let (ok, close) = result;
+    if ok {
+        let kind = *kind;
+        let wanted: usize = text.parse().unwrap_or(1);
+        d.new_tracks = None;
+        let made = p.add_tracks(kind, wanted);
+        if kind == TrackKind::Aux && made > 0 {
+            // An Aux lives in the mixer, until it is asked to show in the Tracks area.
+            s.bottom = crate::Bottom::Mixer;
+        }
+        if made < wanted {
+            s.status = Some(format!(
+                "Made {made} tracks: that is as many as a project can hold"
+            ));
+        }
+        crate::tracks_area::forget_track_indexes(s);
+    } else if close {
+        d.new_tracks = None;
+    }
+}
+
 fn rename_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     let d = &mut s.dialogs;
     let Some((track, text)) = d.rename.as_mut() else {
@@ -141,8 +196,8 @@ fn rename_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     let (ok, close) = result;
     if ok {
         let name = text.trim();
-        if let (false, Some(t)) = (name.is_empty(), p.tracks.get_mut(*track)) {
-            t.name = name.to_string();
+        if !name.is_empty() {
+            p.rename_track(*track, name);
         }
         d.rename = None;
     } else if close {
@@ -444,6 +499,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     rename_project_window(ctx, s);
     go_to_window(ctx, p, s);
     rename_window(ctx, p, s);
+    new_tracks_window(ctx, p, s);
     color_window(ctx, p, s);
     region_color_window(ctx, p, s);
     rec_meter_window(ctx, p, s);

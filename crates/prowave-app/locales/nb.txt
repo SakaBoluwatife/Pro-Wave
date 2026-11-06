@@ -727,3 +727,4 @@ Discard Recording = Forkast opptak
 Recording Meter = Opptaksmåler
 Duplicate Track = Dupliser spor
 New Track with Same Settings = Nytt spor med samme innstillinger
+New Tracks… = Nye spor …

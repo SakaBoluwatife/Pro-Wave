@@ -289,7 +289,7 @@ impl WavFile {
 
 /// One recording on the writer thread.
 /// Frames per point of a recording's live waveform.
-pub const LIVE_HOP: u32 = 256;
+pub const LIVE_HOP: u32 = 64;
 /// The waveform of a recording so far, lowest and highest sample per [`LIVE_HOP`] frames. The
 /// writer thread adds to it and the UI reads it; the audio callback never touches it.
 pub type LivePeaks = std::sync::Arc<std::sync::Mutex<Vec<(f32, f32)>>>;

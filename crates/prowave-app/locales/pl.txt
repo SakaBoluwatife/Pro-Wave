@@ -727,3 +727,4 @@ Discard Recording = Odrzuć nagranie
 Recording Meter = Miernik nagrywania
 Duplicate Track = Duplikuj ścieżkę
 New Track with Same Settings = Nowa ścieżka z tymi samymi ustawieniami
+New Tracks… = Nowe ścieżki…

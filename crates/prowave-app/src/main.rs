@@ -1363,6 +1363,24 @@ fn main_window_handle(frame: &eframe::Frame) -> Option<isize> {
     }
 }
 
+/// Ends the program without the plugin files' unload code: some crash in it, with everything
+/// already done.
+fn leave_now(code: i32) -> ! {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut std::ffi::c_void;
+            fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
+        }
+        // SAFETY: both are plain Windows calls, and the handle is the one for this process.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), code as u32);
+        }
+    }
+    std::process::exit(code)
+}
+
 fn main() -> eframe::Result {
     prowave_engine::Engine::set_worker_limit(settings::worker_limit());
     prowave_engine::set_plugin_block(settings::plugin_block());
@@ -1374,7 +1392,7 @@ fn main() -> eframe::Result {
     let all_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Started by the Plugins tab to read one plugin file, where a crash costs nothing.
     if let Some(file) = plugin_scan::scan_request(&all_args) {
-        std::process::exit(plugin_scan::scan_and_print(&file));
+        leave_now(plugin_scan::scan_and_print(&file));
     }
     let bench_out = bench::requested(&all_args);
     let shots_dir = bench::shots_requested(&all_args);
@@ -1660,6 +1678,10 @@ fn main() -> eframe::Result {
     if let (Some(out), Err(e)) = (&bench_out, &result) {
         bench::report_without_window(out, &e.to_string());
         return Ok(());
+    }
+    // The window has closed and the project is dealt with.
+    if result.is_ok() {
+        leave_now(0);
     }
     result
 }

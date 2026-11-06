@@ -727,3 +727,4 @@ Discard Recording = 放弃录音
 Recording Meter = 录音电平表
 Duplicate Track = 复制轨道
 New Track with Same Settings = 使用相同设置新建轨道
+New Tracks… = 新建轨道…

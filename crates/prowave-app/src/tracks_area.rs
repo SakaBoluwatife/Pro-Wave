@@ -2806,6 +2806,9 @@ fn played_part<'a>(region: &Region, peaks: &'a [(f32, f32)]) -> &'a [(f32, f32)]
     &peaks[bin(start)..bin(end)]
 }
 
+/// How a waveform's height follows the level: below 1, quiet parts are drawn taller.
+const WAVE_CURVE: f32 = 0.6;
+
 fn draw_peaks(
     g: &Painter,
     body: Rect,
@@ -2820,14 +2823,26 @@ fn draw_peaks(
     }
     let mid = body.center().y;
     let half = body.height() * 0.48;
-    let mut x = body.left().floor();
+    // One straight line per screen pixel, on whole pixels, so none blurs or fades into a dash.
+    let ppp = g.ctx().pixels_per_point();
+    let px = 1.0 / ppp;
+    let snap_up = |y: f32| (y * ppp).floor() / ppp;
+    let snap_down = |y: f32| (y * ppp).ceil() / ppp;
+    // Quiet passages stand out without zooming in: the height follows a curve, not the level.
+    let height = |level: f32| level.abs().min(1.0).powf(WAVE_CURVE) * half;
+    let mut mesh = egui::Mesh::default();
+    let mut x = (body.left() * ppp).floor() / ppp;
     while x < body.right() {
+        if x + px <= x0 {
+            x += px;
+            continue;
+        }
         let a = (((x - x0) / full_w) * peaks.len() as f32).max(0.0) as usize;
         if a >= peaks.len() {
             break;
         }
         let b =
-            ((((x + 1.0 - x0) / full_w) * peaks.len() as f32) as usize).clamp(a + 1, peaks.len());
+            ((((x + px - x0) / full_w) * peaks.len() as f32) as usize).clamp(a + 1, peaks.len());
         let (a, b) = if reverse {
             (peaks.len() - b, peaks.len() - a)
         } else {
@@ -2836,20 +2851,13 @@ fn draw_peaks(
         let (lo, hi) = peaks[a..b]
             .iter()
             .fold((0f32, 0f32), |(l, h), p| (l.min(p.0), h.max(p.1)));
-        let (lo, hi) = (lo * gain, hi * gain);
-        g.line_segment(
-            [
-                pos2(x, mid - hi.min(1.0) * half),
-                // Silence is still a thin line.
-                pos2(
-                    x,
-                    (mid - lo.max(-1.0) * half).max(mid - hi.min(1.0) * half + 1.0),
-                ),
-            ],
-            Stroke::new(1.0, col),
-        );
-        x += 1.0;
+        let top = snap_up(mid - height(hi * gain));
+        // Silence is still a thin line, with no gaps in it.
+        let bottom = snap_down(mid + height(lo * gain)).max(top + px);
+        mesh.add_colored_rect(Rect::from_min_max(pos2(x, top), pos2(x + px, bottom)), col);
+        x += px;
     }
+    g.add(egui::Shape::mesh(mesh));
 }
 
 /// Triangle pointing down (open) or right (folded), drawn as a shape so it needs no font glyph.

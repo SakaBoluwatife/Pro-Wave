@@ -727,3 +727,4 @@ Discard Recording = Annuler l'enregistrement
 Recording Meter = Vumètre d'enregistrement
 Duplicate Track = Dupliquer la piste
 New Track with Same Settings = Nouvelle piste avec les mêmes réglages
+New Tracks… = Nouvelles pistes…

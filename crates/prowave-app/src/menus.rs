@@ -143,6 +143,7 @@ const EDIT: &[&str] = &[
 ];
 const TRACK: &[&str] = &[
     "New",
+    "New Tracks…",
     "New Aux Track",
     "Duplicate Track",
     "New Track with Same Settings",
@@ -606,6 +607,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         }
         "New from Template…"
         | "New"
+        | "New Tracks…"
         | "New Aux Track"
         | "New VCA Track"
         | "New External MIDI Track"
@@ -1054,6 +1056,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 crate::tracks_area::forget_track_indexes(s);
             }
         }
+        "New Tracks…" => s.dialogs.open_new_tracks(),
         "New Aux Track" => {
             let t = p.add_track(TrackKind::Aux);
             p.tracks[t].on_timeline = true;
@@ -1663,6 +1666,21 @@ mod tests {
             assert!(all_entries().contains(&label), "{label} is in the menus");
             apply(label, &mut Project::demo(), &mut s);
             assert_eq!(s.file_cmd.take(), Some(cmd));
+        }
+    }
+
+    /// `cargo test -p prowave-app greyed_menu -- --ignored --nocapture` lists what is greyed.
+    #[test]
+    #[ignore = "prints a list, checks nothing"]
+    fn greyed_menu_entries() {
+        let (p, mut s) = (Project::demo(), crate::UiState::new());
+        s.can_undo = true;
+        s.can_redo = true;
+        s.tracks.selected = Some((0, 0));
+        for label in all_entries() {
+            if !enabled(label, &p, &s) {
+                println!("GREY {label}");
+            }
         }
     }
 
