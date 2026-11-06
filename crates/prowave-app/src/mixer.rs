@@ -2332,8 +2332,12 @@ pub fn channel_strip(
     }
     if let StripKey::Track(i) = key {
         let icon = Rect::from_center_size(pos2(strip.center().x, r.icon + 12.0), vec2(22.0, 22.0));
-        g.rect_filled(icon, 4.0, color.gamma_multiply(0.55));
-        crate::track_icons::draw_icon(g, icon, crate::track_icons::track_icon(&p.tracks[i]));
+        crate::track_icons::draw_tinted(
+            g,
+            icon,
+            crate::track_icons::track_icon(&p.tracks[i]),
+            color,
+        );
     }
     let pan_c = pos2(strip.center().x, r.pan + 12.0);
     match key {

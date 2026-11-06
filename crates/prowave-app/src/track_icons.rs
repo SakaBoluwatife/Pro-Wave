@@ -266,6 +266,22 @@ fn rot(pts: &[(f32, f32)], pivot: (f32, f32), deg: f32, k: f32) -> Vec<(f32, f32
 }
 
 /// Draws a track icon scaled to `r`.
+/// The icon on a track: the two plain ones, the note and the waveform, take the track's colour.
+/// The illustrated ones keep their own, as they would look wrong in another.
+pub fn draw_tinted(g: &Painter, r: Rect, kind: IconKind, color: Color32) {
+    let pen = Pen {
+        g,
+        c: r.center(),
+        s: (r.width().min(r.height()) / 36.0).max(0.2),
+    };
+    let dark = rgb(color.r() / 4, color.g() / 4, color.b() / 4);
+    match kind {
+        IconKind::Note => note_tile(&pen, color, dark),
+        IconKind::Waveform => waveform(&pen, color),
+        _ => draw_icon(g, r, kind),
+    }
+}
+
 pub fn draw_icon(g: &Painter, r: Rect, kind: IconKind) {
     let pen = Pen {
         g,
@@ -273,8 +289,8 @@ pub fn draw_icon(g: &Painter, r: Rect, kind: IconKind) {
         s: (r.width().min(r.height()) / 36.0).max(0.2),
     };
     match kind {
-        IconKind::Note => note_tile(&pen),
-        IconKind::Waveform => waveform(&pen),
+        IconKind::Note => note_tile(&pen, rgb(102, 213, 109), rgb(44, 60, 47)),
+        IconKind::Waveform => waveform(&pen, rgb(0x3a, 0x80, 0xf2)),
         IconKind::DrumKit => drum_kit(&pen),
         IconKind::DrummerTile => drummer_tile(&pen),
         IconKind::Piano => piano(&pen),
@@ -298,10 +314,9 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 /// Logic's generic software-instrument icon: a flat dark green tile (rgb 44,60,47, a little
 /// wider than tall) with a flat green (rgb 102,213,109) pair of beamed eighth notes. The
 /// geometry was fitted to the pixels of a Logic Pro track icon (units: tile height = 26).
-fn note_tile(p: &Pen) {
+fn note_tile(p: &Pen, ink: Color32, back: Color32) {
     let tile = Rect::from_center_size(p.c, vec2(34.0, 26.0) * p.s);
-    p.g.rect_filled(tile, 1.6 * p.s, rgb(44, 60, 47));
-    let ink = rgb(102, 213, 109);
+    p.g.rect_filled(tile, 1.6 * p.s, back);
     // Flat anti-aliased shapes (egui feathers convex polygons).
     let fill = |pts: &[(f32, f32)]| {
         let pts: Vec<Pos2> = pts.iter().map(|(x, y)| p.p(*x, *y)).collect();
@@ -453,8 +468,7 @@ fn folder(p: &Pen) {
     );
 }
 
-fn waveform(p: &Pen) {
-    let blue = rgb(0x3a, 0x80, 0xf2);
+fn waveform(p: &Pen, blue: Color32) {
     let heights = [
         2.0f32, 4.0, 3.0, 8.0, 5.0, 13.0, 7.0, 16.0, 10.0, 6.0, 12.0, 4.0, 9.0, 3.0, 5.0, 2.0,
     ];
@@ -463,7 +477,11 @@ fn waveform(p: &Pen) {
         p.line(
             &[(x, -h), (x, *h)],
             1.4,
-            mix(blue, rgb(0x8c, 0xbc, 0xff), (1.0 - h / 16.0) * 0.6),
+            mix(
+                blue,
+                mix(blue, Color32::WHITE, 0.55),
+                (1.0 - h / 16.0) * 0.6,
+            ),
         );
     }
     p.line(&[(-17.0, 0.0), (17.0, 0.0)], 0.8, blue);

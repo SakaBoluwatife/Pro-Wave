@@ -7,7 +7,7 @@
 //! Menu entries that are not implemented yet are shown disabled.
 use crate::i18n::{tr, trf};
 use crate::model::{Project, Region, Track, TrackKind};
-use crate::track_icons::{draw_icon, track_icon};
+use crate::track_icons::track_icon;
 use crate::widgets::{
     context_click, context_menu, menu_title, popup_button, stroke, BLUE, BTN_BG, TEXT, TEXT_DIM,
 };
@@ -3172,7 +3172,7 @@ fn header(
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(hdr, 0.0, if selected { HEADER_SEL } else { HEADER_BG });
-    g.rect_filled(hdr, 0.0, p.tracks[i].color.gamma_multiply(0.14));
+    g.rect_filled(hdr, 0.0, p.tracks[i].color.gamma_multiply(0.07));
     if selected {
         let mark = Rect::from_min_size(hdr.min, vec2(3.0, hdr.height()));
         g.rect_filled(mark, 0.0, crate::theme::ACCENT_BLUE);
@@ -3199,11 +3199,21 @@ fn header(
     }
 
     let h = hdr.height();
+    // A tall row keeps its name and controls at the top, with the icon large beneath them.
+    let stacked = h >= 110.0 && opts.icon;
+    let mid = if stacked {
+        hdr.top() + 30.0
+    } else {
+        hdr.center().y
+    };
+
     // It grows with the row, and on a thin row fills what there is.
-    let icon_size = if h < 36.0 {
+    let icon_size = if stacked {
+        (h - 58.0).min(150.0)
+    } else if h < 36.0 {
         (h - 2.0).max(8.0)
     } else {
-        (h - 14.0).min(120.0)
+        (h - 14.0).min(40.0)
     };
     let indent = f32::from(p.tracks[i].indent) * INDENT_W;
     let folder = p.tracks[i].kind == TrackKind::Folder;
@@ -3220,18 +3230,26 @@ fn header(
         disclosure_triangle(g, arrow.center(), !p.tracks[i].folded, TEXT_DIM);
     }
     let icon = Rect::from_min_size(
-        pos2(
-            content_x + if folder { 14.0 } else { 0.0 },
-            hdr.center().y - icon_size / 2.0,
-        ),
+        if stacked {
+            pos2(
+                (content_x + hdr.right() - icon_size) / 2.0,
+                hdr.top() + 50.0 + (h - 56.0 - icon_size) / 2.0,
+            )
+        } else {
+            pos2(
+                content_x + if folder { 14.0 } else { 0.0 },
+                hdr.center().y - icon_size / 2.0,
+            )
+        },
         vec2(icon_size, icon_size),
     );
     if opts.icon {
-        g.rect_filled(icon, 4.0, p.tracks[i].color.gamma_multiply(0.55));
-        draw_icon(g, icon, track_icon(&p.tracks[i]));
+        crate::track_icons::draw_tinted(g, icon, track_icon(&p.tracks[i]), p.tracks[i].color);
     }
 
-    let name_x = if opts.icon {
+    let name_x = if stacked {
+        content_x + if folder { 14.0 } else { 0.0 }
+    } else if opts.icon {
         icon.right() + 10.0
     } else {
         icon.left()
@@ -3244,11 +3262,7 @@ fn header(
     } else {
         name_x
     };
-    let name_y = if compact {
-        hdr.center().y
-    } else {
-        hdr.center().y - 9.0
-    };
+    let name_y = if compact { hdr.center().y } else { mid - 9.0 };
     let lane_controls = p.tracks[i].show_auto && !folder && !compact && opts.buttons;
     let name_right = if lane_controls {
         LANE_POPUPS_W
@@ -3285,7 +3299,7 @@ fn header(
     // A folder only has M and S, which act on everything inside it, and no volume or pan.
     if folder {
         if !compact && opts.buttons {
-            folder_buttons(ui, g, p, i, name_x, hdr.center().y + 3.0, selected);
+            folder_buttons(ui, g, p, i, name_x, mid + 3.0, selected);
         }
         return (resp, Vec::new());
     }
@@ -3322,7 +3336,7 @@ fn header(
         }
     }
     if !compact && opts.buttons {
-        let by = hdr.center().y + 3.0;
+        let by = mid + 3.0;
         let mut bx = name_x;
         let size = vec2(18.0, 15.0);
         // Power: off makes it silent and rests its plugins.
@@ -3427,7 +3441,7 @@ fn header(
         let frost = Rect::from_center_size(
             pos2(
                 name_x + (if audio { 6.0 } else { 5.0 }) * 21.0 + 7.0,
-                hdr.center().y + 10.5,
+                mid + 10.5,
             ),
             vec2(14.0, 15.0),
         );
@@ -3455,7 +3469,7 @@ fn header(
     if !opts.level {
         // A dot for the level, with the fader hidden.
         let lit = peaks.0.max(peaks.1) > 0.001;
-        let dot = pos2(hdr.right() - 12.0, hdr.center().y);
+        let dot = pos2(hdr.right() - 12.0, mid);
         g.circle_filled(
             dot,
             3.0,
@@ -3472,11 +3486,7 @@ fn header(
         return (resp, Vec::new());
     }
     // Volume slider (dB, -60..+6; double-click resets to 0 dB) and pan knob, on the buttons' row.
-    let level_y = if compact {
-        hdr.center().y
-    } else {
-        hdr.center().y + 10.0
-    };
+    let level_y = if compact { hdr.center().y } else { mid + 10.0 };
     // Logic's slider: a dark pill with a grey thumb that stays inside it.
     let sl = Rect::from_min_size(
         pos2(hdr.right() - 118.0, level_y - SLIDER_H / 2.0),
