@@ -646,6 +646,7 @@ impl App {
         if let Some(cmd) = file_commands::pressed(ctx) {
             self.ui.file_cmd = Some(cmd);
         }
+        self.ui.stems.hold_playback(&mut self.project);
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
         }
@@ -827,6 +828,7 @@ impl eframe::App for App {
         // Pattern and Drummer regions follow their length and the bars under them.
         self.project.refresh_generated();
         takes::record_commands(&mut self.project, &mut self.ui);
+        self.ui.stems.hold_playback(&mut self.project);
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
             sync.set_pre_fader(self.ui.mixer.pre_fader);
