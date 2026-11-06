@@ -274,6 +274,17 @@ impl Pool {
     /// predecessors have finished, the calling thread taking part; returns when all have. `false` (nothing run) when
     /// another thread is using the pool. A panic in a job is raised here once every job has run.
     pub fn run<F: Fn(usize, usize) + Sync>(&self, graph: &Graph, job: &F) -> bool {
+        self.run_wanting(graph, job, usize::MAX)
+    }
+
+    /// As [`Self::run`], waking only enough workers for `helpers` more threads. Waking a thread
+    /// costs time, and those left asleep use none. They join later runs as they are woken.
+    pub fn run_wanting<F: Fn(usize, usize) + Sync>(
+        &self,
+        graph: &Graph,
+        job: &F,
+        helpers: usize,
+    ) -> bool {
         let sh = &*self.shared;
         if graph.n == 0 {
             return true;
@@ -297,11 +308,21 @@ impl Pool {
         // SAFETY: no worker is inside a run (the last run waited for them), so none reads the batch now.
         unsafe { *sh.batch.get() = batch };
         sh.generation.fetch_add(1, Ordering::SeqCst);
+        let awake = sh
+            .sleepers
+            .iter()
+            .filter(|s| !s.asleep.load(Ordering::SeqCst))
+            .count();
+        let mut to_wake = helpers.saturating_sub(awake);
         for s in sh.sleepers.iter() {
+            if to_wake == 0 {
+                break;
+            }
             if s.asleep.load(Ordering::SeqCst) {
                 if let Some(t) = s.thread.get() {
                     t.unpark();
                 }
+                to_wake -= 1;
             }
         }
         work(sh, graph, batch, 0);

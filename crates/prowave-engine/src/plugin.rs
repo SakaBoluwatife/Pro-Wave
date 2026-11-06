@@ -158,6 +158,10 @@ impl PluginRound {
         self.graph.set(self.slots.len(), &mut Vec::new());
     }
 
+    pub(crate) fn pool(&self) -> &crate::parallel::Pool {
+        &self.pool
+    }
+
     /// Runs every slot's block, here and on the workers. If the pool is busy (a bounce is rendering
     /// while the program plays), on this thread alone, with the same result.
     pub(crate) fn run(&self, transport: &PluginTransport) {
@@ -174,7 +178,7 @@ impl PluginRound {
             .iter()
             .filter(|s| unsafe { (*s.0).has_work() })
             .count();
-        if working < 2 || !self.pool.run(&self.graph, &one) {
+        if working < 2 || !self.pool.run_wanting(&self.graph, &one, working - 1) {
             for j in 0..slots.len() {
                 one(j, 0);
             }

@@ -367,6 +367,18 @@ impl AudioClip {
     }
 }
 
+/// The engine, for the jobs of a run of strips. See [`EngineCore::run_strips`].
+struct StripJobs(*const EngineCore);
+
+// SAFETY: jobs reach only what is theirs through it, and it does not outlive the run.
+unsafe impl Sync for StripJobs {}
+
+impl StripJobs {
+    fn get(&self) -> *const EngineCore {
+        self.0
+    }
+}
+
 /// UI -> engine messages. Heap payloads are boxed so the queue slot stays small; the old
 /// payload travels back through the garbage queue so it is freed off the audio thread.
 pub enum Command {
@@ -860,6 +872,19 @@ pub struct EngineCore {
     /// buses they feed) add up without losing the quiet ones to rounding.
     in_l: Vec<[f64; SPAN]>,
     in_r: Vec<[f64; SPAN]>,
+    /// A strip's sound for the span: before the fader, after it, and after its compensation. Strips
+    /// make these on any core, and one thread then sums them in order, so the result is the same.
+    pre_l: Vec<[f64; SPAN]>,
+    pre_r: Vec<[f64; SPAN]>,
+    post_l: Vec<[f64; SPAN]>,
+    post_r: Vec<[f64; SPAN]>,
+    done_l: Vec<[f64; SPAN]>,
+    done_r: Vec<[f64; SPAN]>,
+    /// Jobs for the strips, and whether they are worth sending to the workers.
+    complex_graph: crate::parallel::Graph,
+    aux_graph: crate::parallel::Graph,
+    parallel_complex: bool,
+    parallel_aux: bool,
     /// What the strips sum to, for the span being rendered.
     mix_l: [f64; SPAN],
     mix_r: [f64; SPAN],
@@ -1028,6 +1053,16 @@ impl EngineCore {
             strip_kind: vec![0; MAX_TRACKS],
             in_l: vec![[0.0; SPAN]; MAX_TRACKS],
             in_r: vec![[0.0; SPAN]; MAX_TRACKS],
+            pre_l: vec![[0.0; SPAN]; MAX_TRACKS],
+            pre_r: vec![[0.0; SPAN]; MAX_TRACKS],
+            post_l: vec![[0.0; SPAN]; MAX_TRACKS],
+            post_r: vec![[0.0; SPAN]; MAX_TRACKS],
+            done_l: vec![[0.0; SPAN]; MAX_TRACKS],
+            done_r: vec![[0.0; SPAN]; MAX_TRACKS],
+            complex_graph: crate::parallel::Graph::with_capacity(MAX_TRACKS),
+            aux_graph: crate::parallel::Graph::with_capacity(MAX_TRACKS),
+            parallel_complex: false,
+            parallel_aux: false,
             mix_l: [0.0; SPAN],
             mix_r: [0.0; SPAN],
             beats: [0.0; SPAN],
@@ -1460,6 +1495,28 @@ impl EngineCore {
         // An Aux that feeds another runs before it. In place: this is the audio thread.
         let routes = &self.routes;
         self.aux.sort_unstable_by_key(|a| routes[*a as usize].rank);
+        // Worth the workers only with real work on at least two strips: a strip of plugins alone
+        // just copies, as its plugins already ran. Side-chains read other strips as they go.
+        let any_side = self.side_source.iter().any(|s| *s);
+        let chains = &self.chains;
+        let heavy = |list: &[u16]| {
+            list.iter()
+                .filter(|t| {
+                    chains[**t as usize]
+                        .as_ref()
+                        .is_some_and(|c| !c.fx.is_empty())
+                })
+                .count()
+        };
+        let (heavy_complex, heavy_aux) = (heavy(&self.complex), heavy(&self.aux));
+        let one_rank = match (self.aux.first(), self.aux.last()) {
+            (Some(a), Some(b)) => routes[*a as usize].rank == routes[*b as usize].rank,
+            _ => false,
+        };
+        self.parallel_complex = !any_side && heavy_complex >= 2;
+        self.parallel_aux = !any_side && one_rank && heavy_aux >= 2;
+        self.complex_graph.set(self.complex.len(), &mut Vec::new());
+        self.aux_graph.set(self.aux.len(), &mut Vec::new());
     }
 
     /// Keeps what plugins are told of the song current: the position every frame, the rest, which
@@ -1548,26 +1605,47 @@ impl EngineCore {
         }
     }
 
-    /// Runs one strip: effects, delay compensation, pre-fader sends, fader and pan,
-    /// post-fader sends, and into the mix.
-    #[inline]
-    fn run_strip(&mut self, t: usize, n: usize) {
-        let route = self.routes[t];
-        let audible = self.track_audible[t];
-        let runs = audible || self.side_source[t];
-        let ramped = self.auto_any && self.auto_on[t];
+    /// One strip's sound for the span: effects, compensation, fader. Touches only what is this
+    /// strip's, so strips can do this at the same time; the buses are read, and written only later.
+    ///
+    /// # Safety
+    /// No other thread may be running this for the same `t`, and nothing else may touch the engine
+    /// meanwhile.
+    unsafe fn strip_sound(this: &Self, t: usize, n: usize) {
+        // SAFETY for all of these: the place of strip `t` in each list, which the caller gives to
+        // this call alone.
+        macro_rules! mine {
+            ($field:ident) => {
+                unsafe { &mut *this.$field.as_ptr().cast_mut().add(t) }
+            };
+        }
+        let route = &this.routes[t];
+        let audible = this.track_audible[t];
+        let runs = audible || this.side_source[t];
+        let ramped = this.auto_any && this.auto_on[t];
+        let pre_fader = this.pre_fader_meter;
+        let transport = &this.transport;
+        let (in_l, in_r) = (mine!(in_l), mine!(in_r));
+        let (gain_l, gain_r) = (mine!(track_gain_l), mine!(track_gain_r));
+        let (ramp_l, ramp_r) = (mine!(track_ramp_l), mine!(track_ramp_r));
+        let (pk_l, pk_r) = (mine!(track_pk_l), mine!(track_pk_r));
+        let (pre_l, pre_r) = (mine!(pre_l), mine!(pre_r));
+        let (post_l, post_r) = (mine!(post_l), mine!(post_r));
+        let (done_l, done_r) = (mine!(done_l), mine!(done_r));
+        let (instrument, chain) = (mine!(instruments), mine!(chains));
+        let (plugins, pdc) = (mine!(plugins), mine!(pdc));
         for j in 0..n {
             if ramped {
-                self.track_gain_l[t] = self.track_ramp_l[t].next();
-                self.track_gain_r[t] = self.track_ramp_r[t].next();
+                *gain_l = ramp_l.next();
+                *gain_r = ramp_r.next();
             }
-            let (mut xl, mut xr) = (self.in_l[t][j], self.in_r[t][j]);
-            self.in_l[t][j] = 0.0;
-            self.in_r[t][j] = 0.0;
+            let (mut xl, mut xr) = (in_l[j], in_r[j]);
+            in_l[j] = 0.0;
+            in_r[j] = 0.0;
             if route.bus_in > 0 {
                 let b = route.bus_in as usize - 1;
-                xl += self.bus_l[b][j];
-                xr += self.bus_r[b][j];
+                xl += this.bus_l[b][j];
+                xr += this.bus_r[b][j];
             }
             if !runs {
                 xl = 0.0;
@@ -1575,80 +1653,141 @@ impl EngineCore {
             }
             // The effects work in 32 bits.
             let (mut xl, mut xr) = (xl as f32, xr as f32);
-            if let Some(instrument) = self.instruments[t].as_mut() {
+            if let Some(instrument) = instrument.as_mut() {
                 if let Some(source) = instrument.side_source() {
                     let source = source as usize;
-                    instrument.feed_side(self.side_l[source][j], self.side_r[source][j]);
+                    instrument.feed_side(this.side_l[source][j], this.side_r[source][j]);
                 }
-                let (il, ir) = instrument.process(0.0, 0.0, &self.transport);
+                let (il, ir) = instrument.process(0.0, 0.0, transport);
                 // It goes on sounding while muted, so that it can be heard again at once.
                 if runs {
                     xl += il;
                     xr += ir;
                 }
             }
-            if let Some(chain) = self.chains[t].as_mut() {
+            if let Some(chain) = chain.as_mut() {
                 (xl, xr) = chain.process(xl, xr);
             }
-            for plugin in self.plugins[t].iter_mut().flatten() {
+            for plugin in plugins.iter_mut().flatten() {
                 if let Some(source) = plugin.side_source() {
                     let source = source as usize;
-                    plugin.feed_side(self.side_l[source][j], self.side_r[source][j]);
+                    plugin.feed_side(this.side_l[source][j], this.side_r[source][j]);
                 }
-                (xl, xr) = plugin.process(xl, xr, &self.transport);
+                (xl, xr) = plugin.process(xl, xr, transport);
             }
-            // Before the delay compensation: that lines the strip up with the slowest in the mix, which
-            // would make the key later than the sound it is keying.
-            self.side_l[t][j] = xl;
-            self.side_r[t][j] = xr;
+            // Before the delay compensation: that lines the strip up with the slowest in the mix,
+            // which would make the key later than the sound it is keying.
+            // SAFETY: this strip's place, and while side-chains are in use only one thread runs.
+            unsafe {
+                (*this.side_l.as_ptr().cast_mut().add(t))[j] = xl;
+                (*this.side_r.as_ptr().cast_mut().add(t))[j] = xr;
+            }
             if !audible {
                 xl = 0.0;
                 xr = 0.0;
             }
-            if let Some(pdc) = self.pdc[t].as_mut() {
+            if let Some(pdc) = pdc.as_mut() {
                 (xl, xr) = pdc.delay_before(xl, xr);
             }
             let (xl, xr) = (xl as f64, xr as f64);
+            pre_l[j] = xl;
+            pre_r[j] = xr;
+            let (yl, yr) = (xl * *gain_l as f64, xr * *gain_r as f64);
+            post_l[j] = yl;
+            post_r[j] = yr;
             if audible {
-                for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
-                    let g = send_gain(s.level) as f64;
-                    self.add_to_bus(s.bus, j, xl * g, xr * g);
-                }
-            }
-            let (yl, yr) = (
-                xl * self.track_gain_l[t] as f64,
-                xr * self.track_gain_r[t] as f64,
-            );
-            if audible {
-                for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
-                    let g = send_gain(s.level) as f64;
-                    self.add_to_bus(s.bus, j, yl * g, yr * g);
-                }
-                let (ml, mr) = if self.pre_fader_meter {
-                    (xl, xr)
-                } else {
-                    (yl, yr)
-                };
-                self.track_pk_l[t] = self.track_pk_l[t].max(ml.abs() as f32);
-                self.track_pk_r[t] = self.track_pk_r[t].max(mr.abs() as f32);
+                let (ml, mr) = if pre_fader { (xl, xr) } else { (yl, yr) };
+                *pk_l = pk_l.max(ml.abs() as f32);
+                *pk_r = pk_r.max(mr.abs() as f32);
             }
             // The compensation after the fader keeps running while the strip is silent, so its
             // timing is right the moment it is heard.
-            let (yl, yr) = match self.pdc[t].as_mut() {
+            let (yl, yr) = match pdc.as_mut() {
                 Some(pdc) => {
                     let (a, b) = pdc.delay_after(yl as f32, yr as f32);
                     (a as f64, b as f64)
                 }
                 None => (yl, yr),
             };
-            if audible {
-                if route.output > 0 {
-                    self.add_to_bus(route.output, j, yl, yr);
-                } else {
-                    self.mix_l[j] += yl;
-                    self.mix_r[j] += yr;
-                }
+            done_l[j] = yl;
+            done_r[j] = yr;
+        }
+    }
+
+    /// Where one strip's sound goes: its sends, then its output.
+    fn strip_route(&mut self, t: usize, n: usize) {
+        if !self.track_audible[t] {
+            return;
+        }
+        let route = self.routes[t];
+        for j in 0..n {
+            for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
+                let g = send_gain(s.level) as f64;
+                let (l, r) = (self.pre_l[t][j] * g, self.pre_r[t][j] * g);
+                self.add_to_bus(s.bus, j, l, r);
             }
+            for s in route.sends.iter().filter(|s| s.bus > 0 && !s.pre) {
+                let g = send_gain(s.level) as f64;
+                let (l, r) = (self.post_l[t][j] * g, self.post_r[t][j] * g);
+                self.add_to_bus(s.bus, j, l, r);
+            }
+            let (yl, yr) = (self.done_l[t][j], self.done_r[t][j]);
+            if route.output > 0 {
+                self.add_to_bus(route.output, j, yl, yr);
+            } else {
+                self.mix_l[j] += yl;
+                self.mix_r[j] += yr;
+            }
+        }
+    }
+
+    /// Runs the strips of a list: their sound on as many cores as help, then their routing here, in
+    /// order, so that the sums come out the same however the work was shared.
+    fn run_strips(&mut self, aux: bool, n: usize) {
+        let count = if aux {
+            self.aux.len()
+        } else {
+            self.complex.len()
+        };
+        if count == 0 {
+            return;
+        }
+        let wide = if aux {
+            self.parallel_aux
+        } else {
+            self.parallel_complex
+        };
+        let mut shared = false;
+        if wide && count > 1 {
+            if let Some(round) = self.plugin_round.as_ref() {
+                let core = StripJobs(self as *const Self);
+                let one = |j: usize, _lane: usize| {
+                    // SAFETY: the graph hands each job out once, so each strip to one thread, and
+                    // the engine does nothing else until the run ends.
+                    unsafe {
+                        let this = &*core.get();
+                        let list = if aux { &this.aux } else { &this.complex };
+                        Self::strip_sound(this, list[j] as usize, n);
+                    }
+                };
+                let graph = if aux {
+                    &self.aux_graph
+                } else {
+                    &self.complex_graph
+                };
+                shared = round.pool().run_wanting(graph, &one, count - 1);
+            }
+        }
+        if !shared {
+            for k in 0..count {
+                let t = if aux { self.aux[k] } else { self.complex[k] } as usize;
+                // SAFETY: one thread, one strip at a time.
+                unsafe { Self::strip_sound(self, t, n) };
+            }
+        }
+        for k in 0..count {
+            let t = if aux { self.aux[k] } else { self.complex[k] } as usize;
+            self.strip_route(t, n);
         }
     }
 
@@ -1736,12 +1875,8 @@ impl EngineCore {
             self.gain_ran[t] = ramped;
         }
         self.dirty.clear();
-        for k in 0..self.complex.len() {
-            self.run_strip(self.complex[k] as usize, n);
-        }
-        for k in 0..self.aux.len() {
-            self.run_strip(self.aux[k] as usize, n);
-        }
+        self.run_strips(false, n);
+        self.run_strips(true, n);
         // An automated strip with no sound this span still moves along its lane.
         if self.auto_any {
             for k in 0..self.auto_tracks.len() {
@@ -4249,12 +4384,18 @@ mod tests {
                 route: second
             })
             .is_ok());
-        assert!(tx
-            .push(Command::SetInserts {
-                track: 3,
-                chain: effect(FxKind::ChannelEq, &[])
-            })
-            .is_ok());
+        for track in [0, 3, 4] {
+            let chain = effect(FxKind::ChannelEq, &[]);
+            assert!(tx.push(Command::SetInserts { track, chain }).is_ok());
+        }
+        // With worker threads, as a session with plugins has.
+        if std::env::var_os("PROWAVE_GOLDEN_POOL").is_some() {
+            let pool = crate::parallel::Pool::new(3, None);
+            let round = Box::new(crate::plugin::PluginRound::new(pool, 8));
+            assert!(tx.push(Command::SetPluginRound(round)).is_ok());
+            e.process(&mut []);
+            assert!(e.parallel_complex, "this is to test the workers");
+        }
         let plugin = PluginSlot::new(Box::new(FakePlugin {
             gain: 0.5,
             ..FakePlugin::default()
