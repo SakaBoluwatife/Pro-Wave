@@ -1,0 +1,43 @@
+# Flatpak manifest. It repackages the release binary built by CI (no compiling inside the
+# sandbox), so it is meant for a self-hosted .flatpak bundle, not Flathub. Expects the binary
+# at ../../target/release/ovrtone relative to this file:
+#   flatpak-builder --user --install-deps-from=flathub --repo=repo build dist/linux/com.bankzsoundlab.Ovrtone.yml
+#   flatpak build-bundle repo ovrtone.flatpak com.bankzsoundlab.Ovrtone
+app-id: com.bankzsoundlab.Ovrtone
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: ovrtone
+finish-args:
+  - --share=ipc
+  # The update check and download talk to GitHub; without this the sandbox has no DNS.
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Audio: the runtime's ALSA library is routed to PulseAudio/PipeWire through this socket.
+  - --socket=pulseaudio
+  # Real-time priority for the audio thread, as on the host (rtkit).
+  - --system-talk-name=org.freedesktop.RealtimeKit1
+  # Projects and audio files can live anywhere in the home folder, and drag-and-drop from
+  # the file manager passes plain paths.
+  - --filesystem=home
+modules:
+  - name: ovrtone
+    buildsystem: simple
+    build-commands:
+      - install -D -m 755 ovrtone /app/bin/ovrtone
+      # Flatpak requires the desktop file, icon and MIME file to be named after the app id.
+      - install -D -m 644 ovrtone.desktop /app/share/applications/com.bankzsoundlab.Ovrtone.desktop
+      - sed -i 's/^Icon=.*/Icon=com.bankzsoundlab.Ovrtone/' /app/share/applications/com.bankzsoundlab.Ovrtone.desktop
+      - install -D -m 644 ovrtone.png /app/share/icons/hicolor/512x512/apps/com.bankzsoundlab.Ovrtone.png
+      - install -D -m 644 ovrtone-mime.xml /app/share/mime/packages/com.bankzsoundlab.Ovrtone.xml
+    sources:
+      - type: file
+        path: ../../target/release/ovrtone
+      - type: file
+        path: ovrtone.desktop
+      - type: file
+        path: ovrtone.png
+      - type: file
+        path: ovrtone-mime.xml

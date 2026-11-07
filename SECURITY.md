@@ -1,7 +1,7 @@
-# SECURITY.md — ProWave 
+# SECURITY.md — Ovrtone 
 
 ## 1. Overview
-`prowave` is a DAW that handles untrusted inputs by design: audio files from internet (wav, aiff, caf, mp3, flac, Apple Loops), MIDI files, third-party plugins (CLAP/VST3/AU), project files (`.prowave`, optional `.logicx` import), IRs for Space Designer, sampler instruments (SFZ, EXS), and user patches. A compromise = code execution with mic access, disk access, network exfiltration.
+`ovrtone` is a DAW that handles untrusted inputs by design: audio files from internet (wav, aiff, caf, mp3, flac, Apple Loops), MIDI files, third-party plugins (CLAP/VST3/AU), project files (`.ovrtone`, optional `.logicx` import), IRs for Space Designer, sampler instruments (SFZ, EXS), and user patches. A compromise = code execution with mic access, disk access, network exfiltration.
 
 Our posture: **Rust memory safety is necessary but not sufficient.** We need sandboxing, parsing guards, and supply chain integrity.
 
@@ -11,7 +11,7 @@ Our posture: **Rust memory safety is necessary but not sufficient.** We need san
 | :--- | :--- | :--- | :--- |
 | **Malicious audio file** (wav with huge chunk, mp3 with XXE, Apple Loop with malformed metadata, IR with huge size) | Internet download, Loop Browser | RCE via decoder, DoS (OOM), zip bomb | `symphonia` (Rust, no C FFI), chunk size limits, `rkyv` validation, IR size limit 500MB |
 | **Malicious plugin** (cracked VST, CLAP with RCE) | Cracked plugins, malicious CLAP | RCE, keylogging, mic exfiltration, ransomware | Out-of-process sandbox, no FS/network by default, explicit user consent for FS access, quarantine |
-| **Malicious project file** (.prowave zip slip, .logicx import with path traversal, sampler instrument with path traversal) | Shared project from internet, collab | RCE via deserialization, path traversal, overwrite `~/.ssh/` | Schema validation, Zip Slip check (`path.starts_with(canonical_project_dir)`), no `unsafe` deserialization, limit file count |
+| **Malicious project file** (.ovrtone zip slip, .logicx import with path traversal, sampler instrument with path traversal) | Shared project from internet, collab | RCE via deserialization, path traversal, overwrite `~/.ssh/` | Schema validation, Zip Slip check (`path.starts_with(canonical_project_dir)`), no `unsafe` deserialization, limit file count |
 | **Malicious MIDI file** (SysEx bomb, huge file) | MIDI file import | DoS, RCE via Scripter (Rhai) | SysEx size limit, Rhai sandbox (no FS/network), MIDI file size limit 100MB |
 | **Supply chain** (crates.io compromise) | Malicious crate | Backdoor | `cargo-deny`, `cargo-vet`, pinned deps, `Cargo.lock` committed, `deny.toml` bans build.rs network |
 | **WASM escape** (XSS via project name, OPFS leak) | Browser context, shared project | XSS, OPFS leak, SharedArrayBuffer leak | CSP `script-src 'self' wasm-unsafe-eval`, COOP/COEP headers, no eval, worklet isolation, sanitize project names |
@@ -20,9 +20,9 @@ Our posture: **Rust memory safety is necessary but not sufficient.** We need san
 
 ### 3.1 Rust-Specific
 - Workspace root: `#![forbid(unsafe_code)]` by default. Allow `unsafe` ONLY in:
-  - `prowave-engine/src/driver/cpal_shim.rs` (audio driver FFI)
-  - `prowave-plugin-host/src/ffi/clap.rs`, `vst3.rs`, `au.rs` (plugin FFI)
-  - `prowave-dsp/src/simd.rs` (SIMD intrinsics)
+  - `ovrtone-engine/src/driver/cpal_shim.rs` (audio driver FFI)
+  - `ovrtone-plugin-host/src/ffi/clap.rs`, `vst3.rs`, `au.rs` (plugin FFI)
+  - `ovrtone-dsp/src/simd.rs` (SIMD intrinsics)
   - Each `unsafe` block must have `// SAFETY:` comment + `cargo miri` test + comment explaining why safe
 - Forbid `unwrap()` / `expect()` in engine, dsp, instruments, plugin-host: `clippy::unwrap_used` = deny, `clippy::expect_used` = deny
 - All audio buffers validated: `debug_assert!(buffer.len() <= MAX_BLOCK_SIZE)` where `MAX_BLOCK_SIZE = 8192`
@@ -46,8 +46,8 @@ fn decode(path: &Path) -> Result<AudioBuffer> {
 }
 ```
 - Use `symphonia` (pure Rust) over `ffmpeg` (C FFI)
-- Fuzz all parsers with `cargo fuzz` — corpus in `/fuzz/corpora/` (wav, aiff, caf, mp3, flac, midi, prowave project)
-- Zip projects `.prowave`: Prevent Zip Slip via `path.starts_with(canonical_project_dir)` + canonicalize + reject `..` + limit file count to `MAX_PROJECT_FILES`
+- Fuzz all parsers with `cargo fuzz` — corpus in `/fuzz/corpora/` (wav, aiff, caf, mp3, flac, midi, ovrtone project)
+- Zip projects `.ovrtone`: Prevent Zip Slip via `path.starts_with(canonical_project_dir)` + canonicalize + reject `..` + limit file count to `MAX_PROJECT_FILES`
 - Apple Loops: Parse metadata with `symphonia` + custom Apple Loops parser (fuzzed)
 - Sampler instruments (SFZ, EXS): Parse with size limits, path traversal check for sample references
 
@@ -59,7 +59,7 @@ anything the user can, and its crash ends the program. A plugin that crashes whi
 blocked until Rescan. Only load plugins you trust.
 
 ```
-[ ProWave Main Process ] <--SHM ringbuf (rtrb) + IPC (postcard)--> [ Plugin Sandbox Process per plugin ]
+[ Ovrtone Main Process ] <--SHM ringbuf (rtrb) + IPC (postcard)--> [ Plugin Sandbox Process per plugin ]
                                                                         seccomp-bpf (Linux) + landlock
                                                                         seatbelt (macOS) + hardened runtime
                                                                         AppContainer + Low IL (Windows)
@@ -70,7 +70,7 @@ blocked until Rescan. Only load plugins you trust.
 - **Linux:** `seccomp` filter (allow only read/write/futex/mmap), `landlock` FS restriction, optional separate UID, no network
 - **macOS:** `sandbox-exec` profile, hardened runtime + `com.apple.security.app-sandbox` for sandbox process only, no JIT in main, JIT only in sandbox if needed for VST3
 - **Windows:** Low integrity level + `JOB_OBJECT_SECURITY_NO_GC` + no admin, no network
-- Each plugin crash is isolated: engine detects via heartbeat timeout (2s), restarts plugin, project keeps playing, logs to `~/.prowave-studio/logs/sandbox.log`
+- Each plugin crash is isolated: engine detects via heartbeat timeout (2s), restarts plugin, project keeps playing, logs to `~/.ovrtone/logs/sandbox.log`
 - Plugin scanner runs in sandbox too, with 5s timeout per plugin. Quarantine on 3 repeated crashes, stored in `quarantine.json`
 - Permissions UI: Like Logic, user must approve FS access for sample-based plugins (Kontakt, Sampler with external samples). Explicit prompt: "Vital wants to access ~/Documents - Allow? Deny? Allow Once?" with Remember checkbox
 
@@ -118,24 +118,24 @@ Logic's Scripter uses JavaScript. We will use Rhai (embedded, Rust) for MIDI FX 
 
 ## 6. Cryptography & Project Files
 
-- Project file `.prowave` is a zip: `project.json` (rkyv + serde), `media/` (wavs), `sampler_instruments/` (SFZ/EXS), `irs/` (Space Designer IRs), `bounces/`, `plugins.json` (plugin states)
+- Project file `.ovrtone` is a zip: `project.json` (rkyv + serde), `media/` (wavs), `sampler_instruments/` (SFZ/EXS), `irs/` (Space Designer IRs), `bounces/`, `plugins.json` (plugin states)
 - `project.json` signed with Ed25519 if user enables signing (prevents tampering in collab, verify on load)
 - No encryption at rest for v1.0 (DAW projects are large, encryption overhead high), but media can be optionally encrypted via `age` crate for sharing (password-protected bounce)
 - Keychain: Use OS keychain for storing plugin licenses? No, let plugins handle themselves, we don't store licenses
 
 ## 7. Privacy
 
-- No telemetry by default. Opt-in only, with explicit dialog on first run: "Help improve ProWave by sending anonymous usage stats? No/Yes"
+- No telemetry by default. Opt-in only, with explicit dialog on first run: "Help improve Ovrtone by sending anonymous usage stats? No/Yes"
 - If opt-in: Use `metrics` crate, no PII, no audio data, only counts (e.g., "Channel EQ used", "Project with 24 tracks bounced")
 - Mic access indicator: Always show red dot + "● REC" when engine is capturing, like Logic
-- No network calls from engine. Update check is separate process (`prowave-updater`) + opt-in, checks GitHub releases
+- No network calls from engine. Update check is separate process (`ovrtone-updater`) + opt-in, checks GitHub releases
 - GDPR: No data collection without consent, data deletion request honored
 
 ## 8. Vulnerability Disclosure
 
 **Please report vulnerabilities responsibly.**
 
-Email: security@prowave.studio (replace with real when repo public)
+Email: security@ovrtone.studio (replace with real when repo public)
 Or open a private security advisory on GitHub: Security tab -> Report a vulnerability
 
 We follow 90-day disclosure (Google Project Zero style):
@@ -146,7 +146,7 @@ We follow 90-day disclosure (Google Project Zero style):
 
 ### What to include in report:
 - Crate + version, OS + version, Rust version, repro file (wav/midi/project) minimal, steps to reproduce
-- If plugin-related: plugin name + version, OS, sandbox logs from `~/.prowave-studio/logs/sandbox.log` + `quarantine.json`
+- If plugin-related: plugin name + version, OS, sandbox logs from `~/.ovrtone/logs/sandbox.log` + `quarantine.json`
 - If WASM-related: browser + version, console logs, project file
 - CVSS score if known
 

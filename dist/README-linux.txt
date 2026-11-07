@@ -1,7 +1,7 @@
-Pro Wave — Linux x86_64 build
+Ovrtone — Linux x86_64 build
 =============================
 
-Pro Wave is a DAW (music production app) in the style of Apple Logic Pro, written in
+Ovrtone is a DAW (music production app) in the style of Apple Logic Pro, written in
 Rust. This is an early development build: expect missing features and rough edges.
 
 NOTE: this build has not been tested on a real Linux machine yet (it was compiled either
@@ -51,7 +51,7 @@ What each one is for:
   fontconfig              finding system fonts
   dbus + xdg-desktop-portal  the Open / Save file dialogs
   zenity                  fallback for the Open / Save dialogs when no desktop portal is
-                          running (the "Save changes?" question is drawn by ProWave itself)
+                          running (the "Save changes?" question is drawn by Ovrtone itself)
   Vulkan / EGL            drawing the interface on the GPU
 
 On KDE you can use xdg-desktop-portal-kde instead of -gtk for KDE-style file dialogs.
@@ -60,18 +60,18 @@ On KDE you can use xdg-desktop-portal-kde instead of -gtk for KDE-style file dia
 3. Run it
 ---------
 
-  tar -xzf prowave-linux-x86_64.tar.gz
-  cd prowave-linux-x86_64
-  ./prowave
+  tar -xzf ovrtone-linux-x86_64.tar.gz
+  cd ovrtone-linux-x86_64
+  ./ovrtone
 
-If you get "Permission denied":  chmod +x prowave
+If you get "Permission denied":  chmod +x ovrtone
 
 Command-line options:
-  ./prowave song.prowave             open a project
-  ./prowave drums.wav bass.flac      start a new project and import audio files
-  ./prowave song.prowave vocal.wav   open a project and import files into it
-  ./prowave --play                   start playing right away
-  ./prowave --piano                  open the Piano Roll on start
+  ./ovrtone song.ovrtone             open a project
+  ./ovrtone drums.wav bass.flac      start a new project and import audio files
+  ./ovrtone song.ovrtone vocal.wav   open a project and import files into it
+  ./ovrtone --play                   start playing right away
+  ./ovrtone --piano                  open the Piano Roll on start
 
 Audio files supported: WAV, AIFF, FLAC. (MP3 and CAF are not supported yet.)
 You can also drag audio files from your file manager onto the window.
@@ -84,34 +84,34 @@ The easy way (no root needed): from the unpacked folder run
 
   ./install.sh
 
-It copies the program to ~/.local/bin, adds Pro Wave to your app menu with an icon, and
-makes double-clicking a .prowave file open it. Undo it with:  ./install.sh --uninstall
-If your terminal can't find "prowave" afterwards, add ~/.local/bin to your PATH.
+It copies the program to ~/.local/bin, adds Ovrtone to your app menu with an icon, and
+makes double-clicking a .ovrtone file open it. Undo it with:  ./install.sh --uninstall
+If your terminal can't find "ovrtone" afterwards, add ~/.local/bin to your PATH.
 
-Files in this package: prowave (program), install.sh, prowave-studio.desktop (menu entry),
-prowave.png (icon), prowave-mime.xml (.prowave file type).
+Files in this package: ovrtone (program), install.sh, ovrtone.desktop (menu entry),
+ovrtone.png (icon), ovrtone-mime.xml (.ovrtone file type).
 
 Other package formats (same program, from the same release page):
 
   Debian / Ubuntu / Mint (.deb, installs to /usr):
-    sudo apt install ./prowave-studio_<version>_amd64.deb
-    remove with:  sudo apt remove prowave-studio
+    sudo apt install ./ovrtone_<version>_amd64.deb
+    remove with:  sudo apt remove ovrtone
 
   Fedora / openSUSE / RHEL 9+ (.rpm):
-    sudo dnf install ./prowave-studio-<version>-1.x86_64.rpm     (openSUSE: sudo zypper install ...)
-    remove with:  sudo dnf remove prowave-studio
+    sudo dnf install ./ovrtone-<version>-1.x86_64.rpm     (openSUSE: sudo zypper install ...)
+    remove with:  sudo dnf remove ovrtone
 
   AppImage (any distribution, nothing to install):
-    chmod +x Pro_Wave-<version>-x86_64.AppImage
-    ./Pro_Wave-<version>-x86_64.AppImage
+    chmod +x Ovrtone-<version>-x86_64.AppImage
+    ./Ovrtone-<version>-x86_64.AppImage
     If it says FUSE is missing, install libfuse2 (Ubuntu 24.04+: libfuse2t64) or run it with
     APPIMAGE_EXTRACT_AND_RUN=1. It uses the system's audio and graphics libraries (section 2).
 
   Flatpak (sandboxed; needs Flathub for the runtime):
-    flatpak install --user ./prowave-studio-<version>-x86_64.flatpak
-    flatpak run studio.prowave.Studio
+    flatpak install --user ./ovrtone-<version>-x86_64.flatpak
+    flatpak run com.bankzsoundlab.Ovrtone
     The sandbox can read and write your home folder and plays sound through PulseAudio/
-    PipeWire. Remove with:  flatpak uninstall studio.prowave.Studio
+    PipeWire. Remove with:  flatpak uninstall com.bankzsoundlab.Ovrtone
 
 ----------------------------------------------------------------------------------------------
 
@@ -128,17 +128,17 @@ Linux uses Ctrl where macOS uses Cmd:
 ------------------
 
 The window doesn't open / GPU errors:
-  Force OpenGL instead of Vulkan:     WGPU_BACKEND=gl ./prowave
-  Use the integrated GPU on laptops:  WGPU_POWER_PREF=low ./prowave
+  Force OpenGL instead of Vulkan:     WGPU_BACKEND=gl ./ovrtone
+  Use the integrated GPU on laptops:  WGPU_POWER_PREF=low ./ovrtone
   Check Vulkan works:                 vulkaninfo --summary   (package vulkan-tools)
 
 Wayland problems (blurry, crashes, missing title bar or icon):
-  Run it through XWayland instead:    WAYLAND_DISPLAY= ./prowave
+  Run it through XWayland instead:    WAYLAND_DISPLAY= ./ovrtone
 
 No sound:
-  - If ProWave can't open any audio device it still starts, and shows "No sound: ..." in the
+  - If Ovrtone can't open any audio device it still starts, and shows "No sound: ..." in the
     menu bar. It tries the default device first, then every other output device.
-  - ProWave plays to ALSA's "default" device.
+  - Ovrtone plays to ALSA's "default" device.
   - PipeWire (Ubuntu 22.10+, Fedora 34+): install pipewire-alsa (Debian/Ubuntu/Arch) or
     pipewire-alsa / alsa-plugins-pipewire (Fedora) so ALSA goes through PipeWire.
   - PulseAudio: install libasound2-plugins (Debian/Ubuntu) or alsa-plugins-pulseaudio
@@ -147,18 +147,18 @@ No sound:
   - JACK is not supported directly yet; use PipeWire's JACK/ALSA bridge.
 
 Real-time audio priority (fewer dropouts):
-  ProWave asks Linux to run its audio thread with real-time priority. This needs permission:
+  Ovrtone asks Linux to run its audio thread with real-time priority. This needs permission:
   - Easiest: join the audio group:  sudo usermod -aG audio $USER   (then log out and in)
     and make sure /etc/security/limits.d/ gives that group rtprio (Ubuntu Studio, Fedora's
     realtime-setup, and Arch's realtime-privileges package do this for you).
   - Or run under a system with rtkit (most desktops with PipeWire/PulseAudio have it).
-  - If the system refuses, ProWave still plays at normal priority and logs a warning
+  - If the system refuses, Ovrtone still plays at normal priority and logs a warning
     (see RUST_LOG=debug); you may just hear more crackles under heavy load.
   Check your limit:  ulimit -r   (a value of 0 means real-time is not allowed)
 
 Crackles / dropouts:
   Watch the CPU meter in the LCD display. Close other heavy apps. On PipeWire you can ask
-  for a bigger buffer:  PIPEWIRE_LATENCY=512/48000 ./prowave
+  for a bigger buffer:  PIPEWIRE_LATENCY=512/48000 ./ovrtone
 
 Open/Save dialog doesn't appear:
   Install xdg-desktop-portal plus a backend (-gtk, -kde or -gnome) and log out and back in.
@@ -169,20 +169,20 @@ Open/Save dialog doesn't appear:
 
 "error while loading shared libraries: libXXX.so":
   Install the missing library from section 2. To see everything that's missing:
-    ldd ./prowave | grep "not found"
+    ldd ./ovrtone | grep "not found"
 
 
 7. Logs, crash reports and temporary files
 ------------------------------------------
 
-Logs go to the terminal. More detail:   RUST_LOG=debug ./prowave
-Only ProWave's own messages:            RUST_LOG=prowave=debug ./prowave
+Logs go to the terminal. More detail:   RUST_LOG=debug ./ovrtone
+Only Ovrtone's own messages:            RUST_LOG=ovrtone=debug ./ovrtone
 
-If ProWave crashes, it prints the path of a crash report (a .toml file in /tmp, or in
+If Ovrtone crashes, it prints the path of a crash report (a .toml file in /tmp, or in
 $TMPDIR if set). Please attach that file when reporting the problem.
 
-When you open a .prowave project, its audio is unpacked to /tmp/prowave-media/<process id>/.
-This folder is removed when ProWave closes; leftovers from crashes are removed automatically
+When you open a .ovrtone project, its audio is unpacked to /tmp/ovrtone-media/<process id>/.
+This folder is removed when Ovrtone closes; leftovers from crashes are removed automatically
 after 7 days.
 
 
@@ -206,5 +206,5 @@ Please include:
   - Desktop and session type:   echo $XDG_CURRENT_DESKTOP $XDG_SESSION_TYPE
   - GPU:                        lspci | grep -i -E "vga|3d"
   - Audio system:               pactl info | grep "Server Name"   (PipeWire or PulseAudio)
-  - The terminal output of:     RUST_LOG=debug ./prowave
+  - The terminal output of:     RUST_LOG=debug ./ovrtone
   - The crash report file, if there was one

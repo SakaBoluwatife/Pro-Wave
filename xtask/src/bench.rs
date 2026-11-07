@@ -1,6 +1,6 @@
 //! `cargo xtask bench`: builds the release app and checks it against the lightweight targets
-//! in LINUX-MACOS-LIGHTWEIGHT.md §1 and §6. The app measures itself (`prowave --bench <file>`,
-//! see crates/prowave-app/src/bench.rs); this side builds it, runs it, and compares.
+//! in LINUX-MACOS-LIGHTWEIGHT.md §1 and §6. The app measures itself (`ovrtone --bench <file>`,
+//! see crates/ovrtone-app/src/bench.rs); this side builds it, runs it, and compares.
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -113,9 +113,9 @@ fn evaluate(report: &str, window_advisory: bool) -> (Vec<String>, bool) {
 }
 
 pub fn bench(root: &Path) -> bool {
-    println!("\n==> bench: cargo build --release -p prowave-app");
+    println!("\n==> bench: cargo build --release -p ovrtone-app");
     let built = Command::new("cargo")
-        .args(["build", "--release", "-p", "prowave-app"])
+        .args(["build", "--release", "-p", "ovrtone-app"])
         .current_dir(root)
         .status()
         .is_ok_and(|s| s.success());
@@ -126,7 +126,7 @@ pub fn bench(root: &Path) -> bool {
     let exe = root
         .join("target")
         .join("release")
-        .join(format!("prowave{}", std::env::consts::EXE_SUFFIX));
+        .join(format!("ovrtone{}", std::env::consts::EXE_SUFFIX));
     let binary_mb = match std::fs::metadata(&exe) {
         Ok(m) => m.len() as f64 / (1024.0 * 1024.0),
         Err(e) => {
@@ -135,7 +135,7 @@ pub fn bench(root: &Path) -> bool {
         }
     };
 
-    let out = std::env::temp_dir().join(format!("prowave-bench-{}.txt", std::process::id()));
+    let out = std::env::temp_dir().join(format!("ovrtone-bench-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&out);
     println!("==> bench: {} --bench {}", exe.display(), out.display());
     let started = Instant::now();
@@ -170,7 +170,7 @@ pub fn bench(root: &Path) -> bool {
     };
     let _ = std::fs::remove_file(&out);
     let report = format!("{report}binary_mb={binary_mb:.2}\n");
-    let advisory = std::env::var_os("PROWAVE_BENCH_WINDOW_ADVISORY").is_some();
+    let advisory = std::env::var_os("OVRTONE_BENCH_WINDOW_ADVISORY").is_some();
     let (lines, ok) = evaluate(&report, advisory);
     // On GitHub Actions, also as annotations: they show on the run's page without signing in.
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
@@ -185,7 +185,7 @@ pub fn bench(root: &Path) -> bool {
         }
     }
     println!(
-        "\nPro Wave lightweight targets ({} {}):",
+        "\nOvrtone lightweight targets ({} {}):",
         std::env::consts::OS,
         std::env::consts::ARCH
     );

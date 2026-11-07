@@ -1,11 +1,11 @@
-# Pro Wave — Official Logic Pro .logicx Support Spec
-**Target: Claude must implement this 100% in pure Rust | File: `crates/prowave-logicx-import`**
-> This spec allows ProWave to OPEN and SAVE official Apple Logic Pro .logicx projects on Linux and macOS, while being 10-20x lighter than Logic Pro.
+# Ovrtone — Official Logic Pro .logicx Support Spec
+**Target: Claude must implement this 100% in pure Rust | File: `crates/ovrtone-logicx-import`**
+> This spec allows Ovrtone to OPEN and SAVE official Apple Logic Pro .logicx projects on Linux and macOS, while being 10-20x lighter than Logic Pro.
 
 ## 1. Why This Matters & Lightweight Goal
 
 Logic Pro official is ~1.2GB app + 70GB library, Objective-C++ legacy, 3 sec cold start, 1.5GB RAM idle, macOS only.
-ProWave goal:
+Ovrtone goal:
 - **Binary size:** <50MB single binary (vs 1.2GB)
 - **RAM idle:** <150MB (vs 1.5GB)
 - **Cold start:** <400ms (vs 3-4 sec) — achieved by no NSKeyedArchiver, no CoreData, lazy loading
@@ -35,7 +35,7 @@ MySong.logicx/  (actually a directory)
     └── Audio Files/                  # WAV/AIFF/CAF recorded audio
 ```
 
-Package vs Folder: Logic can save as Package (single .logicx) or Folder (plain folder with .logicx sub-bundle). ProWave must support both.
+Package vs Folder: Logic can save as Package (single .logicx) or Folder (plain folder with .logicx sub-bundle). Ovrtone must support both.
 
 ### 2.1 Plists — Easy Part
 
@@ -186,8 +186,8 @@ Proven method from `LogicProFormatWriter` (MIT, pure Python, Logic-validated):
   5. Patch offsets, lengths, fix 24-byte root header `u32 @ +0x10 = payload length`
   6. Write bundle structure
 
-**Rust port for ProWave:**
-- Crate `prowave-logicx-import` will have `logicx/data/` embedded via `include_bytes!`
+**Rust port for Ovrtone:**
+- Crate `ovrtone-logicx-import` will have `logicx/data/` embedded via `include_bytes!`
 - Function `synthesize_av_bundle(tracks: Vec<TrackDef>) -> Vec<u8>` where `TrackDef { name, kind, regions: Vec<RegionDef> }`
 - `RegionDef` = `Audio { file: Path, start_tick, length_ticks, gain }` or `Midi { notes: Vec<MidiNote>, start_tick }`
 - Audio files: must be 44.1/48kHz WAV (Logic expects). If mp3/aiff, transcode via `symphonia` + `wav` writer, or ALAC in CAF via `alac` crate for lossless 3-4x smaller (Logic plays ALAC/CAF natively)
@@ -200,13 +200,13 @@ Proven method from `LogicProFormatWriter` (MIT, pure Python, Logic-validated):
 - `serde_json` for Drummer JSON
 - `uuid` for track UUIDs
 
-## 4. ProWave Implementation Plan for Claude (Linux + macOS Lightweight)
+## 4. Ovrtone Implementation Plan for Claude (Linux + macOS Lightweight)
 
 ### Crate Structure
 ```
-crates/prowave-logicx-import/
+crates/ovrtone-logicx-import/
   src/
-    lib.rs              # public API: open_logicx(path) -> ProWaveProject, save_logicx(project, path)
+    lib.rs              # public API: open_logicx(path) -> OvrtoneProject, save_logicx(project, path)
     bundle.rs           # parse .logicx bundle structure, handle Package vs Folder, Alternatives
     plist.rs            # parse MetaData.plist, ProjectInformation.plist
     project_data/
@@ -231,11 +231,11 @@ crates/prowave-logicx-import/
     fixtures/           # real .logicx from Logic Pro 11 (small, sine tones)
 ```
 
-### API for ProWave Core
+### API for Ovrtone Core
 
 ```rust
 // Open official Logic Pro project on Linux/macOS
-pub fn open_logicx(path: &Path) -> Result<ProWaveProject, LogicxError> {
+pub fn open_logicx(path: &Path) -> Result<OvrtoneProject, LogicxError> {
     // 1. Detect if path is bundle (dir with Alternatives) or folder project
     // 2. Read Resources/ProjectInformation.plist -> active alternative index
     // 3. Read Alternatives/XXX/MetaData.plist -> tempo, key, sample rate
@@ -246,10 +246,10 @@ pub fn open_logicx(path: &Path) -> Result<ProWaveProject, LogicxError> {
     //    - scan_tracks() -> Vec<TrackRecord>
     //    - scan_regions() -> Vec<RegionRecord> -> cluster to tracks
     // 5. Resolve: assign AUs to tracks by nearest preceding track offset (like lpx-explorer)
-    // 6. Convert to ProWaveProject { tracks: Vec<Track>, tempo_map, audio_files: Vec<Path> }
+    // 6. Convert to OvrtoneProject { tracks: Vec<Track>, tempo_map, audio_files: Vec<Path> }
 }
 
-pub struct ProWaveProject {
+pub struct OvrtoneProject {
     pub tempo_map: TempoMap, // tempo events, time sig, markers
     pub tracks: Vec<Track>,
     pub audio_files: Vec<AudioFileRef>, // paths inside Media/Audio Files/
@@ -263,7 +263,7 @@ pub enum Track {
 }
 
 // Save to .logicx that Logic Pro opens clean (no repair prompt)
-pub fn save_logicx(project: &ProWaveProject, out_path: &Path) -> Result<(), LogicxError> {
+pub fn save_logicx(project: &OvrtoneProject, out_path: &Path) -> Result<(), LogicxError> {
     // Use seed synthesis method, not hand-crafted
 }
 ```
@@ -271,25 +271,25 @@ pub fn save_logicx(project: &ProWaveProject, out_path: &Path) -> Result<(), Logi
 ### Linux vs macOS Specifics
 
 **Linux:**
-- No AU hosting. When opening .logicx with AU plugins (e.g., Alchemy), map to ProWave native equivalents: Alchemy -> ProWave Alchemy-lite, Channel EQ -> prowave Channel EQ, Compressor -> prowave Compressor. Show UI: "Alchemy not available on Linux, replaced with ProWave Alchemy-lite (presets preserved where possible)"
+- No AU hosting. When opening .logicx with AU plugins (e.g., Alchemy), map to Ovrtone native equivalents: Alchemy -> Ovrtone Alchemy-lite, Channel EQ -> ovrtone Channel EQ, Compressor -> ovrtone Compressor. Show UI: "Alchemy not available on Linux, replaced with Ovrtone Alchemy-lite (presets preserved where possible)"
 - Audio I/O: ALSA/JACK/PipeWire via cpal. No CoreAudio. No need for `com.apple.*` entitlements.
 - File system: .logicx bundle is just a directory on Linux (no Finder magic). Handle both as dir. Case-sensitive FS: preserve case.
 - Performance: Use `mimalloc` allocator, `mmap` for ProjectData, lazy load audio files (streaming, not load all). Target <150MB RAM idle.
 
 **macOS:**
-- AU hosting: Can host AU via `coreaudio-sys`. When opening .logicx, if AU present on system (e.g., FabFilter), use it. If not, fallback to ProWave native.
+- AU hosting: Can host AU via `coreaudio-sys`. When opening .logicx, if AU present on system (e.g., FabFilter), use it. If not, fallback to Ovrtone native.
 - CoreAudio: Use `cpal` with CoreAudio backend, support aggregate devices.
 - Bundle: .logicx is package, use `std::fs::is_dir` + check for `Alternatives` subdir to detect.
 - Notarization: No need for parsing, but for saving .logicx, ensure bundle has correct Finder attributes (package bit). Use `xattr`? Not needed, just dir.
 
 ### Lightweight Optimizations (Why 20x lighter than Logic)
 
-1. **No 70GB Library:** ProWave ships with <100MB of essential IRs and wavetables, not 70GB. User can optionally download Logic library if they have Logic installed (read from `/Library/Application Support/Logic/`), but not required.
-2. **No Objective-C / Swift runtime:** Logic uses NSKeyedArchiver, CoreData. ProWave uses pure Rust `rkyv` zero-copy, no ObjC.
-3. **Lazy loading:** Logic loads all plugins on open. ProWave: scan ProjectData linearly, only instantiate channel strips when track selected, plugins sandboxed and lazy.
-4. **Single binary:** Logic = 1.2GB app + helpers. ProWave = <50MB single binary via `cargo build --release` + `strip` + `mimalloc` + LTO.
+1. **No 70GB Library:** Ovrtone ships with <100MB of essential IRs and wavetables, not 70GB. User can optionally download Logic library if they have Logic installed (read from `/Library/Application Support/Logic/`), but not required.
+2. **No Objective-C / Swift runtime:** Logic uses NSKeyedArchiver, CoreData. Ovrtone uses pure Rust `rkyv` zero-copy, no ObjC.
+3. **Lazy loading:** Logic loads all plugins on open. Ovrtone: scan ProjectData linearly, only instantiate channel strips when track selected, plugins sandboxed and lazy.
+4. **Single binary:** Logic = 1.2GB app + helpers. Ovrtone = <50MB single binary via `cargo build --release` + `strip` + `mimalloc` + LTO.
 5. **WASM core:** Same engine for native and web, no duplicate code.
-6. **No legacy:** Logic has 30 years of legacy (Notator, etc.). ProWave starts clean, only modern formats (CLAP primary, VST3, AU on macOS).
+6. **No legacy:** Logic has 30 years of legacy (Notator, etc.). Ovrtone starts clean, only modern formats (CLAP primary, VST3, AU on macOS).
 
 ### Tests (Must pass for Claude)
 
@@ -305,7 +305,7 @@ pub fn save_logicx(project: &ProWaveProject, out_path: &Path) -> Result<(), Logi
   - MAX_PROJECTDATA_SIZE = 200 MB
   - MAX_TRACKS = 2000 (Logic max 1000, we allow 2000)
   - MAX_REGIONS_PER_TRACK = 10000
-  - String lengths: region name max 200 chars (from lpx-explorer), track name 16 chars, but allow up to 100 for ProWave
+  - String lengths: region name max 200 chars (from lpx-explorer), track name 16 chars, but allow up to 100 for Ovrtone
   - No path traversal: audio file refs inside Media/Audio Files/ only, reject `..` or absolute paths
   - No exec: never `eval` Drummer JSON params, parse as JSON only
 
@@ -319,6 +319,6 @@ pub fn save_logicx(project: &ProWaveProject, out_path: &Path) -> Result<(), Logi
 
 ---
 
-**For Claude:** Start with `crates/prowave-logicx-import/src/bundle.rs` + `plist.rs` + `project_data/scanner.rs`. Get empty project parsing working first, then add AU, then stock, then drummer, then regions. Use `lpx-explorer` Rust crate as reference (MIT), but rewrite in pure Rust with no Tauri dependency.
+**For Claude:** Start with `crates/ovrtone-logicx-import/src/bundle.rs` + `plist.rs` + `project_data/scanner.rs`. Get empty project parsing working first, then add AU, then stock, then drummer, then regions. Use `lpx-explorer` Rust crate as reference (MIT), but rewrite in pure Rust with no Tauri dependency.
 
 [^1]: logicx-analyzer/CLAUDE.md at 655fa43dd74be15a83e85e59bb8f886e0f25ed6f · geoffmyers/logicx-analyzer — https://github.com/geoffmyers/logicx-analyzer/blob/HEAD/CLAUDE.md

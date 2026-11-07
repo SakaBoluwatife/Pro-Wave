@@ -1,4 +1,4 @@
-# Pro Wave development notes
+# Ovrtone development notes
 
 The running record of the autonomous development pass: what was done, what is left, known issues and decisions. `docs/LOGIC-WIREFRAME.md` stays the feature map.
 
@@ -6,7 +6,7 @@ Test results here are automated unless a line says otherwise. Nothing in this fi
 
 ## Decisions
 
-- **Reuse before writing.** The owner's rule: no custom work where something proven exists. Plugins run on Lemon Studio's worker pool (`prowave-engine/src/parallel.rs`, GPL-3.0-or-later, copyright kept), not a new one.
+- **Reuse before writing.** The owner's rule: no custom work where something proven exists. Plugins run on Lemon Studio's worker pool (`ovrtone-engine/src/parallel.rs`, GPL-3.0-or-later, copyright kept), not a new one.
 - **Plugins in parallel.** A plugin's output reaches the mix only from the next block, so within a block no plugin depends on another, even in one chain. All of a tick's plugin blocks run across the pool with no dependency graph edges. The sound is identical to one thread (tested).
 - **The rest of the mix stays on the audio thread, sample by sample.** Running strips in parallel as Lemon does would mean rewriting `core.rs` around blocks. Worth doing only if sessions with many built-in effects or clips need it; the plugin load, which dominates real sessions, is already spread out.
 - **Autosave** copies media on a background thread and never touches the project file. It writes per process, so two running copies do not take each other's recovery file for a crash.

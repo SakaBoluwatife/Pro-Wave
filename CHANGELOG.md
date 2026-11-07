@@ -5,6 +5,10 @@ being released into the GitHub Release notes, so keep one `## <version>` heading
 
 ## Unreleased
 
+### Renamed
+
+✅ **Pro Wave is now Ovrtone, from Bankz Sound Lab.** The program is `ovrtone.exe`, and projects save as `.ovrtone`. `.prowave` projects keep opening, and Ovrtone offers to move them over when they are saved. The old settings are copied over once, on first run, and the old folder is left in place. Entries below keep the name in use at the time.
+
 ### Windows
 
 ✅ **VST3 and CLAP plugins:** effects and instruments with their own windows, saved settings and delay compensation, in any slot of a strip or on the whole mix. Your own plugin folders, and a plugin that crashes while loading is blocked until you rescan.

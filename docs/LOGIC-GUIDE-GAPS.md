@@ -1,6 +1,6 @@
 # Logic guide comparison
 
-Pro Wave compared with the chapters of the Logic Pro for Mac User Guide (1,324 pages), to decide what to improve. Written in our own words. The guide is a checklist of features, not a source of text or artwork.
+Ovrtone compared with the chapters of the Logic Pro for Mac User Guide (1,324 pages), to decide what to improve. Written in our own words. The guide is a checklist of features, not a source of text or artwork.
 
 This compares chapter headings against the feature map and a search of the code. "Have" does not mean it matches Logic in depth, and nothing here has been checked by hand. Nothing is removed by this plan.
 
@@ -55,7 +55,7 @@ Most useful for daily mixing and production first:
 
 ## Smaller entries still greyed
 
-Quick: About Pro Wave, Logic-style Key Commands (open the tab in Settings).
+Quick: About Ovrtone, Logic-style Key Commands (open the tab in Settings).
 
 Later: Customize Toolbar, Advanced Tools, Print and Page Setup, MusicXML, Movie and Video, Create New Output Channel Strip.
 

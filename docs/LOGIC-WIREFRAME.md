@@ -1,6 +1,6 @@
-# Pro Wave: Logic-for-Windows Wireframe
+# Ovrtone: Logic-for-Windows Wireframe
 
-Feature map for turning Pro Wave into a Logic-style DAW on Windows with FL Studio's piano roll and channel rack. Structure follows the chapter layout of Apple's public Logic Pro User Guide and the inventory in `ROADMAP.md` section 1. Written in our own words. No Apple text, artwork or branding goes into the app.
+Feature map for turning Ovrtone into a Logic-style DAW on Windows with FL Studio's piano roll and channel rack. Structure follows the chapter layout of Apple's public Logic Pro User Guide and the inventory in `ROADMAP.md` section 1. Written in our own words. No Apple text, artwork or branding goes into the app.
 
 **Scope rule:** the DAW ships with no stock instruments, stock effects or sound library. Everything sonic is brought by the user as **VST3 or CLAP** plugins and their own sample folders. What stays built in is the host, the editors, the mixer and the utilities (metronome, a one-shot sampler, meters).
 
@@ -30,7 +30,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 ## 1. Main window layout
 
-| Area | Logic role | Pro Wave | Notes |
+| Area | Logic role | Ovrtone | Notes |
 |---|---|---|---|
 | Control bar / transport | Play, record, cycle, tempo, LCD | HAVE | Tempo can be typed; buttons name themselves on hover. Low Latency works. Tuner not built |
 | Left panel | Library | HAVE | Tabs: Library, Browser, Plugins |
@@ -48,7 +48,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 | Feature | Status | Windows note |
 |---|---|---|
-| New/Open/Save `.prowave` (zip) | HAVE | |
+| New/Open/Save `.ovrtone` (zip) | HAVE | |
 | Save as Template, Close | HAVE | Your templates show under New from Template |
 | Alternatives, Backups, Clean Up, Consolidate | TODO | Alternatives = named snapshots of the arrangement |
 | Import audio (drag in), MIDI files | HAVE | The File > Import > Audio File entry is GREY |
@@ -166,7 +166,7 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 | Scan VST3 and CLAP folders, the user's own too | HAVE | In child processes with a timeout and a cache |
 | Effects and instruments | HAVE | Tried on 20 CLAP plugins, and Lounge Lizard and an ERA 6 plugin as VST3 |
 | Plugin editor windows | HAVE | Windows only |
-| State in `.prowave`, undo | HAVE | |
+| State in `.ovrtone`, undo | HAVE | |
 | Latency into delay compensation | HAVE | |
 | Parameters | PART | Listed and moved by automation; tried on Lounge Lizard, Pro-C 3, Pro-DS |
 | Blocked after crashing on load | HAVE | Until Rescan |
@@ -194,21 +194,21 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 - All stock instruments (Alchemy, ES2, samplers, Drum Kit Designer, etc.) and the sound library.
 - All stock effects. The built-in ones are still in the slot menus until Task 3.
 - Apple Loops content, Session Player content.
-- Any Apple artwork, names, icons, or trademarked terms. UI says "Pro Wave", not "Logic".
+- Any Apple artwork, names, icons, or trademarked terms. UI says "Ovrtone", not "Logic".
 
 ## 14. Windows-specific tasks
 
 | Task | Status | Notes |
 |---|---|---|
 | ASIO cargo feature and driver picker | HAVE | SDK in `third_party/asio-sdk` under its GPL3 option. Building it needs LLVM |
-| Installer and `.prowave` file association | PART | `dist/windows/installer.iss`, never run: Inno Setup is not installed here |
+| Installer and `.ovrtone` file association | PART | `dist/windows/installer.iss`, never run: Inno Setup is not installed here |
 | Per-user config under `%APPDATA%` | HAVE | |
 | High-DPI, dark title bar | PART | The program draws its own dark title bar; high-DPI not checked on its own |
 | Code signing | TODO | |
 
 ## 15. Other systems
 
-CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows only (`editor_window.rs`, `vst3_plugin.rs`). Mac needs a Cocoa window, signing and notarization; Linux an X11 one. The name "Pro Wave" and the UI can change later: the audio engine only talks to the UI through commands, but colours are written into each screen and need moving into one theme first.
+CLAP and the engine build elsewhere; plugin editor windows and VST3 are Windows only (`editor_window.rs`, `vst3_plugin.rs`). Mac needs a Cocoa window, signing and notarization; Linux an X11 one. The name "Ovrtone" and the UI can change later: the audio engine only talks to the UI through commands, but colours are written into each screen and need moving into one theme first.
 
 ## 16. Menu entries still greyed (checked 2026-11-05)
 
@@ -217,7 +217,7 @@ For now the work is on mixing and beat making, so these wait. Kept in the menus,
 - **On hold, Apple's with no Windows alternative:** Song to Mobile Device, Open in Sound Library Manager
 - **On hold by the owner:** Movie, Show Movie, Video (no movie support for now)
 - **On hold, nothing behind them:** Session Player, Performers, Project Settings (Tuning: plugins have no general way to follow it)
-- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools (nothing in Pro Wave is hidden behind it), Show Flex Editor
+- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools (nothing in Ovrtone is hidden behind it), Show Flex Editor
 - **Mixer:** Create New Output Channel Strip (the engine mixes to one stereo output; a second needs engine work)
 - **Inspector:** Q-Reference, MIDI In Port, MIDI In Channel, MIDI Out Channel
 - **Mix:** Stem Splitter (two versions were made at once; the owner chooses which to keep)

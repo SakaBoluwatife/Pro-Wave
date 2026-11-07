@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ovrtone
+Comment=Music production studio
+Exec=ovrtone %F
+Icon=ovrtone
+StartupWMClass=ovrtone
+Terminal=false
+Categories=AudioVideo;Audio;Music;Midi;Sequencer;
+MimeType=application/x-ovrtone;application/x-prowave;

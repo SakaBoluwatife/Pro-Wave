@@ -1,7 +1,7 @@
-Pro Wave - Windows x64
+Ovrtone - Windows x64
 ======================
 
-Pro Wave is a DAW (music production app) in the style of Apple Logic Pro, written in Rust.
+Ovrtone is a DAW (music production app) in the style of Apple Logic Pro, written in Rust.
 This is an early development build: expect missing features and rough edges.
 
 Run it
@@ -9,7 +9,7 @@ Run it
 
 1. Unzip the folder anywhere (it needs no installer and writes nothing outside your user
    folders).
-2. Double-click prowave.exe.
+2. Double-click ovrtone.exe.
 
 Windows may show "Windows protected your PC" (SmartScreen) because the program is not code
 signed yet. Choose "More info", then "Run anyway".
@@ -17,15 +17,15 @@ signed yet. Choose "More info", then "Run anyway".
 Some antivirus programs (for example Norton, Avast, AVG or McAfee) block new unsigned
 programs they have not seen before. Windows then says "Windows cannot access the specified
 device, path or file" or "Access is denied". Restoring the file from the antivirus's
-history is not always enough: add the Pro Wave folder to its exclusions. In Norton: Settings >
+history is not always enough: add the Ovrtone folder to its exclusions. In Norton: Settings >
 Antivirus > Scans and Risks > "Items to Exclude from Auto-Protect, Script Control, SONAR and
-Download Intelligence Detection" > Configure > Add Folders. Then double-click prowave.exe again.
+Download Intelligence Detection" > Configure > Add Folders. Then double-click ovrtone.exe again.
 
 From a terminal:
-  prowave.exe song.prowave          open a project
-  prowave.exe drums.wav bass.flac   start a new project and import audio files
-  prowave.exe --play                start playing right away
-  prowave.exe --piano               open the Piano Roll on start
+  ovrtone.exe song.ovrtone          open a project
+  ovrtone.exe drums.wav bass.flac   start a new project and import audio files
+  ovrtone.exe --play                start playing right away
+  ovrtone.exe --piano               open the Piano Roll on start
 
 Audio files supported: WAV, AIFF, FLAC, MP3, CAF, Ogg Vorbis, M4A and MP4 (AAC, ALAC), ADPCM. You
 can also drag audio files onto the window.
@@ -41,8 +41,8 @@ Requirements
 Where it keeps things
 ---------------------
 
-- The list of recent projects: %APPDATA%\prowave\recent.txt
-- Projects you open are unpacked to a temporary folder (%TEMP%\prowave-media) while they are
+- The list of recent projects: %APPDATA%\ovrtone\recent.txt
+- Projects you open are unpacked to a temporary folder (%TEMP%\ovrtone-media) while they are
   open; it is cleaned up when you close the program.
 - If it crashes, it prints the path of a crash report in %TEMP%.
 
@@ -53,5 +53,6 @@ Keyboard shortcuts
   Space play/stop    Ctrl+R repeat region    Delete delete selection
   Y Library    I Inspector    X Mixer    Q quantize (Piano Roll)
 
-More: https://github.com/fabox-os/Pro-Wave
-Licensed under the GNU General Public License v3 or later (see LICENSE).
+Publisher: Bankz Sound Lab
+Based on Pro Wave by the original authors: https://github.com/fabox-os/Pro-Wave
+Licensed under GPL-3.0-or-later (see LICENSE).

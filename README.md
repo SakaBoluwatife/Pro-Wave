@@ -1,6 +1,9 @@
-# Pro Wave
+# Ovrtone
 
-**ProWave** is an open-source music production DAW in pure Rust, with a look and
+Published by Bankz Sound Lab. Based on Pro Wave by the original authors:
+<https://github.com/fabox-os/Pro-Wave>. Licensed under GPL-3.0-or-later.
+
+**Ovrtone** is an open-source music production DAW in pure Rust, with a look and
 workflow modelled on Apple's Logic Pro. It is drawn entirely with [egui](https://github.com/emilk/egui)
 and plays audio through [cpal](https://github.com/RustAudio/cpal): no Electron, no JUCE.
 
@@ -9,7 +12,7 @@ and plays audio through [cpal](https://github.com/RustAudio/cpal): no Electron, 
 > instruments and effects are on their way out. [`docs/LOGIC-WIREFRAME.md`](docs/LOGIC-WIREFRAME.md)
 > is the up-to-date feature map and what is left; [`ROADMAP.md`](ROADMAP.md) has the wider plan.
 
-![Pro Wave: Tracks area with MIDI and audio regions, the Library, inspector and Mixer](docs/screenshots/tracks-and-mixer.webp)
+![Ovrtone: Tracks area with MIDI and audio regions, the Library, inspector and Mixer](docs/screenshots/tracks-and-mixer.webp)
 
 <table>
   <tr>
@@ -22,9 +25,9 @@ and plays audio through [cpal](https://github.com/RustAudio/cpal): no Electron, 
   </tr>
 </table>
 
-ProWave is an independent project. It is not affiliated with, sponsored by or endorsed by Apple
-Inc. Logic Pro is a trademark of Apple Inc., used here only to describe the workflow ProWave
-follows. ProWave contains no Apple code, artwork or sounds.
+Ovrtone is an independent project. It is not affiliated with, sponsored by or endorsed by Apple
+Inc. Logic Pro is a trademark of Apple Inc., used here only to describe the workflow Ovrtone
+follows. Ovrtone contains no Apple code, artwork or sounds.
 
 ## Status
 
@@ -33,7 +36,7 @@ used, and a roadmap item when it is ticked in [`ROADMAP.md`](ROADMAP.md). Run `c
 to update this section.
 
 <!-- status:start (made by `cargo xtask status`) -->
-![Pro Wave status: menu entries and roadmap items, done and to do](docs/status.svg)
+![Ovrtone status: menu entries and roadmap items, done and to do](docs/status.svg)
 
 | | Done | Started | Total | Done % |
 | --- | ---: | ---: | ---: | ---: |
@@ -63,21 +66,21 @@ to update this section.
 - **Audio:** WASAPI low latency, and ASIO in builds with the `asio` feature; driver, device and
   buffer size in Settings (Ctrl+,).
 - **Also:** MIDI and audio recording, MIDI take folders, Flex Time and Flex Pitch, Smart Tempo,
-  tempo and signature tracks, MTC, Score view, Event List, MIDI Transform, MIDI FX, `.prowave`
+  tempo and signature tracks, MTC, Score view, Event List, MIDI Transform, MIDI FX, `.ovrtone`
   project files.
 
 ## Downloads
 
 Get the latest build from the [Releases page](https://github.com/fabox-os/Pro-Wave/releases)
-(each version is a pre-release while Pro Wave is in early development):
+(each version is a pre-release while Ovrtone is in early development):
 
 | System | File |
 |---|---|
-| Windows 10/11 x64 | `prowave-windows-x86_64.zip`: unzip and run `prowave.exe` |
-| macOS (Apple Silicon + Intel) | `prowave-macos-universal.zip` with `Pro Wave.app` (ad-hoc signed, not notarized) |
+| Windows 10/11 x64 | `ovrtone-windows-x86_64.zip`: unzip and run `ovrtone.exe` |
+| macOS (Apple Silicon + Intel) | `ovrtone-macos-universal.zip` with `Ovrtone.app` (ad-hoc signed, not notarized) |
 | Debian, Ubuntu, Mint | `.deb` |
 | Fedora, openSUSE, RHEL 9+ | `.rpm` |
-| Any Linux | AppImage, Flatpak bundle, or `prowave-linux-x86_64.tar.gz` with an `install.sh` |
+| Any Linux | AppImage, Flatpak bundle, or `ovrtone-linux-x86_64.tar.gz` with an `install.sh` |
 
 The files are not code signed, so Windows SmartScreen and macOS Gatekeeper warn before running
 them; the release notes say how to continue.
@@ -93,12 +96,12 @@ publishing.
 ## Run from source
 
 ```sh
-cargo run --release -p prowave-app                  # the app
-cargo run --release -p prowave-app -- song.prowave   # open a project
-cargo run --release -p prowave-app -- drums.wav      # new project, import audio files
-cargo run --release -p prowave-app -- --play         # start playing right away
-cargo run --release -p prowave-app -- --piano        # open the Piano Roll on start
-cargo run -p prowave-engine --example beep           # 440 Hz test tone, reports output latency
+cargo run --release -p ovrtone-app                  # the app
+cargo run --release -p ovrtone-app -- song.ovrtone   # open a project
+cargo run --release -p ovrtone-app -- drums.wav      # new project, import audio files
+cargo run --release -p ovrtone-app -- --play         # start playing right away
+cargo run --release -p ovrtone-app -- --piano        # open the Piano Roll on start
+cargo run -p ovrtone-engine --example beep           # 440 Hz test tone, reports output latency
 ```
 
 Windows and Linux use Ctrl where macOS uses Cmd: Space plays and stops, Ctrl+N/O/S new, open and
@@ -117,7 +120,7 @@ Rust stable is required. On Linux, install ALSA's development files and `pkg-con
 | Arch, Manjaro, EndeavourOS | `alsa-lib pkgconf` |
 
 ```sh
-cargo build --release -p prowave-app   # the program is target/release/prowave
+cargo build --release -p ovrtone-app   # the program is target/release/ovrtone
 cargo xtask check                      # fmt, clippy -D warnings, tests, no-alloc check, cargo-deny, wasm check
 ```
 
@@ -125,17 +128,17 @@ ASIO is an optional build on Windows. It compiles the SDK in `third_party/asio-s
 for `libclang` (`winget install LLVM.LLVM`):
 
 ```sh
-cargo run --release -p prowave-app --features asio
+cargo run --release -p ovrtone-app --features asio
 ```
 
 ## Workspace
 
 | Crate | What it is |
 |---|---|
-| [`crates/prowave-engine`](crates/prowave-engine) | Real-time audio engine: transport, tempo map, synth, mixer, disk streaming, cpal output |
-| [`crates/prowave-app`](crates/prowave-app) | The desktop app (egui): every view and editor |
-| [`crates/prowave-host`](crates/prowave-host) | Hosting VST3 and CLAP plugins, and the one-shot sampler |
-| [`crates/prowave-project`](crates/prowave-project) | The `.prowave` project file format |
+| [`crates/ovrtone-engine`](crates/ovrtone-engine) | Real-time audio engine: transport, tempo map, synth, mixer, disk streaming, cpal output |
+| [`crates/ovrtone-app`](crates/ovrtone-app) | The desktop app (egui): every view and editor |
+| [`crates/ovrtone-host`](crates/ovrtone-host) | Hosting VST3 and CLAP plugins, and the one-shot sampler |
+| [`crates/ovrtone-project`](crates/ovrtone-project) | The `.ovrtone` project file format |
 | [`xtask`](xtask) | `cargo xtask check`, `wasm-check` and `rt-check` |
 | [`third_party/asio-sdk`](third_party/asio-sdk) | Steinberg's ASIO SDK, for ASIO builds only |
 | [`dist/windows`](dist/windows) | The Windows read-me and an Inno Setup installer script |
@@ -157,12 +160,12 @@ cargo run --release -p prowave-app --features asio
 
 Copyright (C) 2026 the ProWave contributors.
 
-ProWave is free software: you can redistribute it and/or modify it under the terms of the
+Ovrtone is free software: you can redistribute it and/or modify it under the terms of the
 [GNU General Public License](LICENSE) as published by the Free Software Foundation, either
 version 3 of the License, or (at your option) any later version (GPL-3.0-or-later).
 Contributions are licensed the same way.
 
-ProWave is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+Ovrtone is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
 even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 [`LICENSE`](LICENSE) file for details.
 

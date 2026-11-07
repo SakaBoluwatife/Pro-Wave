@@ -1,4 +1,4 @@
-//! `cargo xtask status`: how far Pro Wave has come, for the README. Counts the menu entries
+//! `cargo xtask status`: how far Ovrtone has come, for the README. Counts the menu entries
 //! that work (what `menus::enabled` turns on) and the ROADMAP.md checkboxes of the phases, draws
 //! `docs/status.svg` and rewrites the block between the status markers in README.md.
 use std::fmt::Write as _;
@@ -370,7 +370,7 @@ fn block(menus: &[Group], roadmap: &[Group]) -> String {
         )
     };
     format!(
-        "{START}\n![Pro Wave status: menu entries and roadmap items, done and to do]({SVG})\n\n\
+        "{START}\n![Ovrtone status: menu entries and roadmap items, done and to do]({SVG})\n\n\
          | | Done | Started | Total | Done % |\n| --- | ---: | ---: | ---: | ---: |\n{}{}{END}",
         row("Menu entries", menus),
         row("Roadmap items", roadmap),
@@ -396,8 +396,8 @@ pub fn run(root: &Path) -> Result<(), String> {
             .map_err(|e| format!("{path}: {e}"))
     };
     let menus = menu_groups(
-        &read("crates/prowave-app/src/menus.rs")?,
-        &read("crates/prowave-app/src/file_commands.rs")?,
+        &read("crates/ovrtone-app/src/menus.rs")?,
+        &read("crates/ovrtone-app/src/file_commands.rs")?,
     );
     let roadmap = roadmap_groups(&read("ROADMAP.md")?);
     if total(&menus) == 0 || total(&roadmap) == 0 {

@@ -6,8 +6,8 @@
 - `LICENSE`: that repository's licence file.
 - `htdemucs.safetensors`: the 84 MB model, from https://huggingface.co/set-soft/audio_separation/resolve/main/Demucs/htdemucs.safetensors
 
-**Model licence:** unresolved. The Demucs code is MIT, but no explicit licence for the trained weights was found, and reports quote a project statement that they were for research use. The owner chose to bundle them while Pro Wave is not sold. Revisit this before any sale, or replace the model with one of our own.
+**Model licence:** unresolved. The Demucs code is MIT, but no explicit licence for the trained weights was found, and reports quote a project statement that they were for research use. The owner chose to bundle them while Ovrtone is not sold. Revisit this before any sale, or replace the model with one of our own.
 
 The owner chose the CPU build for now, to optimize later. The GPU build crashed on the owner's laptop (Intel UHD 620 and NVIDIA MX150) with a wgpu "Encoder is invalid" error on a 10-second test tone.
 
-For a development build, set `PROWAVE_STEMS_DIR` to a folder holding these files.
+For a development build, set `OVRTONE_STEMS_DIR` to a folder holding these files.

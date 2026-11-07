@@ -1,8 +1,8 @@
-# Pro Wave — Status Summary
+# Ovrtone — Status Summary
 
 _Last updated: 2026-11-04_
 
-Pro Wave is a pure-Rust (egui + cpal) DAW whose look and workflow follow Apple Logic Pro.
+Ovrtone is a pure-Rust (egui + cpal) DAW whose look and workflow follow Apple Logic Pro.
 It runs on Windows and is written to be portable to macOS and Linux. Everything is drawn from
 scratch (vector shapes, own patch names); no Apple artwork or code is copied.
 
@@ -20,31 +20,31 @@ comping and crash isolation.
 ## How to run
 
 ```bash
-cargo run --release -p prowave-app                 # the app
-cargo run --release -p prowave-app -- song.wav      # import audio files on launch
-cargo run --release -p prowave-app -- --play        # start playing on launch
-cargo run --release -p prowave-app -- --piano       # open the Piano Roll on launch
+cargo run --release -p ovrtone-app                 # the app
+cargo run --release -p ovrtone-app -- song.wav      # import audio files on launch
+cargo run --release -p ovrtone-app -- --play        # start playing on launch
+cargo run --release -p ovrtone-app -- --piano       # open the Piano Roll on launch
 cargo xtask check                                   # all quality checks (see below)
-cargo run -p prowave-engine --example beep          # latency test
+cargo run -p ovrtone-engine --example beep          # latency test
 ```
 
 ## Builds for other systems
 
 | System | Status |
 |---|---|
-| **Windows** x86_64 | ✅ `cargo build --release -p prowave-app` (tested daily) |
-| **Linux** x86_64 | ✅ Built on 2026-10-19: `dist/prowave-linux-x86_64.tar.gz` (glibc 2.31+: Ubuntu 20.04+, Debian 11+). Also as `.deb`, `.rpm`, AppImage and Flatpak (GitHub release workflow, v0.1.1). **Launches under a virtual display on GitHub's runner; not yet run on real Linux hardware** |
-| **macOS** (Apple Silicon + Intel) | ❌ **Cannot be built on this Windows PC.** Building for macOS needs Apple's SDK (AppKit, CoreAudio, Metal), which only comes with Xcode on a Mac. Options: build on a Mac (`cargo build --release -p prowave-app`), or push the project to GitHub and run `.github/workflows/release.yml`, which builds a universal `Pro Wave.app` on GitHub's macOS runners |
+| **Windows** x86_64 | ✅ `cargo build --release -p ovrtone-app` (tested daily) |
+| **Linux** x86_64 | ✅ Built on 2026-10-19: `dist/ovrtone-linux-x86_64.tar.gz` (glibc 2.31+: Ubuntu 20.04+, Debian 11+). Also as `.deb`, `.rpm`, AppImage and Flatpak (GitHub release workflow, v0.1.1). **Launches under a virtual display on GitHub's runner; not yet run on real Linux hardware** |
+| **macOS** (Apple Silicon + Intel) | ❌ **Cannot be built on this Windows PC.** Building for macOS needs Apple's SDK (AppKit, CoreAudio, Metal), which only comes with Xcode on a Mac. Options: build on a Mac (`cargo build --release -p ovrtone-app`), or push the project to GitHub and run `.github/workflows/release.yml`, which builds a universal `Ovrtone.app` on GitHub's macOS runners |
 
 How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed):
 - Tools: Zig (`pip install ziglang`) + `cargo install cargo-zigbuild`.
 - `cpal` links ALSA, so the build needs Linux's `libasound.so`: taken from Debian 11's official
   `libasound2` / `libasound2-dev` packages, plus a stand-in `pkg-config` that points at it
   (`PKG_CONFIG=<script>`, `PKG_CONFIG_ALLOW_CROSS=1`).
-- `cargo zigbuild --release -p prowave-app --target x86_64-unknown-linux-gnu.2.31`
+- `cargo zigbuild --release -p ovrtone-app --target x86_64-unknown-linux-gnu.2.31`
 - Linux specifics in the code: the audio thread asks for real-time priority (cpal `realtime`
   feature, Linux only; needs an rtprio limit/rtkit, otherwise normal priority + a warning);
-  the window class is `prowave` (so `.desktop` files / icons match under X11 and Wayland).
+  the window class is `ovrtone` (so `.desktop` files / icons match under X11 and Wayland).
   There is no other platform-specific code: file paths, temp folders, dialogs (rfd uses the
   desktop portal, zenity fallback) and media names are all portable.
 - Linux robustness (2026-10-19): audio start tries the default audio system's default device, then every output
@@ -57,7 +57,7 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
   `x86_64-unknown-linux-gnu` (`cargo clippy --workspace --all-targets --target
   x86_64-unknown-linux-gnu`, same env as the build). Tests were compiled, not run, on Linux.
 - Not done for Linux: native PipeWire/JACK back-ends (audio is ALSA, which PipeWire and
-  PulseAudio emulate), an AppImage/.deb/Flatpak package, a Linux test run. The tarball has `install.sh` (user install: menu entry, SVG icon, `.prowave` file type) — never run on Linux yet.
+  PulseAudio emulate), an AppImage/.deb/Flatpak package, a Linux test run. The tarball has `install.sh` (user install: menu entry, SVG icon, `.ovrtone` file type) — never run on Linux yet.
 - Runtime libraries the binary needs: `libasound.so.2`, `libxkbcommon(-x11)`, `libwayland-client`,
   `libfontconfig`, `libdbus-1` (see `dist/README-linux.txt`).
 
@@ -65,16 +65,16 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
 
 | Crate | What it is |
 |---|---|
-| `crates/prowave-engine` | Real-time audio engine: transport, synth, disk streaming, cpal output |
-| `crates/prowave-app` | Desktop app (egui): all the UI |
-| `crates/prowave-project` | `.prowave` project file format (zip with `project.json` + `media/`) |
+| `crates/ovrtone-engine` | Real-time audio engine: transport, synth, disk streaming, cpal output |
+| `crates/ovrtone-app` | Desktop app (egui): all the UI |
+| `crates/ovrtone-project` | `.ovrtone` project file format (zip with `project.json` + `media/`) |
 | `xtask` | `cargo xtask check / wasm-check / rt-check` |
 
 ---
 
 ## ✅ Done (verified by tests and/or screenshots)
 
-### Engine (`prowave-engine`)
+### Engine (`ovrtone-engine`)
 - **Transport:** play, pause, stop, locate, tempo, cycle (loop), metronome, master gain.
 - **Lock-free design:** UI → engine only through `Command`s on an `rtrb` queue; engine → UI
   through atomics. Old songs are freed off the audio thread (garbage queue).
@@ -95,7 +95,7 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
 - Builds for `wasm32-unknown-unknown` (`cargo xtask wasm-check`).
 - 32 engine tests pass (36 app tests, 8 project-file tests).
 
-### App UI (`prowave-app`), styled after Logic Pro
+### App UI (`ovrtone-app`), styled after Logic Pro
 - **Control bar:** view buttons, transport (Play turns green), Logic-style LCD (SMPTE,
   bars/beats, locators, tempo and time signature — drag to change, MIDI in/out, CPU/HD), count-in,
   metronome, master volume (stereo meters + glassy knob), right-hand icon buttons.
@@ -108,7 +108,7 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
   with yellow cycle band (drag to set), playhead, track headers (number, realistic
   instrument icon, name, M/S/R/I, volume, pan), regions (MIDI notes / real waveforms).
   **Individual track heights:** drag a track's lower edge (header or lane) to resize it,
-  double-click the edge to reset; saved in `.prowave` (factor of the vertical zoom, 0.5–6×).
+  double-click the edge to reset; saved in `.ovrtone` (factor of the vertical zoom, 0.5–6×).
   **Solo:** when any track is soloed, the other tracks' regions turn gray (like Logic).
   **Playhead:** drag the playhead's head in the ruler anywhere in the song (stops at bar 1).
   Select / move regions with snap, Delete, Repeat (Ctrl+R), Set Locators by Regions, Catch,
@@ -131,8 +131,8 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
 
 ### Diagnostics (roadmap Phase 0)
 - **CPU meter** in the LCD shows the audio callback's DSP load (peak-held, red at ≥90%,
-  percentage on hover). Measured in `prowave-engine` output.rs, published lock-free.
-- **Logging:** `tracing-subscriber`, set with `RUST_LOG` (default `warn,prowave=info`).
+  percentage on hover). Measured in `ovrtone-engine` output.rs, published lock-free.
+- **Logging:** `tracing-subscriber`, set with `RUST_LOG` (default `warn,ovrtone=info`).
 - **Crash reports:** `human-panic` writes a report to the temp folder in release builds.
 - HD meter is still empty (disk load not measured).
 
@@ -141,7 +141,7 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
   (licences/advisories), wasm32 build. Passes.
 - GitHub Actions CI file for Windows / macOS / Linux / wasm (`.github/workflows/ci.yml`).
 - Release workflow (`.github/workflows/release.yml`): Linux tarball and a universal macOS
-  `Pro Wave.app` (ad-hoc signed, not notarized), plus the `.deb`, `.rpm`, AppImage and Flatpak
+  `Ovrtone.app` (ad-hoc signed, not notarized), plus the `.deb`, `.rpm`, AppImage and Flatpak
   packages. Ran on GitHub for v0.1.1: every job passed (packages install and remove cleanly on
   Ubuntu and Fedora; the tarball and AppImage stay up for 15 s under Xvfb). Results are workflow
   artifacts; there is no public Release page yet.
@@ -149,21 +149,21 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
 
 ---
 
-## ✅ `.prowave` project files — Open / Save (roadmap Phase 1)
+## ✅ `.ovrtone` project files — Open / Save (roadmap Phase 1)
 
-- `crates/prowave-project`: zip with `project.json` + `media/` (round-trip, version check,
+- `crates/ovrtone-project`: zip with `project.json` + `media/` (round-trip, version check,
   zip-slip protection, atomic save).
-- `prowave-app/src/project_io.rs`: app model ⇄ document; audio files embedded once each.
-- `prowave-app/src/file_commands.rs`: File › New… / Open… / Open Recent / Save / Save As… /
+- `ovrtone-app/src/project_io.rs`: app model ⇄ document; audio files embedded once each.
+- `ovrtone-app/src/file_commands.rs`: File › New… / Open… / Open Recent / Save / Save As… /
   Save A Copy As… / Revert to Saved with native dialogs (rfd), Ctrl/Cmd+N, O, S, Shift+S (shown
   in the menu), "save changes?" and "revert?" prompts (playhead/selection don't count as
   changes), window title `<project> - Tracks`.
-- `prowave-app/src/recent_files.rs`: the Open Recent list (last 10 projects opened or saved,
-  newest first, missing files dropped) in `recent.txt` in the config folder (`%APPDATA%\prowave`,
-  `~/Library/Application Support/prowave`, `~/.config/prowave`). Listed flat in the File menu,
+- `ovrtone-app/src/recent_files.rs`: the Open Recent list (last 10 projects opened or saved,
+  newest first, missing files dropped) in `recent.txt` in the config folder (`%APPDATA%\ovrtone`,
+  `~/Library/Application Support/ovrtone`, `~/.config/ovrtone`). Listed flat in the File menu,
   with Clear Menu. Save A Copy As… writes a copy and keeps the current file, title and unsaved
   state; Revert to Saved reloads the file after asking.
-- `prowave song.prowave` opens a project from the command line (audio args import into it).
+- `ovrtone song.ovrtone` opens a project from the command line (audio args import into it).
 - Verified: unit tests + launched the app with a project path (title, tempo, tracks loaded).
   The dialogs themselves have not been clicked through by hand yet.
 
@@ -171,20 +171,20 @@ How the Linux build was made from Windows (cross-compiling, no WSL/Docker needed
 
 ## 🔒 Hardening (review of 2026-10-19)
 
-- `.prowave` loading treats the file as untrusted: `project.json` capped at 64 MiB and media
+- `.ovrtone` loading treats the file as untrusted: `project.json` capped at 64 MiB and media
   at 16 GiB (zip bombs), media paths must be plain `media/…` (a crafted project can no longer
   read other audio files on disk and smuggle them into the next save), and every value is
   brought into range (signature, pitch/velocity, key/velocity limits, region and note
   lengths, quantize grid, cycle) so editors cannot divide by zero, overflow or panic.
 - Unknown plug-in names from files are leaked once per session, not once per open.
-- A failed save removes its `.prowave.tmp`; extracted media lives in
-  `<temp>/prowave-media/<pid>/`, removed on exit (crash leftovers swept after 7 days).
+- A failed save removes its `.ovrtone.tmp`; extracted media lives in
+  `<temp>/ovrtone-media/<pid>/`, removed on exit (crash leftovers swept after 7 days).
 
 ---
 
 ## ⚡ Performance (review of 2026-10-19)
 
-`cargo run --release -p prowave-engine --example dsp_bench` renders 20 s of a dense
+`cargo run --release -p ovrtone-engine --example dsp_bench` renders 20 s of a dense
 arrangement (48 busy voices, filtered saw/square + vibrato, drums, metronome, tempo change):
 
 | | Average DSP load (one core) |
@@ -242,12 +242,12 @@ arrangement (48 busy voices, filtered saw/square + vibrato, drums, metronome, te
 
 | Roadmap item | | What's there / what's missing |
 |---|---|---|
-| Transport: sample-accurate clock, tempo map, SMPTE sync | 🟡 | Engine tempo map with tempo + signature changes ✅. App: one tempo and one editable time signature (LCD drag), saved in `.prowave`, bars/beats/regions/grid/snap follow the signature (6/8 and 7/8 match the engine) ✅. Tempo track with curves, Signature track, SMPTE display via `TempoMap` with frame rate and start time, MTC out and chase ✅ (2026-10-21). **Missing:** MMC, trying MTC with hardware |
-| Track types: Audio, Instrument, Aux, Master, VCA, Folder/Summing Stacks, External MIDI | 🟡 | Audio, Instrument, Drummer (as instrument), Stereo Out/Master ✅. Aux tracks (Track › New Aux Track, mixer strip, bus label) and Folder tracks (Create/Release Track Stack, fold arrow, folder M/S) ✅ in the app and `.prowave`. VCA tracks and External MIDI tracks ✅ (2026-10-21). **Missing:** real bus routing (engine work); Folder summing is UI-only |
+| Transport: sample-accurate clock, tempo map, SMPTE sync | 🟡 | Engine tempo map with tempo + signature changes ✅. App: one tempo and one editable time signature (LCD drag), saved in `.ovrtone`, bars/beats/regions/grid/snap follow the signature (6/8 and 7/8 match the engine) ✅. Tempo track with curves, Signature track, SMPTE display via `TempoMap` with frame rate and start time, MTC out and chase ✅ (2026-10-21). **Missing:** MMC, trying MTC with hardware |
+| Track types: Audio, Instrument, Aux, Master, VCA, Folder/Summing Stacks, External MIDI | 🟡 | Audio, Instrument, Drummer (as instrument), Stereo Out/Master ✅. Aux tracks (Track › New Aux Track, mixer strip, bus label) and Folder tracks (Create/Release Track Stack, fold arrow, folder M/S) ✅ in the app and `.ovrtone`. VCA tracks and External MIDI tracks ✅ (2026-10-21). **Missing:** real bus routing (engine work); Folder summing is UI-only |
 | Regions: audio (wav/aiff/caf/mp3/flac), MIDI, Pattern, Drummer | 🟡 | Audio WAV/AIFF/FLAC/MP3/CAF + MIDI regions ✅. Pattern regions and Drummer regions ✅ (2026-10-21; no per-step Chance/Tie/Repeat, no Groove Track) |
 | Non-destructive editing: clip gain, fades, crossfades, reverse, normalize | ❌ | Only MIDI region parameters (quantize, transpose, velocity). **Missing:** all audio-region editing listed |
 | Disk streaming: memory-mapped + prefetch, 1000-track test | 🟡 | Background prefetch thread with per-clip rings ✅, 1000-track streaming test ✅ (2026-10-21). Memory-mapped WAV/AIFF ✅ (2026-10-21, no speed gain, less private memory) |
-| Project file `.prowave` (zip, `project.json`, `media/`, `bounces/`) | 🟡 | Zip + JSON + `media/`, Open/Save/Save As, Open Recent, Save A Copy As, Revert to Saved, hardened loader ✅. Uses JSON, not `rkyv`. **Missing:** `bounces/` |
+| Project file `.ovrtone` (zip, `project.json`, `media/`, `bounces/`) | 🟡 | Zip + JSON + `media/`, Open/Save/Save As, Open Recent, Save A Copy As, Revert to Saved, hardened loader ✅. Uses JSON, not `rkyv`. **Missing:** `bounces/` |
 | **DoD:** import 24 tracks 48 kHz/24-bit, play without dropouts | ❌ | Not tested yet |
 
 ## 📋 Still to do (later phases)
@@ -281,4 +281,4 @@ arrangement (48 busy voices, filtered saw/square + vibrato, drums, metronome, te
 - [ ] WASM + AudioWorklet build, Bounce/Export (WAV, MIDI, stems)
 
 ### `.logicx` import (separate crate in the spec)
-- [ ] `prowave-logicx-import` per `LOGICX-FORMAT-SPEC.md`
+- [ ] `ovrtone-logicx-import` per `LOGICX-FORMAT-SPEC.md`

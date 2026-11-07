@@ -69,14 +69,14 @@ jobs:
         # reported (as annotations on the run's page) but only the DSP load and binary size fail
         # the job. On a real computer `cargo xtask bench` enforces all five.
         env:
-          PROWAVE_BENCH_WINDOW_ADVISORY: "1"
+          OVRTONE_BENCH_WINDOW_ADVISORY: "1"
         run: cargo xtask bench
       - name: Layout pictures
         if: always()
         shell: bash
         run: |
-          exe=target/release/prowave
-          [ -x "$exe" ] || exe=target/release/prowave.exe
+          exe=target/release/ovrtone
+          [ -x "$exe" ] || exe=target/release/ovrtone.exe
           "$exe" --layout-shots layout-shots || echo "::warning::no window could be opened for the layout pictures"
           ls -l layout-shots || true
       - uses: actions/upload-artifact@v4
@@ -122,11 +122,11 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p prowave-app
+        run: cargo build --release --target ${{ matrix.target }} -p ovrtone-app
       - uses: actions/upload-artifact@v4
         with:
-          name: prowave-${{ matrix.target }}
+          name: ovrtone-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/prowave
-            target/${{ matrix.target }}/release/prowave.exe
+            target/${{ matrix.target }}/release/ovrtone
+            target/${{ matrix.target }}/release/ovrtone.exe
           if-no-files-found: error

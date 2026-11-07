@@ -3230,6 +3230,80 @@ dependencies = [
 ]
 
 [[package]]
+name = "ovrtone-app"
+version = "0.2.1"
+dependencies = [
+ "assert_no_alloc",
+ "base64",
+ "eframe",
+ "egui",
+ "flacenc",
+ "flate2",
+ "human-panic",
+ "image",
+ "midir",
+ "mp3lame-encoder",
+ "muda",
+ "ovrtone-engine",
+ "ovrtone-host",
+ "ovrtone-project",
+ "raw-window-handle",
+ "rfd",
+ "rhai",
+ "rtrb",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "winresource",
+ "zip",
+]
+
+[[package]]
+name = "ovrtone-engine"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "cpal",
+ "memmap2",
+ "rtrb",
+ "symphonia",
+ "tempfile",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "ovrtone-host"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "clack-extensions",
+ "clack-host",
+ "libloading 0.8.9",
+ "ovrtone-engine",
+ "rtrb",
+ "tempfile",
+ "tracing",
+ "vst3",
+ "windows",
+]
+
+[[package]]
+name = "ovrtone-project"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zip",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3526,80 +3600,6 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
-
-[[package]]
-name = "prowave-app"
-version = "0.2.1"
-dependencies = [
- "assert_no_alloc",
- "base64",
- "eframe",
- "egui",
- "flacenc",
- "flate2",
- "human-panic",
- "image",
- "midir",
- "mp3lame-encoder",
- "muda",
- "prowave-engine",
- "prowave-host",
- "prowave-project",
- "raw-window-handle",
- "rfd",
- "rhai",
- "rtrb",
- "serde_json",
- "sha2",
- "sysinfo",
- "tar",
- "tempfile",
- "tracing",
- "tracing-subscriber",
- "ureq",
- "winresource",
- "zip",
-]
-
-[[package]]
-name = "prowave-engine"
-version = "0.1.0"
-dependencies = [
- "assert_no_alloc",
- "cpal",
- "memmap2",
- "rtrb",
- "symphonia",
- "tempfile",
- "tracing",
- "windows",
-]
-
-[[package]]
-name = "prowave-host"
-version = "0.1.0"
-dependencies = [
- "assert_no_alloc",
- "clack-extensions",
- "clack-host",
- "libloading 0.8.9",
- "prowave-engine",
- "rtrb",
- "tempfile",
- "tracing",
- "vst3",
- "windows",
-]
-
-[[package]]
-name = "prowave-project"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "zip",
-]
 
 [[package]]
 name = "pxfm"

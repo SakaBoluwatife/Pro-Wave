@@ -1,4 +1,4 @@
-# cargo-deny policy (run via `cargo xtask check`). ProWave is GPL-3.0-or-later; dependencies
+# cargo-deny policy (run via `cargo xtask check`). Ovrtone is GPL-3.0-or-later; dependencies
 # must use GPL-compatible permissive licences.
 
 [advisories]

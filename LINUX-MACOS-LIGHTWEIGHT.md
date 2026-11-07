@@ -1,16 +1,16 @@
-# Pro Wave — Linux & macOS Lightweight Implementation Spec
+# Ovrtone — Linux & macOS Lightweight Implementation Spec
 **Goal: Super lightweight, pure Rust, works on Linux and macOS, 10-20x lighter than official 【entity-Logic¦canonical_name=Logic】 Pro**
 
-## 1. Why is ProWave Lightweight
+## 1. Why is Ovrtone Lightweight
 
 【entity-Logic¦canonical_name=Logic】 Pro: 1.2GB app + 70GB library, Objective-C++ with 30 years of legacy, CoreData, NSKeyedArchiver, loads everything on startup, 1.5GB RAM idle, 3-4s cold start, macOS only.
 
-ProWave:
+Ovrtone:
 - **Binary:** <50MB single binary (Rust release + LTO + strip + mimalloc)
 - **RAM idle:** <150MB with 0 tracks (vs 1.5GB 【entity-Logic¦canonical_name=Logic】)
 - **Cold start:** <400ms (vs 3-4s) — lazy loading, no ObjC runtime, rkyv zero-copy
 - **Library:** <100MB essentials (IRs, wavetables), not 70GB. Optional: read from `/Library/Application Support/Logic/` if user has 【entity-Logic¦canonical_name=Logic】 installed
-- **Engine:** Same `prowave-engine` core for native and WASM, no duplication
+- **Engine:** Same `ovrtone-engine` core for native and WASM, no duplication
 
 ## 2. Linux — How to Make it Work
 
@@ -54,7 +54,7 @@ ProWave:
 
 ### Universal Binary
 - `cargo build --target x86_64-apple-darwin --target aarch64-apple-darwin`
-- `lipo -create -output ProWaveStudio target/x86_64.../prowave target/aarch64.../prowave`
+- `lipo -create -output OvrtoneStudio target/x86_64.../ovrtone target/aarch64.../ovrtone`
 
 ## 4. Optimizations (Pure Rust)
 
@@ -92,7 +92,7 @@ fn main() {
 ## 5. Crate Features for Linux/macOS
 
 ```toml
-# crates/prowave-engine/Cargo.toml
+# crates/ovrtone-engine/Cargo.toml
 [features]
 default = []
 macos-au = ["coreaudio-sys", "rust-au"] # only on macos
@@ -107,7 +107,7 @@ mod alsa_host;
 
 ## 6. Lightness Tests (for QA)
 
-`cargo xtask bench` builds the release app, runs `prowave --bench <file>` and checks:
+`cargo xtask bench` builds the release app, runs `ovrtone --bench <file>` and checks:
 
 - release binary under 50 MB
 - start to first frame under 400 ms
@@ -118,12 +118,12 @@ mod alsa_host;
 CI runs it on macOS and Windows on every push (`.github/workflows/ci.yml`, job `bench`). On
 Windows the first run (2026-10-20, 4K display) gave 12.6 MB, 314 ms, 125 MB, 3.6 % and 125 MB.
 What made the difference was the graphics API: OpenGL alone instead of starting Vulkan,
-DirectX 12 and OpenGL together (`crates/prowave-app/src/graphics.rs`).
+DirectX 12 and OpenGL together (`crates/ovrtone-app/src/graphics.rs`).
 
-`prowave --layout-shots <folder>` saves pictures of the window at 1920x1080, 1470x920 (13-inch
+`ovrtone --layout-shots <folder>` saves pictures of the window at 1920x1080, 1470x920 (13-inch
 MacBook Air), 1280x800 and 1024x700, to check that nothing overlaps on small screens.
-- Compare with Logic Pro: same 24-track project in Logic = 1.2GB RAM, ProWave = 300MB
+- Compare with Logic Pro: same 24-track project in Logic = 1.2GB RAM, Ovrtone = 300MB
 
 ---
 
-**For Claude:** Start with `prowave-engine` cross-platform (cpal + wgpu), then `prowave-logicx-import` with separate `macos` and `linux` features. Use `#[cfg]` for platform-specific code.
+**For Claude:** Start with `ovrtone-engine` cross-platform (cpal + wgpu), then `ovrtone-logicx-import` with separate `macos` and `linux` features. Use `#[cfg]` for platform-specific code.

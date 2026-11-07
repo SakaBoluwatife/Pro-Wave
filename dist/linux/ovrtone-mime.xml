@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-ovrtone">
+    <comment>Ovrtone project</comment>
+    <glob pattern="*.ovrtone"/>
+  </mime-type>
+  <mime-type type="application/x-prowave">
+    <comment>Ovrtone project (older file)</comment>
+    <glob pattern="*.prowave"/>
+  </mime-type>
+</mime-info>

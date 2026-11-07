@@ -1,6 +1,6 @@
-# Pro Wave — Complete Logic Pro Clone Roadmap
-**Codename: `prowave-studio` | Stack: Pure Rust + WebAssembly | Targets: macOS, Linux, Windows, Web**
-> Pro Wave is an independent, clean-room DAW inspired by Apple Logic Pro. Logic Pro is a trademark of Apple Inc. No Apple code, assets, samples, or UI assets are reused. This document is a functional specification for re-implementation.
+# Ovrtone — Complete Logic Pro Clone Roadmap
+**Codename: `ovrtone` | Stack: Pure Rust + WebAssembly | Targets: macOS, Linux, Windows, Web**
+> Ovrtone is an independent, clean-room DAW inspired by Apple Logic Pro. Logic Pro is a trademark of Apple Inc. No Apple code, assets, samples, or UI assets are reused. This document is a functional specification for re-implementation.
 
 ## Where we are (2026-11-04)
 
@@ -191,10 +191,10 @@ This is exhaustive. Based on Logic Pro 10.7 / 11.
 
 ---
 
-## 2. Technical Architecture for ProWave (Pure Rust + WASM)
+## 2. Technical Architecture for Ovrtone (Pure Rust + WASM)
 
 ```
-[ UI Thread: egui ] --(rtrb SPSC: Command)--> [ Engine Thread: prowave-engine ]
+[ UI Thread: egui ] --(rtrb SPSC: Command)--> [ Engine Thread: ovrtone-engine ]
          ^                                          |
          |----(rtrb SPSC: Metering/Events)----------|
                                                     v
@@ -206,15 +206,15 @@ This is exhaustive. Based on Logic Pro 10.7 / 11.
 **Workspace Structure:**
 ```
 /crates
-  /prowave-engine    # lock-free audio graph, transport, PDC
-  /prowave-dsp       # all FX: Eq, Comp, Reverb, etc. trait DspNode
-  /prowave-instruments # all instruments: Sampler, Quick Sampler, ES2, Sculpture, Vintage...
-  /prowave-mixer     # summing, busses, VCA, groups
-  /prowave-midi      # piano roll logic, score data, step seq, MPE, MIDI 2.0, MIDI FX
-  /prowave-plugin-host # CLAP primary, VST3, AU, sandboxed process
-  /prowave-project   # .prowave file (zip: project.json + media/ + irs/ + sampler instruments)
-  /prowave-ui        # egui widgets: Tracks, Mixer, Piano Roll, Score, Loop Browser, Library
-  /prowave-wasm      # wasm-bindgen glue + AudioWorklet entry + OPFS + Web Remote
+  /ovrtone-engine    # lock-free audio graph, transport, PDC
+  /ovrtone-dsp       # all FX: Eq, Comp, Reverb, etc. trait DspNode
+  /ovrtone-instruments # all instruments: Sampler, Quick Sampler, ES2, Sculpture, Vintage...
+  /ovrtone-mixer     # summing, busses, VCA, groups
+  /ovrtone-midi      # piano roll logic, score data, step seq, MPE, MIDI 2.0, MIDI FX
+  /ovrtone-plugin-host # CLAP primary, VST3, AU, sandboxed process
+  /ovrtone-project   # .ovrtone file (zip: project.json + media/ + irs/ + sampler instruments)
+  /ovrtone-ui        # egui widgets: Tracks, Mixer, Piano Roll, Score, Loop Browser, Library
+  /ovrtone-wasm      # wasm-bindgen glue + AudioWorklet entry + OPFS + Web Remote
 /xtask
 ```
 
@@ -231,14 +231,14 @@ This is exhaustive. Based on Logic Pro 10.7 / 11.
 
 ### Current work split (updated 2026-10-20)
 
-**Claude owns every crate** (`prowave-engine`, `prowave-app`, `prowave-project`, `xtask`,
+**Claude owns every crate** (`ovrtone-engine`, `ovrtone-app`, `ovrtone-project`, `xtask`,
 workflows, docs): all feature work and all engine work. **ChatGPT 6 does small, separate
 checks only** and never edits a crate's feature code. Each check ends in a short report and,
 where something is wrong, a minimal fix with a test, in its own commit.
 
 #### ChatGPT 6: small tasks (bug and exploit checks)
 
-1. **Hostile project files.** Try to break `.prowave` opening (`prowave-project`,
+1. **Hostile project files.** Try to break `.ovrtone` opening (`ovrtone-project`,
    `project_io.rs`): zip bombs and huge declared sizes, `../` and absolute paths in media
    names, duplicate and very long names, NaN/inf/huge numbers in `project.json`, deeply nested
    folders, thousands of tracks/regions/notes. Expected: a clear error or clamped values, never
@@ -251,7 +251,7 @@ where something is wrong, a minimal fix with a test, in its own commit.
    the input that triggers it.
 4. **`unsafe` and dependencies.** List every `unsafe` block with its safety argument, run
    `cargo deny` / `cargo audit`, and note new advisories.
-5. **Translation files.** Read `crates/prowave-app/locales/*.txt` for wrong or unnatural
+5. **Translation files.** Read `crates/ovrtone-app/locales/*.txt` for wrong or unnatural
    wording (they were written by an AI); fix a line only with a reason, keep `{}` placeholders.
 
 Rules: small diffs, `cargo xtask check` green, one commit per finding.
@@ -294,7 +294,7 @@ Rules: small diffs, `cargo xtask check` green, one commit per finding.
    EQ thumbnail are real. Automation of the fader and pan (Off, Read, Touch, Latch, Write): the
    engine plays the lanes (read every 32 samples, VCA level added), the Mixer writes them while
    playing, the Automation editor window adds, moves and deletes points. Copy/Paste Channel
-   Strip, New Aux and New VCA from the Mixer's menus. Saved in `.prowave` (older files load).
+   Strip, New Aux and New VCA from the Mixer's menus. Saved in `.ovrtone` (older files load).
    ✅ Mixer, second part (2026-10-24): the strips and buses are summed in 64 bits (a 1000 and a
    -1000 cancel and the quiet signal between them stays); Noise Gate, Limiter (2 ms look-ahead
    that never passes its ceiling) and a 6-band Multi-Band EQ (low shelf, four bells, high
@@ -306,7 +306,7 @@ Rules: small diffs, `cargo xtask check` green, one commit per finding.
    the middle of each stretch bends it, double-click straightens it); Mix Groups (Group slot:
    new group, pick one, settings for Volume, Pan, Mute and Solo, delete; moving one fader or
    pan moves the group by the same amount, Mute and Solo follow from anywhere). Saved in
-   `.prowave`. Tests: engine 123, app 321 (new ones for every item above).
+   `.ovrtone`. Tests: engine 123, app 321 (new ones for every item above).
    Not done: Bezier curves with two handles, automation of sends and of the Output slot, the
    Output slot, a multi-band compressor, linear-phase EQ, CLAP / VST3 / AU plug-ins (a hosting
    task of its own: loading the library, its parameters and its window).
@@ -326,7 +326,7 @@ positions (fixed, tested), prefetch size now follows the number of clips.
   - Done: `cargo xtask check|wasm-check|rt-check` (fmt, clippy -D warnings, tests, no-alloc, cargo-deny, wasm32) passes on Windows.
   - CI: `.github/workflows/ci.yml` runs `cargo xtask check` on Ubuntu, Windows and macOS (plus the
     cross-target builds) on every push to `main`. Checked 2026-10-31: green on all three systems.
-  - Linux: x86_64 release binary cross-builds from Windows (Zig + `cargo-zigbuild`, glibc 2.31+) and is packaged in `dist/prowave-linux-x86_64.tar.gz` with a full user README; audio thread asks for real-time priority (cpal `realtime`); window class set for desktop integration. Audio start falls back across devices/sample formats; the unsaved-changes prompt is in-app (no zenity); clippy `-D warnings` + test compilation pass for the Linux target; real DT_NEEDED is only libasound + libc. The release workflow ran on GitHub (v0.1.1) and the packaged binary stays up for 15 s under a virtual X display with software OpenGL (tarball and AppImage), but it has not been run on real Linux hardware: no audio device or GPU has been tried.
+  - Linux: x86_64 release binary cross-builds from Windows (Zig + `cargo-zigbuild`, glibc 2.31+) and is packaged in `dist/ovrtone-linux-x86_64.tar.gz` with a full user README; audio thread asks for real-time priority (cpal `realtime`); window class set for desktop integration. Audio start falls back across devices/sample formats; the unsaved-changes prompt is in-app (no zenity); clippy `-D warnings` + test compilation pass for the Linux target; real DT_NEEDED is only libasound + libc. The release workflow ran on GitHub (v0.1.1) and the packaged binary stays up for 15 s under a virtual X display with software OpenGL (tarball and AppImage), but it has not been run on real Linux hardware: no audio device or GPU has been tried.
   - macOS: cannot be built on Windows (needs Apple's SDK). `.github/workflows/release.yml` builds a universal ad-hoc-signed `.app` on GitHub's macOS runner (built successfully for v0.1.1; never launched on a Mac).
   - Release packages (v0.1.1, all built and install-checked on GitHub): Linux tarball, `.deb` (installed and removed on Ubuntu), `.rpm` (installed and removed in a Fedora 41 container), AppImage, Flatpak bundle, macOS `.app`. They are workflow artifacts, not yet published as a GitHub Release.
   - Pending: a Windows build in the release workflow; publishing a GitHub Release page; macOS and real-Linux-hardware runs; native PipeWire/JACK back-ends.
@@ -336,34 +336,34 @@ positions (fixed, tested), prefetch size now follows the number of clips.
   - `basedrop`: not used on purpose. The garbage queue returns old songs/notes/tempo maps to the UI thread to be freed, with a credit system so the queue can never overflow; it is tested in `state_reclamation` and `queue_tests`.
   - Checked 2026-10-21: Windows (`cargo xtask check`, all 7 steps; app start and 24-track bench); Linux x86_64 compiles (engine clippy `-D warnings`, whole app via `cargo zigbuild`) but tests/audio not run there; macOS only in CI.
 - [x] Logging `tracing`, crash handler `human-panic`, `metrics` for DSP load
-  - Done: `tracing` in the engine; `tracing-subscriber` in the app (`RUST_LOG`, default `warn,prowave=info`); `human-panic` crash reports (release builds).
+  - Done: `tracing` in the engine; `tracing-subscriber` in the app (`RUST_LOG`, default `warn,ovrtone=info`); `human-panic` crash reports (release builds).
   - DSP load: each audio callback is timed against its real-time budget and the peak is published through a lock-free atomic (`Shared::take_dsp_load`); the LCD CPU meter shows it (red at >=90%, % on hover). Atomics are used instead of the `metrics` crate (no exporter needed yet).
-- [x] Basic `cpal` playback: sine wave, measure output latency. `prowave-engine` example `beep` (true round-trip latency still needs a loopback cable)
+- [x] Basic `cpal` playback: sine wave, measure output latency. `ovrtone-engine` example `beep` (true round-trip latency still needs a loopback cable)
   - Done: `beep` plays 440 Hz through the engine and reports device output latency (output side only; true RTL needs a loopback).
-- **DoD:** `cargo run -p prowave-engine --example beep` plays 440Hz <20ms on all OSes (Windows met; macOS and Linux not measured yet)
-  - Status (2026-10-21): MET on Windows with the new low-latency path. Pro Wave opens its own WASAPI shared-mode stream through `IAudioClient3` (`wasapi.rs`, the smallest period the audio engine allows, MMCSS "Pro Audio" thread) and falls back to cpal if the device cannot do it (`PROWAVE_NO_LOW_LATENCY=1` forces cpal). On the development PC: 32 ms -> 12 ms reported output latency, 0 xruns (the driver's smallest period there is 480 frames, so a driver that supports 128 or less will do better). ASIO is still built but untested: no ASIO driver or SDK on the development PC. macOS/Linux not measured yet (Linux/ALSA should reach 128-frame buffers with real-time priority).
+- **DoD:** `cargo run -p ovrtone-engine --example beep` plays 440Hz <20ms on all OSes (Windows met; macOS and Linux not measured yet)
+  - Status (2026-10-21): MET on Windows with the new low-latency path. Ovrtone opens its own WASAPI shared-mode stream through `IAudioClient3` (`wasapi.rs`, the smallest period the audio engine allows, MMCSS "Pro Audio" thread) and falls back to cpal if the device cannot do it (`OVRTONE_NO_LOW_LATENCY=1` forces cpal). On the development PC: 32 ms -> 12 ms reported output latency, 0 xruns (the driver's smallest period there is 480 frames, so a driver that supports 128 or less will do better). ASIO is still built but untested: no ASIO driver or SDK on the development PC. macOS/Linux not measured yet (Linux/ALSA should reach 128-frame buffers with real-time priority).
 
 ### Phase 1: Audio Engine Core + Track System (Weeks 5-10)
 - [x] Transport: sample-accurate clock, tempo map (tempo + time signature automation), SMPTE sync
-  - Done (engine): `prowave-engine/src/tempo_map.rs` — tempo events (5-990 BPM, quarter-note tempo like Logic) and signature events, beat<->seconds, bars/beats; the transport advances through tempo changes per sample, audio clips are positioned by real time, the metronome follows the signature (accent on bar 1). Sent with `Command::SetTempoMap` (old map freed off the audio thread).
-  - App: the project has one tempo and one time signature, both saved in `.prowave`. The LCD edits them (drag the tempo, or the signature's numerator and denominator); bar/beat display, region placement, grid lines and snapping follow the signature in quarter notes, so 6/8 and 7/8 line up with the engine.
-  - Tempo track (2026-10-20): Track > Show Tempo Track shows a global Tempo track above the tracks. Double-click adds a tempo change (snapped to the grid), drag a point to change its tempo or move it, double-click or right-click > Delete Tempo Change removes it. Saved in `.prowave` (`tempo_changes`, older files open with none), undoable, sent to the engine as a `TempoMap`; the LCD shows and edits the tempo at the playhead; imported audio gets its length from the tempo map.
-  - Marker track (2026-10-20): Track > Show Marker Track; double-click to add, click to jump, drag to move, double-click to rename, right-click for colour and Delete. Navigate > Create Marker (at the nearest bar), Delete Marker, Go to Next / Previous Marker. Saved in `.prowave` (`markers`).
-  - Signature track (2026-10-21): Track > Show Signature Track. Double-click adds a change at the nearest bar (with the signature in force there), double-click a block or right-click > Edit Signature… sets numerator and denominator, drag moves it to another bar, right-click > Delete Signature Change. The LCD shows and edits the signature at the playhead. Regions sit on bars and follow the changes (`Project::bar_to_beats` / `beats_to_bar`, tested against the engine's `TempoMap` for mixed signatures); the ruler, grids, Piano Roll bar lines, Event list positions, Go to Next Bar and recording follow them too. Saved in `.prowave` (`sig_changes`, older files open with none), undoable.
-  - Tempo curves (2026-10-21): right-click a tempo point > Ramp to Next Tempo Change (or Hold Tempo Until Next Change); the line between the two points is straight and the engine integrates it (`TempoCurve::Linear`). A change added inside a curve continues it; the control bar's tempo shows the value at the playhead. Saved in `.prowave` (`ramp`, `tempo_ramp`).
+  - Done (engine): `ovrtone-engine/src/tempo_map.rs` — tempo events (5-990 BPM, quarter-note tempo like Logic) and signature events, beat<->seconds, bars/beats; the transport advances through tempo changes per sample, audio clips are positioned by real time, the metronome follows the signature (accent on bar 1). Sent with `Command::SetTempoMap` (old map freed off the audio thread).
+  - App: the project has one tempo and one time signature, both saved in `.ovrtone`. The LCD edits them (drag the tempo, or the signature's numerator and denominator); bar/beat display, region placement, grid lines and snapping follow the signature in quarter notes, so 6/8 and 7/8 line up with the engine.
+  - Tempo track (2026-10-20): Track > Show Tempo Track shows a global Tempo track above the tracks. Double-click adds a tempo change (snapped to the grid), drag a point to change its tempo or move it, double-click or right-click > Delete Tempo Change removes it. Saved in `.ovrtone` (`tempo_changes`, older files open with none), undoable, sent to the engine as a `TempoMap`; the LCD shows and edits the tempo at the playhead; imported audio gets its length from the tempo map.
+  - Marker track (2026-10-20): Track > Show Marker Track; double-click to add, click to jump, drag to move, double-click to rename, right-click for colour and Delete. Navigate > Create Marker (at the nearest bar), Delete Marker, Go to Next / Previous Marker. Saved in `.ovrtone` (`markers`).
+  - Signature track (2026-10-21): Track > Show Signature Track. Double-click adds a change at the nearest bar (with the signature in force there), double-click a block or right-click > Edit Signature… sets numerator and denominator, drag moves it to another bar, right-click > Delete Signature Change. The LCD shows and edits the signature at the playhead. Regions sit on bars and follow the changes (`Project::bar_to_beats` / `beats_to_bar`, tested against the engine's `TempoMap` for mixed signatures); the ruler, grids, Piano Roll bar lines, Event list positions, Go to Next Bar and recording follow them too. Saved in `.ovrtone` (`sig_changes`, older files open with none), undoable.
+  - Tempo curves (2026-10-21): right-click a tempo point > Ramp to Next Tempo Change (or Hold Tempo Until Next Change); the line between the two points is straight and the engine integrates it (`TempoCurve::Linear`). A change added inside a curve continues it; the control bar's tempo shows the value at the playhead. Saved in `.ovrtone` (`ramp`, `tempo_ramp`).
   - SMPTE (2026-10-21): the control bar's time follows the whole tempo map (changes and curves), a frame rate (24, 25, 29.97, 29.97 drop frame, 30) and a start time (right-click the time). MIDI Time Code out: quarter frames from the audio clock plus a full frame when the playhead jumps, to a chosen MIDI port. Follow MIDI Time Code: the transport starts, jumps (full frame, or more than 0.06 s off) and stops with the time code arriving on a chosen input port ("chase": it is not sample-locked or resampled). Tested with generator-to-decoder round trips; not tried with real hardware. Not done: MIDI Machine Control, MTC with 29.97 non-drop labelled as such (it goes out as 30).
 - [x] Pattern and Drummer regions (2026-10-21): Track > New Pattern Region / New Drummer Region, or double-click an empty stretch of a Drummer track. A Pattern region loops a grid of steps (1-64 steps, 1/4 to 1/32 and triplets, swing, gate, up to 16 rows, velocity per step) edited in the bottom panel's Step Sequencer tab. A Drummer region plays Rock, Pop, Funk, Jazz, Hip Hop or Electronic with a Complexity/Loudness pad, swing, fills, kit pieces on or off and variations; it follows any signature. Both make ordinary notes (the same settings give the same notes), remade when the region's length or the bars under it change; Convert to MIDI Region makes them editable in the Piano Roll. Not done: per-step Chance, Tie, Repeat and loop direction, the Drummer following a Groove Track, and per-bar Drummer edits. The Drummer is algorithmic and was judged by its printed grids and tests, not by ear.
 - [x] Track types: Audio, Instrument, Aux, Master, VCA, Folder/Summing Stacks, External MIDI
-  - VCA (2026-10-21): Track > New VCA Track. A VCA track is a fader with Mute and Solo (purple strip in the Mixer, filter Master/VCA); a track's Group slot picks the VCA that moves it. The engine gets each track's level plus its VCA's, and Mute/Solo from the track or its VCA (`Project::track_mix_of`). Assignments follow tracks that are inserted or deleted; saved in `.prowave` (`vca`).
-  - External MIDI (2026-10-21): Track > New External MIDI Track. The track's regions send Note On/Off to a MIDI output port and channel chosen in the Inspector (`midir`, own sending thread, `MidiOutEvent` queue from the audio thread); the engine makes no sound for it, stopping or seeking releases held notes, and live keyboard notes go out too. Saved in `.prowave` (`midi_port`, `midi_channel`). Notes are sent when the thread sees them (about 1 ms after the audio block), not at their exact sample. Not tried with a real synthesizer yet. Not done: MIDI clock, program change, controllers (the sustain pedal is not sent).
+  - VCA (2026-10-21): Track > New VCA Track. A VCA track is a fader with Mute and Solo (purple strip in the Mixer, filter Master/VCA); a track's Group slot picks the VCA that moves it. The engine gets each track's level plus its VCA's, and Mute/Solo from the track or its VCA (`Project::track_mix_of`). Assignments follow tracks that are inserted or deleted; saved in `.ovrtone` (`vca`).
+  - External MIDI (2026-10-21): Track > New External MIDI Track. The track's regions send Note On/Off to a MIDI output port and channel chosen in the Inspector (`midir`, own sending thread, `MidiOutEvent` queue from the audio thread); the engine makes no sound for it, stopping or seeking releases held notes, and live keyboard notes go out too. Saved in `.ovrtone` (`midi_port`, `midi_channel`). Notes are sent when the thread sees them (about 1 ms after the audio block), not at their exact sample. Not tried with a real synthesizer yet. Not done: MIDI clock, program change, controllers (the sustain pedal is not sent).
 - [x] Region system: Audio regions (backed by `symphonia` decoder wav/aiff/caf/mp3/flac), MIDI regions, Pattern regions, Drummer regions
-  - Done (2026-10-21): MP3 and CAF decode like the other formats (an MP3 without a length in its header is measured by decoding it once); drag them onto the window. Tests use small files in `crates/prowave-engine/tests/fixtures`. Pattern and Drummer regions: see below.
+  - Done (2026-10-21): MP3 and CAF decode like the other formats (an MP3 without a length in its header is measured by decoding it once); drag them onto the window. Tests use small files in `crates/ovrtone-engine/tests/fixtures`. Pattern and Drummer regions: see below.
 - [x] Non-destructive editing: clip gain, fade in/out with curves (equal-power, linear, S-curve), crossfade, Reverse, Normalize (non-destructive)
   - Done (engine, 2026-10-20): clip gain, beat-based fades, and reverse playback via `Engine::stream_clip_with`; `peak_of` for Normalize.
   - Region end timing is cached between song/map/transport changes; completed fades skip
     curve evaluation. Tests verify fade output after tempo and song changes without allocation.
-  - Done (app, 2026-10-20): Region Inspector Gain, Fade In/Out (1/16-note steps, shown in ms), Curve, Reverse; right-click Normalize Region Gain (non-destructive, peak to 0 dBFS) and Reverse Region; waveform drawn with gain, reversed, fades shaded; saved in `.prowave`. Pending: none from this group (see below).
-  - Done (2026-10-21): Fade tool (Tracks area tool menu): drag the left half of an audio region for a fade in, the right half for a fade out, in 1/16 notes. Crossfades: Drag: X-Fade (or the Inspector's X-Fade box): a region dropped on an earlier audio region fades in over the overlap while the earlier one fades out, with the region's curve (`Project::effective_fades`; the engine just plays the longer fades); drawn as fades on both regions; saved in `.prowave` (`crossfade`).
+  - Done (app, 2026-10-20): Region Inspector Gain, Fade In/Out (1/16-note steps, shown in ms), Curve, Reverse; right-click Normalize Region Gain (non-destructive, peak to 0 dBFS) and Reverse Region; waveform drawn with gain, reversed, fades shaded; saved in `.ovrtone`. Pending: none from this group (see below).
+  - Done (2026-10-21): Fade tool (Tracks area tool menu): drag the left half of an audio region for a fade in, the right half for a fade out, in 1/16 notes. Crossfades: Drag: X-Fade (or the Inspector's X-Fade box): a region dropped on an earlier audio region fades in over the overlap while the earlier one fades out, with the region's curve (`Project::effective_fades`; the engine just plays the longer fades); drawn as fades on both regions; saved in `.ovrtone` (`crossfade`).
 - [x] Disk streaming: memory-mapped + prefetch thread, 1000 tracks streaming test
   - Done (engine): one background decoder/prefetch thread and per-clip lock-free rings; ring
     capacity reduced to about 64 KiB (170 ms at 48 kHz) per clip, down from about 512 KiB.
@@ -372,9 +372,9 @@ positions (fixed, tested), prefetch size now follows the number of clips.
     at matching, higher, and lower output sample rates.
   - Disk registration work is limited to eight requests per worker pass so active streams
     get refills during import bursts; canceled requests are discarded before opening files.
-  - Done (2026-10-21): `MAX_TRACKS = 1024` (track numbers are `u16`, per-track state on the heap). `cargo test --release -p prowave-engine --test thousand_tracks -- --ignored --nocapture`: 1000 stereo streams for 20 s on the development PC, 0 underruns, 37% render load (worst callback 3.6 ms of 5.3 ms); the app builds its interface for 1000 tracks in about 1.9 ms per frame (`PROWAVE_BENCH_TRACKS=1000 prowave --bench file`).
-  - Memory-mapped PCM (2026-10-21): WAV and AIFF/AIFF-C with 16/24/32-bit integer or 32/64-bit float samples are read straight from a memory map (`mapped.rs`); everything else, and any file with an unusual or unfinished header, goes through the decoder. The samples are bit-identical to the decoder's (tested for every format). Measured on the development PC: no speed gain (10 minutes of 24-bit stereo read in 245 ms either way, random seeks 32 µs against 22 µs), but 1000 streaming tracks use 144 MB of private memory instead of 182 MB (the Windows working set also counts the mapped file pages, 3.8 GB for the test's files, which the system can drop). A clip with nothing to read lets go of its map after 1 s, so Windows lets other programs overwrite the file; a file that shrinks while mapped (a crash on Unix) is noticed within 250 ms and read by the decoder instead. `PROWAVE_NO_MMAP=1` turns it off. The 24-track/60-second stream check passes.
-- [x] Project file `.prowave`: zip with `project.json`, `media/` (JSON instead of rkyv, so older
+  - Done (2026-10-21): `MAX_TRACKS = 1024` (track numbers are `u16`, per-track state on the heap). `cargo test --release -p ovrtone-engine --test thousand_tracks -- --ignored --nocapture`: 1000 stereo streams for 20 s on the development PC, 0 underruns, 37% render load (worst callback 3.6 ms of 5.3 ms); the app builds its interface for 1000 tracks in about 1.9 ms per frame (`OVRTONE_BENCH_TRACKS=1000 ovrtone --bench file`).
+  - Memory-mapped PCM (2026-10-21): WAV and AIFF/AIFF-C with 16/24/32-bit integer or 32/64-bit float samples are read straight from a memory map (`mapped.rs`); everything else, and any file with an unusual or unfinished header, goes through the decoder. The samples are bit-identical to the decoder's (tested for every format). Measured on the development PC: no speed gain (10 minutes of 24-bit stereo read in 245 ms either way, random seeks 32 µs against 22 µs), but 1000 streaming tracks use 144 MB of private memory instead of 182 MB (the Windows working set also counts the mapped file pages, 3.8 GB for the test's files, which the system can drop). A clip with nothing to read lets go of its map after 1 s, so Windows lets other programs overwrite the file; a file that shrinks while mapped (a crash on Unix) is noticed within 250 ms and read by the decoder instead. `OVRTONE_NO_MMAP=1` turns it off. The 24-track/60-second stream check passes.
+- [x] Project file `.ovrtone`: zip with `project.json`, `media/` (JSON instead of rkyv, so older
   files keep opening; no `bounces/` until Bounce exists). Open, Save, Save As, Save A Copy As and
   Revert to Saved work
 - [~] Audio recording (2026-10-30; a failing input device marks the take as lost, 2026-10-31): input device and channel per track (mono or stereo pair, the
@@ -382,8 +382,8 @@ positions (fixed, tested), prefetch size now follows the number of clips.
   while recording, files saved in the project, lined up by the delay the system reports. Input
   capture is `capture.rs`: lock-free ring, writer thread, 32-bit float WAV that stays readable
   after a crash.
-  Tested on Windows with a real microphone (`cargo test -p prowave-app records_from_the_real_input
-  -- --ignored`, and `cargo run -p prowave-engine --example record`). The I button hears the input
+  Tested on Windows with a real microphone (`cargo test -p ovrtone-app records_from_the_real_input
+  -- --ignored`, and `cargo run -p ovrtone-engine --example record`). The I button hears the input
   through the track's strip (`monitor.rs`, resampled, a backlog is dropped); Count-in clicks one
   bar before recording; tracks can play into a bus (Output slot); Capture Recording makes a region
   of what was played on a MIDI keyboard. Not done: Linux and macOS runs, cycle takes, punch in/out,
@@ -401,7 +401,7 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 - [x] Step Sequencer: Pattern region with rows, per-step Chance, Repeat, Tie, Gate, Loop Direction
   - Done (2026-10-21): Pattern regions with rows, steps, rate, swing, gate and per-step velocity, Chance (percent, the same every time for a seed; New Variation changes it), Repeat (1-4 notes in a step, click to count up) and Tie (carries on the note before it, also over the loop), and a play direction (Forward, Backward, Ping-Pong, Random). The Edit box above the grid picks what a click sets. Pending: automation per row, per-row gate.
 - [~] Event List, Step Editor, MIDI Transform (conditions + operations), MIDI FX chain (Arp, Chord Trigger, Scripter via Rhai) (2026-11-04): Event List, MIDI Transform and MIDI FX done; Logic's Step Editor to do (`step_editor.rs` is the Pattern editor).
-  - MIDI FX (2026-10-21): Track > MIDI FX… opens a chain of up to 8 effects for the selected track: Transposer, Velocity Processor, Scale Quantizer, Chord Trigger (8 chords), Note Repeater, Arpeggiator (Up, Down, Up and Down, Random, As Played; 1-4 octaves; gate) and Randomizer (pitch, velocity, timing; the same every time). Each can be switched off, moved and removed; they change the notes the engine plays (and what Export MIDI writes) and leave the regions as recorded. Saved in `.prowave`. Added later the same day: Modulator (sine, triangle, saw or square to a MIDI controller or pitch bend of an External MIDI track) and Scripter (Rhai script, sandboxed, with an operation limit). The sustain pedal and the controllers now go out to External MIDI tracks. Not done: the MIDI FX slot in the channel strip, and showing the changed notes in the Piano Roll.
+  - MIDI FX (2026-10-21): Track > MIDI FX… opens a chain of up to 8 effects for the selected track: Transposer, Velocity Processor, Scale Quantizer, Chord Trigger (8 chords), Note Repeater, Arpeggiator (Up, Down, Up and Down, Random, As Played; 1-4 octaves; gate) and Randomizer (pitch, velocity, timing; the same every time). Each can be switched off, moved and removed; they change the notes the engine plays (and what Export MIDI writes) and leave the regions as recorded. Saved in `.ovrtone`. Added later the same day: Modulator (sine, triangle, saw or square to a MIDI controller or pitch bend of an External MIDI track) and Scripter (Rhai script, sandboxed, with an operation limit). The sustain pedal and the controllers now go out to External MIDI tracks. Not done: the MIDI FX slot in the channel strip, and showing the changed notes in the Piano Roll.
   - MIDI Transform (2026-10-21): Piano Roll > Functions > MIDI Transform… selects notes by pitch, velocity, position or length and operates on them (transpose, velocity, position, length, scale, randomize), with presets (Transpose, Fixed Velocity, Legato, Humanize, ...). Not done: conditions on other regions' notes and saving your own presets.
 - [~] Drummer Track v0: 2 drummers, Complexity/Loudness X/Y, Follow Track, Convert to MIDI (2026-11-04): generated notes work; the stock kit goes with the no-stock rule.
 - **DoD:** Create Drummer + Bass (MIDI) + Keys, quantize, bounce
@@ -464,8 +464,8 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 - **DoD:** 5 Logic users can do basic tracking/mixing without manual
 
 ### Phase 9: WASM, Collaboration & Polish (Weeks 67-74)
-- [ ] Compile `prowave-engine` to WASM + AudioWorklet (128-sample blocks, SharedArrayBuffer + Atomics)
-- [ ] `prowave-wasm`: OPFS for project storage, Web UI via `egui_web` (same egui code), Web Remote (like Logic Remote but via browser/WebSocket)
+- [ ] Compile `ovrtone-engine` to WASM + AudioWorklet (128-sample blocks, SharedArrayBuffer + Atomics)
+- [ ] `ovrtone-wasm`: OPFS for project storage, Web UI via `egui_web` (same egui code), Web Remote (like Logic Remote but via browser/WebSocket)
 - [ ] Collaboration: Project file with Ed25519 signing, simple CRDT for arrangement (optional)
 - [~] Export: Bounce Project/Region/Track in Place (offline/real-time, normalize, dither Apogee UV22HR via `r8brain`), Export All Tracks as Audio, Export MIDI, MusicXML, AAF, ADM BWF (Atmos) (2026-11-04): project, section, track, all tracks and regions in place, WAV, FLAC, MP3; normalize, MusicXML and Tracks in Place to do.
 - [ ] Performance: SIMD (`wide`, `std::simd`), benchmarks vs Logic/Reaper
@@ -477,7 +477,7 @@ positions (fixed, tested), prefetch size now follows the number of clips.
 - [x] Starts under a virtual display with software OpenGL in the release workflow
 - [x] Audio thread asks for real-time priority
 - [~] Runs on real machines: testers use it on Ubuntu. The graphics fallbacks for NVIDIA (Vulkan, then X11 under Wayland, then software OpenGL) are written but not confirmed by the tester who reported the crash
-- [x] Wayland: the window's app id matches the menu entry (`prowave-studio`, the Flatpak id in a Flatpak)
+- [x] Wayland: the window's app id matches the menu entry (`ovrtone`, the Flatpak id in a Flatpak)
 - [x] Opens Ogg Vorbis, M4A/MP4 (AAC, ALAC) and ADPCM files besides WAV, AIFF, FLAC, MP3 and CAF
 - [x] `cargo xtask check` passes in CI (checked 2026-10-31)
 - [ ] Sound and audio recording confirmed on real hardware
@@ -529,7 +529,7 @@ For each feature, Claude must produce:
 2.  **Param Layout:** Exactly match Logic's parameter names and ranges (e.g., Compressor Threshold -50 to 0 dB, Ratio 1:1 to 20:1). Use `nih-plug` params for compatibility
 3.  **Preset Test:** Load Logic preset JSON (we will provide `logic-presets/` corpus) and verify output within 0.5dB or 1 cent pitch
 4.  **No Alloc Test:** `#[test] fn no_alloc() { assert_no_alloc::assert_no_alloc(|| { let mut node = ChannelEq::new(); node.process(&inputs, &mut outputs); }); }`
-5.  **WASM Build:** `cargo check -p prowave-dsp --target wasm32-unknown-unknown` must pass
+5.  **WASM Build:** `cargo check -p ovrtone-dsp --target wasm32-unknown-unknown` must pass
 
 ---
 
@@ -545,7 +545,7 @@ For each feature, Claude must produce:
 
 ---
 
-Next step for Claude: Start Phase 0. `cargo new --lib crates/prowave-engine && cargo xtask init`
+Next step for Claude: Start Phase 0. `cargo new --lib crates/ovrtone-engine && cargo xtask init`
 Then implement transport clock with `Transport { sample_rate: f64, tempo_map: TempoMap, position: SamplePosition }`
 
 
@@ -553,7 +553,7 @@ Then implement transport clock with `Transport { sample_rate: f64, tempo_map: Te
 
 ## 10. Official Logic Pro .logicx Support (New Requirement)
 
-ProWave MUST open and save official Apple Logic Pro .logicx projects on Linux and macOS, while being super lightweight in pure Rust.
+Ovrtone MUST open and save official Apple Logic Pro .logicx projects on Linux and macOS, while being super lightweight in pure Rust.
 
 See `LOGICX_FORMAT_SPEC.md` for full byte-level spec for Claude.
 
@@ -562,10 +562,10 @@ See `LOGICX_FORMAT_SPEC.md` for full byte-level spec for Claude.
 - Parse via linear scan, no central header table, guard against false positives (printable ASCII, length caps)
 - 5 record shapes: AU triple (3x FourCC), GAME (stock plugins), JSON (Drummer/Bass Player), Channel-strip records (16-byte name + 8-byte descriptor), Region records (0x61 0xFF + 24 NULs + u16 LE len)
 - Write via seed synthesis method (from LogicProFormatWriter): embed 62KB donor seeds (audio_base.seed, mixed_base.seed, infra.json.gz), clone and patch records, don't hand-craft
-- Linux: No AU, map Alchemy -> ProWave Alchemy-lite, Channel EQ -> ProWave EQ, etc. Show "replaced" UI
+- Linux: No AU, map Alchemy -> Ovrtone Alchemy-lite, Channel EQ -> Ovrtone EQ, etc. Show "replaced" UI
 - macOS: AU hosting via coreaudio-sys, CoreAudio backend, Metal via wgpu
 - Lightweight: <50MB binary, <150MB RAM idle, <400ms cold start vs Logic 1.2GB/1.5GB/3-4s, achieved via mimalloc + LTO + strip + lazy loading + rkyv zero-copy + memmap disk streaming
 
-**Crate:** `crates/prowave-logicx-import` with public API `open_logicx(path) -> ProWaveProject` and `save_logicx(project, path)`
+**Crate:** `crates/ovrtone-logicx-import` with public API `open_logicx(path) -> OvrtoneProject` and `save_logicx(project, path)`
 
 **Tests:** Empty project, Drummer project, audio+MIDI project, round-trip, fuzz

@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 /// Crates that must build for the browser (AGENTS.md §3.5: DSP parity on wasm32).
-const WASM_CRATES: &[&str] = &["prowave-engine"];
+const WASM_CRATES: &[&str] = &["ovrtone-engine"];
 /// Crates whose `unsafe` code must pass miri (AGENTS.md §3).
-const MIRI_CRATES: &[&str] = &["prowave-engine", "prowave-dsp", "prowave-instruments"];
+const MIRI_CRATES: &[&str] = &["ovrtone-engine", "ovrtone-dsp", "ovrtone-instruments"];
 
 fn root() -> PathBuf {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -214,14 +214,14 @@ fn check() -> bool {
 
     steps.extend(wasm_steps());
 
-    if crate_exists("prowave-dsp") {
+    if crate_exists("ovrtone-dsp") {
         steps.push(step(
             "preset_compat",
             "cargo",
             &[
                 "test",
                 "-p",
-                "prowave-dsp",
+                "ovrtone-dsp",
                 "--test",
                 "preset_compat",
                 "--",
@@ -229,17 +229,17 @@ fn check() -> bool {
             ],
         ));
     } else {
-        println!("xtask: prowave-dsp not created yet; preset_compat skipped");
+        println!("xtask: ovrtone-dsp not created yet; preset_compat skipped");
     }
-    if crate_exists("prowave-wasm") {
+    if crate_exists("ovrtone-wasm") {
         steps.push(Step {
             name: "wasm-pack",
             program: "wasm-pack",
-            args: vec!["test", "--node", "crates/prowave-wasm"],
+            args: vec!["test", "--node", "crates/ovrtone-wasm"],
             env: Vec::new(),
         });
     } else {
-        println!("xtask: prowave-wasm not created yet; wasm-pack test skipped");
+        println!("xtask: ovrtone-wasm not created yet; wasm-pack test skipped");
     }
 
     let mut failed = Vec::new();
