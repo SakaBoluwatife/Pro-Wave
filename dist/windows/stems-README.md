@@ -2,12 +2,11 @@
 
 `dist/windows/stems/` is not in git. Before building the installer it must hold:
 
-- `demucs.exe`: from https://github.com/nikhilunni/demucs-rs at commit `805d6f72ede20282832ac78c634e8767716c0b21`, built for the CPU with `cargo build --release -p demucs-cli --features cpu`. Apache-2.0.
-- `LICENSE`: that repository's licence file.
-- `htdemucs.safetensors`: the 84 MB model, from https://huggingface.co/set-soft/audio_separation/resolve/main/Demucs/htdemucs.safetensors
+- `htdemucs_fp16weights.onnx`: the 166 MB model, from https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx (SHA-256 `d05c269d0178d2a72ad484b10b11dd370193fc923201c3b27a99f848745db70a`).
+- `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `ONNXRUNTIME-LICENSE` and `ONNXRUNTIME-ThirdPartyNotices.txt`: from `lib/` and the top of https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/onnxruntime-win-x64-1.31.1.zip. MIT. The version must suit the `ort` crate in `crates/ovrtone-app/Cargo.toml`.
 
-**Model licence:** unresolved. The Demucs code is MIT, but no explicit licence for the trained weights was found, and reports quote a project statement that they were for research use. The owner chose to bundle them while Ovrtone is not sold. Revisit this before any sale, or replace the model with one of our own.
+**Model licence:** unresolved. The model's page and the Demucs code say MIT, but no explicit licence from Meta for the trained weights was found, and reports quote a project statement that they were for research use. The owner chose to bundle them while Ovrtone is not sold. Revisit this before any sale, or download the model on first use, or replace it with one of our own.
 
-The owner chose the CPU build for now, to optimize later. The GPU build crashed on the owner's laptop (Intel UHD 620 and NVIDIA MX150) with a wgpu "Encoder is invalid" error on a 10-second test tone.
+The splitter runs on the CPU, in a copy of `ovrtone.exe` started with `--split-stems`.
 
 For a development build, set `OVRTONE_STEMS_DIR` to a folder holding these files.

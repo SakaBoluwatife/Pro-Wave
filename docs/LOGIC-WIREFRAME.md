@@ -16,8 +16,8 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 1. **Crash isolation:** plugins in a process of their own. A crash while loading is handled; one while playing or in a plugin window still ends the program.
 2. **CPU, second part:** a clean measurement on an idle machine (`perf.rs`, ignored tests), then block processing of strips if sessions with many built-in effects or clips need it.
-3. **Audio takes when recording over a region** (Cycle recording makes folders already).
-4. **Piano roll, second part:** time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M.
+3. **Comping, further:** real overlapping crossfades at comp joins, take names and colours.
+4. **Piano roll, further:** per-note pitch bend for slides (they bend the whole instrument for now).
 5. **Audio setup, second part:** the ASIO driver's control panel, separate input and output devices.
 6. **Theme, second part:** the shared colours and sizes are in `theme.rs`; about 300 one-off colours remain in the screens. Dockable panels.
 7. **Tuner, controller lanes in a Step Editor.**
@@ -88,7 +88,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Autopunch | HAVE | One punch a pass; recording stops at the punch out. Locators come from the selection or Cycle |
 | Replace mode, Record Repeat | GREY | |
 | MIDI take folders, swipe comping | HAVE | |
-| Audio take folders, swipe comping | HAVE | From Cycle recording. Recording over an existing region makes no folder yet |
+| Audio take folders, swipe comping | HAVE | From Cycle recording, and recording over a region. Right click a take: hear it alone, keep comps by name, copy a take or the comp to a new track. Joins between stretches can be dragged |
 | Low latency mode | HAVE | Transport button and Project Settings |
 
 ## 5. Audio editing (chapters: loops/media, Audio Track Editor, Flex)
@@ -111,7 +111,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Piano Roll, FL behaviour | HAVE | Draw, Paint, Delete, Mute, Slice, Select; type to MIDI; ghost notes |
 | Note tools | HAVE | Arpeggiate, Strum, Flam, Note Repeat, Claw, Limit, Levels, Velocity LFO, Randomize, Chord Stamp, Flip, select by pitch or position |
 | Quantize, swing, scale quantize, scale highlight, humanize | HAVE | |
-| Time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M | TODO | |
+| Time selection, slide notes, note colors, Zoom and Playback tools, Shift+R and Shift+M | HAVE | As in FL Studio. Slides bend a hosted instrument, with its bend range set in the inspector |
 | Step Sequencer / Pattern region | HAVE | 16 rows by 64 steps |
 | Score editor | PART | Clefs, keys, rests and ties; no printing or MusicXML |
 | Event List | HAVE | |

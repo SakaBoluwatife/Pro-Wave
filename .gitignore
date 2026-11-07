@@ -27,3 +27,5 @@ Thumbs.db
 
 # The Stem Splitter's helper and model go in the installer, not in git.
 dist/windows/stems/
+dist/windows/runtime/
+dist/windows/output/

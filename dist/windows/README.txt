@@ -1,15 +1,19 @@
 Ovrtone - Windows x64
 ======================
 
-Ovrtone is a DAW (music production app) in the style of Apple Logic Pro, written in Rust.
-This is an early development build: expect missing features and rough edges.
+Ovrtone is a DAW (music production app), written in Rust.
+This is an alpha build: expect missing features and rough edges, and keep backups of your projects.
+It has no stock instruments or sounds: bring your own VST3 or CLAP plugins and samples.
 
 Run it
 ------
 
-1. Unzip the folder anywhere (it needs no installer and writes nothing outside your user
-   folders).
-2. Double-click ovrtone.exe.
+Start Ovrtone from the Start menu.
+
+The first launch reads every plugin you have, on the launch screen. That can take several minutes
+with a big collection, and it happens once: after that only new or changed plugins are read, and
+the program starts quickly. A plugin that crashes or stops responding is left out and remembered;
+Rescan on the Plugins tab tries it again.
 
 Windows may show "Windows protected your PC" (SmartScreen) because the program is not code
 signed yet. Choose "More info", then "Run anyway".
@@ -51,7 +55,7 @@ Keyboard shortcuts
 
   Ctrl+N new    Ctrl+O open    Ctrl+S save    Ctrl+Shift+S save as
   Space play/stop    Ctrl+R repeat region    Delete delete selection
-  Y Library    I Inspector    X Mixer    Q quantize (Piano Roll)
+  I Inspector    X Mixer    Q quantize (Piano Roll)
 
 Publisher: Bankz Sound Lab
 Based on Pro Wave by the original authors: https://github.com/fabox-os/Pro-Wave
