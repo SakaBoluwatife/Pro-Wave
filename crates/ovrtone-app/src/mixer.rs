@@ -13,7 +13,7 @@
 use crate::i18n::{tr, trf};
 use crate::model::{AutoMode, AutoTarget, Insert, Project, SendSlot, TrackKind, MAX_SENDS};
 use crate::widgets::{
-    back_chevron, menu_title, popup_button, stroke, todo_item, BLUE, TEXT, TEXT_DIM,
+    back_chevron, blue, menu_title, popup_button, stroke, todo_item, TEXT, TEXT_DIM,
 };
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, StrokeKind, Ui};
@@ -30,7 +30,6 @@ const STRIP_BG: Color32 = crate::theme::STRIP;
 const STRIP_SEL: Color32 = crate::theme::STRIP_SELECTED;
 const SLOT_EMPTY: Color32 = crate::theme::SLOT_EMPTY;
 const SLOT_GRAY: Color32 = crate::theme::SLOT;
-const PLUGIN_BLUE: Color32 = crate::theme::ACCENT_BLUE;
 /// A strip that makes no sound (muted, or another track is soloed): instruments, plug-ins
 /// and sends turn grey, and so do the meters.
 const PLUGIN_OFF: Color32 = crate::theme::SLOT_OFF;
@@ -141,7 +140,7 @@ pub struct CopiedStrip {
 }
 
 /// Where track `t`'s sound goes: the strip, the Aux strips of the buses it reaches and of the ones
-/// those reach, then the outputs.
+/// those reach, then Stereo Out if it gets there.
 pub fn signal_path(p: &Project, t: usize) -> Vec<StripKey> {
     let mut path = vec![t];
     let mut k = 0;
@@ -161,8 +160,15 @@ pub fn signal_path(p: &Project, t: usize) -> Vec<StripKey> {
         }
         k += 1;
     }
+    // Stereo Out only if something on the way plays there. Sound can end on a bus nothing listens to,
+    // or go only to another pair of outputs.
+    let reaches_out = path
+        .iter()
+        .any(|i| p.tracks[*i].output == 0 && p.tracks[*i].hardware_out == 0);
     let mut keys: Vec<StripKey> = path.into_iter().map(StripKey::Track).collect();
-    keys.push(StripKey::StereoOut);
+    if reaches_out {
+        keys.push(StripKey::StereoOut);
+    }
     keys
 }
 
@@ -333,6 +339,7 @@ fn small_button(
         "S" => "Solo",
         "R" => "Record Enable",
         "I" => "Input Monitoring",
+        "" => "Bounce",
         _ => "",
     };
     let mut resp = ui.interact(r, id, Sense::click());
@@ -396,7 +403,7 @@ fn pan_knob(
     // Off centre, the knob says how far.
     let amount = (value * 64.0).round() as i32;
     if amount != 0 {
-        g.circle_filled(c, 8.5, Color32::from_gray(0x8c));
+        g.circle_filled(c, 8.5, Color32::from_gray(0x68));
         g.text(
             c,
             Align2::CENTER_CENTER,
@@ -447,7 +454,7 @@ fn fader_and_meter(
     let h = (bottom - top).max(1.0);
     let y_of = |f: f32| bottom - f * h;
     let w = area.width();
-    let scale_col = Color32::from_gray(0x8e);
+    let scale_col = Color32::from_gray(0x6c);
     let tiny = FontId::proportional(6.5);
 
     // Columns, proportional to the strip width (Logic: fader left of centre, meter right).
@@ -486,10 +493,10 @@ fn fader_and_meter(
 
     // Fader slot.
     let slot_r = Rect::from_min_max(pos2(fader_x - 2.0, top), pos2(fader_x + 2.0, bottom));
-    g.rect_filled(slot_r, 2.0, Color32::from_gray(0x14));
+    g.rect_filled(slot_r, 2.0, Color32::from_gray(0x0b));
     g.line_segment(
         [slot_r.right_top(), slot_r.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x50)),
+        Stroke::new(1.0, Color32::from_gray(0x2b)),
     );
 
     // Meter bars with peak-hold lines (hold falls back at 12 dB/s).
@@ -507,11 +514,11 @@ fn fader_and_meter(
         pos2(meter_left - 2.0, top - 1.0),
         pos2(meter_left + 2.0 * bar_w + 3.0, bottom + 1.0),
     );
-    g.rect_filled(housing, 2.5, Color32::from_gray(0x10));
+    g.rect_filled(housing, 2.5, Color32::from_gray(0x09));
     g.rect_stroke(
         housing,
         2.5,
-        Stroke::new(1.0, Color32::from_gray(0x2e)),
+        Stroke::new(1.0, Color32::from_gray(0x19)),
         StrokeKind::Inside,
     );
     // The clip light above the bars: on since the meter last went over full scale.
@@ -519,7 +526,7 @@ fn fader_and_meter(
     let light_color = if clipped {
         Color32::from_rgb(0xf0, 0x30, 0x24)
     } else {
-        Color32::from_gray(0x24)
+        Color32::from_gray(0x14)
     };
     g.rect_filled(light, 1.0, light_color);
     for (i, (lvl, hd)) in [(levels.0, hold.0), (levels.1, hold.1)]
@@ -528,7 +535,7 @@ fn fader_and_meter(
     {
         let x0 = meter_left + i as f32 * (bar_w + 1.0);
         let bar = Rect::from_min_max(pos2(x0, top), pos2(x0 + bar_w, bottom));
-        g.rect_filled(bar, 0.5, Color32::from_gray(0x08));
+        g.rect_filled(bar, 0.5, Color32::from_gray(0x04));
         let f = db_to_frac(lvl);
         if f > 0.0 {
             let bands = [(-120.0f32, -6.0f32), (-6.0, 0.0), (0.0, 12.0)];
@@ -621,7 +628,7 @@ fn fader_and_meter(
         2.0,
         Color32::from_black_alpha(110),
     );
-    g.rect_filled(cap, 2.0, Color32::from_gray(0x9c));
+    g.rect_filled(cap, 2.0, Color32::from_gray(0x88));
     g.rect_filled(
         Rect::from_min_max(
             pos2(cap.left() + 1.5, cap.top() + 1.0),
@@ -651,7 +658,7 @@ fn fader_and_meter(
     g.rect_stroke(
         cap,
         2.0,
-        Stroke::new(1.0, Color32::from_gray(0x44)),
+        Stroke::new(1.0, Color32::from_gray(0x25)),
         StrokeKind::Inside,
     );
     for dy in [-9.0f32, -6.0, -3.0, 4.5, 7.5, 10.5] {
@@ -660,7 +667,7 @@ fn fader_and_meter(
                 pos2(cap.left() + 2.5, cap_y + dy),
                 pos2(cap.right() - 2.5, cap_y + dy),
             ],
-            Stroke::new(0.8, Color32::from_gray(0x80)),
+            Stroke::new(0.8, Color32::from_gray(0x50)),
         );
         g.line_segment(
             [
@@ -881,8 +888,16 @@ fn send_slot(
         g,
         slot_r,
         &trf("Bus {}", &[&bus]),
-        if inactive { PLUGIN_OFF } else { PLUGIN_BLUE },
-        if inactive { TEXT_DIM } else { Color32::WHITE },
+        if inactive {
+            PLUGIN_OFF
+        } else {
+            crate::theme::accent()
+        },
+        if inactive {
+            TEXT_DIM
+        } else {
+            crate::theme::on_accent()
+        },
     );
     if send.pre {
         // The eye icon Logic shows on pre-fader sends.
@@ -928,8 +943,8 @@ fn send_slot(
         send.level = 0.0;
     }
     crate::widgets::value_arc(g, knob_c, 8.2, -1.0, send.level * 2.0 - 1.0);
-    g.circle_filled(knob_c, 6.5, Color32::from_gray(0x5e));
-    g.circle_stroke(knob_c, 6.5, Stroke::new(1.0, Color32::from_gray(0x26)));
+    g.circle_filled(knob_c, 6.5, Color32::from_gray(0x32));
+    g.circle_stroke(knob_c, 6.5, Stroke::new(1.0, Color32::from_gray(0x15)));
     let a = -std::f32::consts::FRAC_PI_2 - 2.3 + send.level * 4.6;
     g.line_segment(
         [
@@ -1185,8 +1200,16 @@ fn insert_slot(
                 r,
                 fx.name(),
                 2,
-                if off { PLUGIN_OFF } else { PLUGIN_BLUE },
-                if off { TEXT_DIM } else { Color32::WHITE },
+                if off {
+                    PLUGIN_OFF
+                } else {
+                    crate::theme::accent()
+                },
+                if off {
+                    TEXT_DIM
+                } else {
+                    crate::theme::on_accent()
+                },
             );
         }
         None => slot(
@@ -1415,8 +1438,44 @@ fn move_plugin(p: &mut Project, from: SlotDrag, to: Home, row: usize) {
     };
 }
 
+/// A plugin from the Plugins tab let go on an insert: it takes the place of what is there, in the same
+/// row, or fills it if empty. An instrument cannot go in an insert.
+fn replace_in_slot(
+    p: &mut Project,
+    info: &ovrtone_host::PluginInfo,
+    home: Home,
+    row: usize,
+) -> bool {
+    if info.is_instrument {
+        return false;
+    }
+    let first = home.first_row(p);
+    let row = row.max(first);
+    let list = home.plugins(p);
+    crate::model::settle_plugin_rows(first, list);
+    let mut new = crate::model::PluginInsert::new(info);
+    if let Some(there) = list.iter_mut().find(|x| usize::from(x.row) == row) {
+        new.row = there.row;
+        *there = new;
+    } else {
+        crate::model::place_plugin_in_row(first, list, new, row);
+    }
+    true
+}
+
 /// A plugin let go on slot `r`, row `k` of `home`.
 fn slot_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, home: Home, k: usize) {
+    if let Some(drag) = egui::DragAndDrop::payload::<crate::left_panel::PluginDrag>(ui.ctx()) {
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|at| r.contains(at));
+        if over && !drag.0.is_instrument {
+            g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+            if ui.input(|i| i.pointer.any_released()) && replace_in_slot(p, &drag.0, home, k) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+            }
+        }
+    }
     let Some(drag) = egui::DragAndDrop::payload::<SlotDrag>(ui.ctx()) else {
         return;
     };
@@ -1426,7 +1485,7 @@ fn slot_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, home: Home, k: usiz
     if !over {
         return;
     }
-    g.rect_stroke(r, 2.0, Stroke::new(1.5, BLUE), egui::StrokeKind::Outside);
+    g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
     if ui.input(|i| i.pointer.any_released()) {
         egui::DragAndDrop::clear_payload(ui.ctx());
         move_plugin(p, *drag, home, k);
@@ -1703,7 +1762,11 @@ fn plugin_slot(
         r,
         &plugin.name,
         2,
-        if off { PLUGIN_OFF } else { PLUGIN_BLUE },
+        if off {
+            PLUGIN_OFF
+        } else {
+            crate::theme::accent()
+        },
         text_color,
     );
     let hover = match &plugin.failed {
@@ -1802,34 +1865,6 @@ fn plugin_slot(
     }
 }
 
-/// The built-in sound in the input slot of track `i`, which can be taken away: the track is then
-/// silent until a plugin or a sample is put on it.
-#[allow(clippy::too_many_arguments)]
-fn built_in_instrument_slot(
-    ui: &Ui,
-    g: &Painter,
-    r: Rect,
-    p: &mut Project,
-    v: &mut MixerView,
-    i: usize,
-    name: &str,
-    uid: egui::Id,
-) {
-    named_slot(g, r, name, 1, PLUGIN_BLUE, Color32::WHITE);
-    let resp = ui
-        .interact(r, uid, Sense::click())
-        .on_hover_text_at_pointer(
-            "Built-in sound. Click to choose an instrument plugin, or drop a plugin or sample on this track.",
-        );
-    instrument_menu(&resp, true, p, v, i);
-    let mut remove = delete_pressed(ui, &resp);
-    remove |= slot_remove_button(ui, g, r, uid, Color32::WHITE);
-    if remove {
-        p.tracks[i].instrument = Some(crate::model::NO_INSTRUMENT);
-        p.song_rev += 1;
-    }
-}
-
 /// The input slot of track `i` when a hosted plugin plays its notes. A click opens its editor.
 fn instrument_plugin_slot(
     ui: &Ui,
@@ -1843,6 +1878,36 @@ fn instrument_plugin_slot(
     let Some(plugin) = p.tracks[i].instrument_plugin.clone() else {
         return;
     };
+    // A new sound or instrument let go on it takes its place.
+    let hovering = ui
+        .input(|m| m.pointer.hover_pos())
+        .is_some_and(|at| r.contains(at));
+    let released = ui.input(|m| m.pointer.any_released());
+    if hovering {
+        if let Some(drag) =
+            egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx())
+        {
+            g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+            if released {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                let info = crate::sample_place::sampler_info(&drag.0);
+                let _ = if crate::sample_place::holds_sample(p, i) {
+                    crate::sample_place::replace_sample(p, i, &drag.0)
+                } else {
+                    crate::plugin_rack::add_plugin(p, i, &info)
+                };
+            }
+        }
+        if let Some(drag) = egui::DragAndDrop::payload::<crate::left_panel::PluginDrag>(ui.ctx()) {
+            if drag.0.is_instrument {
+                g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+                if released {
+                    egui::DragAndDrop::clear_payload(ui.ctx());
+                    let _ = crate::plugin_rack::add_plugin(p, i, &drag.0);
+                }
+            }
+        }
+    }
     let loaded = plugin.failed.is_none();
     let on = loaded && !plugin.bypass;
     let text_color = if on { Color32::WHITE } else { TEXT_DIM };
@@ -1851,7 +1916,11 @@ fn instrument_plugin_slot(
         r,
         &plugin.name,
         2,
-        if on { PLUGIN_BLUE } else { PLUGIN_OFF },
+        if on {
+            crate::theme::accent()
+        } else {
+            PLUGIN_OFF
+        },
         text_color,
     );
     let hover = match &plugin.failed {
@@ -2060,7 +2129,7 @@ pub fn channel_strip(
     let (plug, plug_text) = if inactive {
         (PLUGIN_OFF, TEXT_DIM)
     } else {
-        (PLUGIN_BLUE, Color32::WHITE)
+        (crate::theme::accent(), crate::theme::on_accent())
     };
     // Whole-strip click selects (registered first so the controls on top win).
     if let StripKey::Track(i) = key {
@@ -2094,7 +2163,9 @@ pub fn channel_strip(
                     .map(|x| (x.name(), x.bypass))
                     .collect::<Vec<_>>(),
                 Some(t.kind),
-                t.instrument,
+                // An instrument slot to fill, as there are no built-in sounds.
+                matches!(t.kind, TrackKind::Instrument | TrackKind::Drummer)
+                    .then_some(crate::model::NO_INSTRUMENT),
             )
         }
         StripKey::StereoOut => (tr("Stereo Out").to_string(), OUT_PURPLE, vec![], None, None),
@@ -2171,24 +2242,12 @@ pub fn channel_strip(
                 }
             }
             (Some(TrackKind::Instrument | TrackKind::Drummer), Some(inst)) => {
-                let on_track = match key {
-                    StripKey::Track(i) if inst != crate::model::NO_INSTRUMENT => Some(i),
-                    _ => None,
-                };
-                match on_track {
-                    Some(i) => {
-                        let uid = id(ns, (key, "built_in"));
-                        built_in_instrument_slot(ui, g, input_r, p, v, i, inst, uid);
-                    }
-                    None => {
-                        slot(g, input_r, inst, SLOT_EMPTY, TEXT);
-                        if let StripKey::Track(i) = key {
-                            let resp = ui
-                                .interact(input_r, id(ns, (key, "choose")), Sense::click())
-                                .on_hover_text_at_pointer("Click to choose an instrument plugin");
-                            instrument_menu(&resp, true, p, v, i);
-                        }
-                    }
+                slot(g, input_r, inst, SLOT_EMPTY, TEXT);
+                if let StripKey::Track(i) = key {
+                    let resp = ui
+                        .interact(input_r, id(ns, (key, "choose")), Sense::click())
+                        .on_hover_text_at_pointer("Click to choose an instrument plugin");
+                    instrument_menu(&resp, true, p, v, i);
                 }
             }
             // An aux strip's input is the bus it listens to: Aux 1 takes Bus 1, and so on.
@@ -2370,8 +2429,9 @@ pub fn channel_strip(
     // Volume (dB) and peak-hold readouts.
     // Sends on Faders: the fader sets the strip's send to that bus instead of its level.
     let send_bus = match key {
-        StripKey::Track(i) if !matches!(p.tracks[i].kind, TrackKind::Aux | TrackKind::Vca) => {
-            v.sends_on_faders
+        // An Aux can send too, only not into what would come back to it.
+        StripKey::Track(i) if p.tracks[i].kind != TrackKind::Vca => {
+            v.sends_on_faders.filter(|bus| !p.bus_would_loop(i, *bus))
         }
         _ => None,
     };
@@ -2551,9 +2611,11 @@ pub fn channel_strip(
                 if small_button(ui, g, mono, id(ns, (key, "mono")), "1", p.out_mono, SOLO_ON) {
                     p.out_mono = !p.out_mono;
                 }
-                if small_button(ui, g, s_r, id(ns, (key, "bnc")), tr("Bnc"), false, SOLO_ON) {
+                if small_button(ui, g, s_r, id(ns, (key, "bnc")), "", false, SOLO_ON) {
                     v.want_bounce = true;
                 }
+                let bounce = crate::icons::Icon::Bounce;
+                crate::icons::paint(g, s_r.center(), 12.0, bounce, Color32::from_gray(0xe8));
             } else {
                 slot(g, m_r, "M", SLOT_GRAY, TEXT_DIM);
             }
@@ -2585,18 +2647,22 @@ pub fn channel_strip(
     let font = FontId::proportional(10.5);
     let shown = elide(g, &name, &font, name_r.width() - 6.0);
     match name_style {
-        NameStyle::Coloured => {
-            g.rect_filled(name_r, 2.0, color);
+        // A plate in the accent, with the track's own colour kept along its top to tell it by.
+        NameStyle::Coloured | NameStyle::Plain => {
+            let plate = name_r.shrink2(vec2(1.0, 1.0));
+            g.rect_filled(plate, 4.0, crate::theme::accent());
+            g.rect_filled(
+                Rect::from_min_size(plate.min + vec2(4.0, 0.0), vec2(plate.width() - 8.0, 2.0)),
+                1.0,
+                color,
+            );
             g.text(
-                name_r.center(),
+                plate.center() + vec2(0.0, 1.0),
                 Align2::CENTER_CENTER,
                 shown,
                 font,
-                Color32::WHITE,
+                crate::theme::on_accent(),
             );
-        }
-        NameStyle::Plain => {
-            g.text(name_r.center(), Align2::CENTER_CENTER, shown, font, TEXT);
         }
     }
     if key == StripKey::StereoOut && name_style == NameStyle::Coloured {
@@ -2611,7 +2677,7 @@ pub fn channel_strip(
         g.rect_stroke(
             strip,
             2.0,
-            Stroke::new(1.0, Color32::from_gray(0x8a)),
+            Stroke::new(1.0, Color32::from_gray(0x64)),
             StrokeKind::Inside,
         );
     }
@@ -3064,7 +3130,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
         let r = Rect::from_min_size(pos2(rx - 26.0, cy - 10.0), vec2(26.0, 20.0));
         let resp = ui.interact(r, id(NS, key), Sense::click());
         if v.wide == wide {
-            g.rect_filled(r, 4.0, Color32::from_gray(0x5a));
+            g.rect_filled(r, 4.0, Color32::from_gray(0x30));
         }
         let c = r.center();
         let iw = if wide { 13.0 } else { 9.0 };
@@ -3099,7 +3165,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             let r = Rect::from_min_size(pos2(rx - w, cy - 10.0), vec2(w, 20.0));
             let resp = ui.interact(r, id(NS, ("filter", i)), Sense::click());
             let on = v.filters[i];
-            g.rect_filled(r, 4.0, if on { BLUE } else { Color32::from_gray(0x50) });
+            g.rect_filled(r, 4.0, if on { blue() } else { Color32::from_gray(0x2b) });
             g.text(
                 r.center(),
                 Align2::CENTER_CENTER,
@@ -3150,7 +3216,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
         let resp = ui.interact(r, id(NS, ("mode", *label)), Sense::click());
         let on = v.mode == *m;
         if on {
-            g.rect_filled(r, 4.0, BLUE);
+            g.rect_filled(r, 4.0, blue());
         } else if resp.hovered() {
             g.rect_filled(r, 4.0, Color32::from_white_alpha(14));
         }
@@ -3407,7 +3473,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             let line = first + place as f32 * step - GAP * 0.5;
             gs.line_segment(
                 [pos2(line, body.top()), pos2(line, body.bottom())],
-                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+                Stroke::new(2.0, crate::theme::accent()),
             );
             if ui.input(|i| i.pointer.any_released()) {
                 egui::DragAndDrop::clear_payload(ui.ctx());
@@ -3452,9 +3518,34 @@ mod tests {
             ]
         );
         assert!(!path.contains(&StripKey::Track(other)));
-        // A loop ends.
+        // A loop ends, and nothing in it reaches Stereo Out.
         p.tracks[second].output = bus1;
-        assert_eq!(signal_path(&p, source).len(), 5);
+        assert_eq!(
+            signal_path(&p, source),
+            [
+                StripKey::Track(source),
+                StripKey::Track(first),
+                StripKey::Track(second),
+            ]
+        );
+        // A bus nothing listens to is the end of the sound, and a send also keeps the way out.
+        p.tracks[second].output = 0;
+        p.tracks[source].output = 900;
+        assert_eq!(signal_path(&p, source), [StripKey::Track(source)]);
+        p.tracks[source].output = 0;
+        p.tracks[source].sends.push(crate::model::SendSlot {
+            bus: Some(bus2),
+            level: 0.5,
+            pre: false,
+        });
+        assert_eq!(
+            signal_path(&p, source),
+            [
+                StripKey::Track(source),
+                StripKey::Track(second),
+                StripKey::StereoOut,
+            ]
+        );
     }
 
     #[test]
@@ -3528,7 +3619,8 @@ mod tests {
         let r = rows(TOOLBAR_H, fx_rows_for(p, &keys), send_rows_for(p, &keys));
         let strip_bottom = 700.0 - 2.0;
         let top = r.fader_top + 8.0;
-        let bottom = strip_bottom - 26.0 - 22.0 - 6.0;
+        // As `fader_area` and `fader_and_meter` have it.
+        let bottom = strip_bottom - 44.0 - 22.0 - 6.0;
         let sx = LABEL_W + 4.0 + 4.0;
         pos2(sx + 22.0, bottom - db_to_frac(db) * (bottom - top))
     }
@@ -3615,6 +3707,35 @@ mod tests {
         assert_eq!(list[0].level, 0.0);
         set_send_level(&mut list, 4, -60.0);
         assert_eq!(list.len(), 1, "nothing to add for a silent send");
+    }
+
+    #[test]
+    fn sends_on_faders_work_on_an_aux_but_not_into_its_own_bus() {
+        let mut h = crate::ui_test::Harness::new(1400.0, 700.0);
+        let mut s = UiState::new();
+        let mut p = Project::empty();
+        p.tracks.clear();
+        let aux = p.add_track(TrackKind::Aux);
+        let own = p.aux_bus_of(aux);
+        s.mixer.sends_on_faders = Some(own + 1);
+        run(&mut h, &mut p, &mut s, 2);
+        let (bottom, top) = (fader_at(&p, -60.0), fader_at(&p, 0.0));
+        let drag = |h: &mut crate::ui_test::Harness, p: &mut Project, s: &mut UiState| {
+            h.drag(
+                &[bottom, bottom - vec2(0.0, 20.0), top],
+                PointerButton::Primary,
+                |ui| show(ui, p, s, &Meters::default()),
+            );
+        };
+        drag(&mut h, &mut p, &mut s);
+        assert_eq!(p.tracks[aux].sends.len(), 1, "it sends to the next bus");
+        assert_eq!(p.tracks[aux].sends[0].bus, Some(own + 1));
+        // On its own bus the fader is the level again, and no send appears.
+        p.tracks[aux].sends.clear();
+        s.mixer.sends_on_faders = Some(own);
+        run(&mut h, &mut p, &mut s, 2);
+        drag(&mut h, &mut p, &mut s);
+        assert!(p.tracks[aux].sends.is_empty());
     }
 
     #[test]
@@ -3988,27 +4109,5 @@ mod tests {
         h.move_to(SLOT.center(), |ui| draw_slot(ui, &mut p, &mut v));
         h.key(egui::Key::Delete, |ui| draw_slot(ui, &mut p, &mut v));
         assert!(p.tracks[0].plugins.is_empty());
-    }
-
-    #[test]
-    fn the_built_in_sound_can_be_removed_and_the_track_is_silent_then() {
-        let mut p = mixer_project();
-        p.tracks[0].instrument = Some("Sampler");
-        let before = p.song_rev;
-        let mut h = crate::ui_test::Harness::new(500.0, 500.0);
-        let mut view = MixerView::default();
-        let mut draw = |ui: &mut Ui, p: &mut Project| {
-            let g = ui.painter().clone();
-            let uid = egui::Id::unique("input");
-            built_in_instrument_slot(ui, &g, SLOT, p, &mut view, 0, "Sampler", uid);
-        };
-        h.settle(|ui| draw(ui, &mut p));
-        h.click(slot_button_rect(SLOT, 0).center(), |ui| draw(ui, &mut p));
-        assert_eq!(p.tracks[0].instrument, Some(crate::model::NO_INSTRUMENT));
-        assert!(p.song_rev > before);
-        assert_eq!(crate::patches::synth_patch(&p.tracks[0]).gain, 0.0);
-        // And it stays removed through saving.
-        let doc = crate::project_io::to_doc(&p).0;
-        assert_eq!(doc.tracks[0].instrument.as_deref(), Some(""));
     }
 }

@@ -331,7 +331,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 ui.horizontal(|ui| {
                     changed |= ui.checkbox(&mut slot.on, title(&slot.fx)).changed();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if crate::icons::button(ui, crate::icons::Icon::Close, "Remove").clicked() {
                             remove = Some(i);
                         }
                         if ui

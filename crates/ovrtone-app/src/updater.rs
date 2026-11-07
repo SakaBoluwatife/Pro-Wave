@@ -28,6 +28,9 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+/// Whether this build looks for updates at all. Off for the alpha: [`REPO`] is still upstream, whose
+/// releases are not updates of Ovrtone. Testers install each new alpha by hand.
+pub const UPDATES: bool = false;
 /// The GitHub repository releases come from.
 pub const REPO: &str = "fabox-os/Pro-Wave";
 /// How long to wait between two automatic checks.
@@ -930,7 +933,7 @@ fn unix_now() -> u64 {
 
 /// Whether the program looks for updates by itself (Help > Check for Updates Automatically).
 pub fn auto_enabled() -> bool {
-    config_file("updates-off").is_none_or(|f| !f.exists())
+    UPDATES && config_file("updates-off").is_none_or(|f| !f.exists())
 }
 
 pub fn set_auto_enabled(on: bool) {
@@ -1032,7 +1035,7 @@ impl Updater {
 
     /// Looks for a newer release on a background thread.
     pub fn start_check(&mut self, manual: bool) {
-        if matches!(self.state, State::Checking(_) | State::Installing(..)) {
+        if !UPDATES || matches!(self.state, State::Checking(_) | State::Installing(..)) {
             return;
         }
         let (tx, rx) = channel();

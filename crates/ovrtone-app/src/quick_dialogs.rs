@@ -433,7 +433,7 @@ fn big_meter(ui: &mut egui::Ui, level: f32) {
         egui::Sense::hover(),
     );
     let g = ui.painter();
-    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x18));
+    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x0d));
     let db = 20.0 * level.max(1e-6).log10();
     let x_of = |db: f32| rect.left() + rect.width() * ((db + 60.0) / 60.0).clamp(0.0, 1.0);
     let fill = if db >= -0.1 {
@@ -449,7 +449,7 @@ fn big_meter(ui: &mut egui::Ui, level: f32) {
         let x = x_of(mark);
         g.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(1.0, egui::Color32::from_gray(0x60)),
+            egui::Stroke::new(1.0, egui::Color32::from_gray(0x33)),
         );
     }
     g.text(
@@ -773,7 +773,9 @@ fn about_window(ctx: &egui::Context, s: &mut UiState) {
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {
-            match wordmark(ui.ctx(), ui.visuals().dark_mode) {
+            // By the window's own colour: the theme's colours are its own, whatever egui calls them.
+            let dark = ui.visuals().window_fill().r() < 128;
+            match wordmark(ui.ctx(), dark) {
                 Some(logo) => {
                     let size = logo.size_vec2() * (220.0 / logo.size_vec2().x);
                     ui.image((logo.id(), size));
@@ -843,10 +845,8 @@ fn plugin_manager_window(ctx: &egui::Context, s: &mut UiState) {
                     list.clap.hidden.len(),
                     list.clap.failed.len()
                 ));
-                if ui
-                    .button("Rescan")
-                    .on_hover_text("Look for new plugins and try the ones that failed again")
-                    .clicked()
+                let hint = "Look for new plugins and try the ones that failed again";
+                if crate::icons::button(ui, crate::icons::Icon::Refresh, hint).clicked()
                 {
                     crate::plugin_guard::clear_blocked();
                     list.clap.start(true, ctx);

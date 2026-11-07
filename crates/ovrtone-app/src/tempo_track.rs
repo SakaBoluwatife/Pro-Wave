@@ -99,7 +99,7 @@ pub fn show(
         Align2::RIGHT_CENTER,
         format!("{:.0}–{:.0}", r.0, r.1),
         FontId::proportional(10.0),
-        Color32::from_gray(0x8a),
+        Color32::from_gray(0x64),
     );
 
     // ---- lane: double-click an empty spot to add a tempo change
@@ -242,7 +242,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x1a)),
+        Stroke::new(1.0, Color32::from_gray(0x0e)),
     );
 }
 

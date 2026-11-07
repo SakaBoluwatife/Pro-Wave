@@ -863,6 +863,8 @@ fn midi_track_from(
                 pitch: n.pitch.round().clamp(0.0, 127.0) as u8,
                 vel: (40.0 + 87.0 * n.level.clamp(0.0, 1.0)).round() as u8,
                 muted: false,
+                color: 0,
+                slide: false,
             }
         })
         .collect();

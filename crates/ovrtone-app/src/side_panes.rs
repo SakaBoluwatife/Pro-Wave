@@ -165,9 +165,14 @@ mod toolbar_tests {
 
     #[test]
     fn every_choice_is_a_menu_entry() {
+        // A button of the Tracks area's own, which `menus::apply` runs like any entry.
+        const TOOLBAR_ONLY: [&str; 1] = ["Move to Playhead"];
         let all = crate::menus::all_entries();
         for choice in TOOLBAR_CHOICES {
-            assert!(all.contains(choice), "{choice}");
+            assert!(
+                all.contains(choice) || TOOLBAR_ONLY.contains(choice),
+                "{choice}"
+            );
         }
     }
 

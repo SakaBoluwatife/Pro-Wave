@@ -256,8 +256,46 @@ pub fn settle_recording(p: &mut Project, t: usize, r: usize, fold: bool) -> usiz
     }
 }
 
+/// Makes a new track of the same kind holding one take, or the comp with `None`, as ordinary
+/// regions in the same place. The folder is left as it was. Returns the new track's number.
+pub fn copy_to_new_track(
+    p: &mut Project,
+    t: usize,
+    r: usize,
+    take: Option<usize>,
+) -> Option<usize> {
+    let source = p.tracks.get(t)?;
+    let (kind, title) = (source.kind, source.name.clone());
+    let mut region = source.regions.get(r)?.clone();
+    let folder = region.folder.as_mut()?;
+    folder.end_audition();
+    folder.saved.clear();
+    let suffix = match take {
+        Some(take) => {
+            let len = folder.len;
+            folder.swipe(take, 0.0, len);
+            format!("Take {}", take + 1)
+        }
+        None => "Comp".to_string(),
+    };
+    let folder_now = region.folder.clone()?;
+    folder_now.apply(&mut region.notes, &mut region.controls);
+    let new = p.add_track(kind);
+    p.tracks[new].name = format!("{title} {suffix}");
+    p.tracks[new].regions = vec![region];
+    flatten(p, new, 0);
+    Some(new)
+}
+
 /// An ordinary region again, or for a comp of audio one region per stretch. Returns their numbers.
 pub fn flatten(p: &mut Project, t: usize, r: usize) -> Vec<usize> {
+    if let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) {
+        if let Some(mut folder) = region.folder.take() {
+            folder.end_audition();
+            folder.apply(&mut region.notes, &mut region.controls);
+            region.folder = Some(folder);
+        }
+    }
     let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
         return Vec::new();
     };
@@ -450,6 +488,77 @@ impl TakeFolder {
             takes,
             len,
             open: false,
+            saved: Vec::new(),
+            audition: None,
+        }
+    }
+
+    /// The comp, whatever is being listened to just now.
+    pub fn real_comp(&self) -> &[CompSegment] {
+        self.audition.as_ref().map_or(&self.comp, |(_, comp)| comp)
+    }
+
+    /// Goes back to the comp, if a take was being listened to.
+    pub fn end_audition(&mut self) {
+        if let Some((_, comp)) = self.audition.take() {
+            self.comp = comp;
+        }
+    }
+
+    /// Plays `take` throughout to hear it alone; the same take again goes back to the comp.
+    pub fn toggle_audition(&mut self, take: usize) {
+        if take >= self.takes.len() {
+            return;
+        }
+        let same = self.audition.as_ref().is_some_and(|(t, _)| *t == take);
+        self.end_audition();
+        if !same {
+            let comp = std::mem::replace(
+                &mut self.comp,
+                vec![CompSegment {
+                    start: 0.0,
+                    end: self.len,
+                    take,
+                }],
+            );
+            self.audition = Some((take, comp));
+        }
+    }
+
+    /// Keeps the comp as it is under a new name.
+    pub fn save_comp(&mut self) {
+        let mut n = self.saved.len() + 1;
+        while self.saved.iter().any(|c| c.name == format!("Comp {n}")) {
+            n += 1;
+        }
+        self.saved.push(crate::model::SavedComp {
+            name: format!("Comp {n}"),
+            comp: self.real_comp().to_vec(),
+        });
+    }
+
+    /// Plays the comp kept as number `index`.
+    pub fn use_comp(&mut self, index: usize) {
+        self.end_audition();
+        if let Some(saved) = self.saved.get(index) {
+            self.comp = saved.comp.clone();
+        }
+    }
+
+    /// Moves the join between stretch `index` and the next to `beat`, each keeping some length.
+    pub fn move_join(&mut self, index: usize, beat: f32) {
+        const SHORTEST: f32 = 1.0 / 64.0;
+        if index + 1 >= self.comp.len() {
+            return;
+        }
+        let (low, high) = (
+            self.comp[index].start + SHORTEST,
+            self.comp[index + 1].end - SHORTEST,
+        );
+        if low <= high {
+            let at = beat.clamp(low, high);
+            self.comp[index].end = at;
+            self.comp[index + 1].start = at;
         }
     }
 
@@ -481,27 +590,36 @@ impl TakeFolder {
         if take >= self.takes.len() || self.takes.len() < 2 {
             return;
         }
+        self.end_audition();
         let instead = if take == self.takes.len() - 1 {
             take - 1
         } else {
             self.takes.len() - 1
         };
-        for seg in &mut self.comp {
-            if seg.take == take {
-                seg.take = instead;
+        let without = |comp: &mut Vec<CompSegment>| {
+            for seg in comp.iter_mut() {
+                if seg.take == take {
+                    seg.take = instead;
+                }
+                if seg.take > take {
+                    seg.take -= 1;
+                }
             }
-            if seg.take > take {
-                seg.take -= 1;
+            let mut merged: Vec<CompSegment> = Vec::new();
+            for seg in std::mem::take(comp) {
+                match merged.last_mut() {
+                    Some(prev) if prev.take == seg.take => prev.end = seg.end,
+                    _ => merged.push(seg),
+                }
             }
+            *comp = merged;
+        };
+        for saved in &mut self.saved {
+            without(&mut saved.comp);
         }
         self.takes.remove(take);
-        let mut merged: Vec<CompSegment> = Vec::new();
-        for seg in std::mem::take(&mut self.comp) {
-            match merged.last_mut() {
-                Some(prev) if prev.take == seg.take => prev.end = seg.end,
-                _ => merged.push(seg),
-            }
-        }
+        let mut merged = std::mem::take(&mut self.comp);
+        without(&mut merged);
         self.comp = merged;
     }
 
@@ -803,6 +921,8 @@ mod tests {
             pitch: 60,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 
@@ -824,6 +944,61 @@ mod tests {
         let f = folder();
         assert_eq!(f.comp.len(), 1);
         assert_eq!(starts(&f), vec![1.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn a_take_can_be_heard_alone_and_the_comp_comes_back() {
+        let mut f = folder();
+        f.swipe(0, 1.0, 2.0);
+        let comp = f.comp.clone();
+        f.toggle_audition(1);
+        assert_eq!(f.comp.len(), 1);
+        assert_eq!(f.comp[0].take, 1);
+        assert_eq!(
+            f.real_comp(),
+            comp.as_slice(),
+            "it is the comp that is saved"
+        );
+        // Another take goes on to that one, and the same one goes back.
+        f.toggle_audition(0);
+        assert_eq!(f.comp[0].take, 0);
+        assert_eq!(f.real_comp(), comp.as_slice());
+        f.toggle_audition(0);
+        assert_eq!(f.comp, comp);
+        assert!(f.audition.is_none());
+    }
+
+    #[test]
+    fn comps_are_kept_and_gone_back_to() {
+        let mut f = folder();
+        f.swipe(0, 1.0, 2.0);
+        f.save_comp();
+        let kept = f.comp.clone();
+        f.swipe(1, 0.0, f.len);
+        assert_ne!(f.comp, kept);
+        f.save_comp();
+        assert_eq!(f.saved[0].name, "Comp 1");
+        assert_eq!(f.saved[1].name, "Comp 2");
+        f.use_comp(0);
+        assert_eq!(f.comp, kept);
+        // Deleting a take keeps the kept comps right.
+        let last = f.takes.len() - 1;
+        f.remove_take(last);
+        assert!(f.saved[0].comp.iter().all(|s| s.take < f.takes.len()));
+    }
+
+    #[test]
+    fn a_join_moves_and_each_side_keeps_some_length() {
+        let mut f = folder();
+        f.swipe(0, 1.0, 2.0);
+        f.move_join(0, 1.5);
+        assert_eq!((f.comp[0].end, f.comp[1].start), (1.5, 1.5));
+        f.move_join(0, -5.0);
+        assert!(f.comp[0].end > f.comp[0].start);
+        f.move_join(1, 1000.0);
+        assert!(f.comp[1].end < f.comp[2].end);
+        assert_eq!(f.comp[1].end, f.comp[2].start);
+        f.move_join(9, 1.0);
     }
 
     #[test]

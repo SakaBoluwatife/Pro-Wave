@@ -628,7 +628,7 @@ pub fn show(
                             let x = x_of(to);
                             g.line_segment(
                                 [pos2(x, lane.top()), pos2(x, lane.bottom())],
-                                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+                                Stroke::new(2.0, crate::theme::accent()),
                             );
                         }
                     }
@@ -783,7 +783,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x1a)),
+        Stroke::new(1.0, Color32::from_gray(0x0e)),
     );
     result
 }
@@ -862,6 +862,8 @@ mod tests {
                 pitch: 60 + i as u8,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             }];
             let at = add_section(&mut p, beat);
             p.sections[at].name = name.into();
@@ -935,6 +937,8 @@ mod tests {
                 pitch: 40,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             },
             Note {
                 start: 13.0,
@@ -942,6 +946,8 @@ mod tests {
                 pitch: 50,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             },
         ];
         // C goes first.
@@ -1048,6 +1054,8 @@ mod tests {
                 pitch,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             }],
             ..Take::default()
         };
@@ -1058,6 +1066,8 @@ mod tests {
             pitch: 2,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         let before = plays(&p, t);
         assert!(move_section(&mut p, 1, 0.0).is_err());

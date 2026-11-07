@@ -336,7 +336,7 @@ mod tests {
                 len: 1.0,
                 pitch: 60,
                 vel: 90,
-                muted: false,
+                muted: false, color: 0, slide: false,
             };
             n
         ];

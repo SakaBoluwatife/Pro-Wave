@@ -1612,6 +1612,8 @@ mod tests {
             pitch: 60,
             vel: 127,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         let end = project_end(&p);
         // Soloed: only the note, half a second in, and not the clip.
@@ -1927,7 +1929,7 @@ mod tests {
 
         // A send adds to the direct sound.
         p.tracks[0].output = 0;
-        assert!(crate::routing_matrix::toggle_send(&mut p, 0, bus));
+        assert!(crate::routing_matrix::toggle_send(&mut p, 0, bus).is_ok());
         let send = ovrtone_engine::send_gain(p.tracks[0].sends[0].level);
         let both = level(&p, "send.wav");
         let expected = 0.5 + 0.5 * send * 0.501;

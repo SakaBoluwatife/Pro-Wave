@@ -16,18 +16,16 @@ const ROW_H: f32 = 20.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LeftTab {
     #[default]
-    Library,
     Browser,
     Plugins,
 }
 
 #[cfg(test)]
 impl LeftTab {
-    const ALL: [LeftTab; 3] = [LeftTab::Library, LeftTab::Browser, LeftTab::Plugins];
+    const ALL: [LeftTab; 2] = [LeftTab::Browser, LeftTab::Plugins];
 
     fn name(self) -> &'static str {
         match self {
-            LeftTab::Library => "Library",
             LeftTab::Browser => "Browser",
             LeftTab::Plugins => "Plugins",
         }
@@ -99,11 +97,95 @@ impl PluginKind {
 }
 
 /// The width of the list of what to browse.
-const SIDEBAR_W: f32 = 104.0;
+const SIDEBAR_W: f32 = 126.0;
+/// The height of the Browser and Inspector tabs.
+const TABS_H: f32 = 32.0;
+
+/// The small picture beside a kind of thing to browse.
+fn side_icon(g: &egui::Painter, c: egui::Pos2, which: usize, color: egui::Color32) {
+    let line = Stroke::new(1.2, color);
+    match which {
+        // Files: a sheet with a corner folded.
+        0 => {
+            g.rect_stroke(
+                Rect::from_center_size(c, vec2(9.0, 11.0)),
+                1.5,
+                line,
+                egui::StrokeKind::Middle,
+            );
+            g.line_segment([c + vec2(-2.0, -1.5), c + vec2(2.5, -1.5)], line);
+            g.line_segment([c + vec2(-2.0, 1.5), c + vec2(2.5, 1.5)], line);
+        }
+        // Instruments: a note.
+        1 => {
+            g.circle_stroke(c + vec2(-2.0, 3.5), 2.0, line);
+            g.line_segment([c + vec2(0.0, 3.5), c + vec2(0.0, -5.0)], line);
+            g.line_segment([c + vec2(0.0, -5.0), c + vec2(4.0, -3.0)], line);
+        }
+        // Effects: two sliders.
+        2 => {
+            for (x, y) in [(-2.5, 2.0), (2.5, -2.0)] {
+                g.line_segment([c + vec2(x, -5.0), c + vec2(x, 5.0)], line);
+                g.circle_filled(c + vec2(x, y), 2.0, color);
+            }
+        }
+        // Plugins: a plug.
+        _ => {
+            g.rect_stroke(
+                Rect::from_center_size(c + vec2(0.0, 0.5), vec2(8.0, 6.0)),
+                1.5,
+                line,
+                egui::StrokeKind::Middle,
+            );
+            g.line_segment([c + vec2(-2.0, -2.5), c + vec2(-2.0, -5.5)], line);
+            g.line_segment([c + vec2(2.0, -2.5), c + vec2(2.0, -5.5)], line);
+            g.line_segment([c + vec2(0.0, 3.5), c + vec2(0.0, 6.0)], line);
+        }
+    }
+}
+
+/// The tabs along the top: the Browser is this panel, and the Inspector goes beside it.
+fn tabs(ui: &mut Ui, s: &mut UiState, r: Rect) {
+    let g = ui.painter_at(r);
+    g.rect_filled(r, 0.0, crate::theme::PANEL_BG);
+    for (i, name) in ["Browser", "Inspector"].into_iter().enumerate() {
+        let tab = Rect::from_min_size(
+            pos2(r.left() + 8.0 + i as f32 * 88.0, r.top() + 5.0),
+            vec2(82.0, 22.0),
+        );
+        let resp = ui.interact(tab, egui::Id::unique(("left_tabs", i)), Sense::click());
+        let on = i == 0 || s.show_inspector;
+        if on {
+            g.rect_filled(tab, 5.0, crate::theme::accent());
+        } else if resp.hovered() {
+            g.rect_filled(tab, 5.0, crate::theme::HOVERED);
+        }
+        g.text(
+            tab.center(),
+            Align2::CENTER_CENTER,
+            name,
+            FontId::proportional(12.5),
+            if on { crate::theme::on_accent() } else { TEXT },
+        );
+        if resp.clicked() {
+            if i == 0 {
+                s.show_library = false;
+            } else {
+                s.show_inspector = !s.show_inspector;
+            }
+        }
+    }
+}
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
-    let panel = ui.available_rect_before_wrap();
-    ui.allocate_rect(panel, Sense::hover());
+    let whole = ui.available_rect_before_wrap();
+    ui.allocate_rect(whole, Sense::hover());
+    tabs(
+        ui,
+        s,
+        Rect::from_min_size(whole.min, vec2(whole.width(), TABS_H)),
+    );
+    let panel = Rect::from_min_max(whole.min + vec2(0.0, TABS_H), whole.max);
     // One panel: what to browse on the left, and the browsing beside it.
     let side = Rect::from_min_size(panel.min, vec2(SIDEBAR_W, panel.height()));
     let rest = Rect::from_min_max(pos2(side.right(), panel.top()), panel.max);
@@ -124,12 +206,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ),
         ("Effects", LeftTab::Plugins, Some(PluginKind::Effects)),
         ("All Plug-ins", LeftTab::Plugins, Some(PluginKind::All)),
-        ("Patches", LeftTab::Library, None),
     ];
     for (i, (name, tab, kind)) in entries.into_iter().enumerate() {
         let r = Rect::from_min_size(
-            pos2(side.left() + 4.0, side.top() + 8.0 + i as f32 * 26.0),
-            vec2(SIDEBAR_W - 8.0, 24.0),
+            pos2(side.left() + 4.0, side.top() + 8.0 + i as f32 * 28.0),
+            vec2(SIDEBAR_W - 8.0, 26.0),
         );
         let resp = ui.interact(r, egui::Id::unique(("browser_side", i)), Sense::click());
         if resp.clicked() {
@@ -142,11 +223,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let g = ui.painter_at(r);
         if on {
             g.rect_filled(r, 5.0, crate::theme::SELECTED);
+            g.rect_filled(
+                Rect::from_min_size(r.min + vec2(0.0, 5.0), vec2(2.5, r.height() - 10.0)),
+                1.0,
+                crate::theme::accent(),
+            );
         } else if resp.hovered() {
             g.rect_filled(r, 5.0, crate::theme::HOVERED);
         }
+        let ink = if on {
+            crate::theme::accent()
+        } else {
+            crate::theme::TEXT_DIM
+        };
+        side_icon(&g, r.left_center() + vec2(15.0, 0.0), i, ink);
         g.text(
-            r.left_center() + vec2(8.0, 0.0),
+            r.left_center() + vec2(29.0, 0.0),
             Align2::LEFT_CENTER,
             name,
             FontId::proportional(12.5),
@@ -154,7 +246,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         );
     }
     ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| match s.left_tab {
-        LeftTab::Library => crate::library::show(ui, p, s),
         LeftTab::Browser => crate::sample_browser::show(ui, s),
         LeftTab::Plugins => plugins(ui, p, s),
     });
@@ -174,17 +265,14 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ui.horizontal(|ui| {
             let counts = format!("{} plugins", list.clap.plugins.len());
             ui.label(egui::RichText::new(counts).color(TEXT));
-            if ui
-                .small_button("Rescan")
-                .on_hover_text("Look for new plugins and try the ones that failed again")
-                .clicked()
+            let hint = "Look for new plugins and try the ones that failed again";
+            if crate::icons::button(ui, crate::icons::Icon::Refresh, hint).clicked()
             {
                 crate::plugin_guard::clear_blocked();
                 list.clap.start(true, &ctx);
             }
-            if ui
-                .small_button("Folders")
-                .on_hover_text("Choose more folders to look for plugins in")
+            let hint = "Choose more folders to look for plugins in";
+            if crate::icons::toggle(ui, crate::icons::Icon::Folder, list.show_folders, hint)
                 .clicked()
             {
                 list.show_folders = !list.show_folders;
@@ -194,7 +282,9 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             let mut rescan = false;
             for folder in crate::plugin_guard::plugin_folders() {
                 ui.horizontal(|ui| {
-                    if ui.small_button("×").on_hover_text("Stop looking here").clicked() {
+                    if crate::icons::button(ui, crate::icons::Icon::Close, "Stop looking here")
+                        .clicked()
+                    {
                         crate::plugin_guard::remove_folder(&folder);
                         rescan = true;
                     }
@@ -347,7 +437,7 @@ mod tests {
     #[test]
     fn the_tabs_have_their_names() {
         let names: Vec<_> = LeftTab::ALL.iter().map(|t| t.name()).collect();
-        assert_eq!(names, ["Library", "Browser", "Plugins"]);
-        assert_eq!(LeftTab::default(), LeftTab::Library);
+        assert_eq!(names, ["Browser", "Plugins"]);
+        assert_eq!(LeftTab::default(), LeftTab::Browser);
     }
 }

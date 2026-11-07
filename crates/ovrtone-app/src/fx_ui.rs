@@ -138,7 +138,7 @@ fn eq_curve(ui: &mut Ui, kind: FxKind, params: &[f32; ovrtone_engine::MAX_FX_PAR
         Sense::hover(),
     );
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 3.0, Color32::from_gray(0x1c));
+    g.rect_filled(rect, 3.0, Color32::from_gray(0x0f));
     let x_of = |hz: f32| rect.left() + (hz / 20.0).log10() / 3.0 * rect.width();
     let y_of = |db: f32| rect.center().y - db / 18.0 * rect.height() / 2.0;
     for hz in [
@@ -146,7 +146,7 @@ fn eq_curve(ui: &mut Ui, kind: FxKind, params: &[f32; ovrtone_engine::MAX_FX_PAR
     ] {
         g.line_segment(
             [pos2(x_of(hz), rect.top()), pos2(x_of(hz), rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x2c)),
+            Stroke::new(1.0, Color32::from_gray(0x18)),
         );
     }
     for db in [-12.0f32, -6.0, 0.0, 6.0, 12.0] {
@@ -172,7 +172,7 @@ fn eq_curve(ui: &mut Ui, kind: FxKind, params: &[f32; ovrtone_engine::MAX_FX_PAR
     g.rect_stroke(
         rect,
         3.0,
-        Stroke::new(1.0, Color32::from_gray(0x10)),
+        Stroke::new(1.0, Color32::from_gray(0x09)),
         StrokeKind::Inside,
     );
 }
@@ -182,7 +182,7 @@ fn reduction_bar(ui: &mut Ui, reduction: f32, bypassed: bool) {
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width().max(300.0), 16.0), Sense::hover());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 3.0, Color32::from_gray(0x1c));
+    g.rect_filled(rect, 3.0, Color32::from_gray(0x0f));
     let shown = if bypassed {
         0.0
     } else {

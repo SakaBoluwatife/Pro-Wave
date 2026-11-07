@@ -268,6 +268,8 @@ const KEPT_STATES: usize = 64;
 
 struct Live {
     place: Place,
+    /// The file it was loaded from: a new one means loading again, keeping its settings.
+    path: std::path::PathBuf,
     /// For a plugin that plays its track's audio: the project and track it was last told of.
     ara_seen: Option<(u64, u16)>,
     /// The plugin's identifier: where its editor window was is remembered per plugin.
@@ -413,6 +415,13 @@ impl Rack {
     }
 
     /// Where a parameter of a running plugin is now.
+    /// Sets a parameter from a window of the program's own, which the plugin keeps to itself.
+    pub fn show_param(&mut self, uid: u64, param: u32, value: f64) {
+        if let Some(live) = self.live.get_mut(&uid) {
+            live.loaded.show_param(param, value);
+        }
+    }
+
     pub fn param_value(&mut self, uid: u64, param: u32) -> Option<f64> {
         self.live.get_mut(&uid)?.loaded.param_value(param)
     }
@@ -743,6 +752,17 @@ impl Rack {
         self.restart_crashed(p, engine, message);
         self.retiring.retain(|r| !r.released());
         self.sync_ara(p, message);
+        // A sound replaced on its slot: out with the old file. The settings are kept, for the load.
+        let swapped: Vec<u64> = p
+            .all_hosted_mut()
+            .filter(|i| self.live.get(&i.uid).is_some_and(|l| l.path != i.path))
+            .map(|i| i.uid)
+            .collect();
+        for uid in swapped {
+            if !self.take_out(uid, engine) {
+                return false;
+            }
+        }
         let places: HashMap<u64, Place> = self.live.iter().map(|(u, l)| (*u, l.place)).collect();
         let mut loaded_one = false;
         let mut more = false;
@@ -1003,6 +1023,7 @@ impl Rack {
                     side: None,
                     preset: None,
                     ara_seen: None,
+                    path: path.clone(),
                     loaded,
                 },
             );

@@ -120,7 +120,11 @@ pub fn show(
             action = Some(Action::Rename(i));
         }
         if resp.drag_started() {
-            if let Some(pt) = resp.interact_pointer_pos() {
+            // From where the mouse went down: the drag only registers a few points later.
+            let pressed = ui
+                .input(|i| i.pointer.press_origin())
+                .or_else(|| resp.interact_pointer_pos());
+            if let Some(pt) = pressed {
                 ui.ctx()
                     .data_mut(|m| m.insert_temp(grab_id, beat_of(pt.x) - start));
             }
@@ -222,7 +226,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x1a)),
+        Stroke::new(1.0, Color32::from_gray(0x0e)),
     );
 }
 

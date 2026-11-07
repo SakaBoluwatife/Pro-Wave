@@ -475,7 +475,7 @@ fn waveform(ui: &mut egui::Ui, v: &mut FileEditor, file: &AudioRegion) {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 170.0), egui::Sense::drag());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x1a));
+    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x0e));
     let seconds = file.file.duration_secs().max(1e-6);
     let x_of = |t: f64| rect.left() + (t / seconds) as f32 * rect.width();
     let time_at = |x: f32| (f64::from((x - rect.left()) / rect.width()) * seconds).clamp(0.0, seconds);

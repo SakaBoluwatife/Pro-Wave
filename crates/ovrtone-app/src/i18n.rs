@@ -423,9 +423,6 @@ pub(crate) mod tests {
         for t in crate::mixer::FILTERS {
             add(t);
         }
-        for c in crate::library::CATEGORIES {
-            add(c.name);
-        }
         for t in crate::start_screen::Template::ALL {
             add(t.name());
             add(t.about());

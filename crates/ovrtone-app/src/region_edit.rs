@@ -880,6 +880,8 @@ mod tests {
             pitch,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 

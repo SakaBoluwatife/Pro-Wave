@@ -172,10 +172,10 @@ pub fn render(p: &Project, secs: f64) -> Render {
             end_beat: p.bar_to_beats(12.0),
         },
     ];
-    for (i, t) in p.tracks.iter().enumerate() {
+    for i in 0..p.tracks.len() {
         commands.push(Command::SetTrackPatch {
             track: i as u16,
-            patch: crate::patches::synth_patch(t),
+            patch: ovrtone_engine::SynthPatch::default(),
         });
     }
     commands.push(Command::SetPosition { beat: 0.0 });

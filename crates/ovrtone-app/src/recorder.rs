@@ -219,6 +219,8 @@ pub fn capture(rec: &mut Recorder, p: &mut Project) -> Option<(usize, usize)> {
                     pitch,
                     vel,
                     muted: false,
+                    color: 0,
+                    slide: false,
                 });
             }
             LiveNote::Off { pitch } => {
@@ -323,6 +325,8 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
             pitch,
             vel,
             muted: false,
+            color: 0,
+            slide: false,
         });
         rec.open.insert(pitch, notes.len() - 1);
     }
@@ -389,6 +393,8 @@ fn record(rec: &mut Recorder, p: &mut Project, t: usize, r: usize, input: &[Live
                     pitch,
                     vel,
                     muted: false,
+                    color: 0,
+                    slide: false,
                 });
                 rec.open.insert(pitch, region.notes.len() - 1);
             }
@@ -610,6 +616,8 @@ mod tests {
             pitch: 40,
             vel: 90,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         p.rec_replace = true;
         let mut rec = Recorder::default();
@@ -645,6 +653,8 @@ mod tests {
             pitch: 40,
             vel: 90,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         let mut rec = Recorder {
             as_take: true,

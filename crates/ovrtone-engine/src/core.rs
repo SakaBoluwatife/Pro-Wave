@@ -63,10 +63,38 @@ pub struct MidiOutEvent {
 /// that play an external instrument send them (as [`MidiOutEvent`]s).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlEvent {
+    // `number` is a MIDI controller, or [`PITCH_BEND_CONTROL`].
     pub beat: f64,
     pub track: u16,
     pub number: u8,
     pub value: u8,
+}
+
+/// In a [`ControlEvent`]: not a controller but the pitch bend of a hosted instrument, as the song
+/// plays slide notes. Its value is the top 7 bits of a 14-bit bend, with 8192 for no bend: a sampler
+/// bends over 4 octaves, where 7 bits would step audibly.
+pub const PITCH_BEND_CONTROL: u8 = 128;
+/// The low 7 bits of the bend, in the event just before its [`PITCH_BEND_CONTROL`].
+pub const PITCH_BEND_FINE_CONTROL: u8 = 129;
+
+/// A 14-bit bend as a part of the instrument's bend range, -1..=1.
+fn bend_of(high: u8, low: u8) -> f32 {
+    let bend = (i32::from(high) << 7) | i32::from(low);
+    ((bend - 8192) as f32 / 8191.0).clamp(-1.0, 1.0)
+}
+
+/// Whether a track with no instrument sounds at all. The program has no stock instruments and turns
+/// this off when it starts: a track sounds only from a plugin, a sample or an external instrument.
+/// The voices are still here for the engine's own tests, which listen to them; they go in time.
+static BUILT_IN_VOICES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// See [`BUILT_IN_VOICES`].
+pub fn set_built_in_voices(on: bool) {
+    BUILT_IN_VOICES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn built_in_voices() -> bool {
+    BUILT_IN_VOICES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A note sent to an external instrument that has not been released yet.
@@ -878,6 +906,8 @@ pub struct EngineCore {
     keep_headroom: bool,
     /// Plugins with nothing to process stop running.
     plugins_may_rest: bool,
+    /// The low bits of the pitch bend whose high bits come next.
+    bend_low: u8,
     /// Varispeed: how fast the whole song runs, 1 for normal. Speed and pitch move together, as
     /// on a tape machine. Not in offline renders.
     varispeed: f64,
@@ -1086,6 +1116,7 @@ impl EngineCore {
             master_tap: None,
             keep_headroom: false,
             plugins_may_rest: true,
+            bend_low: 0,
             varispeed: 1.0,
             vari_buf: vec![0.0; (VARI_CHUNK + VARI_KEEP) * 2],
             vari_have: VARI_KEEP,
@@ -1330,6 +1361,17 @@ impl EngineCore {
         if !self.plays_outside(c.track) {
             return;
         }
+        if c.number == PITCH_BEND_FINE_CONTROL {
+            self.bend_low = c.value;
+            return;
+        }
+        if c.number == PITCH_BEND_CONTROL {
+            let value = bend_of(c.value, self.bend_low);
+            if let Some(Some(instrument)) = self.instruments.get_mut(c.track as usize) {
+                instrument.push_event(PluginEventKind::PitchBend { value });
+            }
+            return;
+        }
         if c.number == 64 {
             if let Some(down) = self.ext_sustain.get_mut(c.track as usize) {
                 *down = c.value >= 64;
@@ -1392,6 +1434,17 @@ impl EngineCore {
             .notes
             .partition_point(|n| n.start_beat < self.beat);
         self.next_control = self.song.controls.partition_point(|c| c.beat < self.beat);
+        // A slide cut short by this would leave its instrument bent.
+        if self
+            .song
+            .controls
+            .iter()
+            .any(|c| c.number == PITCH_BEND_CONTROL)
+        {
+            for instrument in self.instruments.iter_mut().flatten() {
+                instrument.push_event(PluginEventKind::PitchBend { value: 0.0 });
+            }
+        }
         self.reposition_clips();
         self.mtc_locate();
     }
@@ -2396,6 +2449,9 @@ impl EngineCore {
             self.ext_note_on(n, false);
             return 0;
         }
+        if !built_in_voices() {
+            return 0;
+        }
         // No free voice: steal the first one.
         let idx = self
             .voices
@@ -2443,6 +2499,9 @@ impl EngineCore {
     }
 
     fn live_note_on(&mut self, pitch: u8, vel: u8, track: u16) {
+        if !self.plays_outside(track) && !built_in_voices() {
+            return;
+        }
         if self.plays_outside(track) {
             self.ext_note_on(
                 NoteEvent {

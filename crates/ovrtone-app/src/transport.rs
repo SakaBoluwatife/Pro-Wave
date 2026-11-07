@@ -15,17 +15,16 @@ use egui::{
     StrokeKind, Ui,
 };
 
-const BAR_BG: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
-const SEG_BG: Color32 = Color32::from_rgb(0x6c, 0x6c, 0x6c);
+const BAR_BG: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
+const SEG_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
 const SEG_BORDER: Color32 = crate::theme::PANEL_BG;
-const SEG_ON: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+const SEG_ON: Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
 const ICON: Color32 = Color32::from_rgb(0xd2, 0xd2, 0xd2);
 const ICON_ON: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
-const LCD_BG: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1e);
+const LCD_BG: Color32 = Color32::from_rgb(0x0f, 0x0f, 0x11);
 const LCD_TEXT: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
-const LCD_MID: Color32 = Color32::from_rgb(0x9c, 0x9c, 0x9c);
-const LCD_DIM: Color32 = Color32::from_rgb(0x4e, 0x4e, 0x50);
-const PLAY_GREEN: Color32 = Color32::from_rgb(0x30, 0xa8, 0x4b);
+const LCD_MID: Color32 = Color32::from_rgb(0x88, 0x88, 0x88);
+const LCD_DIM: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2b);
 /// The LCD while recording turns red, as in Logic.
 const LCD_REC_BG: Color32 = Color32::from_rgb(19, 10, 10);
 const LCD_REC_TEXT: Color32 = Color32::from_rgb(244, 98, 86);
@@ -63,7 +62,6 @@ impl LcdColors {
 }
 
 const REC_RED: Color32 = Color32::from_rgb(0xe6, 0x34, 0x2c);
-const CYCLE_YELLOW: Color32 = Color32::from_rgb(0xe8, 0xa6, 0x2a);
 const PURPLE: Color32 = Color32::from_rgb(0x9b, 0x3f, 0xd6);
 
 fn stroke(c: Color32) -> Stroke {
@@ -589,7 +587,7 @@ fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
     g.rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, Color32::from_gray(0x10)),
+        Stroke::new(1.0, Color32::from_gray(0x09)),
         StrokeKind::Inside,
     );
     let x0 = rect.left();
@@ -786,7 +784,7 @@ pub(crate) fn time_text(p: &Project) -> String {
 
 /// The display's simpler forms: beats, time, or both.
 fn lcd_text(g: &Painter, p: &Project, rect: Rect, mode: u8) {
-    g.rect_filled(rect, 5.0, Color32::from_rgb(0x12, 0x12, 0x14));
+    g.rect_filled(rect, 5.0, Color32::from_rgb(0x0a, 0x0a, 0x0b));
     let ink = if p.recording {
         Color32::from_rgb(0xff, 0x70, 0x60)
     } else {
@@ -841,7 +839,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
     g.rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, Color32::from_gray(0x10)),
+        Stroke::new(1.0, Color32::from_gray(0x09)),
         StrokeKind::Inside,
     );
     let top = rect.top() + 4.0;
@@ -974,7 +972,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
             pal.dim,
         );
         let m = Rect::from_min_size(pos2(x0 + 490.0, y - 2.0), vec2(40.0, 4.0));
-        g.rect_filled(m, 1.0, Color32::from_gray(0x2c));
+        g.rect_filled(m, 1.0, Color32::from_gray(0x18));
         if i == 0 {
             let load = cpu_load.clamp(0.0, 1.0);
             let fill = Rect::from_min_size(m.min, vec2(m.width() * load, m.height()));
@@ -1002,7 +1000,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
             pos2(rect.right() - 22.0, rect.top() + 6.0),
             pos2(rect.right() - 22.0, rect.bottom() - 6.0),
         ],
-        Stroke::new(1.0, Color32::from_gray(0x2a)),
+        Stroke::new(1.0, Color32::from_gray(0x17)),
     );
 }
 
@@ -1030,17 +1028,17 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
 
     // Pill with a soft inner edge.
     let r = rect.height() / 2.0;
-    g.rect_filled(rect, r, Color32::from_gray(0x2b));
+    g.rect_filled(rect, r, Color32::from_gray(0x18));
     g.rect_stroke(
         rect,
         r,
-        Stroke::new(1.0, Color32::from_gray(0x4c)),
+        Stroke::new(1.0, Color32::from_gray(0x29)),
         egui::StrokeKind::Inside,
     );
     g.rect_stroke(
         rect.shrink(1.5),
         r - 1.5,
-        Stroke::new(1.0, Color32::from_gray(0x1c)),
+        Stroke::new(1.0, Color32::from_gray(0x0f)),
         egui::StrokeKind::Inside,
     );
 
@@ -1057,7 +1055,7 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
     for (i, peak) in [l, rr].into_iter().enumerate() {
         let y = inner.top() + i as f32 * (bar_h + 2.0);
         let bar = Rect::from_min_size(pos2(inner.left(), y), vec2(inner.width(), bar_h));
-        g.rect_filled(bar, 2.0, Color32::from_gray(0x1d));
+        g.rect_filled(bar, 2.0, Color32::from_gray(0x10));
         let f = meter_frac(peak);
         for (lo, hi, col) in [
             (0.0f32, 0.82f32, green),
@@ -1245,7 +1243,7 @@ pub fn control_bar(
     }
     // Logic keeps the triangle while playing; only the background turns green.
     let play_icon: IconFn = icon_play;
-    let play_bg = p.playing.then_some(PLAY_GREEN);
+    let play_bg = p.playing.then_some(crate::theme::accent());
     if tbutton(
         ui,
         &g,
@@ -1253,7 +1251,11 @@ pub fn control_bar(
         "play",
         play_icon,
         play_bg,
-        if p.playing { Color32::WHITE } else { ICON },
+        if p.playing {
+            crate::theme::on_accent()
+        } else {
+            ICON
+        },
     ) {
         p.playing = !p.playing;
     }
@@ -1281,7 +1283,7 @@ pub fn control_bar(
     if clicked(ui, cap_r, "capture") {
         s.capture_cmd = true;
     }
-    let cyc_bg = p.cycle.then_some(CYCLE_YELLOW);
+    let cyc_bg = p.cycle.then_some(crate::theme::accent());
     if tbutton(
         ui,
         &g,
@@ -1289,13 +1291,17 @@ pub fn control_bar(
         "cycle",
         icon_cycle,
         cyc_bg,
-        if p.cycle { Color32::WHITE } else { ICON },
+        if p.cycle {
+            crate::theme::on_accent()
+        } else {
+            ICON
+        },
     ) {
         crate::key_commands::toggle_cycle(p, &s.tracks);
     }
 
     let rx = |dx: f32| pos2(lcd_rect.right() + dx, cy);
-    let low_bg = p.low_latency.then_some(CYCLE_YELLOW);
+    let low_bg = p.low_latency.then_some(crate::theme::accent());
     let low_icon = if p.low_latency { Color32::WHITE } else { ICON };
     if tbutton(
         ui,
@@ -1354,7 +1360,7 @@ pub fn control_bar(
             2 => s.browser.open == Some(Tab::Loops),
             _ => s.browser.open == Some(Tab::Files),
         };
-        let on = shown.then_some(crate::widgets::BLUE);
+        let on = shown.then_some(crate::widgets::blue());
         let color = if on.is_some() { Color32::WHITE } else { ICON };
         if tbutton(ui, &g, c, &format!("right{i}"), *draw, on, color) {
             match i {

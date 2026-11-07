@@ -126,7 +126,7 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::Comma, ctrl, Action::Menu("Settings…")),
     // Views.
     cmd(Key::X, none, Action::Menu("Show Mixer")),
-    cmd(Key::Y, none, Action::Menu("Show Library")),
+    cmd(Key::Y, none, Action::Menu("Show Browser")),
     cmd(Key::I, none, Action::Menu("Show Inspector")),
     cmd(Key::P, none, Action::Menu("Show Piano Roll")),
     cmd(Key::E, none, Action::Menu("Show Piano Roll")),
@@ -172,10 +172,130 @@ pub const COMMANDS: &[Command] = &[
     cmd(Key::Num9, alt, Action::SaveScreenset(9)),
 ];
 
+/// A command, and the key a set of keys puts it on.
+type KeyMove = (Action, Key, fn() -> Modifiers);
+
+/// A whole set of keys to work with. Ovrtone's is [`COMMANDS`] as it stands, the owner's own choices
+/// included; each of the others moves the commands it knows onto the keys of that program. Each set
+/// keeps the changes the user makes to it. The piano roll's keys and Space are the same in all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyPreset {
+    #[default]
+    Ovrtone,
+    Logic,
+    FlStudio,
+    ProTools,
+}
+
+impl KeyPreset {
+    pub const ALL: [KeyPreset; 4] = [
+        KeyPreset::Ovrtone,
+        KeyPreset::Logic,
+        KeyPreset::FlStudio,
+        KeyPreset::ProTools,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyPreset::Ovrtone => "Ovrtone",
+            KeyPreset::Logic => "Logic Pro",
+            KeyPreset::FlStudio => "FL Studio",
+            KeyPreset::ProTools => "Pro Tools",
+        }
+    }
+
+    /// Its name in the settings folder.
+    fn id(self) -> &'static str {
+        match self {
+            KeyPreset::Ovrtone => "ovrtone",
+            KeyPreset::Logic => "logic",
+            KeyPreset::FlStudio => "fl",
+            KeyPreset::ProTools => "protools",
+        }
+    }
+
+    fn file(self) -> String {
+        match self {
+            // The file that was there before there were sets of keys.
+            KeyPreset::Ovrtone => KEYS_FILE.to_string(),
+            other => format!("{KEYS_FILE}-{}", other.id()),
+        }
+    }
+
+    /// What differs from [`COMMANDS`]: the action, and the key it goes on.
+    fn moves(self) -> &'static [KeyMove] {
+        match self {
+            KeyPreset::Ovrtone => &[],
+            KeyPreset::Logic => LOGIC_KEYS,
+            KeyPreset::FlStudio => FL_KEYS,
+            KeyPreset::ProTools => PRO_TOOLS_KEYS,
+        }
+    }
+}
+
+/// [`COMMANDS`] is Logic's table, apart from this.
+const LOGIC_KEYS: &[KeyMove] = &[(Action::Menu("New Tracks…"), Key::N, ctrl_alt)];
+
+/// From the keyboard shortcuts page of FL Studio's manual.
+const FL_KEYS: &[KeyMove] = &[
+    (Action::Metronome, Key::M, ctrl),
+    (Action::Menu("Show Piano Roll"), Key::F7, none),
+    (Action::Menu("Show Mixer"), Key::F9, none),
+    (Action::Menu("Show Browser"), Key::F8, none),
+    (Action::Menu("Show Media Browser"), Key::F8, alt),
+    (Action::Repeat, Key::B, ctrl),
+    (Action::MuteRegions, Key::M, alt),
+    (Action::Edit(EditCmd::Split), Key::Insert, none),
+    (Action::Menu("Zoom In"), Key::PageUp, none),
+    (Action::Menu("Zoom Out"), Key::PageDown, none),
+    (Action::Menu("Zoom to Fit"), Key::Num4, shift),
+];
+
+/// Pro Tools' usual keys on Windows. Not checked against Avid's guide, which could not be read when
+/// this was written: the owner, who knows these keys, is to confirm them.
+const PRO_TOOLS_KEYS: &[KeyMove] = &[
+    (Action::Menu("Record"), Key::F12, none),
+    (Action::Cycle, Key::L, ctrl_shift),
+    (Action::Menu("Show Mixer"), Key::Equals, ctrl),
+    (Action::Menu("New Tracks…"), Key::N, ctrl_shift),
+    (Action::Repeat, Key::D, ctrl),
+    (Action::Edit(EditCmd::Split), Key::E, ctrl),
+    (Action::MuteTrack, Key::M, shift),
+    (Action::SoloTrack, Key::S, shift),
+];
+
+/// The key command number `index` has in `preset`, before the user's own changes. A command the set
+/// has no key for, because the set uses its key for something else, has none.
+fn preset_key(preset: KeyPreset, index: usize) -> Option<(Key, Modifiers)> {
+    let command = COMMANDS.get(index)?;
+    let moves = preset.moves();
+    if let Some((_, key, m)) = moves.iter().find(|(a, _, _)| *a == command.action) {
+        // A command listed twice takes the set's key once.
+        let first = COMMANDS.iter().position(|c| c.action == command.action);
+        return (first == Some(index)).then(|| (*key, m()));
+    }
+    let own = (command.key, (command.modifiers)());
+    (!moves.iter().any(|(_, key, m)| (*key, m()) == own)).then_some(own)
+}
+
+/// The set in use, for the menus, which show its keys.
+static ACTIVE_PRESET: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn active_preset() -> KeyPreset {
+    let at = ACTIVE_PRESET.load(std::sync::atomic::Ordering::Relaxed);
+    KeyPreset::ALL
+        .get(usize::from(at))
+        .copied()
+        .unwrap_or_default()
+}
+
+const PRESET_FILE: &str = "key-preset";
+
 /// The user's own keys: a command's name and what it is on now, kept in the config folder. A
 /// command not listed has its key from [`COMMANDS`].
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct KeyMap {
+    pub preset: KeyPreset,
     own: Vec<(String, Key, Modifiers)>,
     loaded: bool,
     /// The Settings window waits for a key for this command.
@@ -256,10 +376,47 @@ impl KeyMap {
         if cfg!(test) {
             return;
         }
-        let text = crate::recent_files::config_dir()
-            .and_then(|d| std::fs::read_to_string(d.join(KEYS_FILE)).ok());
-        if let Some(text) = text {
-            self.own = Self::from_text(&text);
+        let chosen = crate::recent_files::config_dir()
+            .and_then(|d| std::fs::read_to_string(d.join(PRESET_FILE)).ok())
+            .unwrap_or_default();
+        self.preset = KeyPreset::ALL
+            .into_iter()
+            .find(|p| p.id() == chosen.trim())
+            .unwrap_or_default();
+        self.load_own();
+    }
+
+    /// Reads what the user changed in the set in use, and tells the menus which set it is.
+    fn load_own(&mut self) {
+        let at = KeyPreset::ALL
+            .iter()
+            .position(|p| *p == self.preset)
+            .unwrap_or(0);
+        ACTIVE_PRESET.store(at as u8, std::sync::atomic::Ordering::Relaxed);
+        self.own = crate::recent_files::config_dir()
+            .and_then(|d| std::fs::read_to_string(d.join(self.preset.file())).ok())
+            .map_or_else(Vec::new, |text| Self::from_text(&text));
+    }
+
+    /// Changes to another set of keys, and remembers it. The changes made to the last one are kept
+    /// for when it is chosen again.
+    pub fn choose_preset(&mut self, preset: KeyPreset) {
+        self.make_ready();
+        if preset == self.preset {
+            return;
+        }
+        self.preset = preset;
+        if cfg!(test) {
+            self.own.clear();
+            return;
+        }
+        self.load_own();
+        if let Some(dir) = crate::recent_files::config_dir() {
+            let saved = std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(dir.join(PRESET_FILE), preset.id()));
+            if let Err(e) = saved {
+                tracing::warn!("cannot save the set of keys: {e}");
+            }
         }
     }
 
@@ -269,20 +426,20 @@ impl KeyMap {
         }
         if let Some(dir) = crate::recent_files::config_dir() {
             let saved = std::fs::create_dir_all(&dir)
-                .and_then(|()| std::fs::write(dir.join(KEYS_FILE), self.to_text()));
+                .and_then(|()| std::fs::write(dir.join(self.preset.file()), self.to_text()));
             if let Err(e) = saved {
                 tracing::warn!("cannot save the key commands: {e}");
             }
         }
     }
 
-    /// The key a command is on now.
-    pub fn key_of(&self, command: &Command) -> (Key, Modifiers) {
-        let name = name_of(command.action);
-        self.own
-            .iter()
-            .find(|(n, _, _)| *n == name)
-            .map_or((command.key, (command.modifiers)()), |(_, k, m)| (*k, *m))
+    /// The key a command is on now, if it has one.
+    pub fn key_of(&self, index: usize) -> Option<(Key, Modifiers)> {
+        let name = name_of(COMMANDS.get(index)?.action);
+        match self.own.iter().find(|(n, _, _)| *n == name) {
+            Some((_, k, m)) => Some((*k, *m)),
+            None => preset_key(self.preset, index),
+        }
     }
 
     /// The command already on this key, other than `except`.
@@ -290,7 +447,7 @@ impl KeyMap {
         COMMANDS
             .iter()
             .enumerate()
-            .find(|(i, c)| *i != except && self.key_of(c) == (key, m))
+            .find(|(i, _)| *i != except && self.key_of(*i) == Some((key, m)))
             .map(|(_, c)| c)
     }
 
@@ -305,7 +462,7 @@ impl KeyMap {
         self.save();
     }
 
-    /// Back to the keys Ovrtone comes with.
+    /// Back to the keys of the set in use.
     pub fn reset(&mut self) {
         self.own.clear();
         self.save();
@@ -328,10 +485,11 @@ fn label_of(action: Action) -> Option<&'static str> {
 
 /// The key shown beside a menu entry.
 pub fn shortcut_of(label: &str) -> Option<egui::KeyboardShortcut> {
-    COMMANDS
+    let index = COMMANDS
         .iter()
-        .find(|c| label_of(c.action) == Some(label))
-        .map(|c| egui::KeyboardShortcut::new((c.modifiers)(), c.key))
+        .position(|c| label_of(c.action) == Some(label))?;
+    let (key, m) = preset_key(active_preset(), index)?;
+    Some(egui::KeyboardShortcut::new(m, key))
 }
 
 /// Runs what this frame's keys ask for.
@@ -343,7 +501,7 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     if s.keys.capturing.is_some() {
         return;
     }
-    for command in COMMANDS {
+    for (index, command) in COMMANDS.iter().enumerate() {
         let screenset = matches!(
             command.action,
             Action::RecallScreenset(_) | Action::SaveScreenset(_)
@@ -361,7 +519,9 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         if s.typing.on && matches!(command.action, Action::RecallScreenset(_)) {
             continue;
         }
-        let (key, mods) = s.keys.key_of(command);
+        let Some((key, mods)) = s.keys.key_of(index) else {
+            continue;
+        };
         let pressed =
             ctx.input_mut(|i| i.modifiers.matches_exact(mods) && i.consume_key(mods, key));
         if pressed {
@@ -512,7 +672,7 @@ mod tests {
             .is_some());
         assert!(s.keys.taken_by(Key::F9, Modifiers::SHIFT, cycle).is_none());
         s.keys.reset();
-        assert_eq!(s.keys.key_of(&COMMANDS[cycle]).0, Key::C);
+        assert_eq!(s.keys.key_of(cycle).map(|k| k.0), Some(Key::C));
     }
 
     #[test]
@@ -528,12 +688,15 @@ mod tests {
 
     #[test]
     fn every_menu_label_in_the_table_is_a_real_menu_entry() {
+        // Keys that work with no entry in the menu bar. The Summing Stack is on the tracks' own menu.
+        const KEYS_ONLY: [&str; 3] = ["Show Loop Browser", "Count-in", "Create Summing Stack"];
         let entries = crate::menus::all_entries();
-        for c in COMMANDS {
-            if let Some(label) = label_of(c.action) {
-                assert!(entries.contains(&label), "{label}");
-            }
-        }
+        let missing: Vec<&str> = COMMANDS
+            .iter()
+            .filter_map(|c| label_of(c.action))
+            .filter(|label| !entries.contains(label) && !KEYS_ONLY.contains(label))
+            .collect();
+        assert!(missing.is_empty(), "{missing:?}");
     }
 
     #[test]
@@ -577,6 +740,56 @@ mod tests {
         press(&ctx, Key::A, ctrl_alt(), &mut p, &mut s);
         assert_eq!(p.tracks.len(), n + 1);
         assert_eq!(p.tracks[n].kind, TrackKind::Audio);
+    }
+
+    #[test]
+    fn every_set_of_keys_is_of_real_commands_and_no_key_does_two_things() {
+        for preset in KeyPreset::ALL {
+            for (action, _, _) in preset.moves() {
+                assert!(
+                    COMMANDS.iter().any(|c| c.action == *action),
+                    "{preset:?}: {action:?}"
+                );
+            }
+            let mut seen: Vec<(Key, Modifiers, Action)> = Vec::new();
+            for (i, command) in COMMANDS.iter().enumerate() {
+                if let Some((key, m)) = preset_key(preset, i) {
+                    if let Some(other) = seen.iter().find(|s| s.0 == key && s.1 == m) {
+                        // The table has one command on a key only, for a reason of its own or not:
+                        // only what a set moves is held to this here.
+                        let moved = preset
+                            .moves()
+                            .iter()
+                            .any(|(a, _, _)| *a == command.action || *a == other.2);
+                        assert!(!moved, "{preset:?}: {key:?} on two commands");
+                    }
+                    seen.push((key, m, command.action));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_set_moves_its_commands_and_leaves_ovrtones_as_they_are() {
+        let of = |action: Action| COMMANDS.iter().position(|c| c.action == action).unwrap();
+        let mixer = of(Action::Menu("Show Mixer"));
+        assert_eq!(
+            preset_key(KeyPreset::Ovrtone, mixer).map(|k| k.0),
+            Some(Key::X)
+        );
+        assert_eq!(
+            preset_key(KeyPreset::FlStudio, mixer).map(|k| k.0),
+            Some(Key::F9)
+        );
+        // FL Studio has Ctrl+B for Repeat, so the bounce loses the key.
+        let bounce = of(Action::Menu("Project or Section…"));
+        assert_eq!(preset_key(KeyPreset::FlStudio, bounce), None);
+        assert!(preset_key(KeyPreset::Ovrtone, bounce).is_some());
+        // Both of a command listed twice do not take the one key.
+        let mut s = UiState::new();
+        s.keys.choose_preset(KeyPreset::FlStudio);
+        assert_eq!(s.keys.preset, KeyPreset::FlStudio);
+        assert_eq!(s.keys.key_of(mixer).map(|k| k.0), Some(Key::F9));
     }
 
     #[test]

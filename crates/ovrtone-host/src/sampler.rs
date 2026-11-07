@@ -4,26 +4,147 @@
 //! instrument slot like any plugin.
 //!
 //! A short sample plays to its end whatever the note's length, as a drum hit should. A longer one
-//! stops, with a short fade, when the note does.
+//! stops, with a short fade, when the note does. [`params`] are its settings: pitch, root key, level,
+//! pan, where it starts and ends, reverse, an envelope and more. The window for them is the program's.
 use crate::{HostError, Loaded, LoadedPlugin};
 use ovrtone_engine::{AudioFile, PluginEvent, PluginEventKind, PluginProcessor, PluginTransport};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 /// Notes sounding at once; past this the oldest gives way.
 const VOICES: usize = 32;
-/// The note that plays the sample as recorded.
-const ROOT_KEY: i32 = 60;
 /// Samples up to this long play to their end.
 const ONE_SHOT_SECONDS: f64 = 2.0;
-/// How long a held note takes to fade when let go.
-const RELEASE_SECONDS: f64 = 0.012;
+
+/// The sampler's settings, each kept as a position 0..=1 as plugin parameters are, and what those
+/// positions mean.
+pub mod params {
+    pub const VOLUME: u32 = 0;
+    pub const PAN: u32 = 1;
+    pub const PITCH: u32 = 2;
+    pub const FINE: u32 = 3;
+    pub const ROOT: u32 = 4;
+    pub const START: u32 = 5;
+    pub const END: u32 = 6;
+    pub const REVERSE: u32 = 7;
+    pub const ATTACK: u32 = 8;
+    pub const DECAY: u32 = 9;
+    pub const SUSTAIN: u32 = 10;
+    pub const RELEASE: u32 = 11;
+    pub const CUT_SELF: u32 = 12;
+    pub const TO_END: u32 = 13;
+    pub const COUNT: usize = 14;
+
+    pub const NAMES: [&str; COUNT] = [
+        "Volume",
+        "Pan",
+        "Pitch",
+        "Fine",
+        "Root Key",
+        "Start",
+        "End",
+        "Reverse",
+        "Attack",
+        "Decay",
+        "Sustain",
+        "Release",
+        "Cut Itself",
+        "Play to End",
+    ];
+
+    const MIN_DB: f32 = -60.0;
+    const MAX_DB: f32 = 12.0;
+
+    pub fn volume_db(v: f32) -> f32 {
+        MIN_DB + v * (MAX_DB - MIN_DB)
+    }
+    pub fn pitch_semitones(v: f32) -> f32 {
+        ((v - 0.5) * 96.0).round()
+    }
+    pub fn fine_cents(v: f32) -> f32 {
+        (v - 0.5) * 200.0
+    }
+    pub fn root_key(v: f32) -> u8 {
+        (v * 127.0).round().clamp(0.0, 127.0) as u8
+    }
+    pub fn of_root_key(key: u8) -> f32 {
+        f32::from(key.min(127)) / 127.0
+    }
+    /// Attack, decay and release, in seconds: fine at the short end.
+    pub fn seconds(v: f32) -> f32 {
+        v * v * 4.0
+    }
+
+    /// Where each starts: a sample as recorded, a short fade when let go.
+    pub fn defaults() -> [f32; COUNT] {
+        [
+            -MIN_DB / (MAX_DB - MIN_DB),
+            0.5,
+            0.5,
+            0.5,
+            60.0 / 127.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.055,
+            0.0,
+            0.0,
+        ]
+    }
+}
+
+/// The settings, shared by the window and the audio thread: it reads them once a block.
+struct Settings([AtomicU32; params::COUNT]);
+
+impl Settings {
+    fn new(to_end: bool) -> Self {
+        let mut values = params::defaults();
+        values[params::TO_END as usize] = if to_end { 1.0 } else { 0.0 };
+        Self(values.map(|v| AtomicU32::new(v.to_bits())))
+    }
+
+    fn get(&self, id: u32) -> f32 {
+        self.0
+            .get(id as usize)
+            .map_or(0.0, |v| f32::from_bits(v.load(Ordering::Relaxed)))
+    }
+
+    fn set(&self, id: u32, value: f32) {
+        if let Some(slot) = self.0.get(id as usize) {
+            slot.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
+/// The settings as the audio thread uses them, worked out once a block.
+#[derive(Clone, Copy, Default)]
+struct Live {
+    left: f32,
+    right: f32,
+    root: i32,
+    /// Semitones, fine tune included.
+    offset: f64,
+    start: f64,
+    end: f64,
+    reverse: bool,
+    attack: f32,
+    decay: f32,
+    sustain: f32,
+    release: f32,
+    cut_self: bool,
+    to_end: bool,
+}
 
 #[derive(Clone, Copy, Default)]
 struct Voice {
     active: bool,
     releasing: bool,
+    /// Still rising to full level.
+    rising: bool,
     key: u8,
     /// Where it is in the sample, in frames.
     position: f64,
@@ -35,13 +156,23 @@ struct Voice {
     age: u64,
 }
 
+/// How far the sampler bends at the top of the range, either way: as far as a slide could want.
+pub const SAMPLER_BEND_SEMITONES: f32 = 48.0;
+/// How much of the way to the wanted pitch each frame goes, so that steps between bends glide.
+const BEND_GLIDE_PER_FRAME: f32 = 0.004;
+
 struct SamplerProcessor {
+    /// The bend wanted and the bend now, in semitones, and what the now means for playing speed.
+    bend_wanted: f32,
+    bend_now: f32,
+    bend_speed: f64,
     /// Interleaved stereo.
     samples: Arc<Vec<f32>>,
     /// Frames of the sample per frame of output at the root key.
     base_step: f64,
-    one_shot: bool,
-    release_per_frame: f32,
+    settings: Arc<Settings>,
+    live: Live,
+    rate: f32,
     voices: [Voice; VOICES],
     started: u64,
     released: Arc<AtomicBool>,
@@ -63,21 +194,29 @@ impl SamplerProcessor {
             })
             .unwrap_or(0);
         self.started += 1;
-        let semitones = (i32::from(key) - ROOT_KEY) as f64;
+        let live = self.live;
+        if live.cut_self {
+            for v in self.voices.iter_mut().filter(|v| v.active) {
+                v.releasing = true;
+            }
+        }
+        let semitones = f64::from(i32::from(key) - live.root) + live.offset;
+        let rising = live.attack < 1.0;
         self.voices[at] = Voice {
             active: true,
             releasing: false,
+            rising,
             key,
             position: 0.0,
             step: self.base_step * (semitones / 12.0).exp2(),
             gain: velocity.clamp(0.0, 1.0),
-            envelope: 1.0,
+            envelope: if rising { 0.0 } else { 1.0 },
             age: self.started,
         };
     }
 
     fn note_off(&mut self, key: u8) {
-        if self.one_shot {
+        if self.live.to_end {
             return;
         }
         for v in self.voices.iter_mut().filter(|v| v.active && v.key == key) {
@@ -85,28 +224,86 @@ impl SamplerProcessor {
         }
     }
 
+    /// Takes in the settings for this block. No allocation or lock: only atomics.
+    fn read_settings(&mut self) {
+        use params as x;
+        let s = &self.settings;
+        let frames = (self.samples.len() / 2).saturating_sub(1) as f64;
+        let gain = if s.get(x::VOLUME) <= 0.0 {
+            0.0
+        } else {
+            10f32.powf(x::volume_db(s.get(x::VOLUME)) / 20.0)
+        };
+        let pan = s.get(x::PAN);
+        let per_frame = |seconds: f32, rate: f32| {
+            if seconds <= 0.0 {
+                1.0
+            } else {
+                (1.0 / (seconds * rate)).min(1.0)
+            }
+        };
+        let (first, last) = (s.get(x::START), s.get(x::END));
+        let (first, last) = (first.min(last), first.max(last));
+        self.live = Live {
+            left: gain * (2.0 - 2.0 * pan).min(1.0),
+            right: gain * (2.0 * pan).min(1.0),
+            root: i32::from(x::root_key(s.get(x::ROOT))),
+            offset: f64::from(
+                x::pitch_semitones(s.get(x::PITCH)) + x::fine_cents(s.get(x::FINE)) / 100.0,
+            ),
+            start: f64::from(first) * frames,
+            end: f64::from(last) * frames,
+            reverse: s.get(x::REVERSE) >= 0.5,
+            attack: per_frame(x::seconds(s.get(x::ATTACK)), self.rate),
+            decay: per_frame(x::seconds(s.get(x::DECAY)), self.rate),
+            sustain: s.get(x::SUSTAIN),
+            release: per_frame(x::seconds(s.get(x::RELEASE)), self.rate),
+            cut_self: s.get(x::CUT_SELF) >= 0.5,
+            to_end: s.get(x::TO_END) >= 0.5,
+        };
+    }
+
     /// Adds one frame of every voice to (l, r).
     #[inline]
     fn render(&mut self) -> (f32, f32) {
         let frames = self.samples.len() / 2;
+        let live = self.live;
         let (mut l, mut r) = (0.0, 0.0);
         for v in self.voices.iter_mut().filter(|v| v.active) {
-            let at = v.position as usize;
+            if live.start + v.position >= live.end {
+                v.active = false;
+                continue;
+            }
+            // Where it is in the file: from the start on, or back from the end when reversed.
+            let place = if live.reverse {
+                (live.end - v.position - 1.0).max(0.0)
+            } else {
+                live.start + v.position
+            };
+            let at = place as usize;
             if at + 1 >= frames {
                 v.active = false;
                 continue;
             }
-            let t = (v.position - at as f64) as f32;
+            let t = (place - at as f64) as f32;
             let s = &self.samples;
             let gain = v.gain * v.envelope;
-            l += (s[at * 2] + (s[at * 2 + 2] - s[at * 2]) * t) * gain;
-            r += (s[at * 2 + 1] + (s[at * 2 + 3] - s[at * 2 + 1]) * t) * gain;
-            v.position += v.step;
+            l += (s[at * 2] + (s[at * 2 + 2] - s[at * 2]) * t) * gain * live.left;
+            r += (s[at * 2 + 1] + (s[at * 2 + 3] - s[at * 2 + 1]) * t) * gain * live.right;
+            v.position += v.step * self.bend_speed;
             if v.releasing {
-                v.envelope -= self.release_per_frame;
+                v.envelope -= live.release;
                 if v.envelope <= 0.0 {
                     v.active = false;
                 }
+            } else if v.rising {
+                v.envelope += live.attack;
+                if v.envelope >= 1.0 {
+                    v.envelope = 1.0;
+                    v.rising = false;
+                }
+            } else if v.envelope > live.sustain {
+                v.envelope = (v.envelope - live.decay).max(live.sustain);
             }
         }
         (l, r)
@@ -121,6 +318,7 @@ impl PluginProcessor for SamplerProcessor {
         events: &[PluginEvent],
         _transport: &PluginTransport,
     ) {
+        self.read_settings();
         let [out_l, out_r] = output;
         let mut next = 0;
         for frame in 0..out_l.len() {
@@ -128,9 +326,21 @@ impl PluginProcessor for SamplerProcessor {
                 match e.kind {
                     PluginEventKind::NoteOn { key, velocity } => self.note_on(key, velocity),
                     PluginEventKind::NoteOff { key } => self.note_off(key),
-                    PluginEventKind::Control { .. } | PluginEventKind::PitchBend { .. } => {}
+                    PluginEventKind::PitchBend { value } => {
+                        self.bend_wanted = value * SAMPLER_BEND_SEMITONES;
+                    }
+                    PluginEventKind::Control { .. } => {}
                 }
                 next += 1;
+            }
+            if self.bend_now != self.bend_wanted {
+                let gap = self.bend_wanted - self.bend_now;
+                self.bend_now = if gap.abs() < 0.001 {
+                    self.bend_wanted
+                } else {
+                    self.bend_now + gap * BEND_GLIDE_PER_FRAME
+                };
+                self.bend_speed = f64::from(self.bend_now / 12.0).exp2();
             }
             let (l, r) = self.render();
             out_l[frame] = l + input[0][frame];
@@ -140,6 +350,10 @@ impl PluginProcessor for SamplerProcessor {
 
     fn latency_samples(&self) -> usize {
         0
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.settings.set(id, value as f32);
     }
 }
 
@@ -152,9 +366,34 @@ impl Drop for SamplerProcessor {
 /// The UI side has nothing to do yet: the sound lives in the audio half.
 struct LoadedSampler {
     released: Arc<AtomicBool>,
+    settings: Arc<Settings>,
+    dirty: bool,
 }
 
+/// Starts the sampler's saved settings.
+const STATE_MAGIC: &[u8; 4] = b"PWS1";
+
 impl LoadedPlugin for LoadedSampler {
+    fn params(&self) -> Vec<crate::PluginParam> {
+        params::NAMES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| crate::PluginParam {
+                id: id as u32,
+                name: (*name).to_string(),
+            })
+            .collect()
+    }
+
+    fn param_value(&mut self, id: u32) -> Option<f64> {
+        ((id as usize) < params::COUNT).then(|| f64::from(self.settings.get(id)))
+    }
+
+    fn show_param(&mut self, id: u32, value: f64) {
+        self.settings.set(id, value as f32);
+        self.dirty = true;
+    }
+
     fn latency_samples(&self) -> usize {
         0
     }
@@ -187,15 +426,26 @@ impl LoadedPlugin for LoadedSampler {
     fn close_editor(&mut self) {}
 
     fn save_state(&mut self) -> Result<Option<Vec<u8>>, HostError> {
-        Ok(None)
+        let mut out = STATE_MAGIC.to_vec();
+        for id in 0..params::COUNT as u32 {
+            out.extend_from_slice(&self.settings.get(id).to_le_bytes());
+        }
+        Ok(Some(out))
     }
 
-    fn load_state(&mut self, _bytes: &[u8]) -> Result<(), HostError> {
+    fn load_state(&mut self, bytes: &[u8]) -> Result<(), HostError> {
+        let saved = bytes
+            .strip_prefix(STATE_MAGIC)
+            .ok_or_else(|| HostError("the sampler's saved settings are damaged".to_string()))?;
+        // A later version may save more; one that saved less leaves the rest as they are.
+        for (id, value) in saved.as_chunks::<4>().0.iter().enumerate() {
+            self.settings.set(id as u32, f32::from_le_bytes(*value));
+        }
         Ok(())
     }
 
     fn take_dirty(&mut self) -> bool {
-        false
+        std::mem::take(&mut self.dirty)
     }
 }
 
@@ -211,16 +461,26 @@ pub fn load_sampler(path: &Path, sample_rate: u32) -> Result<Loaded, HostError> 
     }
     let rate = f64::from(sample_rate.max(1));
     let released = Arc::new(AtomicBool::new(false));
+    let settings = Arc::new(Settings::new(file.duration_secs() <= ONE_SHOT_SECONDS));
     let audio = SamplerProcessor {
         samples: Arc::new(samples),
         base_step: f64::from(file.sample_rate.max(1)) / rate,
-        one_shot: file.duration_secs() <= ONE_SHOT_SECONDS,
-        release_per_frame: (1.0 / (RELEASE_SECONDS * rate)) as f32,
+        bend_wanted: 0.0,
+        bend_now: 0.0,
+        bend_speed: 1.0,
+        settings: settings.clone(),
+        live: Live::default(),
+        rate: rate as f32,
         voices: [Voice::default(); VOICES],
         started: 0,
         released: released.clone(),
     };
-    Ok((Box::new(LoadedSampler { released }), Box::new(audio)))
+    let loaded = LoadedSampler {
+        released,
+        settings,
+        dirty: false,
+    };
+    Ok((Box::new(loaded), Box::new(audio)))
 }
 
 #[cfg(test)]
@@ -290,6 +550,70 @@ mod tests {
         assert!((238..=241).contains(&up), "{up}");
         let down = sounding(&mut audio, &[on(0, 48)], 40);
         assert!((958..=961).contains(&down), "{down}");
+    }
+
+    #[test]
+    fn a_bend_changes_how_fast_a_one_shot_plays_and_with_no_steps_or_breaks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), 0.25);
+        let rate = RATE;
+        let played = |bend: Option<f32>| {
+            let (_, mut audio) = load_sampler(&path, rate).unwrap();
+            let mut events = vec![on(0, 60)];
+            if let Some(value) = bend {
+                events.push(PluginEvent {
+                    frame: 0,
+                    kind: PluginEventKind::PitchBend { value },
+                });
+            }
+            sounding(&mut audio, &events, 400)
+        };
+        let (plain, up) = (played(None), played(Some(12.0 / SAMPLER_BEND_SEMITONES)));
+        // An octave up plays it in half the time, give or take the first moments of the glide.
+        assert!(up < plain * 3 / 5, "{up} frames against {plain}");
+        assert!(up > plain * 2 / 5, "{up} frames against {plain}");
+        // Down, it takes longer, and a bend back to nothing leaves it as it was.
+        assert!(played(Some(-12.0 / SAMPLER_BEND_SEMITONES)) > plain);
+        assert_eq!(played(Some(0.0)), plain);
+    }
+
+    #[test]
+    fn the_settings_change_the_sound_and_are_saved() {
+        use params as x;
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), 0.25);
+        let (mut loaded, mut audio) = load_sampler(&path, RATE).unwrap();
+        let plain = sounding(&mut audio, &[on(0, 60)], 400);
+        // An octave higher by the Pitch setting plays in half the time, as a root key an octave
+        // lower does.
+        loaded.show_param(x::PITCH, 0.5 + 12.0 / 96.0);
+        assert!(loaded.take_dirty());
+        let up = sounding(&mut audio, &[on(0, 60)], 400);
+        assert!(up < plain * 3 / 5 && up > plain * 2 / 5, "{up} of {plain}");
+        loaded.show_param(x::PITCH, 0.5);
+        loaded.show_param(x::ROOT, f64::from(x::of_root_key(48)));
+        let by_root = sounding(&mut audio, &[on(0, 60)], 400);
+        assert!(by_root < plain * 3 / 5, "{by_root} of {plain}");
+        loaded.show_param(x::ROOT, f64::from(x::of_root_key(60)));
+        // Half of it, by where it ends.
+        loaded.show_param(x::END, 0.5);
+        let half = sounding(&mut audio, &[on(0, 60)], 400);
+        assert!(half < plain * 3 / 5, "{half} of {plain}");
+        // Reversed, it is as long.
+        loaded.show_param(x::END, 1.0);
+        loaded.show_param(x::REVERSE, 1.0);
+        let back = sounding(&mut audio, &[on(0, 60)], 400);
+        assert!(back.abs_diff(plain) < plain / 20, "{back} of {plain}");
+        // Silent at the bottom of the fader.
+        loaded.show_param(x::VOLUME, 0.0);
+        assert_eq!(sounding(&mut audio, &[on(0, 60)], 100), 0);
+        // What was set comes back in a new one.
+        let state = loaded.save_state().unwrap().unwrap();
+        let (mut again, _audio) = load_sampler(&path, RATE).unwrap();
+        again.load_state(&state).unwrap();
+        assert_eq!(again.param_value(x::REVERSE), Some(1.0));
+        assert_eq!(again.param_value(x::VOLUME), Some(0.0));
+        assert!(again.load_state(b"nonsense").is_err());
     }
 
     #[test]

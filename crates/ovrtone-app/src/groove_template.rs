@@ -261,6 +261,8 @@ mod tests {
             pitch: 60,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 

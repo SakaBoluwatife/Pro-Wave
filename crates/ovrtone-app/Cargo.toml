@@ -40,6 +40,8 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 rhai = { version = "1", features = ["no_module"] }
 flacenc = { version = "0.5.1", default-features = false, features = ["par"] }
 mp3lame-encoder = "0.3.0"
+# The Stem Splitter (src/stem_worker.rs). The library itself is loaded from the stems folder.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"] }
 
 # The menus in the macOS system menu bar (see src/native_menu.rs).
 [target.'cfg(target_os = "macos")'.dependencies]

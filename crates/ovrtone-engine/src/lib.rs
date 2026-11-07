@@ -41,8 +41,9 @@ pub use crate::capture::{
     MAX_INPUT_CHANNELS,
 };
 pub use crate::core::{
-    dsp_load, AudioClip, ClipEdit, Command, ControlEvent, EngineCore, EngineState, FadeCurve,
-    Garbage, MidiOutEvent, NoteEvent, Preview, Shared, Song, StateReader, TrackMix, MAX_TRACKS,
+    dsp_load, set_built_in_voices, AudioClip, ClipEdit, Command, ControlEvent, EngineCore,
+    EngineState, FadeCurve, Garbage, MidiOutEvent, NoteEvent, Preview, Shared, Song, StateReader,
+    TrackMix, MAX_TRACKS, PITCH_BEND_CONTROL, PITCH_BEND_FINE_CONTROL,
 };
 pub use crate::disk::{
     ring_blocks_for, AudioError, AudioFile, DiskThread, RING_BLOCKS, RING_BLOCKS_MAX,

@@ -1,11 +1,10 @@
 //! Bridges the UI project model to `ovrtone-engine` using only `Command`s (never direct mutation).
 use crate::model::TrackKind;
 use crate::model::{Insert, Project, Region, TempoPoint, Track};
-use crate::patches::synth_patch;
 use crate::plugin_rack::Rack;
 use ovrtone_engine::{
     AutoLane, AutoTarget, Chain, Command, ControlEvent, Engine, Fx, InputSource, MonitorTrack,
-    NoteEvent, Pdc, Route, SendSpec, Song, SynthPatch, TrackMix, MAX_MONITORS, MAX_TRACKS,
+    NoteEvent, Pdc, Route, SendSpec, Song, TrackMix, MAX_MONITORS, MAX_TRACKS,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -33,8 +32,6 @@ pub struct EngineSync {
     master: Option<f32>,
     position: Option<f64>,
     mixes: Vec<Mix>,
-    /// Last synth patch sent for each track (re-sent whenever the Library changes it).
-    patches: Vec<SynthPatch>,
     /// Which tracks the engine was told are external, by track.
     externals: Vec<bool>,
     /// The controller changes the engine has.
@@ -304,6 +301,109 @@ fn mixes(p: &Project) -> Vec<Mix> {
         .collect()
 }
 
+/// Whether a track's instrument is the sampler that plays its samples, as FL Studio's channels do.
+fn plays_samples(t: &Track) -> bool {
+    t.instrument_plugin.as_ref().is_some_and(|i| {
+        ovrtone_host::PluginFormat::of(&i.path) == ovrtone_host::PluginFormat::Sampler
+    })
+}
+
+/// The slide notes of a region that have a note to bend: each with the note it bends, the one
+/// sounding at its start that began last. With `rings` the sound goes on past its note, as a
+/// one-shot such as an 808 does, so that is the last note begun, however short. One with nothing to
+/// bend is an ordinary note.
+fn slides_of(notes: &[crate::model::Note], rings: bool) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for (i, slide) in notes.iter().enumerate() {
+        if !slide.slide || slide.muted {
+            continue;
+        }
+        let base = notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                !n.slide
+                    && !n.muted
+                    && n.start <= slide.start
+                    && (rings || n.start + n.len > slide.start)
+            })
+            .max_by(|a, b| a.1.start.total_cmp(&b.1.start))
+            .map(|(k, _)| k);
+        if let Some(base) = base {
+            out.push((i, base));
+        }
+    }
+    out
+}
+
+/// The pitch bends that play a region's slide notes: over each slide from where the last one got
+/// to, to its pitch, and back to no bend when the bent note ends. `range` is the instrument's bend
+/// range in semitones; a slide further than that goes as far as it can. With `rings` the bent sound
+/// outlasts its note, so it lets go only just before the next note, or at the end of the region.
+fn slide_bends(
+    notes: &[crate::model::Note],
+    origin: f64,
+    track: u16,
+    range: f32,
+    rings: bool,
+    length: f32,
+) -> Vec<ControlEvent> {
+    const STEP: f32 = 1.0 / 32.0;
+    let mut slides = slides_of(notes, rings);
+    slides.sort_by(|a, b| notes[a.0].start.total_cmp(&notes[b.0].start));
+    // Just before a note, so that it starts at its own pitch.
+    const BEFORE_NOTE: f32 = 1.0 / 512.0;
+    let bend =
+        |semitones: f32| (8192.0 + 8191.0 * (semitones / range).clamp(-1.0, 1.0)).round() as u16;
+    let event = |beat: f32, semitones: f32| {
+        let value = bend(semitones);
+        [
+            ControlEvent {
+                beat: origin + f64::from(beat),
+                track,
+                number: ovrtone_engine::PITCH_BEND_FINE_CONTROL,
+                value: (value & 0x7f) as u8,
+            },
+            ControlEvent {
+                beat: origin + f64::from(beat),
+                track,
+                number: ovrtone_engine::PITCH_BEND_CONTROL,
+                value: (value >> 7) as u8,
+            },
+        ]
+    };
+    let mut out = Vec::new();
+    let mut last: Option<(usize, f32)> = None;
+    for (at, &(slide, base)) in slides.iter().enumerate() {
+        let (s, b) = (notes[slide], notes[base]);
+        let from = last.filter(|(k, _)| *k == base).map_or(0.0, |(_, to)| to);
+        let to = f32::from(s.pitch) - f32::from(b.pitch);
+        let end = if rings {
+            notes
+                .iter()
+                .filter(|n| !n.slide && !n.muted && n.start > b.start)
+                .map(|n| n.start - BEFORE_NOTE)
+                .fold(length, f32::min)
+        } else {
+            b.start + b.len
+        };
+        let steps = (s.len / STEP).ceil().clamp(1.0, 64.0) as u32;
+        for k in 1..=steps {
+            let part = k as f32 / steps as f32;
+            let beat = s.start + s.len * part;
+            if beat < end {
+                out.extend(event(beat, from + (to - from) * part));
+            }
+        }
+        last = Some((base, to));
+        // The next slide on this note carries on from here; else its end lets go of the bend.
+        if slides.get(at + 1).is_none_or(|next| next.1 != base) {
+            out.extend(event(end, 0.0));
+        }
+    }
+    out
+}
+
 /// Notes of one MIDI region as the engine should play them, with the Region Inspector
 /// (quantize, transpose, velocity) and Track Inspector (transpose, velocity, key and
 /// velocity limits) applied non-destructively, as Logic does on playback.
@@ -316,10 +416,17 @@ pub(crate) fn region_notes(t: &Track, r: &Region, origin: f64, track: u16) -> Ve
         0.0
     };
     let mut flams: std::collections::HashMap<i64, u32> = std::collections::HashMap::new();
+    // Slide notes that bend what is sounding start no note. Only a hosted instrument can be bent.
+    let bends = if t.instrument_plugin.is_some() {
+        slides_of(&r.notes, plays_samples(t))
+    } else {
+        Vec::new()
+    };
     r.notes
         .iter()
-        .filter(|n| !n.muted)
-        .filter_map(|n| {
+        .enumerate()
+        .filter(|(i, n)| !n.muted && !bends.iter().any(|b| b.0 == *i))
+        .filter_map(|(_, n)| {
             let (mut start, mut len) = (n.start, n.len);
             if let Some(q) = rp.quantize.filter(|q| *q > 0.0) {
                 let target = (n.start / q).round() * q;
@@ -422,6 +529,22 @@ fn song_controls(p: &Project) -> Vec<ControlEvent> {
                     number: c.num.min(127),
                     value: c.val.min(127),
                 }));
+                if t.instrument_plugin.is_some() {
+                    let range = if plays_samples(t) {
+                        ovrtone_host::SAMPLER_BEND_SEMITONES
+                    } else {
+                        f32::from(t.slide_range.max(1))
+                    };
+                    let length = p.region_len_beats(r) as f32;
+                    out.extend(slide_bends(
+                        &r.notes,
+                        origin,
+                        track,
+                        range,
+                        plays_samples(t),
+                        length,
+                    ));
+                }
             }
             // A Modulator on the track sends its controller along all the regions.
             out.extend(
@@ -587,7 +710,6 @@ impl EngineSync {
             master: None,
             position: None,
             mixes: Vec::new(),
-            patches: Vec::new(),
             externals: Vec::new(),
             controls: Vec::new(),
             mtc: None,
@@ -737,23 +859,6 @@ impl EngineSync {
             })
         {
             self.master = Some(p.master_vol);
-        }
-        // Library patches: send each track's synth patch whenever it changes. Stop at the
-        // first rejection so `patches` stays indexed by track; the rest go next frame.
-        for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
-            let patch = synth_patch(t);
-            if self.patches.get(i) == Some(&patch) {
-                continue;
-            }
-            let track = i as u16;
-            if !self.send(Command::SetTrackPatch { track, patch }) {
-                break;
-            }
-            if i < self.patches.len() {
-                self.patches[i] = patch;
-            } else {
-                self.patches.push(patch);
-            }
         }
         // External MIDI tracks: their notes go out as MIDI instead of sounding here.
         for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
@@ -948,6 +1053,10 @@ impl EngineSync {
     }
 
     /// Where a plugin parameter is now.
+    pub fn show_param(&mut self, uid: u64, param: u32, value: f64) {
+        self.rack.show_param(uid, param, value);
+    }
+
     pub fn param_value(&mut self, uid: u64, param: u32) -> Option<f64> {
         self.rack.param_value(uid, param)
     }
@@ -1059,6 +1168,86 @@ mod tests {
     use ovrtone_engine::TempoMap;
 
     #[test]
+    fn slide_notes_bend_what_is_sounding_and_let_go_at_its_end() {
+        let note = |start: f32, len: f32, pitch: u8, slide: bool| Note {
+            start,
+            len,
+            pitch,
+            vel: 100,
+            muted: false,
+            color: 0,
+            slide,
+        };
+        // Two up over a beat, within a note of four beats.
+        let notes = [note(0.0, 4.0, 60, false), note(1.0, 1.0, 62, true)];
+        assert_eq!(slides_of(&notes, false), [(1, 0)]);
+        // The high part of each bend, which comes after its low part.
+        let high = |events: &[ControlEvent]| -> Vec<(f64, u8)> {
+            events
+                .iter()
+                .filter(|b| b.number == ovrtone_engine::PITCH_BEND_CONTROL)
+                .map(|b| (b.beat, b.value))
+                .collect()
+        };
+        let bends = slide_bends(&notes, 8.0, 3, 2.0, false, 16.0);
+        assert_eq!(bends[0].number, ovrtone_engine::PITCH_BEND_FINE_CONTROL);
+        assert_eq!(bends[0].track, 3);
+        assert!(bends[0].beat > 9.0);
+        let steps = high(&bends);
+        assert_eq!(steps[steps.len() - 2], (10.0, 127));
+        assert_eq!(steps[steps.len() - 1], (12.0, 64));
+        // With nothing sounding it is an ordinary note.
+        assert!(slides_of(&[note(1.0, 1.0, 62, true)], false).is_empty());
+        assert!(slide_bends(&[note(1.0, 1.0, 62, true)], 0.0, 0, 2.0, false, 4.0).is_empty());
+        // Further than the range goes as far as it can.
+        let far = slide_bends(
+            &[note(0.0, 2.0, 60, false), note(0.0, 1.0, 72, true)],
+            0.0,
+            0,
+            2.0,
+            false,
+            4.0,
+        );
+        let steps = high(&far);
+        assert_eq!(steps[steps.len() - 2].1, 127);
+    }
+
+    #[test]
+    fn a_slide_bends_a_one_shot_after_its_short_note_and_lets_go_before_the_next() {
+        let note = |start: f32, len: f32, pitch: u8, slide: bool| Note {
+            start,
+            len,
+            pitch,
+            vel: 100,
+            muted: false,
+            color: 0,
+            slide,
+        };
+        // An 808: a short note that rings on, a slide two beats later, then another note.
+        let notes = [
+            note(0.0, 0.25, 36, false),
+            note(2.0, 0.5, 24, true),
+            note(4.0, 0.25, 36, false),
+        ];
+        assert!(slides_of(&notes, false).is_empty(), "nothing held");
+        assert_eq!(slides_of(&notes, true), [(1, 0)]);
+        let bends = slide_bends(&notes, 0.0, 0, 48.0, true, 8.0);
+        let last = bends.last().unwrap();
+        assert!(
+            last.beat < 4.0 && last.beat > 3.9,
+            "just before the next note"
+        );
+        assert_eq!(last.value, 64);
+        // A quarter of the way down the range: 12 of 48 semitones, with 14 bits to say it in.
+        let lowest = bends
+            .iter()
+            .filter(|b| b.number == ovrtone_engine::PITCH_BEND_CONTROL)
+            .map(|b| b.value)
+            .min();
+        assert_eq!(lowest, Some(48));
+    }
+
+    #[test]
     fn the_cycle_loops_the_playhead_through_the_real_engine() {
         let mut p = Project::empty();
         p.tempo = 120.0;
@@ -1096,6 +1285,7 @@ mod tests {
             monitor: false,
             hardware_out: 0,
             aux_bus: 0,
+            slide_range: crate::model::DEFAULT_SLIDE_RANGE,
             input: ovrtone_engine::InputSource::Mono(0),
             output: 0,
             volume_db: 0.0,
@@ -1103,7 +1293,6 @@ mod tests {
             inserts: vec![],
             plugins: Vec::new(),
             instrument_plugin: None,
-            instrument: None,
             regions: vec![Region {
                 name: "r".into(),
                 start_bar: 1.0,
@@ -1145,6 +1334,8 @@ mod tests {
             pitch,
             vel,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 
@@ -1166,22 +1357,25 @@ mod tests {
                 pre: false,
             },
         ];
-        // Aux strips take Bus 1, Bus 2... in order, and do not send themselves.
+        // Aux strips take Bus 1, Bus 2... in order, and can send, only not into their own bus.
         p.tracks[a1].sends = p.tracks[0].sends.clone();
         assert_eq!(
             (p.aux_bus_of(a1), p.aux_bus_of(a2), p.aux_bus_of(0)),
             (1, 2, 0)
         );
         assert_eq!(route_of(&p, a2).bus_in, 2);
-        assert!(!route_of(&p, a1).has_sends());
+        assert!(route_of(&p, a1).has_sends(), "Bus 1 sends to Bus 2");
+        p.tracks[a2].sends = p.tracks[0].sends.clone();
+        assert!(!route_of(&p, a2).has_sends(), "Bus 2 cannot send to itself");
+        p.tracks[a2].sends.clear();
         let r = route_of(&p, 0);
         assert_eq!((r.bus_in, r.sends[0].bus, r.sends[0].pre), (0, 2, true));
         assert_eq!(r.sends[1].bus, 0, "an empty slot sends nothing");
-        // More than eight Aux strips: the ninth hears no bus.
+        // More than eight Aux strips: each still has a bus of its own.
         for _ in 0..8 {
             p.add_track(TrackKind::Aux);
         }
-        assert_eq!(p.aux_bus_of(p.tracks.len() - 1), 0);
+        assert_eq!(p.aux_bus_of(p.tracks.len() - 1), 10);
 
         // Automation: the lanes sent are what the project has, and the comparison knows it.
         assert!(automation_unchanged(&p, &[]));
@@ -1295,6 +1489,8 @@ mod tests {
             pitch,
             vel,
             muted: false,
+            color: 0,
+            slide: false,
         };
         t.regions[0].notes = vec![note(0.1, 60, 40), note(0.1, 64, 100), note(0.9, 67, 100)];
         t.regions[0].params.quantize = Some(1.0);
@@ -1351,6 +1547,8 @@ mod tests {
             pitch: 60,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         assert_eq!(song_notes(&p).len(), 1);
         p.tracks[t].frozen = Some(Box::new(p.tracks[t].regions[0].clone()));
@@ -1682,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_can_play_into_a_bus_but_an_aux_cannot() {
+    fn a_track_or_an_aux_can_play_into_a_bus_but_not_the_one_it_listens_to() {
         let mut p = Project::empty();
         p.tracks.clear();
         p.tracks.push(Track::new("Vox", TrackKind::Audio));
@@ -1690,6 +1888,9 @@ mod tests {
         p.tracks[0].output = 3;
         p.tracks[1].output = 3;
         assert_eq!(route_of(&p, 0).output, 3);
+        assert_eq!(route_of(&p, 1).output, 3, "an Aux can feed another");
+        // Into itself would go round for ever: it plays to Stereo Out instead.
+        p.tracks[1].output = p.aux_bus_of(1);
         assert_eq!(route_of(&p, 1).output, 0);
     }
 }

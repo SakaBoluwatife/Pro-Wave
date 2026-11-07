@@ -23,7 +23,7 @@ use std::sync::Arc;
 const SPACE: f32 = 9.0;
 const HALF: f32 = SPACE / 2.0;
 const INK: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
-const STAFF_INK: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
+const STAFF_INK: Color32 = Color32::from_rgb(0x84, 0x84, 0x84);
 const PAPER: Color32 = crate::theme::GRID_BG;
 /// Width reserved at the left for the clefs.
 const CLEF_W: f32 = 50.0;
@@ -743,6 +743,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
                 pitch,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             });
             p.song_rev += 1;
             s.audition.push(crate::piano_roll::Audition::On {
@@ -1028,6 +1030,8 @@ mod tests {
             pitch,
             vel: 90,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 
@@ -1372,6 +1376,8 @@ mod tests {
                 pitch,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             });
         }
         let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 420.0));

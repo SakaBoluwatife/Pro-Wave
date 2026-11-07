@@ -223,7 +223,7 @@ fn preview(ui: &mut egui::Ui, levels: &[f32], kept: &[(f64, f64)], window: (f64,
         g.rect_filled(
             Rect::from_min_max(pos2(x_of(*a), rect.top()), pos2(x_of(*b), rect.bottom())),
             0.0,
-            crate::theme::ACCENT_BLUE.gamma_multiply(0.45),
+            crate::theme::accent().gamma_multiply(0.45),
         );
     }
     let mid = rect.center().y;

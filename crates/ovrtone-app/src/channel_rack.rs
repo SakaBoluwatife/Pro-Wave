@@ -2,9 +2,10 @@
 //! notes it has in the current pattern. A channel's view can be switched between step buttons and
 //! a small piano roll, both showing the same notes. Drag a pattern's name onto the Tracks area to
 //! place it, and a sample from the Browser onto a row to load it there.
+use crate::icons::{button, Icon};
 use crate::model::{Project, TrackKind};
 use crate::song_pattern::{self as sp, STEP_BEATS};
-use crate::widgets::BLUE;
+use crate::widgets::blue;
 use crate::Bottom;
 use crate::UiState;
 use egui::{pos2, vec2, Color32, FontId, Rect, Sense, Stroke, Ui};
@@ -117,13 +118,13 @@ fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
     let rows = (i32::from(high) + 3 - low).max(12);
     let (rect, resp) = ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROLL_H), Sense::click());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, Color32::from_gray(0x2a));
+    g.rect_filled(rect, 2.0, Color32::from_gray(0x17));
     let row_h = ROLL_H / rows as f32;
     for step in (0..steps).step_by(4) {
         let x = rect.left() + step as f32 * STEP_W;
         g.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x44)),
+            Stroke::new(1.0, Color32::from_gray(0x25)),
         );
     }
     let box_of = |start: f32, len: f32, pitch: u8| {
@@ -161,6 +162,8 @@ fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
                 pitch: pitch.clamp(0, 127) as u8,
                 vel: crate::pattern::DEFAULT_VELOCITY,
                 muted: false,
+                color: 0,
+                slide: false,
             });
             return true;
         }
@@ -217,27 +220,17 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
                 .max_decimals(2),
         )
         .on_hover_text("Pan");
-        if ui
-            .small_button("Mix")
-            .on_hover_text("Show this channel in the mixer")
-            .clicked()
+        if button(ui, Icon::Mixer, "Show this channel in the mixer").clicked()
         {
             p.selected_track = t;
             s.show_mixer = true;
             s.bottom = Bottom::Mixer;
         }
-        if toggle(
-            ui,
-            roll,
-            "Roll",
-            "Switch between step buttons and a small piano roll",
-        ) {
+        let hint = "Switch between step buttons and a small piano roll";
+        if crate::icons::toggle(ui, Icon::Piano, roll, hint).clicked() {
             s.rack.roll.insert(channel, !roll);
         }
-        if ui
-            .small_button("Edit")
-            .on_hover_text("Open in the Piano Roll")
-            .clicked()
+        if button(ui, Icon::Pencil, "Open in the Piano Roll").clicked()
         {
             open_in_piano_roll(p, s, t, id);
         }
@@ -266,12 +259,21 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
             .input(|i| i.pointer.hover_pos())
             .is_some_and(|at| rect.contains(at));
         if over {
-            ui.painter()
-                .rect_stroke(rect, 2.0, Stroke::new(1.5, BLUE), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.5, blue()),
+                egui::StrokeKind::Outside,
+            );
             if ui.input(|i| i.pointer.any_released()) {
                 egui::DragAndDrop::clear_payload(ui.ctx());
                 let info = crate::sample_place::sampler_info(&drag.0);
-                if let Err(e) = crate::plugin_rack::add_plugin(p, t, &info) {
+                let done = if crate::sample_place::holds_sample(p, t) {
+                    crate::sample_place::replace_sample(p, t, &drag.0)
+                } else {
+                    crate::plugin_rack::add_plugin(p, t, &info)
+                };
+                if let Err(e) = done {
                     s.status = Some(e);
                 } else {
                     p.tracks[t].name = crate::sample_browser::display_name(&drag.0);
@@ -297,7 +299,7 @@ fn pattern_bar(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 current = pattern.id;
             }
         }
-        if ui.button("+").on_hover_text("New pattern").clicked() {
+        if button(ui, Icon::Plus, "New pattern").clicked() {
             current = sp::new_pattern(p);
         }
     });
@@ -334,15 +336,17 @@ fn pattern_bar(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 s.status = Some("This pattern has no notes yet".to_string());
             }
         }
-        if ui.button("Clone").clicked() {
+        if button(ui, Icon::Copy, "Clone this pattern").clicked() {
             if let Some(new) = sp::clone_pattern(p, current) {
                 s.rack.current = new;
             }
         }
-        if ui
-            .button("Delete")
-            .on_hover_text("Placed regions keep their notes")
-            .clicked()
+        if button(
+            ui,
+            Icon::Trash,
+            "Delete this pattern. Placed regions keep their notes",
+        )
+        .clicked()
         {
             sp::delete_pattern(p, current);
             s.rack.current = p.patterns.first().map_or(0, |x| x.id);

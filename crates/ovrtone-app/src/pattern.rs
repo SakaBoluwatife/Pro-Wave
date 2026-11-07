@@ -355,6 +355,8 @@ impl PatternParams {
                         pitch: row.pitch,
                         vel: ((vel as f32 * fade).round() as u8).clamp(1, 127),
                         muted: false,
+                        color: 0,
+                        slide: false,
                     });
                 }
             }
@@ -569,6 +571,8 @@ pub fn drummer_notes(p: &DrummerParams, bars: &[BarSpec]) -> Vec<Note> {
                     pitch: h.pitch,
                     vel: h.vel.round().clamp(1.0, 127.0) as u8,
                     muted: false,
+                    color: 0,
+                    slide: false,
                 });
             }
         }

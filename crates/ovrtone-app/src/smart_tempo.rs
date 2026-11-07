@@ -515,10 +515,12 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     }
                     ui.separator();
                     ui.label(tr("Downbeat:"));
-                    if ui.button("◀").clicked() {
+                    if crate::icons::button(ui, crate::icons::Icon::Earlier, "Earlier").clicked() {
                         e.downbeat = e.downbeat.saturating_sub(1);
                     }
-                    if ui.button("▶").clicked() && e.edited_beats().len() > 2 {
+                    if crate::icons::button(ui, crate::icons::Icon::Later, "Later").clicked()
+                        && e.edited_beats().len() > 2
+                    {
                         e.downbeat += 1;
                     }
                 });
@@ -527,7 +529,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
             let g = ui.painter_at(rect);
-            g.rect_filled(rect, 4.0, Color32::from_rgb(0x22, 0x22, 0x26));
+            g.rect_filled(rect, 4.0, Color32::from_rgb(0x13, 0x13, 0x15));
             if let Some(peaks) = &peaks {
                 let mid = rect.center().y;
                 let h = rect.height() * 0.45;

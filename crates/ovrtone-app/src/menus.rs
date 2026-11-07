@@ -265,7 +265,7 @@ const VIEW: &[&str] = &[
     "Show Flex Editor",
     "-",
     "Show Mixer",
-    "Show Library",
+    "Show Browser",
     "Show List Editors",
     "Show Quick Help",
     "Show Inspector",
@@ -415,7 +415,7 @@ pub(crate) const CHECKABLE: &[&str] = &[
     "Show Global Tracks",
     "Show Piano Roll",
     "Show Mixer",
-    "Show Library",
+    "Show Browser",
     "Show Inspector",
     "Show List Editors",
     "Show Quick Help",
@@ -446,7 +446,6 @@ struct Look {
     menu: Color32,
     text: Color32,
     dim: Color32,
-    hover: Color32,
     hover_text: Color32,
     separator: Color32,
 }
@@ -457,7 +456,6 @@ const DARK: Look = Look {
     menu: Color32::from_rgb(0x4a, 0x4a, 0x4c),
     text: Color32::from_rgb(0xe6, 0xe6, 0xe6),
     dim: Color32::from_rgb(0x8a, 0x8a, 0x8c),
-    hover: crate::theme::ACCENT_BLUE,
     hover_text: Color32::WHITE,
     separator: Color32::from_rgb(0x5e, 0x5e, 0x60),
 };
@@ -469,7 +467,6 @@ const LIGHT: Look = Look {
     menu: Color32::from_rgb(0xec, 0xec, 0xec),
     text: Color32::from_rgb(0x1d, 0x1d, 0x1f),
     dim: Color32::from_rgb(0xa8, 0xa8, 0xaa),
-    hover: Color32::from_rgb(0x2f, 0x7b, 0xf6),
     hover_text: Color32::WHITE,
     separator: Color32::from_rgb(0xd2, 0xd2, 0xd4),
 };
@@ -550,6 +547,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         }
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => !p.tracks.is_empty(),
+        "Check for Updates…" | "Check for Updates Automatically" => crate::updater::UPDATES,
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         // Key commands with no menu entry.
         "Show Loop Browser" | "Count-in" => true,
@@ -567,9 +565,16 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Record Toggle" => p.playing,
         "Discard Recording" => s.rec.active() || s.audio_rec.active(),
         "Recording Meter" | "Mono Sum Output" | "Dim Output" => true,
-        "Nudge Left" | "Nudge Right" | "Group Regions" | "Ungroup Regions" | "Loop Region…" => {
+        "Nudge Left" | "Nudge Right" | "Group Regions" | "Loop Region…" => {
             !s.tracks.all_selected().is_empty()
         }
+        // Only when one of them is in a group: otherwise there is nothing for it to do.
+        "Ungroup Regions" => s.tracks.all_selected().iter().any(|&(t, r)| {
+            p.tracks
+                .get(t)
+                .and_then(|t| t.regions.get(r))
+                .is_some_and(|r| r.params.group != 0)
+        }),
         "Show Flex Editor" | "Varispeed…" | "Map Beat to Playhead" => true,
         "Repeat Section Between Locators"
         | "Cut Section Between Locators"
@@ -669,11 +674,9 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         | "Show Channel Rack"
         | "Show Smart Controls"
         | "Show Mixer"
-        | "Show Library"
+        | "Show Browser"
         | "Show Inspector"
         | "Show List Editors"
-        | "Check for Updates…"
-        | "Check for Updates Automatically"
         | "Show Tempo Track"
         | "Show Marker Track"
         | "Show Signature Track"
@@ -711,7 +714,7 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Snap to Zero Crossings" => p.snap_zero,
         "Show Piano Roll" => s.bottom == Bottom::PianoRoll,
         "Show Mixer" => s.show_mixer && s.bottom == Bottom::Mixer,
-        "Show Library" => s.show_library,
+        "Show Browser" => s.show_library,
         "Show Channel Rack" => s.rack.open,
         "Show Smart Controls" => s.smart.open,
         "Show Inspector" => s.show_inspector,
@@ -769,7 +772,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.show_mixer = !(s.show_mixer && s.bottom == Bottom::Mixer);
             s.bottom = Bottom::Mixer;
         }
-        "Show Library" => s.show_library = !s.show_library,
+        "Show Browser" => s.show_library = !s.show_library,
         "Show Loop Browser" => s.browser.toggle(crate::file_browser::Tab::Loops),
         "Count-in" => p.count_in = !p.count_in,
         "Create Summing Stack" => {
@@ -1097,9 +1100,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Duplicate Track" | "New Track with Same Settings" => {
             let with_regions = label == "Duplicate Track";
-            if p.duplicate_track(p.selected_track, with_regions).is_some() {
-                crate::tracks_area::forget_track_indexes(s);
-            }
+            crate::tracks_area::duplicate_picked(p, s, p.selected_track, with_regions);
         }
         "New Tracks…" => s.dialogs.open_new_tracks(),
         "Repeat Section Between Locators"
@@ -1291,11 +1292,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.ui_scale = crate::ui_scale::step(s.ui_scale, dir);
             crate::ui_scale::save(s.ui_scale);
         }
-        "Delete Track" => {
-            if p.delete_track(p.selected_track) {
-                forget_region_selection(s);
-            }
-        }
+        "Delete Track" => crate::tracks_area::delete_picked(p, s, p.selected_track),
         "Release Track Stack" => {
             if p.release_track_stack(p.selected_track) {
                 forget_region_selection(s);
@@ -1364,7 +1361,7 @@ fn row(
     let hot = enabled && resp.hovered();
     let g = ui.painter();
     if hot {
-        g.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 4.0, look.hover);
+        g.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 4.0, crate::theme::accent());
     }
     let color = match (enabled, hot) {
         (false, _) => look.dim,
@@ -1576,11 +1573,19 @@ pub fn menu_bar(ui: &mut egui::Ui, p: &mut Project, s: &mut crate::UiState) -> f
         .style(menu_style(light))
         .config(egui::containers::menu::MenuConfig::new().style(menu_style(light)));
     bar.ui(ui, |ui| {
-        ui.label(
-            egui::RichText::new("Ovrtone")
-                .strong()
-                .color(look(light).bar_text),
-        );
+        match crate::quick_dialogs::wordmark(ui.ctx(), !light) {
+            Some(logo) => {
+                let size = logo.size_vec2() * (76.0 / logo.size_vec2().x);
+                ui.add(egui::Image::new((logo.id(), size)));
+            }
+            None => {
+                ui.label(
+                    egui::RichText::new("Ovrtone")
+                        .strong()
+                        .color(look(light).bar_text),
+                );
+            }
+        }
         for (title, items) in MENUS {
             menu(ui, title, items, p, s);
         }
@@ -1678,7 +1683,13 @@ mod tests {
                 (
                     s.tracks.show_tempo,
                     s.tracks.show_markers,
-                    s.tracks.show_signatures
+                    s.tracks.show_signatures,
+                    s.tracks.show_chords,
+                    s.tracks.show_arrangement,
+                    s.tracks.flex_view,
+                    s.dialogs.varispeed,
+                    s.dialogs.loop_times.is_some(),
+                    s.dialogs.new_tracks.is_some(),
                 ),
                 (
                     i18n::chosen(),
@@ -1811,11 +1822,11 @@ mod tests {
         let mut s = crate::UiState::new();
         let mut p = Project::demo();
         assert!(
-            !checked("Show Library", &Project::demo(), &s)
+            !checked("Show Browser", &Project::demo(), &s)
                 && !checked("Show Mixer", &Project::demo(), &s)
         );
-        apply("Show Library", &mut p, &mut s);
-        assert!(s.show_library && checked("Show Library", &Project::demo(), &s));
+        apply("Show Browser", &mut p, &mut s);
+        assert!(s.show_library && checked("Show Browser", &Project::demo(), &s));
         apply("Show Piano Roll", &mut p, &mut s);
         assert!(
             checked("Show Piano Roll", &Project::demo(), &s)
@@ -1830,7 +1841,7 @@ mod tests {
         let mut s = crate::UiState::new();
         apply("Save As…", &mut Project::demo(), &mut s);
         assert_eq!(s.file_cmd, Some(FileCmd::SaveAs));
-        assert!(shortcut("Show Library").is_some() && shortcut("Bounce").is_none());
+        assert!(shortcut("Show Browser").is_some() && shortcut("Bounce").is_none());
 
         for (label, cmd) in [
             ("Save A Copy As…", FileCmd::SaveCopy),
@@ -1865,6 +1876,7 @@ mod tests {
         s.can_undo = true;
         s.can_redo = true;
         s.tracks.selected = Some((0, 0));
+        let mut idle = Vec::new();
         for label in all_entries() {
             if !enabled(label, &p, &s) {
                 continue;
@@ -1879,13 +1891,15 @@ mod tests {
                 "Go to Next Region",
                 "Actual Interface Size",
                 "English (Default)",
+                // The region is at the very start of the song already.
+                "Nudge Left",
             ]
             .contains(&label);
-            assert!(
-                before != state(&p2, &s2) || may_stay,
-                "{label} is enabled but does nothing"
-            );
+            if before == state(&p2, &s2) && !may_stay {
+                idle.push(label);
+            }
         }
+        assert!(idle.is_empty(), "enabled but doing nothing: {idle:?}");
         // And unimplemented ones are greyed, like the ones from the GitHub report.
         assert!(!enabled("Stem Splitter…", &p, &s));
     }

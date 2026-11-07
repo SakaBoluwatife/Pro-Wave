@@ -1,10 +1,10 @@
 //! Mix > Stem Splitter: splits the selected audio region into drums, bass, vocals and the rest, each
-//! on a new track in the same place, with the original muted. The work is done by a helper program
-//! (`stems\demucs.exe`, from demucs-rs) next to Ovrtone. It is its own process, so its size stays
-//! out of this program and a failure in it costs only the split.
+//! on a new track in the same place, with the original muted. The work is done by a copy of this
+//! program started for it (see `stem_worker.rs`), with the model and ONNX Runtime from the `stems`
+//! folder next to Ovrtone. It is its own process, so a failure in it costs only the split.
 use crate::model::Project;
 use crate::UiState;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,10 +108,6 @@ fn stems_of(chosen: [bool; 3]) -> Vec<(&'static str, &'static str)> {
 }
 /// What a split that was stopped on purpose reports. Not shown as an error.
 const STOPPED: &str = "stopped";
-/// The request whose answer ends the split.
-const ANSWER_ID: i64 = 2;
-/// The model file, which the helper looks for in its cache.
-const MODEL: &str = "htdemucs.safetensors";
 
 /// The region being split.
 #[derive(Clone, Debug)]
@@ -202,36 +198,17 @@ fn helper_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("stems"))
 }
 
-/// Puts the bundled model where the helper looks for it, unless it is there already.
-fn place_model(dir: &Path) -> Result<(), String> {
-    let Some(cache) = std::env::var_os("LOCALAPPDATA") else {
-        return Err("LOCALAPPDATA is not set".to_string());
-    };
-    let cache = PathBuf::from(cache).join("demucs-rs");
-    let target = cache.join(MODEL);
-    if target.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    // By way of a temporary name: a copy cut short must not pass for the model.
-    let partial = cache.join(format!("{MODEL}.part"));
-    std::fs::copy(dir.join(MODEL), &partial).map_err(|e| format!("the bundled model: {e}"))?;
-    std::fs::rename(&partial, &target).map_err(|e| e.to_string())
-}
-
-/// Runs the helper on `input`, writing the stems to `out`. On its own thread: it takes minutes.
+/// Runs a copy of `exe` on `input`, writing the stems to `out`. On its own thread: it takes minutes.
 fn split(
+    exe: &Path,
     dir: &Path,
     input: &Path,
     out: &Path,
     stems: &[&str],
     control: &JobControl,
 ) -> Result<(), String> {
-    place_model(dir)?;
-    // Its server mode is the one that reports progress. It takes one request per line on its input
-    // and answers on its output.
-    let mut command = std::process::Command::new(dir.join("demucs.exe"));
-    command.arg("--mcp");
+    let mut command = std::process::Command::new(exe);
+    command.args(crate::stem_worker::arguments(dir, input, out, stems));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -244,70 +221,27 @@ fn split(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot start the splitter: {e}"))?;
-    let mut input_pipe = child
-        .stdin
-        .take()
-        .ok_or_else(|| "cannot talk to the splitter".to_string())?;
-    let requests = [
-        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "Ovrtone", "version": env!("CARGO_PKG_VERSION")},
-        }}),
-        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        serde_json::json!({"jsonrpc": "2.0", "id": ANSWER_ID, "method": "tools/call", "params": {
-            "name": "separate_stems",
-            "arguments": {
-                "input": input.to_string_lossy(),
-                "model": "htdemucs",
-                "output_dir": out.to_string_lossy(),
-                "stems": stems,
-            },
-            "_meta": {"progressToken": 1},
-        }}),
-    ];
-    for request in requests {
-        writeln!(input_pipe, "{request}")
-            .map_err(|e| format!("cannot talk to the splitter: {e}"))?;
-    }
-    input_pipe
-        .flush()
-        .map_err(|e| format!("cannot talk to the splitter: {e}"))?;
-    if let Ok(mut progress) = control.progress.lock() {
-        progress.began = Some(Instant::now());
-    }
-    let answer: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
-    if let Some(stdout) = child.stdout.take() {
-        let (control, answer) = (control.clone(), answer.clone());
+    // While this is open the copy goes on. If this program goes, so does the copy.
+    let _keep_going = child.stdin.take();
+    let reports = child.stdout.take().map(|stdout| {
+        let control = control.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let Ok(reply) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                if let Some(now) = read_reply(&reply, &control) {
-                    if let Ok(mut answer) = answer.lock() {
-                        *answer = Some(now);
-                    }
-                }
+                read_report(&line, &control);
             }
-        });
-    }
-    let last_line = Arc::new(Mutex::new(String::new()));
-    if let Some(stderr) = child.stderr.take() {
-        let (stage, last) = (control.stage.clone(), last_line.clone());
+        })
+    });
+    let errors = child.stderr.take().map(|stderr| {
         std::thread::spawn(move || {
+            let mut last = String::new();
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if let (Some(now), Ok(mut stage)) = (stage_of(&line), stage.lock()) {
-                    *stage = now.to_string();
-                }
                 if !line.trim().is_empty() {
-                    if let Ok(mut last) = last.lock() {
-                        *last = line;
-                    }
+                    last = line;
                 }
             }
-        });
-    }
+            last
+        })
+    });
     loop {
         if control.stop.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -315,17 +249,15 @@ fn split(
             let _ = std::fs::remove_dir_all(out);
             return Err(STOPPED.to_string());
         }
-        let finished = answer.lock().ok().and_then(|mut a| a.take());
-        if let Some(result) = finished {
-            // It would wait for its next request.
-            drop(input_pipe);
-            let _ = child.kill();
-            let _ = child.wait();
-            return result;
-        }
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let last = last_line.lock().map(|l| l.clone()).unwrap_or_default();
+            Ok(Some(status)) => {
+                if let Some(reports) = reports {
+                    let _ = reports.join();
+                }
+                if status.success() {
+                    return Ok(());
+                }
+                let last = errors.and_then(|e| e.join().ok()).unwrap_or_default();
                 return Err(if last.is_empty() {
                     "the splitter stopped".to_string()
                 } else {
@@ -338,30 +270,19 @@ fn split(
     }
 }
 
-/// Takes in a line from the helper: a progress report, or the answer to the split when it is that.
-fn read_reply(reply: &serde_json::Value, control: &JobControl) -> Option<Result<(), String>> {
-    if reply["method"] == "notifications/progress" {
-        if let (Some(message), Ok(mut progress)) =
-            (reply["params"]["message"].as_str(), control.progress.lock())
-        {
-            progress.read(message, Instant::now());
+/// Takes in a line from the copy doing the work.
+fn read_report(line: &str, control: &JobControl) {
+    if let (Some(now), Ok(mut stage)) = (stage_of(line), control.stage.lock()) {
+        *stage = now.to_string();
+    }
+    if let Ok(mut progress) = control.progress.lock() {
+        let now = Instant::now();
+        // The time for a part is timed from here: loading the model is not part of it.
+        if line.starts_with("Separating") {
+            progress.began = Some(now);
         }
-        return None;
+        progress.read(line, now);
     }
-    if reply["id"] != ANSWER_ID {
-        return None;
-    }
-    if let Some(message) = reply["error"]["message"].as_str() {
-        return Some(Err(message.to_string()));
-    }
-    let result = &reply["result"];
-    if result["isError"] == true {
-        let why = result["content"][0]["text"]
-            .as_str()
-            .unwrap_or("the splitter failed");
-        return Some(Err(why.to_string()));
-    }
-    Some(Ok(()))
 }
 
 /// A folder of its own for one split, among the session's recordings so that saving keeps them.
@@ -446,9 +367,9 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         }
     }
     let dir = helper_dir();
-    let ready = dir
-        .as_ref()
-        .is_some_and(|d| d.join("demucs.exe").exists() && d.join(MODEL).exists());
+    let ready = dir.as_ref().is_some_and(|d| {
+        d.join(crate::stem_worker::RUNTIME).exists() && d.join(crate::stem_worker::MODEL).exists()
+    });
     let (busy, mut start) = (s.stems.job.is_some(), false);
     let mut open = true;
     egui::Window::new("Stem Splitter")
@@ -473,7 +394,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             if !ready {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "The splitter is not installed: stems\\demucs.exe and its model are missing.",
+                    "The splitter is not installed: the stems folder is missing ONNX Runtime or the model.",
                 );
             }
             if let Some(e) = &s.stems.error {
@@ -542,7 +463,10 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         s.stems.began = Some(Instant::now());
         s.stems.thread = Some(std::thread::spawn(move || {
             let names: Vec<&str> = stems.iter().map(|(stem, _)| *stem).collect();
-            let _ = tx.send(split(&dir, &input, &out, &names, &control).map(|()| out));
+            let result = std::env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|exe| split(&exe, &dir, &input, &out, &names, &control));
+            let _ = tx.send(result.map(|()| out));
         }));
         s.stems.error = None;
         s.stems.job = Some(rx);
@@ -599,15 +523,16 @@ mod tests {
         assert_eq!(progress.done, 1);
     }
 
-    /// A real split through the helper, given by `OVRTONE_STEMS_DIR` and `OVRTONE_TEST_STEMS_WAV`.
+    /// A real split, by `OVRTONE_TEST_EXE` with `OVRTONE_STEMS_DIR` on `OVRTONE_TEST_STEMS_WAV`.
     #[test]
     #[ignore = "takes minutes and needs the helper"]
     fn the_helper_splits_and_reports_its_progress() {
+        let exe = PathBuf::from(std::env::var("OVRTONE_TEST_EXE").unwrap());
         let dir = helper_dir().unwrap();
         let input = PathBuf::from(std::env::var("OVRTONE_TEST_STEMS_WAV").unwrap());
         let out = tempfile::tempdir().unwrap();
         let control = JobControl::default();
-        split(&dir, &input, out.path(), &["vocals"], &control).unwrap();
+        split(&exe, &dir, &input, out.path(), &["vocals"], &control).unwrap();
         assert!(out.path().join("vocals.wav").exists());
         assert!(!out.path().join("drums.wav").exists());
         let progress = *control.progress.lock().unwrap();

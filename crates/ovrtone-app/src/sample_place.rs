@@ -60,6 +60,61 @@ pub(crate) fn new_sampler_track(p: &mut Project, path: &Path) -> Result<usize, S
     Ok(t)
 }
 
+/// Whether a track's instrument is a sample, so a new sound can take its place.
+pub fn holds_sample(p: &Project, t: usize) -> bool {
+    p.tracks
+        .get(t)
+        .and_then(|t| t.instrument_plugin.as_ref())
+        .is_some_and(|i| PluginFormat::of(&i.path) == PluginFormat::Sampler)
+}
+
+/// Puts another sound on a track that holds one. Its notes and its settings stay, and its name follows
+/// if it was named after the old sound.
+pub fn replace_sample(p: &mut Project, t: usize, path: &Path) -> Result<(), String> {
+    let track = p.tracks.get_mut(t).ok_or("No such track")?;
+    let plugin = track
+        .instrument_plugin
+        .as_mut()
+        .filter(|i| PluginFormat::of(&i.path) == PluginFormat::Sampler)
+        .ok_or("This track does not hold a sample")?;
+    let (old, new) = (stem_of(&plugin.path), stem_of(path));
+    plugin.path = path.to_path_buf();
+    plugin.name.clone_from(&new);
+    if track.name == old {
+        track.name = new;
+    }
+    p.song_rev += 1;
+    Ok(())
+}
+
+/// Samples up to this long are hits to play, not clips to arrange: as the sampler also decides.
+const ONE_SHOT_SECONDS: f64 = 2.0;
+
+/// Whether a file is a one-shot, by its length.
+pub fn is_one_shot(path: &Path) -> bool {
+    ovrtone_engine::AudioFile::open(path).is_ok_and(|f| f.duration_secs() <= ONE_SHOT_SECONDS)
+}
+
+/// A one-shot let go on the timeline: its own sampler track, with a note where it was let go, so that
+/// it sounds at once and its key can be changed. Returns the region.
+pub fn place_one_shot(p: &mut Project, path: &Path, bar: f32) -> Result<(usize, usize), String> {
+    let t = new_sampler_track(p, path)?;
+    let r = p
+        .add_midi_region(t, bar)
+        .ok_or("Could not make a region for it")?;
+    p.tracks[t].regions[r].notes.push(crate::model::Note {
+        start: 0.0,
+        len: 1.0,
+        pitch: 60,
+        vel: 100,
+        muted: false,
+        color: 0,
+        slide: false,
+    });
+    p.song_rev += 1;
+    Ok((t, r))
+}
+
 /// A step pattern with one row, which plays the sample as it was recorded.
 fn one_row_pattern() -> PatternParams {
     PatternParams {
@@ -105,7 +160,11 @@ pub fn place(
             let Some(t) = drop.track else {
                 return Err("Drop it on an instrument track".to_string());
             };
-            add_plugin(p, t, &sampler_info(&drop.path))?;
+            if holds_sample(p, t) {
+                replace_sample(p, t, &drop.path)?;
+            } else {
+                add_plugin(p, t, &sampler_info(&drop.path))?;
+            }
             let first = p.tracks[t].regions.first().map(|_| 0);
             Ok(first.or_else(|| p.add_midi_region(t, bar)).map(|r| (t, r)))
         }
@@ -189,6 +248,29 @@ mod tests {
             dir,
             wav,
         )
+    }
+
+    #[test]
+    fn a_new_sound_takes_the_place_of_the_old_and_keeps_the_notes_and_settings() {
+        let (mut p, _s, _ctx, dir, wav) = rig();
+        let (t, r) = place_one_shot(&mut p, &wav, 3.0).unwrap();
+        assert!(holds_sample(&p, t));
+        assert_eq!(p.tracks[t].regions[r].notes.len(), 1, "it sounds at once");
+        let uid = p.tracks[t].instrument_plugin.as_ref().unwrap().uid;
+        let other = dir.path().join("Snare 02.wav");
+        replace_sample(&mut p, t, &other).unwrap();
+        let held = p.tracks[t].instrument_plugin.as_ref().unwrap();
+        assert_eq!((held.uid, held.path.clone()), (uid, other.clone()));
+        assert_eq!(p.tracks[t].name, "Snare 02", "named after the sound");
+        assert_eq!(p.tracks[t].regions[r].notes.len(), 1);
+        // A name the user gave stays.
+        p.tracks[t].name = "Backbeat".to_string();
+        replace_sample(&mut p, t, &wav).unwrap();
+        assert_eq!(p.tracks[t].name, "Backbeat");
+        // One second is a hit; a track with no sample has nothing to replace.
+        assert!(is_one_shot(&wav));
+        let empty = p.add_track(TrackKind::Audio);
+        assert!(replace_sample(&mut p, empty, &wav).is_err());
     }
 
     fn dropped(path: &Path, track: Option<usize>) -> SampleDrop {

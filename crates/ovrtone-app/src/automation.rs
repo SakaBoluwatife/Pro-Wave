@@ -5,6 +5,7 @@
 //! module records them ([`tick`] and the helpers the Mixer and the effect windows call when a
 //! control is moved) and has the Automation editor window, where the points of a lane are
 //! added, moved and removed and the stretches between them are bent.
+use crate::icons::{button, Icon};
 use crate::i18n::{tr, trf};
 use crate::mixer::{db_to_frac, frac_to_db};
 use crate::model::{AutoMode, AutoPoint, AutoTarget, Automation, Project, Track};
@@ -714,16 +715,16 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     });
                 ui.separator();
                 let ed = &mut s.mixer.auto_editor;
-                if ui.button("−").on_hover_text(tr("Zoom Out")).clicked() {
+                if button(ui, Icon::Minus, tr("Zoom Out")).clicked() {
                     ed.span = (ed.span * 2.0).min(4096.0);
                 }
-                if ui.button("+").on_hover_text(tr("Zoom In")).clicked() {
+                if button(ui, Icon::Plus, tr("Zoom In")).clicked() {
                     ed.span = (ed.span / 2.0).max(1.0);
                 }
-                if ui.button("◀").clicked() {
+                if button(ui, Icon::Earlier, "Earlier").clicked() {
                     ed.from = (ed.from - ed.span / 2.0).max(0.0);
                 }
-                if ui.button("▶").clicked() {
+                if button(ui, Icon::Later, "Later").clicked() {
                     ed.from += ed.span / 2.0;
                 }
                 ui.separator();
@@ -1049,7 +1050,7 @@ pub fn track_lane(
                     colour
                 };
                 g.circle_filled(c, 3.5, fill);
-                g.circle_stroke(c, 3.5, Stroke::new(1.0, Color32::from_gray(0x10)));
+                g.circle_stroke(c, 3.5, Stroke::new(1.0, Color32::from_gray(0x09)));
             }
         }
     }
@@ -1302,7 +1303,7 @@ fn canvas(
         }
         g.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x36)),
+            Stroke::new(1.0, Color32::from_gray(0x1d)),
         );
         if span <= 128.0 || bar.bar0 % 4 == 0 {
             g.text(
@@ -1310,7 +1311,7 @@ fn canvas(
                 Align2::LEFT_TOP,
                 format!("{}", bar.bar0 + 1),
                 FontId::proportional(10.0),
-                Color32::from_gray(0x80),
+                Color32::from_gray(0x50),
             );
         }
     }
@@ -1346,7 +1347,7 @@ fn canvas(
             Align2::RIGHT_BOTTOM,
             value_text(&p.tracks[ti], target, *m),
             FontId::proportional(9.0),
-            Color32::from_gray(0x78),
+            Color32::from_gray(0x40),
         );
     }
     let colour = lane_colour(target);
@@ -1416,7 +1417,7 @@ fn canvas(
                     colour
                 },
             );
-            g.circle_stroke(c, 4.0, Stroke::new(1.0, Color32::from_gray(0x10)));
+            g.circle_stroke(c, 4.0, Stroke::new(1.0, Color32::from_gray(0x09)));
         }
     } else {
         g.text(
@@ -1424,7 +1425,7 @@ fn canvas(
             Align2::CENTER_CENTER,
             tr("Click to add a point"),
             FontId::proportional(12.0),
-            Color32::from_gray(0x78),
+            Color32::from_gray(0x40),
         );
     }
     // The playhead.
@@ -1438,7 +1439,7 @@ fn canvas(
     g.rect_stroke(
         rect,
         3.0,
-        Stroke::new(1.0, Color32::from_gray(0x10)),
+        Stroke::new(1.0, Color32::from_gray(0x09)),
         StrokeKind::Inside,
     );
 

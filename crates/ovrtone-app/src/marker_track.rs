@@ -220,6 +220,6 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x1a)),
+        Stroke::new(1.0, Color32::from_gray(0x0e)),
     );
 }

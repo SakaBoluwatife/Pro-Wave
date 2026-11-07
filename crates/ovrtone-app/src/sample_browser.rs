@@ -639,7 +639,7 @@ fn wave_panel(ui: &mut Ui, b: &mut SampleBrowser) {
                         pos2(x, mid - hi / peak * half),
                         pos2(x, mid - lo / peak * half + 1.0),
                     ],
-                    Stroke::new(1.0, GREEN),
+                    Stroke::new(1.0, crate::theme::accent()),
                 );
             }
             g.text(
@@ -946,6 +946,29 @@ fn star(g: &egui::Painter, c: Pos2, filled: bool, color: Color32) {
 }
 
 /// The triangle of a folder: pointing right when closed, down when open.
+/// A folder's colour, by the words in its name. So the eye finds the drums without reading.
+fn folder_color(name: &str) -> Color32 {
+    let name = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+    if has(&["drum", "kick", "snare", "hat", "perc", "808", "clap"]) {
+        Color32::from_rgb(0x4f, 0xb8, 0x6a)
+    } else if has(&["loop"]) {
+        Color32::from_rgb(0x2f, 0xb0, 0xa8)
+    } else if has(&["one shot", "oneshot", "one-shot", "shot"]) {
+        Color32::from_rgb(0x4a, 0x96, 0xe6)
+    } else if has(&["fx", "effect"]) {
+        Color32::from_rgb(0x7a, 0x6a, 0xe0)
+    } else if has(&["vocal", "vox", "voice"]) {
+        Color32::from_rgb(0xd8, 0x8a, 0x5a)
+    } else if has(&["template", "preset"]) {
+        Color32::from_rgb(0xc8, 0x5a, 0xb4)
+    } else if has(&["bass", "synth", "melod", "keys", "piano"]) {
+        Color32::from_rgb(0xd8, 0xb0, 0x4a)
+    } else {
+        Color32::from_rgb(0x7f, 0x86, 0x92)
+    }
+}
+
 fn disclosure(g: &egui::Painter, c: Pos2, open: bool) {
     let pts = if open {
         vec![
@@ -1023,6 +1046,18 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
     let clip = g.with_clip_rect(text_rect);
     let x = rect.left() + 4.0 + INDENT * r.depth as f32;
     let mark = pos2(x + 5.0, rect.center().y);
+    // A folder has its picture, in a colour by what it holds.
+    let name_x = if is_folder { x + 32.0 } else { x + 14.0 };
+    if is_folder {
+        let at = Rect::from_center_size(pos2(x + 23.0, rect.center().y), vec2(13.0, 10.0));
+        let color = folder_color(&r.name);
+        clip.rect_filled(
+            Rect::from_min_size(at.min - vec2(0.0, 1.5), vec2(6.0, 3.0)),
+            1.0,
+            color,
+        );
+        clip.rect_filled(at, 1.5, color);
+    }
     if let RowKind::Folder { open } = r.kind {
         disclosure(&clip, mark, open);
     } else if look.playing {
@@ -1037,7 +1072,7 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
         ));
     }
     let name = clip.text(
-        pos2(x + 14.0, rect.center().y),
+        pos2(name_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         &r.name,
         FontId::proportional(12.5),
@@ -1187,7 +1222,9 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
                 .hint_text("Search all locations")
                 .desired_width(width.max(40.0)),
         );
-        if !b.search.is_empty() && ui.small_button("×").clicked() {
+        if !b.search.is_empty()
+            && crate::icons::button(ui, crate::icons::Icon::Close, "Clear the search").clicked()
+        {
             b.search.clear();
         }
     });
@@ -1208,7 +1245,9 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
             b.show_favorites = !b.show_favorites;
             b.rows_dirty = true;
         }
-        if b.preview.playing.is_some() && ui.small_button("Stop").clicked() {
+        if b.preview.playing.is_some()
+            && crate::icons::button(ui, crate::icons::Icon::Stop, "Stop the preview").clicked()
+        {
             b.preview.stop = true;
         }
     });

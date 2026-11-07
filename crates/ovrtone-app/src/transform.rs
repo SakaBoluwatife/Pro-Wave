@@ -253,6 +253,8 @@ mod tests {
             pitch,
             vel,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 

@@ -166,12 +166,21 @@ impl App {
     fn do_file_cmd(&mut self, cmd: FileCmd, ctx: &egui::Context) {
         match cmd {
             FileCmd::New | FileCmd::Close => self.replace(Project::empty(), None),
-            FileCmd::NewFrom(t) => self.replace(t.project(), None),
+            FileCmd::NewFrom(t) => {
+                let mut p = t.project();
+                if let Some(details) = self.ui.new_details.take() {
+                    details.apply(&mut p);
+                }
+                self.replace(p, None);
+            }
             FileCmd::NewFromFile => {
                 if let Some(path) = self.ui.recent_pick.take() {
                     match project_io::open_project(&path, ctx) {
                         Ok((mut p, _)) => {
                             p.name = "Untitled".to_string();
+                            if let Some(details) = self.ui.new_details.take() {
+                                details.apply(&mut p);
+                            }
                             self.replace(p, None);
                         }
                         Err(e) => {
@@ -399,8 +408,9 @@ impl App {
             return;
         };
         self.collect_plugin_states();
-        if let Err(e) = project_io::save_project(&self.project, &file) {
-            self.ui.status = Some(format!("cannot save {}: {e}", file.display()));
+        match project_io::save_project(&self.project, &file) {
+            Ok(saved) => self.ui.thumbnail_wanted = Some((saved, 3)),
+            Err(e) => self.ui.status = Some(format!("cannot save {}: {e}", file.display())),
         }
     }
 
@@ -460,6 +470,7 @@ impl App {
             Ok((p, warnings)) => {
                 self.replace(p, Some(path.to_path_buf()));
                 self.ui.recent.add(path);
+                self.ui.thumbnail_wanted = Some((path.to_path_buf(), 30));
                 if !warnings.is_empty() {
                     self.ui.status = Some(trf("missing media: {}", &[&warnings.join(", ")]));
                 }
@@ -531,6 +542,7 @@ impl App {
                     self.project.name = stem.to_string();
                 }
                 self.ui.recent.add(&path);
+                self.ui.thumbnail_wanted = Some((path.clone(), 3));
                 self.ui.offer_new_extension = ovrtone_project::is_legacy_file(&path)
                     && self.ui.keep_old_extension.as_ref() != Some(&path);
                 self.path = Some(path);

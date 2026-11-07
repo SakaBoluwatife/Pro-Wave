@@ -8,7 +8,10 @@ use egui::{
 pub const TEXT: Color32 = crate::theme::TEXT;
 pub const TEXT_DIM: Color32 = crate::theme::TEXT_DIM;
 pub const BTN_BG: Color32 = crate::theme::BUTTON;
-pub const BLUE: Color32 = crate::theme::ACCENT_BLUE;
+/// The accent colour.
+pub fn blue() -> Color32 {
+    crate::theme::accent()
+}
 
 pub fn stroke(c: Color32) -> Stroke {
     Stroke::new(1.3, c)
@@ -96,7 +99,7 @@ pub fn popup_button(ui: &Ui, g: &Painter, rect: Rect, id: Id, text: &str) -> Res
         rect,
         4.0,
         if resp.hovered() {
-            Color32::from_gray(0x60)
+            Color32::from_gray(0x33)
         } else {
             BTN_BG
         },
@@ -195,9 +198,9 @@ pub fn slider_h(
     g.rect_filled(groove, 2.0, crate::theme::BORDER);
     let knob = pos2(rect.left() + 6.0 + (rect.width() - 12.0) * v, cy);
     let (fill, edge) = if enabled {
-        (Color32::from_gray(0xc4), Color32::from_gray(0x70))
+        (Color32::from_gray(0xc4), Color32::from_gray(0x3c))
     } else {
-        (Color32::from_gray(0x6a), Color32::from_gray(0x50))
+        (Color32::from_gray(0x39), Color32::from_gray(0x2b))
     };
     g.circle_filled(knob, 6.0, fill);
     g.circle_stroke(knob, 6.0, Stroke::new(1.0, edge));
@@ -252,20 +255,20 @@ pub fn draw_knob(g: &Painter, c: Pos2, r: f32, value: f32) {
     value_arc(g, c, r + 3.6, 0.0, value);
     // Soft shadow and dark bezel.
     g.circle_filled(c + vec2(0.0, 1.0), r + 2.2, Color32::from_black_alpha(80));
-    g.circle_filled(c, r + 1.6, Color32::from_gray(0x2a));
+    g.circle_filled(c, r + 1.6, Color32::from_gray(0x17));
     // Domed body: darker edge, lighter centre and a highlight up and to the left.
-    g.circle_filled(c, r, Color32::from_gray(0x7c));
+    g.circle_filled(c, r, Color32::from_gray(0x48));
     g.circle_filled(
         c + vec2(-r * 0.12, -r * 0.18),
         r * 0.8,
-        Color32::from_gray(0x92),
+        Color32::from_gray(0x74),
     );
     g.circle_filled(
         c + vec2(-r * 0.2, -r * 0.3),
         r * 0.45,
         Color32::from_gray(0xa2),
     );
-    g.circle_stroke(c, r, Stroke::new(1.0, Color32::from_gray(0x56)));
+    g.circle_stroke(c, r, Stroke::new(1.0, Color32::from_gray(0x2e)));
     // Pointer.
     let a = (-90.0 + value.clamp(-1.0, 1.0) * 135.0).to_radians();
     let d = vec2(a.cos(), a.sin());

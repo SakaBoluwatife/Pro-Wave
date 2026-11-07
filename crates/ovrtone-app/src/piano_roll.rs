@@ -11,12 +11,13 @@
 //! As in FL Studio, dragging the ruler with the right button makes a time selection, which takes
 //! the notes that start in it; Ctrl+Delete and Ctrl+Insert take time out or open it up. The lane
 //! under the notes shows velocity or any MIDI controller, chosen from its label.
+use crate::icons::Icon;
 use crate::i18n::{tr, trf};
 use crate::model::{Note, Project, TrackKind};
 use crate::note_edit::{self, GRIDS, MODES, ROOTS};
 use crate::tracks_area::{snap_step, snap_to, Snap};
 use crate::widgets::{
-    back_chevron, menu_title, popup_button, slider_h, BLUE, BTN_BG, TEXT, TEXT_DIM,
+    back_chevron, blue, menu_title, popup_button, slider_h, BTN_BG, TEXT, TEXT_DIM,
 };
 use crate::UiState;
 use egui::{
@@ -35,8 +36,8 @@ const VEL_H: f32 = 72.0;
 
 const PANEL_BG: Color32 = crate::theme::PANEL_BG;
 const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
-const ROW_WHITE: Color32 = Color32::from_rgb(26, 26, 26);
-const ROW_BLACK: Color32 = Color32::from_rgb(20, 20, 20);
+const ROW_WHITE: Color32 = Color32::from_rgb(0x0e, 0x0e, 0x0e);
+const ROW_BLACK: Color32 = Color32::from_rgb(0x0b, 0x0b, 0x0b);
 const NOTE_SEL: Color32 = Color32::from_rgb(0xe4, 0xff, 0xb0);
 /// What the colour of a note says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,6 +46,25 @@ pub enum NoteColors {
     Velocity,
     Track,
     Pitch,
+    /// The note's colour group, as in FL Studio.
+    Group,
+}
+
+/// How many colour groups there are.
+const COLOR_GROUPS: u8 = 16;
+
+/// The colour of a colour group.
+fn group_color(group: u8) -> Color32 {
+    let hue = f32::from(group % COLOR_GROUPS) / f32::from(COLOR_GROUPS);
+    egui::ecolor::Hsva::new(hue, 0.65, 0.9, 1.0).into()
+}
+
+/// A number below `count`, for picking a note. Nothing depends on it being a good one.
+fn random_below(count: usize) -> usize {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.subsec_nanos());
+    (nanos.wrapping_mul(2_654_435_761) >> 8) as usize % count.max(1)
 }
 
 /// A colour for each of the twelve notes of the octave.
@@ -110,16 +130,22 @@ enum Tool {
     Slice,
     /// E: drag a box to select.
     Select,
+    /// Z: drag a box to zoom to it.
+    Zoom,
+    /// Y: click a note to hear it, drag across notes to hear them in turn.
+    Playback,
 }
 
 impl Tool {
-    const ALL: [Tool; 6] = [
+    const ALL: [Tool; 8] = [
         Tool::Draw,
         Tool::Paint,
         Tool::Delete,
         Tool::Mute,
         Tool::Slice,
         Tool::Select,
+        Tool::Zoom,
+        Tool::Playback,
     ];
 
     fn hint(self) -> &'static str {
@@ -130,17 +156,22 @@ impl Tool {
             Tool::Mute => "Mute (T)",
             Tool::Slice => "Slice (C)",
             Tool::Select => "Select (E)",
+            Tool::Zoom => "Zoom (Z)",
+            Tool::Playback => "Playback (Y)",
         }
     }
 
-    /// The letter on its button; Draw and Select have pictures.
-    fn letter(self) -> Option<&'static str> {
+    /// The picture on its button.
+    fn icon(self) -> Icon {
         match self {
-            Tool::Draw | Tool::Select => None,
-            Tool::Paint => Some("B"),
-            Tool::Delete => Some("D"),
-            Tool::Mute => Some("T"),
-            Tool::Slice => Some("C"),
+            Tool::Draw => Icon::Pencil,
+            Tool::Paint => Icon::Brush,
+            Tool::Delete => Icon::Eraser,
+            Tool::Mute => Icon::Mute,
+            Tool::Slice => Icon::Scissors,
+            Tool::Select => Icon::Pointer,
+            Tool::Zoom => Icon::Zoom,
+            Tool::Playback => Icon::Play,
         }
     }
 }
@@ -177,6 +208,12 @@ enum Drag {
     Slice {
         beat: f32,
     },
+    /// The Zoom tool: where the box began.
+    Zoom {
+        from: Pos2,
+    },
+    /// The Playback tool: the note under the pointer sounds.
+    Scrub,
 }
 
 /// What the lane under the notes shows and edits.
@@ -311,6 +348,12 @@ pub struct PianoView {
     /// What a new note copies: the length and velocity of the last one placed or touched.
     last_len: f32,
     new_velocity: u8,
+    /// The colour group new notes get.
+    color_group: u8,
+    /// New notes are slide notes.
+    slide_mode: bool,
+    /// The slide range to give the track, chosen in the inspector.
+    slide_range_edit: Option<u8>,
     /// Ctrl+C and Ctrl+X.
     clipboard: Vec<Note>,
     drag: Drag,
@@ -352,6 +395,9 @@ impl Default for PianoView {
             scale_mode: 0,
             last_len: 0.25,
             new_velocity: 100,
+            color_group: 0,
+            slide_mode: false,
+            slide_range_edit: None,
             clipboard: Vec::new(),
             drag: Drag::None,
             centered_for: None,
@@ -478,7 +524,7 @@ fn tabs(ui: &Ui, g: &Painter, bar: Rect, active: usize, switch: bool) -> Option<
             }
         }
         if i == active {
-            g.rect_filled(r, 4.0, BLUE);
+            g.rect_filled(r, 4.0, blue());
             g.text(
                 r.center(),
                 Align2::CENTER_CENTER,
@@ -494,7 +540,7 @@ fn tabs(ui: &Ui, g: &Painter, bar: Rect, active: usize, switch: bool) -> Option<
                 Align2::CENTER_CENTER,
                 *t,
                 font.clone(),
-                if live { TEXT } else { Color32::from_gray(0x7e) },
+                if live { TEXT } else { Color32::from_gray(0x4c) },
             );
         }
         x += *w;
@@ -695,6 +741,7 @@ fn toolbar(
                 (NoteColors::Velocity, "By Velocity"),
                 (NoteColors::Track, "By Track"),
                 (NoteColors::Pitch, "By Pitch"),
+                (NoteColors::Group, "By Color Group"),
             ] {
                 if ui.selectable_label(v.note_colors == colors, text).clicked() {
                     v.note_colors = colors;
@@ -712,46 +759,12 @@ fn toolbar(
             .on_hover_text(tool.hint());
         let on = v.tool == tool;
         if on {
-            g.rect_filled(r, 4.0, BLUE);
+            g.rect_filled(r, 4.0, blue());
         } else if resp.hovered() {
             g.rect_filled(r, 4.0, Color32::from_white_alpha(14));
         }
         let col = if on { Color32::WHITE } else { TEXT };
-        let c = r.center();
-        if let Some(letter) = tool.letter() {
-            g.text(
-                c,
-                Align2::CENTER_CENTER,
-                letter,
-                FontId::proportional(11.5),
-                col,
-            );
-        } else if tool == Tool::Select {
-            g.add(Shape::line(
-                vec![
-                    c + vec2(-3.0, -6.0),
-                    c + vec2(5.0, 2.0),
-                    c + vec2(1.0, 2.5),
-                    c + vec2(-1.0, 7.0),
-                    c + vec2(-3.0, -6.0),
-                ],
-                Stroke::new(1.3, col),
-            ));
-        } else {
-            g.line_segment(
-                [c + vec2(5.0, -6.0), c + vec2(-4.0, 3.0)],
-                Stroke::new(2.4, col),
-            );
-            g.add(Shape::convex_polygon(
-                vec![
-                    c + vec2(-4.0, 3.0),
-                    c + vec2(-6.0, 7.0),
-                    c + vec2(-2.0, 5.0),
-                ],
-                col,
-                Stroke::NONE,
-            ));
-        }
+        crate::icons::paint(&g, r.center(), 15.0, tool.icon(), col);
         if resp.clicked() {
             v.tool = tool;
         }
@@ -759,8 +772,8 @@ fn toolbar(
 
     // Type to MIDI and ghost notes.
     let extras_x = x + Tool::ALL.len() as f32 * 28.0 + 8.0;
-    let typing_r = Rect::from_min_size(pos2(extras_x, cy - 10.0), vec2(52.0, 20.0));
-    if toggle_button(ui, &g, typing_r, uid("typing"), "Keys", act.typing_on)
+    let typing_r = Rect::from_min_size(pos2(extras_x, cy - 10.0), vec2(26.0, 20.0));
+    if toggle_button(ui, &g, typing_r, uid("typing"), Icon::Keyboard, act.typing_on)
         .on_hover_text(
             "Play notes on the computer keyboard (Ctrl+K). Numpad + and - change the octave.",
         )
@@ -768,8 +781,8 @@ fn toolbar(
     {
         act.toggle_typing = true;
     }
-    let ghost_r = Rect::from_min_size(pos2(extras_x + 56.0, cy - 10.0), vec2(52.0, 20.0));
-    if toggle_button(ui, &g, ghost_r, uid("ghosts"), "Ghost", v.ghosts)
+    let ghost_r = Rect::from_min_size(pos2(extras_x + 28.0, cy - 10.0), vec2(26.0, 20.0));
+    if toggle_button(ui, &g, ghost_r, uid("ghosts"), Icon::Ghost, v.ghosts)
         .on_hover_text("Show the notes of the other regions behind these (Alt+V)")
         .clicked()
     {
@@ -813,12 +826,12 @@ fn toggle_button(
     g: &Painter,
     r: Rect,
     id: egui::Id,
-    label: &str,
+    icon: Icon,
     on: bool,
 ) -> egui::Response {
     let resp = ui.interact(r, id, Sense::click());
     if on {
-        g.rect_filled(r, 4.0, BLUE);
+        g.rect_filled(r, 4.0, blue());
     } else {
         g.rect_filled(
             r,
@@ -830,13 +843,7 @@ fn toggle_button(
             },
         );
     }
-    g.text(
-        r.center(),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(11.0),
-        if on { Color32::WHITE } else { TEXT },
-    );
+    crate::icons::paint(g, r.center(), 15.0, icon, if on { crate::theme::on_accent() } else { TEXT });
     resp
 }
 
@@ -847,7 +854,7 @@ fn small_q(ui: &Ui, g: &Painter, r: Rect, key: &str, enabled: bool) -> bool {
         r,
         4.0,
         if hovered {
-            Color32::from_gray(0x62)
+            Color32::from_gray(0x34)
         } else {
             BTN_BG
         },
@@ -860,10 +867,23 @@ fn small_q(ui: &Ui, g: &Painter, r: Rect, key: &str, enabled: bool) -> bool {
         if enabled {
             TEXT
         } else {
-            Color32::from_gray(0x78)
+            Color32::from_gray(0x40)
         },
     );
     resp.is_some_and(|r| r.clicked())
+}
+
+/// The slide button and key: makes the selected notes slide, or not if they all do. With none
+/// selected it says whether new notes are slide notes.
+fn set_slide(notes: &mut [Note], selected: &[usize], mode: &mut bool) {
+    if selected.is_empty() {
+        *mode = !*mode;
+        return;
+    }
+    let on = !selected.iter().all(|&i| notes[i].slide);
+    for &i in selected {
+        notes[i].slide = on;
+    }
 }
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
@@ -1113,8 +1133,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let content_h = 128.0 * v.key_h;
     {
         let gs = ui.painter_at(Rect::from_min_max(hbar.min, vbar.max));
-        gs.rect_filled(hbar, 0.0, Color32::from_gray(0x2a));
-        gs.rect_filled(vbar, 0.0, Color32::from_gray(0x2a));
+        gs.rect_filled(hbar, 0.0, Color32::from_gray(0x17));
+        gs.rect_filled(vbar, 0.0, Color32::from_gray(0x17));
         let tw = hbar.width();
         let thumb_w = (tw * grid.width() / content_w).clamp(24.0, tw);
         let max_x = (content_w - grid.width()).max(1.0);
@@ -1198,12 +1218,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             MODES[v.scale_mode].1.contains(&degree)
         });
         if in_scale {
-            gg.rect_filled(row, 0.0, BLUE.gamma_multiply(0.14));
+            gg.rect_filled(row, 0.0, blue().gamma_multiply(0.14));
         }
         if pitch % 12 == 0 {
             gg.line_segment(
                 [row.left_bottom(), row.right_bottom()],
-                Stroke::new(1.0, Color32::from_gray(0x44)),
+                Stroke::new(1.0, Color32::from_gray(0x25)),
             );
         }
     }
@@ -1214,7 +1234,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let bx = x_of(b as f32);
         gg.line_segment(
             [pos2(bx, grid.top()), pos2(bx, grid.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x3a)),
+            Stroke::new(1.0, Color32::from_gray(0x1f)),
         );
         if let Some(st) = sub {
             let mut k = st;
@@ -1222,7 +1242,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 let sx = x_of(b as f32 + k);
                 gg.line_segment(
                     [pos2(sx, grid.top()), pos2(sx, grid.bottom())],
-                    Stroke::new(1.0, Color32::from_gray(0x33)),
+                    Stroke::new(1.0, Color32::from_gray(0x1c)),
                 );
                 k += st;
             }
@@ -1232,7 +1252,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let bx = x_of(rel as f32);
         gg.line_segment(
             [pos2(bx, grid.top()), pos2(bx, grid.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x58)),
+            Stroke::new(1.0, Color32::from_gray(0x2f)),
         );
     }
     // Outside the region: dim.
@@ -1275,6 +1295,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     // Alt turns the snap off for as long as it is held.
     let snap = if alt { 1.0 / 64.0 } else { step };
     let edge_beats = 10.0 / beat_px;
+    if let Some(range) = v.slide_range_edit.take() {
+        p.tracks[ti].slide_range = range;
+        p.song_rev += 1;
+    }
+    let slide_range = p.tracks[ti].slide_range;
     let shown = &mut p.tracks[ti].regions[ri];
     let (notes, controls) = (&mut shown.notes, &mut shown.controls);
     let (primary_press, secondary_press, hover, down_now, secondary_down) = ui.input(|i| {
@@ -1320,6 +1345,20 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                             beat: snap_to(beat as f64, snap as f64) as f32,
                         };
                     }
+                    (Tool::Zoom, _) => v.drag = Drag::Zoom { from: pt },
+                    (Tool::Playback, _) => {
+                        v.drag = Drag::Scrub;
+                        let under = note_edit::hit_note(notes, beat, pitch as u8, 0.0)
+                            .map(|(i, _)| notes[i].pitch);
+                        audition(
+                            &mut s.audition,
+                            &mut v.held,
+                            under,
+                            v.new_velocity,
+                            track_u8,
+                        );
+                        v.release_at = None;
+                    }
                     (Tool::Select, None) => {
                         let base = if ctrl { v.selected.clone() } else { Vec::new() };
                         v.selected = base.clone();
@@ -1351,6 +1390,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                             pitch: pitch as u8,
                             vel: v.new_velocity,
                             muted: false,
+                            color: v.color_group,
+                            slide: v.slide_mode,
                         });
                         let index = notes.len() - 1;
                         v.selected.clear();
@@ -1498,6 +1539,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                         pitch: *key,
                         vel: v.new_velocity,
                         muted: false,
+                        color: v.color_group,
+                        slide: v.slide_mode,
                     };
                     if note_edit::paint(notes, template, *key, *start, beat) > 0 {
                         v.dirty = true;
@@ -1505,6 +1548,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 }
                 Drag::Slice { beat: at } => {
                     *at = snap_to(beat as f64, snap as f64) as f32;
+                }
+                Drag::Zoom { .. } => {}
+                Drag::Scrub => {
+                    // The note under the pointer, or else any note at this moment.
+                    let under = note_edit::hit_note(notes, beat, pitch as u8, 0.0)
+                        .map(|(i, _)| notes[i].pitch)
+                        .or_else(|| {
+                            notes
+                                .iter()
+                                .find(|n| !n.muted && n.start <= beat && beat < n.start + n.len)
+                                .map(|n| n.pitch)
+                        });
+                    audition(
+                        &mut s.audition,
+                        &mut v.held,
+                        under,
+                        v.new_velocity,
+                        track_u8,
+                    );
                 }
                 Drag::None => {}
             }
@@ -1518,6 +1580,24 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                     v.dirty = true;
                 }
             }
+            Drag::Zoom { from } => {
+                if let Some(to) = hover {
+                    let (x0, x1) = (from.x.min(to.x), from.x.max(to.x));
+                    let (y0, y1) = (from.y.min(to.y), from.y.max(to.y));
+                    // A click, not a box: nothing to zoom to.
+                    if x1 - x0 > 4.0 && y1 - y0 > 4.0 {
+                        let (first_beat, last_beat) = (beat_at(x0), beat_at(x1));
+                        let top = pitch_at(y0) as f32 + 1.0;
+                        let span = (top - pitch_at(y1) as f32).max(1.0);
+                        v.beat_px = (grid.width() / (last_beat - first_beat).max(1.0 / 64.0))
+                            .clamp(12.0, 400.0);
+                        v.key_h = (grid.height() / span).clamp(6.0, 24.0);
+                        v.scroll_x = (first_beat * v.beat_px).max(0.0);
+                        v.scroll_y = ((127.0 - top + 1.0) * v.key_h).max(0.0);
+                    }
+                }
+            }
+            Drag::Scrub => audition(&mut s.audition, &mut v.held, None, 0, track_u8),
             Drag::Marquee { .. } | Drag::None => {}
             Drag::Move { .. }
             | Drag::Resize { .. }
@@ -1531,7 +1611,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let ruler_resp = ui.interact(ruler, id("ruler"), Sense::click_and_drag());
     let in_ruler = hover.is_some_and(|pt| ruler.contains(pt)) && ruler_resp.hovered();
     let on_step = |x: f32| (snap_to(beat_at(x) as f64, snap as f64) as f32).max(0.0);
-    if in_ruler && secondary_press {
+    // FL Studio's other way, Ctrl with the left button, works too.
+    if in_ruler && (secondary_press || (ctrl && primary_press)) {
         v.time_anchor = hover.map(|pt| on_step(pt.x));
         v.time_sel = None;
     }
@@ -1539,7 +1620,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         v.time_sel = None;
     }
     if let Some(anchor) = v.time_anchor {
-        if !secondary_down {
+        if !secondary_down && !down_now {
             v.time_anchor = None;
         } else if let Some(pt) = hover {
             let now = on_step(pt.x);
@@ -1661,12 +1742,39 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             let targets = targets_of(&v.selected, notes.len(), v.time_sel.is_some());
             let mut edited = true;
             match key {
+                // As in FL Studio: pick notes at random, and by the chosen colour group.
+                Key::R if shift && !ctrl && !alt && !typing_on && !notes.is_empty() => {
+                    v.selected = vec![random_below(notes.len())];
+                    edited = false;
+                }
+                Key::M if shift && !ctrl && !alt && !typing_on => {
+                    let left: Vec<usize> = (0..notes.len())
+                        .filter(|i| !v.selected.contains(i))
+                        .collect();
+                    if !left.is_empty() {
+                        v.selected.push(left[random_below(left.len())]);
+                    }
+                    edited = false;
+                }
+                Key::C if shift && !ctrl && !alt && !typing_on => {
+                    v.selected = (0..notes.len())
+                        .filter(|&i| notes[i].color == v.color_group)
+                        .collect();
+                    edited = false;
+                }
                 Key::P if tool_key => v.tool = Tool::Draw,
                 Key::B if tool_key => v.tool = Tool::Paint,
                 Key::D if tool_key => v.tool = Tool::Delete,
                 Key::T if tool_key => v.tool = Tool::Mute,
                 Key::C if tool_key => v.tool = Tool::Slice,
                 Key::E if tool_key => v.tool = Tool::Select,
+                Key::Z if tool_key => v.tool = Tool::Zoom,
+                Key::Y if tool_key => v.tool = Tool::Playback,
+                Key::S if tool_key => {
+                    set_slide(notes, &v.selected, &mut v.slide_mode);
+                    v.dirty |= !v.selected.is_empty();
+                    edited = false;
+                }
                 Key::Escape => {
                     v.selected.clear();
                     v.time_sel = None;
@@ -1792,7 +1900,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         TEXT_DIM,
     );
     let box_r = Rect::from_min_size(pos2(ix + iw - 24.0, y), vec2(24.0, 18.0));
-    gi.rect_filled(box_r, 3.0, Color32::from_gray(0x4a));
+    gi.rect_filled(box_r, 3.0, Color32::from_gray(0x28));
     gi.rect_stroke(
         Rect::from_center_size(box_r.center(), vec2(10.0, 8.0)),
         1.5,
@@ -1882,7 +1990,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             pos2(insp.left() + 6.0, y - 8.0),
             pos2(insp.right() - 6.0, y - 8.0),
         ],
-        Stroke::new(1.0, Color32::from_gray(0x2c)),
+        Stroke::new(1.0, Color32::from_gray(0x18)),
     );
     y += 4.0;
 
@@ -1940,7 +2048,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             pos2(insp.left() + 6.0, y - 10.0),
             pos2(insp.right() - 6.0, y - 10.0),
         ],
-        Stroke::new(1.0, Color32::from_gray(0x2c)),
+        Stroke::new(1.0, Color32::from_gray(0x18)),
     );
 
     // Velocity of the selection (average), or the velocity for new notes.
@@ -1984,6 +2092,83 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
     }
 
+    // Colour groups and slide notes, as in FL Studio.
+    y += 22.0;
+    gi.text(
+        pos2(ix, y),
+        Align2::LEFT_TOP,
+        "Color Group",
+        FontId::proportional(11.5),
+        TEXT_DIM,
+    );
+    y += 16.0;
+    let swatch = (iw / f32::from(COLOR_GROUPS / 2)).floor();
+    for group in 0..COLOR_GROUPS {
+        let (col, row) = (f32::from(group % 8), f32::from(group / 8));
+        let r = Rect::from_min_size(
+            pos2(ix + col * swatch, y + row * 16.0),
+            vec2(swatch - 2.0, 14.0),
+        );
+        gi.rect_filled(r, 2.0, group_color(group));
+        if group == v.color_group {
+            gi.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+        }
+        let resp = ui
+            .interact(r, id(("color_group", group)), Sense::click())
+            .on_hover_text(
+                "New notes and the selection take this color. Shift+C selects its notes.",
+            );
+        if resp.clicked() {
+            v.color_group = group;
+            v.note_colors = NoteColors::Group;
+            for &i in &v.selected {
+                notes[i].color = group;
+            }
+            v.dirty |= !v.selected.is_empty();
+        }
+    }
+    y += 36.0;
+    let slide_button = Rect::from_min_size(pos2(ix, y), vec2(76.0, 20.0));
+    let slide_resp = ui
+        .interact(slide_button, id("slide_mode"), Sense::click())
+        .on_hover_text(
+            "New notes are slide notes. With notes selected, makes them slide or not (S).",
+        );
+    gi.rect_filled(
+        slide_button,
+        3.0,
+        if v.slide_mode { blue() } else { BTN_BG },
+    );
+    gi.text(
+        slide_button.center(),
+        Align2::CENTER_CENTER,
+        "Slide (S)",
+        FontId::proportional(11.5),
+        TEXT,
+    );
+    if slide_resp.clicked() {
+        set_slide(notes, &v.selected, &mut v.slide_mode);
+        v.dirty |= !v.selected.is_empty();
+    }
+    gi.text(
+        pos2(ix + iw, y + 10.0),
+        Align2::RIGHT_CENTER,
+        format!("Range {slide_range}"),
+        FontId::proportional(11.5),
+        TEXT,
+    );
+    y += 24.0;
+    if let Some(n) = slider_h(
+        ui,
+        &gi,
+        Rect::from_min_size(pos2(ix, y), vec2(iw, 14.0)),
+        id("slide_range"),
+        (f32::from(slide_range) - 1.0) / 47.0,
+        true,
+    ) {
+        v.slide_range_edit = Some((1.0 + n * 47.0).round().clamp(1.0, 48.0) as u8);
+    }
+
     // Automation / MIDI: what the lane under the notes shows (Note Velocity).
     let ay = insp.bottom() - 112.0;
     if ay > y + 24.0 {
@@ -1999,7 +2184,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         gi.circle_stroke(power.center(), 5.0, Stroke::new(1.3, Color32::WHITE));
         let region_btn =
             Rect::from_min_size(pos2(ix + 28.0, ay + 18.0), vec2(iw - 28.0 - 34.0, 20.0));
-        gi.rect_filled(region_btn, 0.0, BLUE);
+        gi.rect_filled(region_btn, 0.0, blue());
         gi.text(
             region_btn.center(),
             Align2::CENTER_CENTER,
@@ -2008,9 +2193,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             Color32::WHITE,
         );
         let curve = Rect::from_min_size(pos2(ix + iw - 30.0, ay + 18.0), vec2(30.0, 20.0));
-        gi.rect_filled(curve, 3.0, Color32::from_gray(0x4a));
+        gi.rect_filled(curve, 3.0, Color32::from_gray(0x28));
         let box_r = Rect::from_min_size(pos2(ix, ay + 42.0), vec2(iw, 44.0));
-        gi.rect_filled(box_r, 3.0, Color32::from_gray(0x30));
+        gi.rect_filled(box_r, 3.0, Color32::from_gray(0x1a));
         gi.text(
             pos2(box_r.center().x, box_r.top() + 10.0),
             Align2::CENTER_CENTER,
@@ -2040,7 +2225,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         Align2::LEFT_TOP,
         hint_text,
         hint_font,
-        Color32::from_gray(0x88),
+        Color32::from_gray(0x60),
     );
 
     // ---- Apply toolbar/inspector actions
@@ -2114,7 +2299,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     // ---- Draw keys, notes, ruler, playhead (after edits so they show immediately)
     let notes = &p.tracks[ti].regions[ri].notes;
     let gk = ui.painter_at(keys);
-    gk.rect_filled(keys, 0.0, Color32::from_gray(0x20));
+    gk.rect_filled(keys, 0.0, Color32::from_gray(0x12));
     for pitch in bottom_pitch..=top_pitch {
         let y = y_of(pitch);
         let row = Rect::from_min_size(pos2(keys.left(), y), vec2(KEYS_W, key_h));
@@ -2122,7 +2307,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             gk.rect_filled(
                 Rect::from_min_size(row.min, vec2(KEYS_W * 0.62, key_h)),
                 0.0,
-                Color32::from_gray(0x14),
+                Color32::from_gray(0x0b),
             );
             gk.rect_filled(
                 Rect::from_min_max(pos2(row.left() + KEYS_W * 0.62, row.top()), row.max),
@@ -2133,7 +2318,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             gk.rect_filled(row, 0.0, Color32::from_gray(0xee));
             gk.line_segment(
                 [row.left_bottom(), row.right_bottom()],
-                Stroke::new(1.0, Color32::from_gray(0x9a)),
+                Stroke::new(1.0, Color32::from_gray(0x84)),
             );
         }
         if v.held == Some(pitch as u8) {
@@ -2149,7 +2334,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 Align2::RIGHT_CENTER,
                 c_label(pitch),
                 FontId::proportional(9.5),
-                Color32::from_gray(0x30),
+                Color32::from_gray(0x1a),
             );
         }
     }
@@ -2184,28 +2369,37 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             NoteColors::Velocity => velocity_color(n.vel),
             NoteColors::Track => p.tracks[ti].color,
             NoteColors::Pitch => pitch_color(n.pitch),
+            NoteColors::Group => group_color(n.color),
         };
         let (fill, edge) = if n.muted {
-            (Color32::from_gray(0x55), Color32::from_gray(0x77))
+            (Color32::from_gray(0x2e), Color32::from_gray(0x3f))
         } else if selected {
             (NOTE_SEL, Color32::WHITE)
         } else {
             (
-                color.lerp_to_gamma(Color32::from_gray(0x80), 0.3),
+                color.lerp_to_gamma(Color32::from_gray(0x50), 0.3),
                 color.lerp_to_gamma(Color32::WHITE, 0.65),
             )
         };
         gg.rect_filled(r, 1.5, fill);
         gg.rect_stroke(r, 1.5, Stroke::new(1.0, edge), StrokeKind::Inside);
+        if n.slide {
+            // A slide note says so with a rising wedge.
+            gg.add(Shape::convex_polygon(
+                vec![r.left_bottom(), r.right_bottom(), r.right_top()],
+                Color32::from_black_alpha(90),
+                Stroke::NONE,
+            ));
+        }
     }
     if let Drag::Slice { beat } = &v.drag {
         let lx = x_of(*beat);
         gg.line_segment(
             [pos2(lx, grid.top()), pos2(lx, grid.bottom())],
-            Stroke::new(1.5, BLUE),
+            Stroke::new(1.5, blue()),
         );
     }
-    if let Drag::Marquee { from, .. } = &v.drag {
+    if let Drag::Marquee { from, .. } | Drag::Zoom { from } = &v.drag {
         if let Some(now) = ui.input(|i| i.pointer.hover_pos()) {
             let r = Rect::from_two_pos(*from, now);
             gg.rect_filled(r, 0.0, Color32::from_white_alpha(22));
@@ -2220,7 +2414,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     // Velocity or controller lane. Its label picks which.
     let gv = ui.painter_at(Rect::from_min_max(vel_label.min, vel_rect.max));
-    gv.rect_filled(vel_label, 0.0, Color32::from_gray(0x2c));
+    gv.rect_filled(vel_label, 0.0, Color32::from_gray(0x18));
     gv.text(
         vel_label.center(),
         Align2::CENTER_CENTER,
@@ -2244,14 +2438,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let y = vel_rect.bottom() - f * vel_rect.height();
         gv.line_segment(
             [pos2(vel_rect.left(), y), pos2(vel_rect.right(), y)],
-            Stroke::new(1.0, Color32::from_gray(0x36)),
+            Stroke::new(1.0, Color32::from_gray(0x1d)),
         );
     }
     for &(rel, _) in &bars {
         let bx = x_of(rel as f32);
         gv.line_segment(
             [pos2(bx, vel_rect.top()), pos2(bx, vel_rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x44)),
+            Stroke::new(1.0, Color32::from_gray(0x25)),
         );
     }
     if let Lane::Control(number) = v.lane {
@@ -2312,7 +2506,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             pos2(editor.right(), grid.top()),
         ),
         0.0,
-        Color32::from_gray(0x1f),
+        Color32::from_gray(0x11),
     );
     // The part of the ruler over the region is gold, as in Logic.
     let ruler_gold = Color32::from_rgb(
@@ -2335,7 +2529,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let x = x_of(rel as f32);
         gr.line_segment(
             [pos2(x, ruler.top() + 3.0), pos2(x, ruler.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x78)),
+            Stroke::new(1.0, Color32::from_gray(0x40)),
         );
         if (bar0 as i32 - (start_bar as i32 - 1)) % label_every == 0 {
             gr.text(
@@ -2364,7 +2558,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             Align2::LEFT_CENTER,
             &region_name,
             FontId::proportional(10.5),
-            Color32::from_gray(0x20),
+            Color32::from_gray(0x12),
         );
     }
     gr.line_segment(
@@ -2372,7 +2566,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             pos2(keys.left(), grid.top()),
             pos2(editor.right(), grid.top()),
         ],
-        Stroke::new(1.0, Color32::from_gray(0x20)),
+        Stroke::new(1.0, Color32::from_gray(0x12)),
     );
     // The time selection shades the grid and the lane, and shows on the ruler.
     if let Some((a, b)) = v.time_sel {
@@ -2384,12 +2578,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             for x in [x0, x1] {
                 painter.line_segment(
                     [pos2(x, area.top()), pos2(x, area.bottom())],
-                    Stroke::new(1.0, BLUE),
+                    Stroke::new(1.0, blue()),
                 );
             }
         }
         let top = Rect::from_min_max(pos2(x0, ruler.top()), pos2(x1, ruler.bottom()));
-        gr.rect_filled(top, 0.0, BLUE.gamma_multiply(0.75));
+        gr.rect_filled(top, 0.0, blue().gamma_multiply(0.75));
     }
     let px = x_of(position as f32);
     if px >= grid.left() && px <= grid.right() {
@@ -2527,6 +2721,8 @@ mod tests {
                 pitch: row as u8,
                 vel: 90,
                 muted: false,
+                color: 0,
+                slide: false,
             });
         }
     }

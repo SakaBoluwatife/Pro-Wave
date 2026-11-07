@@ -13,6 +13,7 @@ mod clap;
 #[cfg(windows)]
 mod editor_window;
 mod sampler;
+pub mod splash;
 #[cfg(windows)]
 mod vst3_plugin;
 
@@ -22,7 +23,7 @@ pub use crate::bridge::{
     set_isolation,
 };
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
-pub use crate::sampler::load_sampler;
+pub use crate::sampler::{load_sampler, params as sampler_params, SAMPLER_BEND_SEMITONES};
 #[cfg(windows)]
 pub use crate::vst3_plugin::{find_vst3_files, load_vst3, scan_vst3_file, vst3_folders};
 #[doc(no_inline)]

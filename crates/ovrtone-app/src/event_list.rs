@@ -6,7 +6,7 @@
 
 use crate::i18n::tr;
 use crate::model::{Project, TrackKind};
-use crate::widgets::{BLUE, TEXT, TEXT_DIM};
+use crate::widgets::{blue, TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, Ui};
 
@@ -15,14 +15,14 @@ const ROW_H: f32 = 17.5;
 const TICKS_PER_BEAT: i64 = 960;
 const TICKS_PER_DIVISION: i64 = 240;
 
-const BG: Color32 = Color32::from_rgb(33, 33, 33);
-const TAB_ON: Color32 = Color32::from_rgb(64, 64, 64);
-const TAB_OFF: Color32 = Color32::from_rgb(47, 47, 47);
-const TOOLBAR_BG: Color32 = Color32::from_rgb(55, 55, 55);
-const FILTER_BG: Color32 = Color32::from_rgb(66, 66, 66);
+const BG: Color32 = Color32::from_rgb(0x12, 0x12, 0x12);
+const TAB_ON: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+const TAB_OFF: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
+const TOOLBAR_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
+const FILTER_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
 const FILTER_BLUE: Color32 = Color32::from_rgb(29, 74, 134);
 const FILTER_TEXT: Color32 = Color32::from_rgb(190, 214, 245);
-const HEAD_BG: Color32 = Color32::from_rgb(45, 45, 45);
+const HEAD_BG: Color32 = Color32::from_rgb(0x19, 0x19, 0x19);
 
 /// The list's own state.
 pub struct ListView {
@@ -250,9 +250,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         catch,
         4.0,
         if s.lists.follow {
-            BLUE
+            blue()
         } else {
-            Color32::from_gray(0x58)
+            Color32::from_gray(0x2f)
         },
     );
     g.text(
@@ -324,7 +324,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         pos2(head.right() - 104.0, head.top() + 4.0),
         vec2(70.0, 18.0),
     );
-    g.rect_filled(qbox, 3.0, Color32::from_gray(0x25));
+    g.rect_filled(qbox, 3.0, Color32::from_gray(0x14));
     g.text(
         qbox.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
@@ -344,7 +344,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     // Column titles.
     let cols = Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), 20.0));
-    g.rect_filled(cols, 0.0, Color32::from_rgb(47, 47, 47));
+    g.rect_filled(cols, 0.0, Color32::from_rgb(0x1a, 0x1a, 0x1a));
     let f = FontId::proportional(10.5);
     let dim = Color32::from_gray(0xc0);
     let cx = |v: f32| area.left() + v;
@@ -405,7 +405,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let cy = list.top() + i as f32 * ROW_H - s.lists.scroll + ROW_H / 2.0;
         let ([bar, beat, div], tick) = position_in(p, e.beats);
         let l = length_parts(e.len, p.bar_len_at(e.beats));
-        let color = if e.dim { Color32::from_gray(0x76) } else { ink };
+        let color = if e.dim { Color32::from_gray(0x3f) } else { ink };
         let at = |x: f32, align: Align2, text: String| {
             gl.text(pos2(cx(x), cy), align, text, font.clone(), color);
         };

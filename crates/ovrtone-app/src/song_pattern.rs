@@ -80,6 +80,8 @@ impl Lane {
                 pitch: self.step_pitch,
                 vel: crate::pattern::DEFAULT_VELOCITY,
                 muted: false,
+                color: 0,
+                slide: false,
             });
         }
     }
@@ -387,6 +389,8 @@ mod tests {
                 pitch: 64,
                 vel: 90,
                 muted: false,
+                color: 0,
+                slide: false,
             }],
         };
         lane.toggle_step(2);
@@ -442,6 +446,8 @@ mod tests {
             pitch: 67,
             vel: 80,
             muted: false,
+            color: 0,
+            slide: false,
         });
         sync(&mut p);
         assert_eq!(pattern(&mut p, id).lane(ca).unwrap().notes.len(), 2);

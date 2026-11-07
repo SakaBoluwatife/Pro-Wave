@@ -382,6 +382,8 @@ mod tests {
             pitch,
             vel: 90,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 
@@ -447,6 +449,8 @@ mod tests {
             pitch: 60,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }];
         assert_eq!(hit_note(&notes, 1.5, 60, 0.2), Some((0, false)));
         assert_eq!(hit_note(&notes, 2.9, 60, 0.2), Some((0, true)));
@@ -461,6 +465,8 @@ mod tests {
             pitch,
             vel: 100,
             muted: false,
+            color: 0,
+            slide: false,
         }
     }
 

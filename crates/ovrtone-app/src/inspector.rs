@@ -110,7 +110,7 @@ fn section_header(
     g.rect_filled(r, 0.0, HEADER_BG);
     g.line_segment(
         [r.left_bottom(), r.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x2a)),
+        Stroke::new(1.0, Color32::from_gray(0x17)),
     );
     let c = pos2(r.left() + 12.0, r.center().y);
     let tri = if open {
@@ -149,9 +149,9 @@ fn section_header(
 
 fn label(g: &Painter, panel_left: f32, y: f32, text: &str, enabled: bool) {
     let col = if enabled {
-        Color32::from_gray(0xb0)
+        crate::theme::TEXT
     } else {
-        Color32::from_gray(0x6c)
+        crate::theme::TEXT_DIM.gamma_multiply(0.55)
     };
     g.text(
         pos2(panel_left + LABEL_RIGHT, y + ROW_H / 2.0),
@@ -170,17 +170,17 @@ fn checkbox(ui: &Ui, g: &Painter, at: Pos2, key: &str, value: bool, enabled: boo
             .interact(r.expand(3.0), id(("check", key)), Sense::click())
             .clicked();
     let border = if enabled {
-        Color32::from_gray(0x8a)
+        Color32::from_gray(0x64)
     } else {
-        Color32::from_gray(0x55)
+        Color32::from_gray(0x2e)
     };
     g.rect_filled(
         r,
         2.5,
         if value {
-            crate::widgets::BLUE
+            crate::widgets::blue()
         } else {
-            Color32::from_gray(0x2c)
+            Color32::from_gray(0x18)
         },
     );
     g.rect_stroke(r, 2.5, Stroke::new(1.0, border), StrokeKind::Inside);
@@ -209,7 +209,7 @@ fn popup(
     let col = if enabled {
         TEXT
     } else {
-        Color32::from_gray(0x70)
+        Color32::from_gray(0x3c)
     };
     let resp = enabled.then(|| ui.interact(r, id(("popup", key)), Sense::click()));
     let hovered = resp.as_ref().is_some_and(|r| r.hovered());
@@ -217,11 +217,11 @@ fn popup(
         r,
         3.0,
         if hovered {
-            Color32::from_gray(0x5c)
+            Color32::from_gray(0x31)
         } else if enabled {
             BTN_BG
         } else {
-            Color32::from_gray(0x44)
+            Color32::from_gray(0x25)
         },
     );
     g.text(
@@ -263,9 +263,9 @@ fn drag_value(
     let col = if enabled {
         TEXT
     } else {
-        Color32::from_gray(0x70)
+        Color32::from_gray(0x3c)
     };
-    g.rect_filled(r, 3.0, Color32::from_gray(0x30));
+    g.rect_filled(r, 3.0, Color32::from_gray(0x1a));
     g.text(
         pos2(r.left() + 6.0, r.center().y),
         Align2::LEFT_CENTER,

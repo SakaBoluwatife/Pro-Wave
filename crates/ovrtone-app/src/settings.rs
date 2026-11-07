@@ -11,7 +11,7 @@ use std::sync::mpsc::{channel, Receiver};
 const AUDIO_FILE: &str = "audio-setup";
 const TYPING_OFF_FILE: &str = "typing-off";
 const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
-const RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
+pub(crate) const RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 
 /// Which driver, device and buffer size to play through. Empty means the usual choice.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -51,7 +51,7 @@ impl AudioSetup {
             .map_or_else(Self::default, |t| Self::from_text(&t))
     }
 
-    fn save(&self) {
+    pub(crate) fn save(&self) {
         let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) else {
             return;
         };
@@ -228,6 +228,36 @@ pub fn plugin_isolation() -> bool {
         .is_some_and(|text| text.trim() == "1")
 }
 
+fn chooser_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("chooser-at-launch"))
+}
+
+/// Whether the Project Chooser comes up when the program starts. It does, unless turned off here.
+pub fn chooser_at_launch() -> bool {
+    chooser_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .is_none_or(|text| text.trim() != "0")
+}
+
+fn chooser_row(ui: &mut Ui) {
+    let saved = chooser_at_launch();
+    let mut on = saved;
+    ui.checkbox(&mut on, "Show the Project Chooser at startup")
+        .on_hover_text("Off: Ovrtone starts on an empty project.");
+    if on != saved {
+        let Some(file) = chooser_file() else {
+            return;
+        };
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, if on { "1" } else { "0" }));
+        if let Err(e) = result {
+            tracing::warn!("could not save the chooser setting: {e}");
+        }
+    }
+}
+
 fn ara_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-ara"))
 }
@@ -364,7 +394,31 @@ fn save_view() {
     }
 }
 
+/// The colour of what is selected or on, everywhere: a ready one, or any the user picks.
+fn accent_row(ui: &mut Ui) {
+    let now = crate::theme::accent();
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label("Theme");
+        for (name, color) in crate::theme::ACCENTS {
+            if ui.selectable_label(now == color, name).clicked() {
+                picked = Some(color);
+            }
+        }
+        let mut custom = now;
+        if ui.color_edit_button_srgba(&mut custom).changed() {
+            picked = Some(custom);
+        }
+        ui.label("Your own");
+    });
+    if let Some(color) = picked {
+        crate::theme::set_accent(ui.ctx(), color);
+    }
+}
+
 fn display_tab(ui: &mut Ui) {
+    accent_row(ui);
+    ui.add_space(6.0);
     let mut changed = false;
     let mut wide = wide_playhead();
     changed |= ui.checkbox(&mut wide, "Wide playhead").changed();
@@ -675,6 +729,24 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
         }
     }
     ui.horizontal(|ui| {
+        ui.label("Keys like");
+        let now = s.keys.preset;
+        egui::ComboBox::from_id_salt(egui::Id::unique("settings_key_preset"))
+            .selected_text(now.name())
+            .show_ui(ui, |ui| {
+                for preset in crate::key_commands::KeyPreset::ALL {
+                    if ui.selectable_label(now == preset, preset.name()).clicked() {
+                        s.keys.choose_preset(preset);
+                    }
+                }
+            });
+    })
+    .response
+    .on_hover_text(
+        "A whole set of keys. Each keeps the changes you make to it. Space, Undo, the File commands \
+         and the piano roll's keys are the same in all of them.",
+    );
+    ui.horizontal(|ui| {
         ui.label("Click a key, then press the new one. Esc gives up.");
         if ui.small_button("Back to the usual keys").clicked() {
             s.keys.reset();
@@ -688,11 +760,12 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
                 .show(ui, |ui| {
                     for (i, command) in COMMANDS.iter().enumerate() {
                         ui.label(name_of(command.action));
-                        let (key, m) = s.keys.key_of(command);
                         let text = if s.keys.capturing == Some(i) {
                             "Press a key…".to_string()
                         } else {
-                            key_text(key, m)
+                            s.keys
+                                .key_of(i)
+                                .map_or("No key".to_string(), |(key, m)| key_text(key, m))
                         };
                         if ui.button(text).clicked() {
                             s.keys.capturing = Some(i);
@@ -704,6 +777,7 @@ fn keys_tab(ui: &mut Ui, s: &mut UiState) {
 }
 
 fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
+    chooser_row(ui);
     ara_row(ui);
     isolation_row(ui);
     ui.separator();
@@ -712,10 +786,7 @@ fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
     let mut rescan = false;
     for folder in crate::plugin_guard::plugin_folders() {
         ui.horizontal(|ui| {
-            if ui
-                .small_button("×")
-                .on_hover_text("Stop looking here")
-                .clicked()
+            if crate::icons::button(ui, crate::icons::Icon::Close, "Stop looking here").clicked()
             {
                 crate::plugin_guard::remove_folder(&folder);
                 rescan = true;
@@ -755,9 +826,10 @@ fn general_tab(ui: &mut Ui, s: &mut UiState) {
         }
     });
     ui.checkbox(&mut s.light_menus, "Light menu bar");
-    if ui
-        .checkbox(&mut s.update_auto, "Check for updates automatically")
-        .changed()
+    if crate::updater::UPDATES
+        && ui
+            .checkbox(&mut s.update_auto, "Check for updates automatically")
+            .changed()
     {
         crate::updater::set_auto_enabled(s.update_auto);
     }

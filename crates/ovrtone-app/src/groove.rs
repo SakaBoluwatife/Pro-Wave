@@ -284,6 +284,8 @@ mod tests {
                 pitch: 40,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             })
             .collect();
         p.tracks[1].regions[0].notes = (0..8)
@@ -293,6 +295,8 @@ mod tests {
                 pitch: 60,
                 vel: 100,
                 muted: false,
+                color: 0,
+                slide: false,
             })
             .collect();
         set_groove_track(&mut p, Some(0));

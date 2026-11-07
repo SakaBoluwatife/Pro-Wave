@@ -30,7 +30,7 @@ use vst3::Steinberg::TUID;
 /// The newest generation asked for. Every field used here exists in it.
 const GENERATION: ARAAPIGeneration = kARAAPIGeneration_2_0_Final as ARAAPIGeneration;
 const ROLES: ARAPlugInInstanceRoleFlags =
-    (kARAPlaybackRendererRole | kARAEditorRendererRole | kARAEditorViewRole) as i32;
+    kARAPlaybackRendererRole | kARAEditorRendererRole | kARAEditorViewRole;
 /// A reader decodes this much at a time: each read of a compressed file starts over from a packet.
 const READ_AHEAD: usize = 1 << 17;
 

@@ -42,7 +42,6 @@ pub fn capture(s: &UiState, slot: u8, name: String) -> ScreensetDoc {
         score_tab: s.score_tab,
         show_library: s.show_library,
         left_tab: match s.left_tab {
-            LeftTab::Library => 0,
             LeftTab::Browser => 1,
             LeftTab::Plugins => 2,
         },
@@ -73,9 +72,9 @@ pub fn recall(s: &mut UiState, set: &ScreensetDoc) {
     s.score_tab = set.score_tab;
     s.show_library = set.show_library;
     s.left_tab = match set.left_tab {
-        1 => LeftTab::Browser,
         2 => LeftTab::Plugins,
-        _ => LeftTab::Library,
+        // 0 was the Library, which is gone.
+        _ => LeftTab::Browser,
     };
     s.show_inspector = set.show_inspector;
     s.show_lists = set.show_lists;
@@ -260,7 +259,7 @@ mod tests {
         assert_eq!(p.screensets.len(), 1);
 
         s.show_library = false;
-        s.left_tab = LeftTab::Library;
+        s.left_tab = LeftTab::Browser;
         s.bottom = Bottom::Mixer;
         s.browser.open = None;
         s.tracks.bar_w = 40.0;
@@ -288,6 +287,8 @@ mod tests {
     fn the_number_keys_save_and_recall_and_clash_with_nothing() {
         let ctx = egui::Context::default();
         let (mut p, mut s) = (Project::demo(), UiState::new());
+        // The keyboard starts out playing notes, which keeps the plain numbers. Off for now.
+        s.typing.on = false;
         s.show_library = true;
         press(&ctx, Key::Num4, Modifiers::ALT, &mut p, &mut s);
         assert_eq!(p.screensets[0].slot, 4);

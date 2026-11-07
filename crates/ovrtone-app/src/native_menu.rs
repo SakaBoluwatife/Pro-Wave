@@ -404,7 +404,7 @@ mod tests {
             }))
         );
         // Y / I / X stay with the app, so typing in a text field still works.
-        assert_eq!(kind("Show Library"), Kind::Check);
+        assert_eq!(kind("Show Browser"), Kind::Check);
         assert_eq!(kind("Bounce"), Kind::Plain(None));
     }
 

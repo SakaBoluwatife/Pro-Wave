@@ -18,7 +18,7 @@ use crate::pattern::{
     DEFAULT_VELOCITY, MAX_ROWS,
 };
 use crate::piano_roll::{velocity_color, Audition};
-use crate::widgets::{context_menu, BLUE, TEXT, TEXT_DIM};
+use crate::widgets::{blue, context_menu, TEXT, TEXT_DIM};
 use crate::UiState;
 use egui::{
     pos2, vec2, Align, Align2, Color32, FontId, Layout, Rect, Sense, Stroke, StrokeKind, Ui,
@@ -103,7 +103,7 @@ enum Gesture {
 
 /// Whether a track plays a drum kit (so its pattern rows are named after the drums).
 pub fn is_drum_track(t: &Track) -> bool {
-    t.kind == TrackKind::Drummer || t.instrument.is_some_and(|i| i.contains("Drum"))
+    t.kind == TrackKind::Drummer
 }
 
 /// Draws the editor for the Pattern or Drummer region `ri` of track `ti` in `body`.
@@ -400,7 +400,7 @@ fn show_pattern(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
             continue;
         }
         let label = Rect::from_min_size(pos2(area.left(), y), vec2(LABEL_W - 4.0, ROW_H - 1.0));
-        g.rect_filled(label, 3.0, Color32::from_gray(0x44));
+        g.rect_filled(label, 3.0, Color32::from_gray(0x25));
         g.text(
             label.left_center() + vec2(8.0, 0.0),
             Align2::LEFT_CENTER,
@@ -797,7 +797,7 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
             pos2(lanes.left(), lanes.top() + i as f32 * lane_h),
             vec2(lanes.width() - 8.0, lane_h - 2.0),
         );
-        lg.rect_filled(lane, 3.0, Color32::from_gray(0x33));
+        lg.rect_filled(lane, 3.0, Color32::from_gray(0x1c));
         let on = d.parts & part != 0;
         lg.text(
             lane.left_center() + vec2(8.0, 0.0),
@@ -812,7 +812,7 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
         let x = grid.left() + ((bar.start - origin) as f32) * beat_px;
         lg.line_segment(
             [pos2(x, lanes.top()), pos2(x, lanes.top() + lane_h * 6.0)],
-            Stroke::new(1.0, Color32::from_gray(0x5a)),
+            Stroke::new(1.0, Color32::from_gray(0x30)),
         );
     }
     for n in &p.tracks[ti].regions[ri].notes {
@@ -869,7 +869,7 @@ fn xy_pad(
     g.rect_filled(pad, 4.0, crate::theme::BORDER);
     for k in 1..4 {
         let t = k as f32 / 4.0;
-        let line = Stroke::new(1.0, Color32::from_gray(0x34));
+        let line = Stroke::new(1.0, Color32::from_gray(0x1c));
         g.line_segment(
             [
                 pos2(pad.left() + pad.width() * t, pad.top()),
@@ -888,7 +888,7 @@ fn xy_pad(
     g.rect_stroke(
         pad,
         4.0,
-        Stroke::new(1.0, Color32::from_gray(0x50)),
+        Stroke::new(1.0, Color32::from_gray(0x2b)),
         StrokeKind::Inside,
     );
     let small = FontId::proportional(10.5);
@@ -942,7 +942,7 @@ fn xy_pad(
         pad.left() + pad.width() * d.complexity.min(100) as f32 / 100.0,
         pad.bottom() - pad.height() * d.loudness.min(100) as f32 / 100.0,
     );
-    g.circle_filled(dot, 7.0, BLUE);
+    g.circle_filled(dot, 7.0, blue());
     g.circle_stroke(dot, 7.0, Stroke::new(1.5, Color32::WHITE));
     changed
 }
@@ -997,10 +997,8 @@ mod tests {
     fn drum_tracks_are_the_drummer_and_kit_instruments() {
         let drummer = Track::new("D", TrackKind::Drummer);
         assert!(is_drum_track(&drummer));
-        let mut synth = Track::new("S", TrackKind::Instrument);
+        let synth = Track::new("S", TrackKind::Instrument);
         assert!(!is_drum_track(&synth));
-        synth.instrument = Some("Drum Machine");
-        assert!(is_drum_track(&synth));
     }
 
     // ---- the editors with a pointer, in a headless egui (see ui_test.rs)

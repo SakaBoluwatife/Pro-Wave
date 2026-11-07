@@ -24,6 +24,8 @@ fn note(start: f32, pitch: u8) -> Note {
         pitch,
         vel: 90,
         muted: false,
+        color: 0,
+        slide: false,
     }
 }
 

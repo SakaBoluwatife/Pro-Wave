@@ -4,7 +4,6 @@
 //! (`media/…`) and loading extracts them into a per-project folder under the temp directory,
 //! where the disk-streaming engine reads them.
 use crate::import::audio_region;
-use crate::library::CATEGORIES;
 use crate::model::{
     CompSegment, Control, Generated, Generator, Marker, Note, Project, Region, RegionParams,
     SendSlot, SigChange, Take, TakeFolder, TempoPoint, Track, TrackKind, TrackParams,
@@ -134,17 +133,6 @@ pub(crate) fn builtin_name(s: &str) -> Option<&'static str> {
     ];
     if let Some(k) = EXTRA.iter().find(|k| **k == s) {
         return Some(k);
-    }
-    for c in CATEGORIES {
-        if c.name == s {
-            return Some(c.name);
-        }
-        if c.instrument == Some(s) {
-            return c.instrument;
-        }
-        if let Some(fx) = c.fx.iter().find(|f| **f == s) {
-            return Some(fx);
-        }
     }
     None
 }
@@ -483,6 +471,8 @@ fn region_to_doc(
                 pitch: n.pitch,
                 vel: n.vel,
                 muted: n.muted,
+                color: n.color,
+                slide: n.slide,
             })
             .collect(),
         controls: r
@@ -523,6 +513,8 @@ fn region_to_doc(
                             pitch: n.pitch,
                             vel: n.vel,
                             muted: n.muted,
+                            color: n.color,
+                            slide: n.slide,
                         })
                         .collect(),
                     controls: t
@@ -537,13 +529,17 @@ fn region_to_doc(
                 })
                 .collect()
         }),
-        comp: r.folder.as_ref().map_or_else(Vec::new, |f| {
-            f.comp
+        // What a take that is only being listened to has set aside is what gets saved.
+        comp: r
+            .folder
+            .as_ref()
+            .map_or_else(Vec::new, |f| comp_to_doc(f.real_comp())),
+        saved_comps: r.folder.as_ref().map_or_else(Vec::new, |f| {
+            f.saved
                 .iter()
-                .map(|s| CompDoc {
-                    start: s.start,
-                    end: s.end,
-                    take: s.take as u32,
+                .map(|c| ovrtone_project::SavedCompDoc {
+                    name: c.name.clone(),
+                    comp: comp_to_doc(&c.comp),
                 })
                 .collect()
         }),
@@ -696,7 +692,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 })
                 .collect(),
             group: t.group,
-            instrument: t.instrument.map(str::to_string),
+            // No stock instruments any more; an older file's entry is left unread.
+            instrument: None,
             category: t.category.map(str::to_string),
             icon: t
                 .icon
@@ -724,6 +721,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             output: t.output,
             hardware_out: t.hardware_out,
             aux_bus: t.aux_bus,
+            slide_range: t.slide_range,
             groove: t.params.groove,
             follow_groove: t.params.follow_groove,
             midi_fx: t
@@ -782,6 +780,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                                 pitch: n.pitch,
                                 vel: n.vel,
                                 muted: n.muted,
+                                color: n.color,
+                                slide: n.slide,
                             })
                             .collect(),
                     })
@@ -899,6 +899,8 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
                     pitch: n.pitch.min(127),
                     vel: n.vel.clamp(1, 127),
                     muted: n.muted,
+                    color: n.color,
+                    slide: n.slide,
                 })
                 .collect(),
             controls: t
@@ -912,13 +914,46 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
                 .collect(),
         })
         .collect();
-    let mut comp: Vec<CompSegment> = Vec::new();
-    for s in &r.comp {
+    let comp = comp_from_doc(&r.comp, takes.len());
+    let len = comp.last()?.end;
+    let saved = r
+        .saved_comps
+        .iter()
+        .map(|c| crate::model::SavedComp {
+            name: c.name.clone(),
+            comp: comp_from_doc(&c.comp, takes.len()),
+        })
+        // One that comes to nothing, or that does not fit the folder, is no use to go back to.
+        .filter(|c| c.comp.last().is_some_and(|last| last.end <= len + 1e-3))
+        .collect();
+    Some(TakeFolder {
+        takes,
+        comp,
+        len,
+        open: false,
+        saved,
+        audition: None,
+    })
+}
+
+fn comp_to_doc(comp: &[CompSegment]) -> Vec<CompDoc> {
+    comp.iter()
+        .map(|s| CompDoc {
+            start: s.start,
+            end: s.end,
+            take: s.take as u32,
+        })
+        .collect()
+}
+
+fn comp_from_doc(doc: &[CompDoc], takes: usize) -> Vec<CompSegment> {
+    let mut comp = Vec::new();
+    for s in doc {
         let (start, end) = (
             finite_in(s.start, 0.0, MAX_BEATS, 0.0),
             finite_in(s.end, 0.0, MAX_BEATS, 0.0),
         );
-        if end > start && (s.take as usize) < takes.len() {
+        if end > start && (s.take as usize) < takes {
             comp.push(CompSegment {
                 start,
                 end,
@@ -926,13 +961,7 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
             });
         }
     }
-    let len = comp.last()?.end;
-    Some(TakeFolder {
-        takes,
-        comp,
-        len,
-        open: false,
-    })
+    comp
 }
 
 /// A list of saved regions. A region whose file is missing or unreadable is left out and reported.
@@ -1014,6 +1043,8 @@ fn regions_from_doc(
                     pitch: n.pitch.min(127),
                     vel: n.vel.clamp(1, 127),
                     muted: n.muted,
+                    color: n.color,
+                    slide: n.slide,
                 })
                 .collect(),
             controls: r
@@ -1090,7 +1121,6 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .as_ref()
                 .filter(|d| !d.id.is_empty())
                 .map(plugin_from_doc),
-            instrument: t.instrument.as_deref().map(intern),
             regions,
             params: TrackParams {
                 channel: t.channel,
@@ -1118,6 +1148,10 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             input: input_source(t.input, t.input_stereo),
             hardware_out: t.hardware_out,
             aux_bus: t.aux_bus.min(ovrtone_engine::MAX_BUSES as u16),
+            slide_range: match t.slide_range {
+                0 => crate::model::DEFAULT_SLIDE_RANGE,
+                range => range.min(48),
+            },
             output: if usize::from(t.output) <= ovrtone_engine::MAX_BUSES {
                 t.output
             } else {
@@ -1240,6 +1274,8 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                             pitch: n.pitch.min(127),
                             vel: n.vel.clamp(1, 127),
                             muted: n.muted,
+                            color: n.color,
+                            slide: n.slide,
                         })
                         .collect(),
                 })
@@ -2735,6 +2771,8 @@ pub(crate) mod tests {
                             pitch: 255,
                             vel: 0,
                             muted: false,
+                            color: 0,
+                            slide: false,
                         }],
                         ..RegionDoc::default()
                     },
@@ -2782,10 +2820,7 @@ pub(crate) mod tests {
 
     #[test]
     fn known_names_intern_to_static_strings() {
-        assert!(std::ptr::eq(
-            intern("Piano"),
-            CATEGORIES.iter().find(|c| c.name == "Piano").unwrap().name
-        ));
+        assert!(std::ptr::eq(intern("Channel EQ"), intern("Channel EQ")));
         assert_eq!(
             intern("Some Third-Party Plug-in"),
             "Some Third-Party Plug-in"
@@ -2882,6 +2917,8 @@ pub(crate) mod tests {
             pitch,
             vel: 90,
             muted: false,
+            color: 0,
+            slide: false,
         };
         let pedal = |val: u8| Control {
             start: 0.0,
@@ -2932,6 +2969,9 @@ pub(crate) mod tests {
         assert_eq!(q.notes, p.notes);
         assert_eq!(q.tracks[0].output, 2);
         doc.tracks[0].output = 200;
+        let kept = from_doc(&doc, Path::new("."), &egui::Context::default()).0;
+        assert_eq!(kept.tracks[0].output, 200, "any bus can be used");
+        doc.tracks[0].output = ovrtone_engine::MAX_BUSES as u16 + 1;
         doc.notes = "x".repeat(crate::side_panes::MAX_NOTES + 10);
         let (r, _) = from_doc(&doc, Path::new("."), &egui::Context::default());
         assert_eq!(r.tracks[0].output, 0, "no such bus");

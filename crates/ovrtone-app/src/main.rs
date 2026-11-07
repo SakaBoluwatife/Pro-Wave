@@ -26,11 +26,11 @@ mod groove;
 mod groove_template;
 mod groups;
 mod i18n;
+mod icons;
 mod import;
 mod inspector;
 mod key_commands;
 mod left_panel;
-mod library;
 mod marker_track;
 mod mastering;
 mod menus;
@@ -46,7 +46,6 @@ mod mtc_in;
 mod native_menu;
 mod note_edit;
 mod note_tools;
-mod patches;
 mod pattern;
 #[cfg(test)]
 mod perf;
@@ -56,6 +55,7 @@ mod plugin_presets;
 mod plugin_rack;
 mod plugin_scan;
 mod project_io;
+mod project_thumbs;
 mod quick_dialogs;
 mod recent_files;
 mod recorder;
@@ -66,6 +66,7 @@ mod reliability_tests;
 mod routing_matrix;
 mod sample_browser;
 mod sample_place;
+mod sampler_window;
 mod score;
 mod screensets;
 mod scripter;
@@ -77,6 +78,7 @@ mod smart_tempo;
 mod song_pattern;
 mod start_screen;
 mod stem_splitter;
+mod stem_worker;
 mod step_editor;
 mod strip_silence;
 mod sync_menu;
@@ -155,7 +157,6 @@ pub struct UiState {
     /// What Mute and Solo were last frame, so mix groups follow (see `groups.rs`).
     pub group_watch: groups::GroupWatch,
     pub inspector: inspector::InspectorView,
-    pub library: library::LibraryView,
     pub piano: piano_roll::PianoView,
     /// The MIDI FX window of the selected track is open.
     pub show_midi_fx: bool,
@@ -206,6 +207,8 @@ pub struct UiState {
     pub file_task: Option<file_commands::FileTask>,
     pub window_cmd: Option<menus::WindowCmd>,
     /// A New / Open waiting for the answer to the "save changes?" prompt.
+    /// The launch screen is up, following the plugin scan.
+    pub launching: bool,
     pub ask_save: Option<file_commands::FileCmd>,
     /// A `.prowave` file was just saved: ask whether to move to the new extension.
     pub offer_new_extension: bool,
@@ -223,6 +226,17 @@ pub struct UiState {
     pub light_menus: bool,
     /// The Project Chooser, while it covers the window (File > New from Template…).
     pub chooser: Option<start_screen::Chooser>,
+    /// What the chooser's panel says for the project about to start.
+    pub new_details: Option<start_screen::Details>,
+    /// The audio devices the chooser found.
+    pub chooser_devices: start_screen::FoundDevices,
+    /// A project file to take a picture for, once this many frames have been drawn.
+    pub thumbnail_wanted: Option<(std::path::PathBuf, u32)>,
+    /// Frames to keep drawing after asking for a picture: it only arrives on a later frame.
+    pub thumbnail_settle: u32,
+    /// The sample holder whose window is open, by its plugin's number.
+    pub sampler_window: Option<u64>,
+    pub sampler_view: sampler_window::SamplerView,
     /// The user's interface size (1.0 = 100 %), on top of fitting small windows (`ui_scale`).
     pub ui_scale: f32,
     /// Edit > Undo / Redo picked this frame; run by `App` (which keeps the history).
@@ -270,7 +284,6 @@ impl UiState {
             },
             group_watch: groups::GroupWatch::default(),
             inspector: inspector::InspectorView::default(),
-            library: library::LibraryView::default(),
             piano: piano_roll::PianoView::default(),
             steps: step_editor::StepView::default(),
             show_midi_fx: false,
@@ -303,6 +316,7 @@ impl UiState {
             file_cmd: None,
             file_task: None,
             window_cmd: None,
+            launching: false,
             ask_save: None,
             offer_new_extension: false,
             keep_old_extension: None,
@@ -312,6 +326,12 @@ impl UiState {
             cpu_load: 0.0,
             light_menus: false,
             chooser: None,
+            new_details: None,
+            chooser_devices: start_screen::FoundDevices::default(),
+            thumbnail_wanted: None,
+            thumbnail_settle: 0,
+            sampler_window: None,
+            sampler_view: sampler_window::SamplerView::default(),
             ui_scale: 1.0,
             undo_cmd: None,
             can_undo: false,
@@ -758,6 +778,85 @@ impl App {
     }
 }
 
+impl App {
+    /// Takes the picture of the project that the chooser shows, a few frames after it was opened or
+    /// saved so that it shows the project and not what came before.
+    fn take_thumbnail(&mut self, ctx: &egui::Context) {
+        if self.ui.thumbnail_settle > 0 {
+            self.ui.thumbnail_settle -= 1;
+            ctx.request_repaint();
+        }
+        if self.ui.chooser.is_some() {
+            return;
+        }
+        let Some((path, frames)) = self.ui.thumbnail_wanted.take() else {
+            return;
+        };
+        if frames > 0 {
+            self.ui.thumbnail_wanted = Some((path, frames - 1));
+            ctx.request_repaint();
+            return;
+        }
+        project_thumbs::request(ctx, path);
+        self.ui.thumbnail_settle = 10;
+    }
+
+    /// Holds the launch until the plugin scan is done, showing it on the launch screen: the main
+    /// window opens with every plugin known and no scan going on. Later scans are only those the
+    /// user asks for. Only Windows has the screen to show this on.
+    fn wait_for_launch_scan(&mut self) {
+        if !cfg!(windows) {
+            return;
+        }
+        loop {
+            let scan = &mut self.ui.plugins.clap;
+            scan.drain();
+            if scan.progress.is_none() {
+                break;
+            }
+            show_scan_on_launch_screen(scan);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        ovrtone_host::splash::step("Opening the window", 0.97);
+    }
+
+    /// The launch screen goes once the scan is done and the main window has drawn.
+    fn follow_launch_scan(&mut self) {
+        if !self.ui.launching {
+            return;
+        }
+        let scan = &mut self.ui.plugins.clap;
+        scan.drain();
+        if scan.progress.is_some() {
+            show_scan_on_launch_screen(scan);
+            return;
+        }
+        self.ui.launching = false;
+        ovrtone_host::splash::close();
+    }
+}
+
+fn show_scan_on_launch_screen(scan: &plugin_scan::PluginScan) {
+    let Some((done, total)) = scan.progress else {
+        return;
+    };
+    let name = scan.reading.lock().map(|n| n.clone()).unwrap_or_default();
+    let words = if total == 0 {
+        "Looking for plugins".to_string()
+    } else if name.is_empty() {
+        format!("Checking plugins: {done} of {total}")
+    } else {
+        // Only what is new is read. The rest of the program waits for it this once.
+        format!("Scanning new plugins, this happens once: {done} of {total}, {name}")
+    };
+    let part = if total == 0 {
+        0.0
+    } else {
+        done as f32 / total as f32
+    };
+    ovrtone_host::splash::step(&words, 0.3 + 0.65 * part);
+}
+
 impl eframe::App for App {
     /// A clean exit leaves nothing to recover.
     fn on_exit(&mut self) {
@@ -765,6 +864,8 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.follow_launch_scan();
+        self.take_thumbnail(ui.ctx());
         let ctx = ui.ctx().clone();
         // Before anything else looks at the keys: while it is on, the note keys are its own.
         let mut typed = std::mem::take(&mut self.ui.typed);
@@ -891,8 +992,19 @@ impl eframe::App for App {
                 }
             }
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
-                sync.open_plugin_editor(uid, &name, main_window_handle(frame));
+                // A sample is shown by a window of the program's own.
+                let sample = self.project.all_hosted_mut().any(|i| {
+                    i.uid == uid
+                        && ovrtone_host::PluginFormat::of(&i.path)
+                            == ovrtone_host::PluginFormat::Sampler
+                });
+                if sample {
+                    self.ui.sampler_window = Some(uid);
+                } else {
+                    sync.open_plugin_editor(uid, &name, main_window_handle(frame));
+                }
             }
+            sampler_window::show(&ctx, &mut self.project, &mut self.ui, sync);
             if let Some(message) = sync.take_plugin_message() {
                 self.ui.status = Some(message);
             }
@@ -952,21 +1064,24 @@ impl eframe::App for App {
         top_bar(ui, p, s);
         egui::Panel::top("control")
             .exact_size(58.0)
-            .frame(egui::Frame::new().fill(egui::Color32::from_gray(0x5a)))
+            .frame(egui::Frame::new().fill(theme::TOOLBAR))
             .show(ui, |ui| transport::control_bar(ui, p, s, master_peaks));
+        let mut cards: Vec<egui::Rect> = Vec::new();
         if s.show_library {
-            egui::Panel::left("library")
+            let shown = egui::Panel::left("library")
                 .resizable(true)
                 .default_size(420.0)
                 .size_range(330.0..=720.0)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| left_panel::show(ui, p, s));
+            cards.push(shown.response.rect);
         }
         if s.show_inspector {
-            egui::Panel::left("inspector")
+            let shown = egui::Panel::left("inspector")
                 .exact_size(244.0)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| inspector::show(ui, p, s, &meters));
+            cards.push(shown.response.rect);
         }
         if s.show_toolbar {
             egui::Panel::top("toolbar")
@@ -1006,14 +1121,20 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(usual)
                 .size_range(160.0..=(room * 0.85).max(160.0));
-            panel.show(ui, |ui| match s.bottom {
+            let shown = panel.show(ui, |ui| match s.bottom {
                 Bottom::Mixer => mixer::show(ui, p, s, &meters),
                 Bottom::PianoRoll => piano_roll::show(ui, p, s),
             });
+            cards.push(shown.response.rect);
         }
-        egui::CentralPanel::default()
+        let shown = egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| tracks_area::show(ui, p, s, &meters));
+        cards.push(shown.response.rect);
+        let edges = ui.painter().clone();
+        for card in cards {
+            theme::panel_edge(&edges, card);
+        }
         sample_place::menu(ui, p, s);
         bounce::show(&ctx, p, s);
         channel_rack::show(&ctx, p, s);
@@ -1462,6 +1583,10 @@ fn main() -> eframe::Result {
     if let Some(file) = plugin_scan::scan_request(&all_args) {
         leave_now(plugin_scan::scan_and_print(&file));
     }
+    // Started by the Stem Splitter to do its work, where a failure costs only the split.
+    if let Some(request) = stem_worker::request(&all_args) {
+        leave_now(stem_worker::run(&request));
+    }
     let bench_out = bench::requested(&all_args);
     let shots_dir = bench::shots_requested(&all_args);
     if bench_out.is_none() && shots_dir.is_none() {
@@ -1469,6 +1594,23 @@ fn main() -> eframe::Result {
     }
     // Measuring runs leave the user's settings (recent projects, size) alone.
     let measuring = bench_out.is_some() || shots_dir.is_some();
+    // No stock instruments: a track sounds only from what the user puts on it.
+    if !measuring {
+        ovrtone_engine::set_built_in_voices(false);
+    }
+    if !measuring {
+        let logo = include_bytes!("../assets/brand/ovrtone-wordmark-white.png");
+        if let Ok(logo) = eframe::icon_data::from_png_bytes(logo) {
+            ovrtone_host::splash::show(
+                &logo.rgba,
+                (logo.width, logo.height),
+                format!(
+                    "Version {}   |   Bankz Sound Lab",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+        }
+    }
     // Release builds: on a crash, write a report to the temp folder instead of a raw panic.
     human_panic::setup_panic!(human_panic::Metadata::new(
         "Ovrtone",
@@ -1513,7 +1655,9 @@ fn main() -> eframe::Result {
         "Ovrtone",
         opts,
         Box::new(|cc| {
+            ovrtone_host::splash::step("Loading the interface", 0.1);
             theme::install_fonts(&cc.egui_ctx);
+            theme::load_accent();
             theme::apply(&cc.egui_ctx);
             // Cmd/Ctrl + = / - / 0 resize the interface through `ui_scale` instead, which
             // also keeps the fit for small windows.
@@ -1526,6 +1670,7 @@ fn main() -> eframe::Result {
             };
             let mut audio_error = None;
             let mut midi_out = None;
+            ovrtone_host::splash::step("Starting the audio engine", 0.15);
             // What was chosen in Settings, or the usual device if that will not start.
             let setup = settings::AudioSetup::load();
             let started = ovrtone_engine::Engine::start_chosen(
@@ -1556,6 +1701,7 @@ fn main() -> eframe::Result {
                     None
                 }
             };
+            ovrtone_host::splash::step("Connecting MIDI", 0.25);
             let mut app = App {
                 autosave: autosave::Autosave::default(),
                 saved: file_commands::content(&project),
@@ -1583,6 +1729,12 @@ fn main() -> eframe::Result {
             #[cfg(target_os = "macos")]
             {
                 app.native_menu = Some(native_menu::NativeMenu::install(&cc.egui_ctx));
+            }
+            ovrtone_host::splash::step("Looking for plugins", 0.3);
+            if !measuring {
+                app.ui.plugins.clap.start(false, &cc.egui_ctx);
+                app.wait_for_launch_scan();
+                app.ui.launching = true;
             }
             app.ui.status = audio_error;
             if let Some(n) = measuring
@@ -1701,6 +1853,11 @@ fn main() -> eframe::Result {
             } else {
                 std::env::args_os().skip(1).collect()
             };
+            // Nothing asked for: the chooser, once the launch screen goes.
+            if args.is_empty() && !measuring && settings::chooser_at_launch() {
+                let has_recent = !app.ui.recent.paths().is_empty();
+                app.ui.chooser = Some(start_screen::Chooser::at_launch(has_recent));
+            }
             let is_project =
                 |a: &std::ffi::OsString| ovrtone_project::is_project_file(std::path::Path::new(a));
             if let Some(file) = args.iter().find(|a| is_project(a)) {

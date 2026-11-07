@@ -499,6 +499,8 @@ pub fn import(p: &mut Project, file: &MidiFile) -> usize {
                 pitch: n.pitch.min(127),
                 vel: n.vel.clamp(1, 127),
                 muted: false,
+                color: 0,
+                slide: false,
             })
             .collect();
         let controls: Vec<Control> = ft

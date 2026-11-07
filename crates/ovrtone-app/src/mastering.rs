@@ -390,19 +390,19 @@ fn row(ui: &mut Ui, name: &str, value: f64, unit: &str) {
 fn draw_spectrum(ui: &mut Ui, bands: &[f32]) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), Sense::hover());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, Color32::from_gray(0x20));
+    g.rect_filled(rect, 2.0, Color32::from_gray(0x12));
     for db in [-20.0f32, -40.0, -60.0] {
         let y = rect.top() + rect.height() * (-db / 80.0);
         g.line_segment(
             [pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(1.0, Color32::from_gray(0x38)),
+            Stroke::new(1.0, Color32::from_gray(0x1e)),
         );
         g.text(
             pos2(rect.left() + 3.0, y),
             egui::Align2::LEFT_BOTTOM,
             format!("{db:.0}"),
             FontId::proportional(9.0),
-            Color32::from_gray(0x80),
+            Color32::from_gray(0x50),
         );
     }
     if bands.is_empty() {

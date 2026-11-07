@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -19,6 +19,12 @@ const HIDDEN_FILE: &str = "plugin-hidden";
 /// How long one file may take, there only to end a real hang. A shell of hundreds of plugins takes
 /// a while the first time, and its result is kept after that.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// How long a scanner may do no work at all. One that uses no CPU for this long is waiting for
+/// something that will not come, such as a licence window nobody can see behind the launch screen.
+/// A plugin that is slow but working is left to [`SCAN_TIMEOUT`].
+const SCAN_STALL: Duration = Duration::from_secs(2 * 60);
+/// How often a scanner's work is looked at.
+const SCAN_STALL_CHECK: Duration = Duration::from_secs(5);
 /// The scanner's last line: the list above it is whole, whatever happens as the process ends.
 const SCAN_DONE: &str = "scan-done";
 /// The first line of the cache. Files in a cache without it get another chance if they failed:
@@ -72,6 +78,13 @@ fn parse_plugin_line(line: &str, path: &Path) -> Option<PluginInfo> {
 /// The scanner copy's whole job: prints what `path` offers, one plugin a line. Plugins print things
 /// of their own, which the reader skips. Returns the process's exit code.
 pub fn scan_and_print(path: &Path) -> i32 {
+    // The program that asked keeps this pipe open. If it goes, for any reason, so does this copy:
+    // a plugin that hangs here would otherwise stay running with nobody to stop it.
+    std::thread::spawn(|| {
+        let mut sink = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut sink);
+        crate::leave_now(2);
+    });
     match scan_plugin_file(path) {
         Ok(found) => {
             for info in &found {
@@ -94,7 +107,8 @@ fn scan_in_child(exe: &Path, path: &Path, timeout: Duration) -> Result<Vec<Plugi
     command
         .arg(SCAN_ARG)
         .arg(path)
-        .stdin(Stdio::null())
+        // Held open while this waits, and closed by Windows if this program ends.
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     run_scanner(command, path, timeout)
@@ -119,6 +133,7 @@ fn run_scanner(
         let _ = tx.send(text);
     });
     let start = Instant::now();
+    let mut work = WorkWatch::new(child.id());
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -129,6 +144,11 @@ fn run_scanner(
                     "did not finish loading in {} seconds",
                     timeout.as_secs()
                 ));
+            }
+            Ok(None) if work.stalled() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("stopped responding while loading".to_string());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => return Err(e.to_string()),
@@ -150,6 +170,52 @@ fn run_scanner(
         .lines()
         .filter_map(|l| parse_plugin_line(l, path))
         .collect())
+}
+
+/// Sees whether a process is still doing any work.
+struct WorkWatch {
+    system: sysinfo::System,
+    pid: sysinfo::Pid,
+    /// The CPU time it had used when last it was seen to use more, and when that was.
+    used: u64,
+    since: Instant,
+    checked: Instant,
+}
+
+impl WorkWatch {
+    fn new(pid: u32) -> Self {
+        let now = Instant::now();
+        Self {
+            system: sysinfo::System::new(),
+            pid: sysinfo::Pid::from_u32(pid),
+            used: 0,
+            since: now,
+            checked: now,
+        }
+    }
+
+    /// True once it has used no CPU for [`SCAN_STALL`].
+    fn stalled(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.checked) < SCAN_STALL_CHECK {
+            return false;
+        }
+        self.checked = now;
+        self.system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_cpu(),
+        );
+        let Some(process) = self.system.process(self.pid) else {
+            return false;
+        };
+        let used = process.accumulated_cpu_time();
+        if used != self.used {
+            self.used = used;
+            self.since = now;
+        }
+        now.duration_since(self.since) >= SCAN_STALL
+    }
 }
 
 /// What is known about one plugin file.
@@ -280,6 +346,33 @@ enum ScanMsg {
     Done(Vec<Scanned>),
 }
 
+/// What tells two formats of one plugin apart from different plugins: the name, the maker's first
+/// word ("FabFilter" and "FabFilter Software" are one maker), and instrument or effect.
+fn same_plugin_key(p: &PluginInfo) -> (String, String, bool) {
+    let plain = |text: &str| -> String {
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let maker = p.vendor.split_whitespace().next().unwrap_or_default();
+    (plain(&p.name), plain(maker), p.is_instrument)
+}
+
+/// A plugin installed as both CLAP and VST3 is offered as CLAP. A project that already uses the VST3
+/// goes on loading it: this is only the list to choose from.
+fn prefer_clap(plugins: Vec<PluginInfo>) -> Vec<PluginInfo> {
+    let clap: std::collections::HashSet<_> = plugins
+        .iter()
+        .filter(|p| p.format == PluginFormat::Clap)
+        .map(same_plugin_key)
+        .collect();
+    plugins
+        .into_iter()
+        .filter(|p| p.format != PluginFormat::Vst3 || !clap.contains(&same_plugin_key(p)))
+        .collect()
+}
+
 /// The installed CLAP plugins as far as they are known, and the scan bringing them up to date.
 #[derive(Default)]
 pub struct PluginScan {
@@ -290,6 +383,8 @@ pub struct PluginScan {
     pub progress: Option<(usize, usize)>,
     /// Left out of the menus, by the user's choice. They still load in a project that uses them.
     pub hidden: std::collections::HashSet<String>,
+    /// The plugin file being read just now, by name; empty while only checking the known ones.
+    pub reading: std::sync::Arc<std::sync::Mutex<String>>,
     rx: Option<Receiver<ScanMsg>>,
     started: bool,
 }
@@ -345,19 +440,46 @@ impl PluginScan {
         self.rx = Some(rx);
         self.progress = Some((0, 0));
         let ctx = ctx.clone();
+        let reading = self.reading.clone();
         std::thread::spawn(move || {
+            let began = Instant::now();
             let files = find_plugin_files(&crate::plugin_guard::plugin_folders());
             let total = files.len();
+            let _ = tx.send(ScanMsg::Progress(0, total));
             let Ok(exe) = std::env::current_exe() else {
                 let _ = tx.send(ScanMsg::Done(Vec::new()));
                 ctx.request_repaint();
                 return;
             };
+            // What is known so far is saved after each new file, so that a long first scan cut
+            // short does not start over: only what it had not reached is still to read.
+            let known = Mutex::new(cache.clone());
             let all = scan_all(
                 &files,
                 &cache,
                 retry,
-                |path| scan_in_child(&exe, path, SCAN_TIMEOUT),
+                |path| {
+                    if let (Some(name), Ok(mut now)) = (path.file_stem(), reading.lock()) {
+                        *now = name.to_string_lossy().into_owned();
+                    }
+                    let result = scan_in_child(&exe, path, SCAN_TIMEOUT);
+                    if let (Some(file), Ok(mut known)) = (&cache_path, known.lock()) {
+                        known.retain(|s| s.path != path);
+                        known.push(Scanned {
+                            path: path.to_path_buf(),
+                            stamp: stamp_of(path),
+                            result: result.clone(),
+                        });
+                        let saved = file
+                            .parent()
+                            .map_or(Ok(()), std::fs::create_dir_all)
+                            .and_then(|()| std::fs::write(file, cache_text(&known)));
+                        if let Err(e) = saved {
+                            tracing::warn!("could not save the plugin list: {e}");
+                        }
+                    }
+                    result
+                },
                 |done| {
                     let _ = tx.send(ScanMsg::Progress(done, total));
                     ctx.request_repaint();
@@ -372,6 +494,10 @@ impl PluginScan {
                     tracing::warn!("could not save the plugin list: {e}");
                 }
             }
+            tracing::info!(
+                "plugin scan: {total} files in {:.2} s",
+                began.elapsed().as_secs_f32()
+            );
             let _ = tx.send(ScanMsg::Done(all));
             ctx.request_repaint();
         });
@@ -383,24 +509,36 @@ impl PluginScan {
             return;
         };
         let mut done = None;
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                ScanMsg::Progress(n, of) => self.progress = Some((n, of)),
-                ScanMsg::Done(all) => done = Some(all),
+        let mut gone = false;
+        loop {
+            match rx.try_recv() {
+                Ok(ScanMsg::Progress(n, of)) => self.progress = Some((n, of)),
+                Ok(ScanMsg::Done(all)) => done = Some(all),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    gone = true;
+                    break;
+                }
             }
         }
+        let finished = done.is_some() || gone;
         if let Some(all) = done {
             self.show(&all);
+        }
+        // Also if the scan's thread ended without a word: nothing is coming, and the launch waits
+        // for this.
+        if finished {
             self.rx = None;
             self.progress = None;
         }
     }
 
     fn show(&mut self, all: &[Scanned]) {
-        self.plugins = all
-            .iter()
-            .flat_map(|s| s.result.iter().flatten().cloned())
-            .collect();
+        self.plugins = prefer_clap(
+            all.iter()
+                .flat_map(|s| s.result.iter().flatten().cloned())
+                .collect(),
+        );
         self.plugins
             .sort_by_key(|p| (p.name.to_lowercase(), p.id.clone()));
         self.failed = all
@@ -414,6 +552,42 @@ impl PluginScan {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clap_is_offered_over_vst3_of_the_same_plugin() {
+        let make = |name: &str, vendor: &str, format, is_instrument| PluginInfo {
+            id: format!("{name}-{format:?}"),
+            name: name.to_string(),
+            vendor: vendor.to_string(),
+            version: String::new(),
+            format,
+            path: PathBuf::new(),
+            is_instrument,
+        };
+        let (clap, vst3) = (PluginFormat::Clap, PluginFormat::Vst3);
+        let kept = prefer_clap(vec![
+            make("Pro-Q 3", "FabFilter", vst3, false),
+            make("Pro-Q 3", "FabFilter Software", clap, false),
+            // No CLAP of this one: its VST3 stays.
+            make("H-Comp", "Waves", vst3, false),
+            // A name shared with another maker's, or with an instrument, is another plugin.
+            make("Comp", "One", clap, false),
+            make("Comp", "Two", vst3, false),
+            make("Comp", "One", vst3, true),
+        ]);
+        let names: Vec<(&str, PluginFormat)> =
+            kept.iter().map(|p| (p.name.as_str(), p.format)).collect();
+        assert_eq!(
+            names,
+            [
+                ("Pro-Q 3", clap),
+                ("H-Comp", vst3),
+                ("Comp", clap),
+                ("Comp", vst3),
+                ("Comp", vst3),
+            ]
+        );
+    }
 
     fn info(name: &str, is_instrument: bool, path: &Path) -> PluginInfo {
         PluginInfo {

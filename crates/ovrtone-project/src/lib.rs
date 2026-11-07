@@ -74,6 +74,10 @@ pub struct NoteDoc {
     pub vel: u8,
     /// It stays in the region but does not play.
     pub muted: bool,
+    /// Its colour group.
+    pub color: u8,
+    /// A slide note.
+    pub slide: bool,
 }
 
 /// One take of a take folder.
@@ -93,6 +97,14 @@ pub struct TakeDoc {
     pub window: Option<[f32; 2]>,
     /// Its own gain in dB, on top of the folder's.
     pub gain_db: f32,
+}
+
+/// A comp kept under a name.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct SavedCompDoc {
+    pub name: String,
+    pub comp: Vec<CompDoc>,
 }
 
 /// A stretch of a take folder that plays one take.
@@ -154,6 +166,8 @@ pub struct RegionDoc {
     /// then hold what the comp plays.
     pub takes: Vec<TakeDoc>,
     pub comp: Vec<CompDoc>,
+    /// Comps kept to go back to.
+    pub saved_comps: Vec<SavedCompDoc>,
     /// Path inside the archive (`media/…`) for audio regions.
     pub audio: Option<String>,
     pub mute: bool,
@@ -360,6 +374,8 @@ pub struct TrackDoc {
     pub hardware_out: u8,
     /// The bus an Aux listens to, when it was chosen. 0: the next one free.
     pub aux_bus: u16,
+    /// How far a slide note can bend, in semitones. 0: the usual 2.
+    pub slide_range: u8,
     /// MIDI FX, first to last.
     pub midi_fx: Vec<MidiFxDoc>,
     /// The Groove Track, and the tracks that follow it.
@@ -601,6 +617,7 @@ impl Default for TrackDoc {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            slide_range: 0,
             midi_fx: Vec::new(),
             groove: false,
             follow_groove: false,
@@ -1055,6 +1072,8 @@ mod tests {
                             pitch: 60,
                             vel: 90,
                             muted: true,
+                            color: 0,
+                            slide: false,
                         }],
                         quantize: Some(0.25),
                         ..RegionDoc::default()

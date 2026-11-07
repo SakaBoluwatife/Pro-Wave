@@ -5,11 +5,12 @@
 //! Regions, drag in the ruler to set the cycle, click to move the playhead, scroll, zoom
 //! (sliders and Ctrl+wheel), Catch playhead, add/duplicate tracks, M/S/R/I, volume, pan.
 //! Menu entries that are not implemented yet are shown disabled.
+use crate::icons::Icon;
 use crate::i18n::{tr, trf};
 use crate::model::{Project, Region, Track, TrackKind};
 use crate::track_icons::track_icon;
 use crate::widgets::{
-    context_click, context_menu, menu_title, popup_button, stroke, BLUE, BTN_BG, TEXT, TEXT_DIM,
+    blue, context_click, context_menu, menu_title, popup_button, stroke, BTN_BG, TEXT, TEXT_DIM,
 };
 use crate::{Bottom, UiState};
 use egui::{
@@ -25,7 +26,7 @@ const NUM_W: f32 = 24.0;
 pub(crate) const MIN_BAR_W: f32 = 6.0;
 pub(crate) const MAX_BAR_W: f32 = 40000.0;
 /// How far the vertical zoom goes, in points per track.
-const MIN_ROW_H: f32 = 14.0;
+const MIN_ROW_H: f32 = 16.0;
 const MAX_ROW_H: f32 = 300.0;
 /// How long the zoom's readout and the overview stay after the zoom last moved.
 const ZOOM_NOTE_SECONDS: f32 = 1.5;
@@ -33,10 +34,10 @@ const ZOOM_NOTE_SECONDS: f32 = 1.5;
 const INDENT_W: f32 = 14.0;
 
 const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
-const HEADER_BG: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
-const HEADER_SEL: Color32 = Color32::from_rgb(0x62, 0x62, 0x62);
-const LANE_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-const LANE_SEL: Color32 = Color32::from_rgb(0x42, 0x42, 0x42);
+const HEADER_BG: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
+const HEADER_SEL: Color32 = Color32::from_rgb(0x34, 0x34, 0x34);
+const LANE_BG: Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
+const LANE_SEL: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
 const RULER_BG: Color32 = crate::theme::PANEL_BG;
 const CYCLE: Color32 = Color32::from_rgb(0xd4, 0x9e, 0x2a);
 const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
@@ -191,22 +192,38 @@ impl TrackTool {
     }
 
     /// The letter on the tool's button.
-    fn letter(self) -> Option<&'static str> {
+    fn icon(self) -> Option<Icon> {
         Some(match self {
-            Self::Scissors => "S",
-            Self::Glue => "G",
-            Self::Pencil => "P",
-            Self::Eraser => "E",
-            Self::Text => "T",
-            Self::Solo => "O",
-            Self::Mute => "M",
-            Self::Zoom => "Z",
-            Self::Automation => "A",
-            Self::Marquee => "Q",
-            Self::Flex => "X",
-            Self::Scrub => "U",
-            Self::Pointer | Self::Fade => return None,
+            Self::Pointer => Icon::Pointer,
+            Self::Scissors => Icon::Scissors,
+            Self::Glue => Icon::Glue,
+            Self::Pencil => Icon::Pencil,
+            Self::Eraser => Icon::Eraser,
+            Self::Text => Icon::Text,
+            Self::Solo => Icon::Solo,
+            Self::Mute => Icon::Mute,
+            Self::Zoom => Icon::Zoom,
+            Self::Automation => Icon::Automation,
+            Self::Marquee => Icon::Crosshair,
+            Self::Flex => Icon::Flex,
+            Self::Scrub => Icon::Scrub,
+            Self::Fade => return None,
         })
+    }
+
+    /// Its picture, wherever it is shown.
+    fn draw(self, g: &Painter, at: Pos2, c: Color32) {
+        match self.icon() {
+            Some(icon) => crate::icons::paint(g, at, 15.0, icon, c),
+            None => draw_fade_tool(g, at, c),
+        }
+    }
+
+    /// Its name, as the menu gives it.
+    fn name(self) -> &'static str {
+        (0..TOOLS.len())
+            .find(|n| Self::of_entry(*n) == self)
+            .map_or("", |n| tr(TOOLS[n]))
     }
 
     /// A tool that only clicks on a region: nothing moves.
@@ -239,7 +256,7 @@ impl Default for HeaderOpts {
 }
 
 /// Regions with View > Show Colors off.
-const NO_COLOR: Color32 = Color32::from_gray(0x7c);
+const NO_COLOR: Color32 = Color32::from_gray(0x48);
 
 /// The width of the narrow header left when Show Track Header is off.
 const NARROW_HEADER_W: f32 = 112.0;
@@ -585,7 +602,7 @@ fn pick_track(picked: &mut Vec<usize>, from: usize, i: usize, ctrl: bool, shift:
 }
 
 /// The tracks picked if `i` is one of them, else `i`.
-fn picked_or(picked: &[usize], i: usize) -> Vec<usize> {
+pub(crate) fn picked_or(picked: &[usize], i: usize) -> Vec<usize> {
     if picked.contains(&i) {
         picked.to_vec()
     } else {
@@ -678,7 +695,7 @@ fn icon_button(
 ) -> egui::Response {
     let resp = ui.interact(rect, id(("icon", key)), Sense::click());
     if on {
-        g.rect_filled(rect, 4.0, BLUE);
+        g.rect_filled(rect, 4.0, blue());
     } else if resp.hovered() {
         g.rect_filled(rect, 4.0, Color32::from_white_alpha(14));
     }
@@ -712,9 +729,9 @@ fn mini_slider(ui: &Ui, g: &Painter, rect: Rect, key: &str, value: f32) -> f32 {
 
 fn header_button_bg(selected_row: bool) -> Color32 {
     if selected_row {
-        Color32::from_gray(0x72)
+        Color32::from_gray(0x3d)
     } else {
-        Color32::from_gray(0x5a)
+        Color32::from_gray(0x30)
     }
 }
 
@@ -836,27 +853,11 @@ fn draw_catch_icon(g: &Painter, r: Rect, c: Color32) {
     ));
 }
 
-fn draw_pointer(g: &Painter, at: Pos2, c: Color32) {
-    let pts = vec![
-        at + vec2(-3.0, -7.0),
-        at + vec2(5.0, 1.0),
-        at + vec2(1.0, 1.5),
-        at + vec2(-1.0, 6.0),
-        at + vec2(-3.0, -7.0),
-    ];
-    g.add(Shape::line(pts, stroke(c)));
-}
-
 /// The Fade tool's icon: a ramp down to a baseline.
 fn draw_fade_tool(g: &Painter, at: Pos2, c: Color32) {
     g.line_segment([at + vec2(-6.0, 5.0), at + vec2(6.0, 5.0)], stroke(c));
     g.line_segment([at + vec2(-6.0, 5.0), at + vec2(-6.0, -5.0)], stroke(c));
     g.line_segment([at + vec2(-6.0, -5.0), at + vec2(6.0, 5.0)], stroke(c));
-}
-
-fn draw_crosshair(g: &Painter, at: Pos2, c: Color32) {
-    g.line_segment([at + vec2(-6.0, 0.0), at + vec2(6.0, 0.0)], stroke(c));
-    g.line_segment([at + vec2(0.0, -6.0), at + vec2(0.0, 6.0)], stroke(c));
 }
 
 fn draw_zoom_icon(g: &Painter, at: Pos2, c: Color32, vertical: bool) {
@@ -1304,26 +1305,14 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
             pos2(rx - 40.0 - (1 - i) as f32 * 44.0, cy - 10.0),
             vec2(40.0, 20.0),
         );
-        let resp = ui.interact(r, id(*key), Sense::click());
+        let shown = if i == 0 { v.tool } else { v.tool2 };
+        let resp = ui
+            .interact(r, id(*key), Sense::click())
+            .on_hover_text(shown.name());
         if resp.hovered() {
             g.rect_filled(r, 4.0, Color32::from_white_alpha(14));
         }
-        let icon_at = pos2(r.left() + 13.0, cy);
-        if i == 0 && v.tool == TrackTool::Fade {
-            draw_fade_tool(g, icon_at, TEXT);
-        } else if let (0, Some(letter)) = (i, v.tool.letter()) {
-            g.text(
-                icon_at,
-                Align2::CENTER_CENTER,
-                letter,
-                FontId::proportional(11.0),
-                TEXT,
-            );
-        } else if i == 0 {
-            draw_pointer(g, icon_at, TEXT);
-        } else {
-            draw_crosshair(g, icon_at, TEXT);
-        }
+        shown.draw(g, pos2(r.left() + 13.0, cy), TEXT);
         let c = pos2(r.right() - 9.0, cy + 1.0);
         g.add(Shape::line(
             vec![
@@ -1338,7 +1327,14 @@ fn tool_menus(ui: &Ui, g: &Painter, v: &mut TracksView, rx: f32, cy: f32) {
             for (n, t) in TOOLS.iter().enumerate() {
                 let tool = TrackTool::of_entry(n);
                 let current = if i == 0 { v.tool } else { v.tool2 };
-                if ui.selectable_label(current == tool, tr(t)).clicked() {
+                // Room is left before the name for the tool's picture.
+                let entry = ui.selectable_label(current == tool, format!("       {}", tr(t)));
+                tool.draw(
+                    ui.painter(),
+                    pos2(entry.rect.left() + 12.0, entry.rect.center().y),
+                    TEXT,
+                );
+                if entry.clicked() {
                     if i == 0 {
                         v.tool = tool;
                     } else {
@@ -1381,6 +1377,13 @@ enum CtxAction {
     ToggleTakeFolder(usize, usize),
     FlattenTakeFolder(usize, usize),
     DeleteTake(usize, usize, usize),
+    /// Hear one take alone, or go back to the comp.
+    AuditionTake(usize, usize, usize),
+    SaveComp(usize, usize),
+    UseComp(usize, usize, usize),
+    DeleteComp(usize, usize, usize),
+    /// A new track with one take, or with the comp.
+    CopyTakeToTrack(usize, usize, Option<usize>),
     Normalize(usize, usize),
     /// Smart Tempo: say the region's tempo (false) or make it the project's (true).
     DetectTempo(usize, usize, bool),
@@ -1972,6 +1975,51 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
             let made = crate::takes::flatten(p, t, r);
             v.select_many(made.into_iter().map(|r| (t, r)).collect());
         }
+        CtxAction::AuditionTake(t, r, take) => {
+            if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
+                if let Some(mut folder) = region.folder.take() {
+                    folder.toggle_audition(take);
+                    folder.apply(&mut region.notes, &mut region.controls);
+                    region.folder = Some(folder);
+                }
+            }
+            p.song_rev += 1;
+        }
+        CtxAction::SaveComp(t, r) => {
+            if let Some(folder) = p
+                .tracks
+                .get_mut(t)
+                .and_then(|t| t.regions.get_mut(r))
+                .and_then(|r| r.folder.as_mut())
+            {
+                folder.save_comp();
+            }
+        }
+        CtxAction::UseComp(t, r, index) => {
+            if let Some(region) = p.tracks.get_mut(t).and_then(|t| t.regions.get_mut(r)) {
+                if let Some(mut folder) = region.folder.take() {
+                    folder.use_comp(index);
+                    folder.apply(&mut region.notes, &mut region.controls);
+                    region.folder = Some(folder);
+                }
+            }
+            p.song_rev += 1;
+        }
+        CtxAction::DeleteComp(t, r, index) => {
+            if let Some(folder) = p
+                .tracks
+                .get_mut(t)
+                .and_then(|t| t.regions.get_mut(r))
+                .and_then(|r| r.folder.as_mut())
+            {
+                if index < folder.saved.len() {
+                    folder.saved.remove(index);
+                }
+            }
+        }
+        CtxAction::CopyTakeToTrack(t, r, take) => {
+            crate::takes::copy_to_new_track(p, t, r, take);
+        }
         CtxAction::DeleteTake(t, r, take) => {
             let left = crate::takes::delete_take(p, t, r, take);
             v.select_many(left.into_iter().map(|r| (t, r)).collect());
@@ -2014,9 +2062,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         }
         CtxAction::SplitStems(t, r) => crate::stem_splitter::open(p, s, t, r),
         CtxAction::DuplicateTrack(i, with_regions) => {
-            if p.duplicate_track(i, with_regions).is_some() {
-                forget_track_indexes(s);
-            }
+            duplicate_picked(p, s, i, with_regions);
         }
         CtxAction::RegionColor(t, r) => {
             let group = if v.is_selected((t, r)) {
@@ -2052,11 +2098,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
             p.set_folder_flags(i, None, Some(solo));
         }
         CtxAction::ResetHeight(i) => p.tracks[i].height = 1.0,
-        CtxAction::DeleteTrack(i) => {
-            if p.delete_track(i) {
-                forget_track_indexes(s);
-            }
-        }
+        CtxAction::DeleteTrack(i) => delete_picked(p, s, i),
     }
 }
 
@@ -2151,6 +2193,27 @@ pub(crate) fn forget_track_indexes(s: &mut UiState) {
     s.tracks.track_drag = None;
     s.tracks.selected = None;
     s.piano.selected.clear();
+}
+
+/// Duplicates what is highlighted if track `i` is among it, else track `i`. The copies stay
+/// highlighted, ready for the next thing.
+pub(crate) fn duplicate_picked(p: &mut Project, s: &mut UiState, i: usize, with_regions: bool) {
+    let tracks = picked_or(&s.tracks.picked_tracks, i);
+    let made = p.duplicate_tracks(&tracks, with_regions);
+    if !made.is_empty() {
+        forget_track_indexes(s);
+        if tracks.len() > 1 {
+            s.tracks.picked_tracks = made;
+        }
+    }
+}
+
+/// Deletes what is highlighted if track `i` is among it, else track `i`.
+pub(crate) fn delete_picked(p: &mut Project, s: &mut UiState, i: usize) {
+    let tracks = picked_or(&s.tracks.picked_tracks, i);
+    if p.delete_tracks(&tracks) {
+        forget_track_indexes(s);
+    }
 }
 
 // ------------------------------------------------------------------ actions
@@ -2343,7 +2406,7 @@ fn draw_take_folder(
 ) {
     let wave_fit = region.audio.as_ref().map_or(1.0, |a| a.waveform_fit()) * wave_zoom;
     let base = if region.params.mute {
-        Color32::from_gray(0x6a)
+        Color32::from_gray(0x39)
     } else if colored {
         region
             .params
@@ -2354,14 +2417,14 @@ fn draw_take_folder(
         NO_COLOR
     };
     let fill = if silenced {
-        Color32::from_rgb(0x2e, 0x2e, 0x30)
+        Color32::from_rgb(0x19, 0x19, 0x1a)
     } else if selected {
         selected_fill(region_fill(base))
     } else {
         region_fill(base)
     };
     let ink = if silenced {
-        Color32::from_gray(0x8c)
+        Color32::from_gray(0x68)
     } else {
         fill.lerp_to_gamma(Color32::WHITE, if selected { 0.75 } else { 0.6 })
     };
@@ -2390,7 +2453,7 @@ fn draw_take_folder(
     // The header.
     let head = Rect::from_min_size(full.min, vec2(full.width(), head_h));
     let head_fill = if silenced {
-        Color32::from_gray(0x70)
+        Color32::from_gray(0x3c)
     } else {
         FOLDER_YELLOW
     };
@@ -2501,7 +2564,7 @@ fn draw_take_folder(
     if folder.open {
         for (take_idx, take) in folder.takes.iter().enumerate() {
             let row = take_row_rect(full, folder.takes.len(), take_idx);
-            g.rect_filled(row, 3.0, Color32::from_gray(0x3a));
+            g.rect_filled(row, 3.0, Color32::from_gray(0x1f));
             let row_inner =
                 Rect::from_min_max(pos2(row.left(), row.top() + 2.0), row.max - vec2(0.0, 2.0));
             let (lo, hi) = pitch_range(&take.notes);
@@ -2548,12 +2611,21 @@ fn draw_take_folder(
                 take.notes.iter().filter(|n| !used(n.start)),
                 lo,
                 hi,
-                Color32::from_gray(0x86),
+                Color32::from_gray(0x5c),
             );
+            let label = if folder
+                .audition
+                .as_ref()
+                .is_some_and(|(t, _)| *t == take_idx)
+            {
+                format!("{} (heard alone)", trf("Take {}", &[&(take_idx + 1)]))
+            } else {
+                trf("Take {}", &[&(take_idx + 1)])
+            };
             g.text(
                 row.left_top() + vec2(5.0, 1.0),
                 Align2::LEFT_TOP,
-                trf("Take {}", &[&(take_idx + 1)]),
+                label,
                 FontId::proportional(9.5),
                 Color32::from_white_alpha(200),
             );
@@ -2587,7 +2659,7 @@ fn draw_region(
     let wave_fit = region.audio.as_ref().map_or(1.0, |a| a.waveform_fit()) * wave_zoom;
     // Muted regions are drawn grey, like Logic.
     let base = if region.params.mute {
-        Color32::from_gray(0x6a)
+        Color32::from_gray(0x39)
     } else if colored {
         region
             .params
@@ -2602,7 +2674,7 @@ fn draw_region(
         RECORDING_FILL
     } else if silenced {
         // Another track is soloed: dark grey body, grey content, name in the track colour.
-        Color32::from_rgb(0x2e, 0x2e, 0x30)
+        Color32::from_rgb(0x19, 0x19, 0x1a)
             .lerp_to_gamma(Color32::WHITE, if selected { 0.06 } else { 0.0 })
     } else if selected {
         selected_fill(region_fill(base))
@@ -2637,13 +2709,35 @@ fn draw_region(
             );
         }
     }
-    g.text(
-        head.left_center() + vec2(5.0, 0.0),
-        Align2::LEFT_CENTER,
-        &region.name,
-        FontId::proportional(10.5),
-        name_color,
-    );
+    // The name stays inside the region, and a thin one has only its name and colour, as in FL
+    // Studio: what is in it would only be a jumble at that height.
+    let thin = rr.height() < THIN_REGION_H;
+    let (name_at, name_size) = if thin {
+        (rr.left_center(), (rr.height() - 3.0).clamp(8.0, 10.5))
+    } else {
+        (head.left_center(), 10.5)
+    };
+    g.with_clip_rect(rr.shrink2(vec2(2.0, 0.0)).intersect(g.clip_rect()))
+        .text(
+            name_at + vec2(5.0, 0.0),
+            Align2::LEFT_CENTER,
+            &region.name,
+            FontId::proportional(name_size),
+            name_color,
+        );
+    let border = if recording {
+        Color32::from_rgb(120, 22, 22)
+    } else if selected {
+        SELECTED_EDGE
+    } else if silenced {
+        Color32::from_gray(0x25)
+    } else {
+        Color32::from_black_alpha(110)
+    };
+    if thin {
+        g.rect_stroke(rr, 3.0, Stroke::new(1.0, border), StrokeKind::Inside);
+        return;
+    }
     let inner = Rect::from_min_max(
         pos2(rr.left(), head.bottom() + 2.0),
         rr.max - vec2(0.0, 2.0),
@@ -2682,7 +2776,7 @@ fn draw_region(
     let ink = if recording {
         Color32::from_rgb(236, 152, 155)
     } else if silenced {
-        Color32::from_gray(0x8c)
+        Color32::from_gray(0x68)
     } else {
         // Logic draws the content in a pale tint of the region colour, not pure white.
         body.lerp_to_gamma(Color32::WHITE, if selected { 0.75 } else { 0.6 })
@@ -2742,15 +2836,6 @@ fn draw_region(
     if edit {
         draw_fades(g, rr, inner, full, region, fades, beat_px);
     }
-    let border = if recording {
-        Color32::from_rgb(120, 22, 22)
-    } else if selected {
-        SELECTED_EDGE
-    } else if silenced {
-        Color32::from_gray(0x44)
-    } else {
-        Color32::from_black_alpha(110)
-    };
     if selected && !recording {
         // Logic outlines a selected region in yellow-green with a dark line around it.
         g.rect_stroke(
@@ -2859,59 +2944,8 @@ fn played_part<'a>(region: &Region, peaks: &'a [(f32, f32)]) -> &'a [(f32, f32)]
     &peaks[bin(start)..bin(end)]
 }
 
-/// The whole project small in a corner, with a frame on the part in view.
-fn draw_overview(
-    g: &Painter,
-    p: &Project,
-    rows: &[(f32, f32)],
-    lanes: Rect,
-    (scroll_x, scroll_y): (f32, f32),
-    beat_px: f32,
-    end_beat: f64,
-) {
-    let map = Rect::from_min_size(
-        lanes.right_bottom() - vec2(198.0, 118.0),
-        vec2(190.0, 110.0),
-    );
-    g.rect_filled(
-        map,
-        3.0,
-        Color32::from_rgba_unmultiplied(0x1a, 0x1a, 0x1e, 235),
-    );
-    let height = rows
-        .last()
-        .map_or(1.0, |(top, h)| top + h)
-        .max(lanes.height())
-        .max(1.0);
-    let last_in_view = f64::from((scroll_x + lanes.width()) / beat_px.max(1e-3));
-    let beats = end_beat.max(last_in_view).max(1.0) as f32;
-    let (sx, sy) = (map.width() / beats, map.height() / height);
-    for (t, &(top, row)) in p.tracks.iter().zip(rows) {
-        if row <= 0.0 {
-            continue;
-        }
-        for r in &t.regions {
-            let from = p.region_start_beats(r) as f32;
-            let to = p.region_end_beats(r) as f32;
-            let block = Rect::from_min_size(
-                map.min + vec2(from * sx, top * sy),
-                vec2(((to - from) * sx).max(1.0), (row * sy).max(1.0)),
-            );
-            g.rect_filled(block.intersect(map), 0.0, t.color);
-        }
-    }
-    let view = Rect::from_min_size(
-        map.min + vec2(scroll_x / beat_px.max(1e-3) * sx, scroll_y * sy),
-        vec2(lanes.width() / beat_px.max(1e-3) * sx, lanes.height() * sy),
-    )
-    .intersect(map);
-    g.rect_stroke(
-        view,
-        0.0,
-        Stroke::new(1.0, Color32::WHITE),
-        egui::StrokeKind::Inside,
-    );
-}
+/// A region lower than this shows its name and colour, and nothing of what is in it.
+const THIN_REGION_H: f32 = 30.0;
 
 /// The Flex markers of a region on the region itself: drag one to move that moment of the sound,
 /// right-click one to remove it, and double-click the region to add one.
@@ -3193,11 +3227,11 @@ fn header(
     g.rect_filled(hdr, 0.0, p.tracks[i].color.gamma_multiply(0.07));
     if selected {
         let mark = Rect::from_min_size(hdr.min, vec2(3.0, hdr.height()));
-        g.rect_filled(mark, 0.0, crate::theme::ACCENT_BLUE);
+        g.rect_filled(mark, 0.0, crate::theme::accent());
     }
     g.line_segment(
         [hdr.left_bottom(), hdr.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x2a)),
+        Stroke::new(1.0, Color32::from_gray(0x17)),
     );
     let num_w = if opts.number { NUM_W } else { 0.0 };
     if opts.number {
@@ -3261,13 +3295,15 @@ fn header(
         },
         vec2(icon_size, icon_size),
     );
-    if opts.icon {
+    // Too thin for a picture: the name has the room instead.
+    let show_icon = opts.icon && h >= 24.0;
+    if show_icon {
         crate::track_icons::draw_tinted(g, icon, track_icon(&p.tracks[i]), p.tracks[i].color);
     }
 
     let name_x = if stacked {
         content_x + if folder { 14.0 } else { 0.0 }
-    } else if opts.icon {
+    } else if show_icon {
         icon.right() + 10.0
     } else {
         icon.left()
@@ -3366,7 +3402,7 @@ fn header(
             (i, "power"),
             "",
             !t.off,
-            crate::theme::ACCENT_BLUE,
+            crate::theme::accent(),
             selected,
         ) {
             t.off = !t.off;
@@ -3494,7 +3530,7 @@ fn header(
             if lit {
                 crate::theme::GOOD
             } else {
-                Color32::from_gray(0x2a)
+                Color32::from_gray(0x17)
             },
         );
         return (resp, Vec::new());
@@ -3523,7 +3559,7 @@ fn header(
     if volume.double_clicked() {
         t.volume_db = 0.0;
     }
-    g.rect_filled(sl, SLIDER_H / 2.0, Color32::from_rgb(55, 54, 54));
+    g.rect_filled(sl, SLIDER_H / 2.0, Color32::from_rgb(0x1e, 0x1d, 0x1d));
     // Level meter inside the pill, as in Logic: two thin bars (L over R) that follow the
     // slider's own scale, green, yellow from -6 dB and red above 0 dB.
     let silent = t.mute || silenced;
@@ -3541,7 +3577,7 @@ fn header(
             if to > from {
                 let r = Rect::from_min_max(pos2(x_at(from), y), pos2(x_at(to), y + 2.5));
                 let color = if silent {
-                    Color32::from_gray(0x70)
+                    Color32::from_gray(0x3c)
                 } else {
                     crate::mixer::meter_colour(to - 0.01)
                 };
@@ -3554,11 +3590,15 @@ fn header(
         travel.0 + (travel.1 - travel.0) * db_to_slider(t.volume_db),
         sl.center().y,
     );
-    g.circle_filled(knob, SLIDER_H / 2.0 - 1.0, Color32::from_rgb(136, 134, 135));
+    g.circle_filled(
+        knob,
+        SLIDER_H / 2.0 - 1.0,
+        Color32::from_rgb(0x60, 0x5c, 0x5e),
+    );
     g.circle_stroke(
         knob,
         SLIDER_H / 2.0 - 1.0,
-        Stroke::new(1.0, Color32::from_rgb(98, 97, 97)),
+        Stroke::new(1.0, Color32::from_rgb(0x34, 0x34, 0x34)),
     );
 
     let kc = pos2(hdr.right() - 22.0, level_y);
@@ -3751,14 +3791,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let x = x_of(bar.start);
         g.line_segment(
             [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x38)),
+            Stroke::new(1.0, Color32::from_gray(0x1e)),
         );
         if beat_px * bar.unit as f32 >= 14.0 {
             for k in 1..bar.num {
                 let xb = x_of(bar.start + k as f64 * bar.unit);
                 g.line_segment(
                     [pos2(xb, lanes.top()), pos2(xb, lanes.bottom())],
-                    Stroke::new(1.0, Color32::from_gray(0x30)),
+                    Stroke::new(1.0, Color32::from_gray(0x1a)),
                 );
             }
         }
@@ -3821,21 +3861,53 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     // and when it is let go over the lanes the user is asked what it should become (a MIDI file
     // is imported as tracks).
     if let Some(drag) = egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx()) {
+        // Over a track that holds a sample, on its header too: the new sound takes its place.
+        let holder = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|pt| area.contains(*pt) && pt.y >= lanes.top())
+            .and_then(|pt| row_at(&rows, pt.y - lanes.top() + scroll_y))
+            .filter(|t| crate::sample_place::holds_sample(p, *t));
+        if let Some(t) = holder {
+            if let Some(&(top, h)) = rows.get(t) {
+                let y = lanes.top() + top - scroll_y;
+                g.rect_filled(
+                    Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), h)),
+                    0.0,
+                    crate::widgets::blue().gamma_multiply(0.25),
+                );
+            }
+            if ui.input(|i| i.pointer.any_released()) {
+                egui::DragAndDrop::clear_payload(ui.ctx());
+                if let Err(e) = crate::sample_place::replace_sample(p, t, &drag.0) {
+                    s.status = Some(e);
+                }
+            }
+        }
         let over = ui
             .input(|i| i.pointer.hover_pos())
-            .filter(|pt| lanes.contains(*pt));
+            .filter(|pt| lanes.contains(*pt) && holder.is_none());
         if let Some(pt) = over {
             let bar0 = p.beats_to_bar(beat_of(pt.x)).floor();
             let x = x_of(p.bar_to_beats(bar0));
             g.line_segment(
                 [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
-                Stroke::new(2.0, crate::widgets::BLUE),
+                Stroke::new(2.0, crate::widgets::blue()),
             );
             if ui.input(|i| i.pointer.any_released()) {
                 egui::DragAndDrop::clear_payload(ui.ctx());
                 let path = &drag.0;
+                let choose = ui.input(|i| i.modifiers.shift);
                 if crate::midi_file::is_midi_path(path) {
                     s.open_paths.push(path.clone());
+                } else if !choose && crate::sample_place::is_one_shot(path) {
+                    // A hit goes in a sampler of its own, as in FL Studio. Shift asks instead.
+                    match crate::sample_place::place_one_shot(p, path, bar0 as f32 + 1.0) {
+                        Ok((t, r)) => {
+                            v.selected = Some((t, r));
+                            p.selected_track = t;
+                        }
+                        Err(e) => s.status = Some(e),
+                    }
                 } else {
                     // An audio clip, or something to play? The user says.
                     s.sample_drop = Some(crate::sample_place::SampleDrop {
@@ -3858,7 +3930,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             let x = x_of(p.bar_to_beats(bar0));
             g.line_segment(
                 [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
-                Stroke::new(2.0, crate::widgets::BLUE),
+                Stroke::new(2.0, crate::widgets::blue()),
             );
             if ui.input(|i| i.pointer.any_released()) {
                 egui::DragAndDrop::clear_payload(ui.ctx());
@@ -3880,7 +3952,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 g.rect_filled(
                     Rect::from_min_size(pos2(lanes.left(), y), vec2(lanes.width(), h)),
                     0.0,
-                    crate::widgets::BLUE.gamma_multiply(0.25),
+                    crate::widgets::blue().gamma_multiply(0.25),
                 );
             }
             if ui.input(|i| i.pointer.any_released()) {
@@ -4203,6 +4275,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             |pt: egui::Pos2| snap_pos((beat_of(pt.x) - start_beat).max(0.0)) as f32;
                         if resp.drag_started() {
                             if let Some(pt) = resp.interact_pointer_pos() {
+                                folder.end_audition();
                                 v.swipe = Some((folder.comp.clone(), grab(pt)));
                             }
                         }
@@ -4227,6 +4300,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             moved = true;
                         }
                         context_menu(&resp, |ui| {
+                            let hearing = folder.audition.as_ref().is_some_and(|(t, _)| *t == take);
+                            pick(
+                                ui,
+                                if hearing {
+                                    "Back to the Comp"
+                                } else {
+                                    "Hear This Take Alone"
+                                },
+                                "",
+                                CtxAction::AuditionTake(ti, ri, take),
+                                &mut picked,
+                            );
+                            pick(
+                                ui,
+                                "Copy Take to New Track",
+                                "",
+                                CtxAction::CopyTakeToTrack(ti, ri, Some(take)),
+                                &mut picked,
+                            );
                             pick(
                                 ui,
                                 tr("Delete Take"),
@@ -4234,7 +4326,87 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                                 CtxAction::DeleteTake(ti, ri, take),
                                 &mut picked,
                             );
+                            ui.separator();
+                            pick(
+                                ui,
+                                "Keep This Comp",
+                                "",
+                                CtxAction::SaveComp(ti, ri),
+                                &mut picked,
+                            );
+                            pick(
+                                ui,
+                                "Copy Comp to New Track",
+                                "",
+                                CtxAction::CopyTakeToTrack(ti, ri, None),
+                                &mut picked,
+                            );
+                            for (index, kept) in folder.saved.iter().enumerate() {
+                                ui.menu_button(kept.name.as_str(), |ui| {
+                                    pick(
+                                        ui,
+                                        "Play This Comp",
+                                        "",
+                                        CtxAction::UseComp(ti, ri, index),
+                                        &mut picked,
+                                    );
+                                    pick(
+                                        ui,
+                                        "Delete This Comp",
+                                        "",
+                                        CtxAction::DeleteComp(ti, ri, index),
+                                        &mut picked,
+                                    );
+                                });
+                            }
                         });
+                    }
+                    // The joins between stretches of the comp can be dragged, on any row. After
+                    // the rows, so that near a join the pointer takes the join.
+                    let joins =
+                        p.tracks[ti].regions[ri]
+                            .folder
+                            .as_ref()
+                            .map_or_else(Vec::new, |f| {
+                                let scale = full.width() / f.len.max(1e-3);
+                                f.comp
+                                    .iter()
+                                    .take(f.comp.len().saturating_sub(1))
+                                    .map(|s| full.left() + s.end * scale)
+                                    .collect::<Vec<f32>>()
+                            });
+                    if n > 0 {
+                        let (top, bottom) = (
+                            take_row_rect(full, n, n - 1).top(),
+                            take_row_rect(full, n, 0).bottom(),
+                        );
+                        for (index, x) in joins.into_iter().enumerate() {
+                            let spot =
+                                Rect::from_min_max(pos2(x - 3.0, top), pos2(x + 3.0, bottom))
+                                    .intersect(lanes);
+                            if spot.width() <= 0.0 || spot.height() <= 0.0 {
+                                continue;
+                            }
+                            let resp =
+                                ui.interact(spot, id(("comp_join", ti, ri, index)), Sense::drag());
+                            if resp.hovered() || resp.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            }
+                            if let (true, Some(pt)) = (resp.dragged(), resp.interact_pointer_pos())
+                            {
+                                let beat = snap_pos((beat_of(pt.x) - start_beat).max(0.0)) as f32;
+                                let region = &mut p.tracks[ti].regions[ri];
+                                if let Some(mut folder) = region.folder.take() {
+                                    folder.end_audition();
+                                    folder.move_join(index, beat);
+                                    folder.apply(&mut region.notes, &mut region.controls);
+                                    region.folder = Some(folder);
+                                }
+                            }
+                            if resp.drag_stopped() {
+                                moved = true;
+                            }
+                        }
                     }
                 }
                 if let Some(folder) = p.tracks[ti].regions[ri].folder.as_ref() {
@@ -4337,7 +4509,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
     if let Some((r, db, active)) = gain_handle {
         let fill = if active {
-            crate::theme::ACCENT_BLUE
+            crate::theme::accent()
         } else {
             Color32::from_black_alpha(150)
         };
@@ -4363,7 +4535,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 g.rect_filled(
                     r.intersect(lanes),
                     0.0,
-                    crate::theme::ACCENT_BLUE.gamma_multiply(0.18),
+                    crate::theme::accent().gamma_multiply(0.18),
                 );
             }
             Some(DropRow::Below) => {
@@ -4373,7 +4545,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 g.rect_filled(
                     r.intersect(lanes),
                     0.0,
-                    crate::theme::ACCENT_BLUE.gamma_multiply(0.18),
+                    crate::theme::accent().gamma_multiply(0.18),
                 );
                 g.text(
                     r.left_center() + vec2(8.0, 0.0),
@@ -4611,7 +4783,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
 
     // ---- headers
     let gh = ui.painter_at(headers);
-    gh.rect_filled(headers, 0.0, Color32::from_gray(0x3a));
+    gh.rect_filled(headers, 0.0, Color32::from_gray(0x1f));
     // Below the last track too, a right-click can make one.
     let blank = ui.interact(headers, id("headers_blank"), Sense::click());
     context_menu(&blank, |ui| new_track_items(ui, &mut picked));
@@ -4660,7 +4832,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         // A double click on a track's name renames it. On the number, it is the colour.
         if resp.double_clicked() {
             let at = ui.input(|m| m.pointer.interact_pos());
-            if at.is_some_and(|at| at.x >= hdr.left() + NUM_W) {
+            // On the icon of a track that holds a sample: the sampler.
+            let on_icon =
+                at.is_some_and(|at| at.x >= hdr.left() + NUM_W && at.x < hdr.left() + NUM_W + 44.0);
+            let sampler = crate::sample_place::holds_sample(p, i)
+                .then(|| p.tracks[i].instrument_plugin.as_ref().map(|x| x.uid))
+                .flatten();
+            if let Some(uid) = sampler.filter(|_| on_icon) {
+                s.sampler_window = Some(uid);
+            } else if at.is_some_and(|at| at.x >= hdr.left() + NUM_W) {
                 if let Some(name) = p.tracks.get(i).map(|t| t.name.clone()) {
                     s.dialogs.open_rename(i, &name);
                 }
@@ -4673,7 +4853,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             }
         }
         if s.tracks.picked_tracks.contains(&i) && p.selected_track != i {
-            gh.rect_filled(hdr, 0.0, crate::theme::ACCENT_BLUE.gamma_multiply(0.22));
+            gh.rect_filled(hdr, 0.0, crate::theme::accent().gamma_multiply(0.22));
         }
         let Some(info) = track_info(p, i) else {
             continue;
@@ -4704,7 +4884,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             let line = lanes.top() + line_y - scroll_y;
             gh.line_segment(
                 [pos2(headers.left(), line), pos2(headers.right(), line)],
-                Stroke::new(2.0, crate::theme::ACCENT_BLUE),
+                Stroke::new(2.0, crate::theme::accent()),
             );
             if !down {
                 let moving = if s.tracks.picked_tracks.contains(&from) {
@@ -4761,7 +4941,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
 
     // ---- corner above the headers: "+" (new track), duplicate track, global tracks
     let gc = ui.painter_at(corner);
-    gc.rect_filled(corner, 0.0, Color32::from_gray(0x3a));
+    gc.rect_filled(corner, 0.0, Color32::from_gray(0x1f));
     gc.line_segment(
         [corner.left_bottom(), corner.right_bottom()],
         Stroke::new(1.0, crate::theme::BORDER),
@@ -4775,7 +4955,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         plus,
         4.0,
         if pr.hovered() {
-            Color32::from_gray(0x66)
+            Color32::from_gray(0x37)
         } else {
             BTN_BG
         },
@@ -4803,7 +4983,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     );
     let dr = ui.interact(dup, id("dup"), Sense::click());
     let dup_bg = if dr.hovered() {
-        Color32::from_gray(0x66)
+        Color32::from_gray(0x37)
     } else {
         BTN_BG
     };
@@ -4915,7 +5095,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let in_cycle = p.cycle && beat >= p.cycle_start && beat < p.cycle_end;
         let in_selection = selection.is_some_and(|(s0, s1)| beat >= s0 && beat < s1);
         let col = if in_cycle {
-            Color32::from_gray(0x2a)
+            Color32::from_gray(0x17)
         } else if in_selection {
             Color32::WHITE
         } else {
@@ -5050,7 +5230,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         if p.end_beat.is_some() {
             Color32::from_gray(0xd8)
         } else {
-            Color32::from_gray(0x90)
+            Color32::from_gray(0x70)
         },
         Stroke::NONE,
     ));
@@ -5115,15 +5295,6 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 text,
                 FontId::proportional(12.0),
                 Color32::WHITE,
-            );
-            draw_overview(
-                &gz,
-                p,
-                &rows,
-                lanes,
-                (v.scroll_x, v.scroll_y),
-                beat_px,
-                shown_end,
             );
         } else {
             v.zoom_note = None;

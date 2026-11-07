@@ -36,6 +36,9 @@ impl TrackKind {
     }
 }
 
+/// The bend range most instruments start with.
+pub const DEFAULT_SLIDE_RANGE: u8 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Note {
     pub start: f32, // beats from region start
@@ -44,6 +47,11 @@ pub struct Note {
     pub vel: u8,
     /// It stays in the region but does not play.
     pub muted: bool,
+    /// Its colour group, 0..16, as in FL Studio. Selects notes together; changes no sound.
+    pub color: u8,
+    /// A slide note, as in FL Studio: it does not start a note, but bends what is sounding to its
+    /// pitch over its length. With nothing sounding it plays as an ordinary note.
+    pub slide: bool,
 }
 
 /// One pass of a cycle recording.
@@ -88,6 +96,13 @@ pub struct CompSegment {
     pub take: usize,
 }
 
+/// A comp kept under a name, to go back to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedComp {
+    pub name: String,
+    pub comp: Vec<CompSegment>,
+}
+
 /// Logic's take folder: several takes of the same passage and the comp that plays one of
 /// them in each stretch. See `takes.rs`.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,6 +114,11 @@ pub struct TakeFolder {
     pub len: f32,
     /// Shown opened, with a row for each take (not saved).
     pub open: bool,
+    /// Comps kept to go back to.
+    pub saved: Vec<SavedComp>,
+    /// One take is playing throughout to be listened to, and this is the comp to return to (not
+    /// saved).
+    pub audition: Option<(usize, Vec<CompSegment>)>,
 }
 
 /// A MIDI controller event in a region (the sustain pedal is controller 64).
@@ -889,6 +909,8 @@ pub struct Track {
     pub hardware_out: u8,
     /// The bus an Aux listens to, when it was chosen. 0: the next one free.
     pub aux_bus: u16,
+    /// How far a slide note can bend, in semitones: what the track's instrument is set to.
+    pub slide_range: u8,
     pub volume_db: f32,
     pub pan: f32,
     pub inserts: Vec<Insert>,
@@ -896,7 +918,6 @@ pub struct Track {
     pub plugins: Vec<PluginInsert>,
     /// The hosted plugin that plays the track's notes, in place of the built-in sound.
     pub instrument_plugin: Option<PluginInsert>,
-    pub instrument: Option<&'static str>,
     pub regions: Vec<Region>,
     pub params: TrackParams,
     /// Sends to buses, in slot order (up to [`MAX_SENDS`]; an emptied slot is removed).
@@ -963,15 +984,15 @@ impl Track {
     /// A new track of `kind` with default settings and no regions: software instruments get
     /// the Sampler, and every kind its own colour.
     pub fn new(name: impl Into<String>, kind: TrackKind) -> Self {
-        let (color, instrument) = match kind {
-            TrackKind::Instrument => (Color32::from_rgb(0x4e, 0xb0, 0x4a), Some("Sampler")),
-            TrackKind::Drummer => (Color32::from_rgb(0xd9, 0xaa, 0x2a), Some("Drum Kit")),
-            TrackKind::Audio => (Color32::from_rgb(0x3f, 0x5f, 0xc0), None),
-            TrackKind::Aux => (Color32::from_rgb(0x2a, 0xa8, 0xa8), None),
-            TrackKind::Folder => (Color32::from_rgb(0x88, 0x8c, 0x98), None),
-            TrackKind::Vca => (Color32::from_rgb(0x9a, 0x6c, 0xd0), None),
-            TrackKind::ExternalMidi => (Color32::from_rgb(0xd0, 0x84, 0x3c), None),
-            TrackKind::Bus | TrackKind::Output => (Color32::from_rgb(0x7a, 0x4f, 0xc0), None),
+        let color = match kind {
+            TrackKind::Instrument => Color32::from_rgb(0x4e, 0xb0, 0x4a),
+            TrackKind::Drummer => Color32::from_rgb(0xd9, 0xaa, 0x2a),
+            TrackKind::Audio => Color32::from_rgb(0x3f, 0x5f, 0xc0),
+            TrackKind::Aux => Color32::from_rgb(0x2a, 0xa8, 0xa8),
+            TrackKind::Folder => Color32::from_rgb(0x88, 0x8c, 0x98),
+            TrackKind::Vca => Color32::from_rgb(0x9a, 0x6c, 0xd0),
+            TrackKind::ExternalMidi => Color32::from_rgb(0xd0, 0x84, 0x3c),
+            TrackKind::Bus | TrackKind::Output => Color32::from_rgb(0x7a, 0x4f, 0xc0),
         };
         Self {
             name: name.into(),
@@ -985,12 +1006,12 @@ impl Track {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
             plugins: Vec::new(),
             instrument_plugin: None,
-            instrument,
             regions: vec![],
             params: TrackParams::default(),
             sends: Vec::new(),
@@ -1184,6 +1205,8 @@ fn demo_notes(seed: u32, bars: f32, lo: u8, hi: u8) -> Vec<Note> {
             pitch,
             vel: 70 + (lcg(&mut s) % 50) as u8,
             muted: false,
+            color: 0,
+            slide: false,
         });
         t += [0.5, 1.0, 0.25, 0.75][(lcg(&mut s) % 4) as usize];
     }
@@ -1207,12 +1230,12 @@ impl Project {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: 0.0,
             pan: 0.0,
             inserts: vec![],
             plugins: Vec::new(),
             instrument_plugin: None,
-            instrument: Some("Sampler"),
             regions: vec![],
             params: TrackParams::default(),
             category: None,
@@ -1250,7 +1273,7 @@ impl Project {
         let mk = |name: &str,
                   kind,
                   color,
-                  inst: Option<&'static str>,
+                  _inst: Option<&'static str>,
                   ins: Vec<&'static str>,
                   seed,
                   vol| Track {
@@ -1265,12 +1288,12 @@ impl Project {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: vol,
             pan: 0.0,
             inserts: inserts_from_names(&ins),
             plugins: Vec::new(),
             instrument_plugin: None,
-            instrument: inst,
             regions: vec![Region {
                 name: name.into(),
                 start_bar: 1.0,
@@ -2026,36 +2049,90 @@ impl Project {
 
     /// Whether a track of this kind can be copied whole. A stack's contents would have to come too.
     pub fn can_duplicate(&self, t: usize) -> bool {
-        self.tracks.get(t).is_some_and(|track| {
-            !matches!(
-                track.kind,
-                TrackKind::Folder | TrackKind::Bus | TrackKind::Output
-            )
-        })
+        t < self.tracks.len()
     }
 
     /// A copy of track `t` right below it, with its plugins, sends and output, and with its
     /// regions or without. An Aux copy gets a bus of its own. Returns where it is.
     pub fn duplicate_track(&mut self, t: usize, with_regions: bool) -> Option<usize> {
-        if !self.can_duplicate(t) {
-            return None;
+        self.duplicate_tracks(&[t], with_regions).first().copied()
+    }
+
+    /// A copy of each of `picked`, of any kind, right below it; a folder's copy has copies of what
+    /// is inside it. Returns where all the copies are, and the first of them is then selected.
+    pub fn duplicate_tracks(&mut self, picked: &[usize], with_regions: bool) -> Vec<usize> {
+        let mut tops: Vec<usize> = picked
+            .iter()
+            .copied()
+            .filter(|t| *t < self.tracks.len())
+            .collect();
+        tops.sort_unstable();
+        tops.dedup();
+        // What is inside a picked folder comes with it.
+        let mut blocks: Vec<(usize, usize)> = Vec::new();
+        for top in tops {
+            if blocks.last().is_some_and(|b| top < b.1) {
+                continue;
+            }
+            let end = if self.tracks[top].kind == TrackKind::Folder {
+                self.folder_end(top)
+            } else {
+                top + 1
+            };
+            blocks.push((top, end));
         }
-        let mut copy = self.tracks[t].clone();
-        copy.name = format!("{} copy", copy.name);
-        copy.aux_bus = 0;
-        copy.rec = false;
-        copy.monitor = false;
-        copy.solo = false;
-        if !with_regions {
-            copy.regions.clear();
-            copy.frozen = None;
+        // From the last up, so that the places of those still to do stay as they are.
+        for &(top, end) in blocks.iter().rev() {
+            let copies: Vec<Track> = self.tracks[top..end]
+                .iter()
+                .map(|track| {
+                    let mut copy = track.clone();
+                    copy.name = format!("{} copy", copy.name);
+                    copy.aux_bus = 0;
+                    copy.rec = false;
+                    copy.monitor = false;
+                    copy.solo = false;
+                    if !with_regions {
+                        copy.regions.clear();
+                        copy.frozen = None;
+                    }
+                    copy
+                })
+                .collect();
+            let levels: Vec<u8> = copies.iter().map(|c| c.indent).collect();
+            let from = self.tracks.len();
+            self.tracks.extend(copies);
+            let moving: Vec<usize> = (from..self.tracks.len()).collect();
+            self.move_tracks(&moving, end);
+            // At the level of the originals, not in whatever stack ends just above.
+            for (k, level) in levels.into_iter().enumerate() {
+                self.tracks[end + k].indent = level;
+            }
         }
-        self.tracks.push(copy);
-        let last = self.tracks.len() - 1;
-        self.move_tracks(&[last], t + 1);
-        self.selected_track = t + 1;
-        self.song_rev += 1;
-        Some(t + 1)
+        self.normalize_nesting();
+        let mut made = Vec::new();
+        for (top, end) in blocks {
+            let at = end + made.len();
+            made.extend(at..at + (end - top));
+        }
+        if let Some(first) = made.first() {
+            self.selected_track = *first;
+            self.song_rev += 1;
+        }
+        made
+    }
+
+    /// Deletes each of `picked`, as [`Project::delete_track`] does. False if none was there.
+    pub fn delete_tracks(&mut self, picked: &[usize]) -> bool {
+        let mut going = picked.to_vec();
+        going.sort_unstable();
+        going.dedup();
+        // From the last up, so that the places of those still to go stay as they are.
+        let mut any = false;
+        for i in going.into_iter().rev() {
+            any |= self.delete_track(i);
+        }
+        any
     }
 
     /// The colour for a new track: the one in the palette that the fewest tracks have.
@@ -2237,8 +2314,7 @@ impl Project {
         if !track.kind.has_regions() || track.kind == TrackKind::Audio {
             return None;
         }
-        let drums = track.kind == TrackKind::Drummer
-            || track.instrument.is_some_and(|i| i.contains("Drum"));
+        let drums = track.kind == TrackKind::Drummer;
         let (name, source) = if drummer {
             (
                 "Drummer",
@@ -3845,12 +3921,44 @@ mod tests {
     }
 
     #[test]
+    fn picked_tracks_of_any_kind_are_duplicated_and_deleted_together() {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        for (name, kind) in [
+            ("Vox", TrackKind::Audio),
+            ("Box", TrackKind::Folder),
+            ("In", TrackKind::Instrument),
+            ("Bus", TrackKind::Bus),
+            ("Out", TrackKind::Output),
+        ] {
+            p.tracks.push(Track::new(name, kind));
+        }
+        p.tracks[2].indent = 1;
+        let made = p.duplicate_tracks(&[0, 1, 3, 4], true);
+        let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Vox", "Vox copy", "Box", "In", "Box copy", "In copy", "Bus", "Bus copy", "Out",
+                "Out copy"
+            ]
+        );
+        assert_eq!(made, [1, 4, 5, 7, 9]);
+        assert_eq!(p.selected_track, 1);
+        let levels: Vec<u8> = p.tracks.iter().map(|t| t.indent).collect();
+        assert_eq!(levels, [0, 0, 0, 1, 0, 1, 0, 0, 0, 0]);
+        assert!(p.delete_tracks(&made));
+        let names: Vec<&str> = p.tracks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Vox", "Box", "In", "Bus", "Out"]);
+    }
+
+    #[test]
     fn new_tracks_have_the_defaults_of_their_kind() {
         let inst = Track::new("Inst 1", TrackKind::Instrument);
-        assert_eq!((inst.instrument, inst.regions.len()), (Some("Sampler"), 0));
+        assert!(inst.instrument_plugin.is_none() && inst.regions.is_empty());
         for kind in [TrackKind::Aux, TrackKind::Folder] {
             let t = Track::new("x", kind);
-            assert!(t.instrument.is_none() && !kind.has_regions());
+            assert!(!kind.has_regions());
             assert_eq!(
                 (t.indent, t.folded, t.volume_db, t.height),
                 (0, false, 0.0, 1.0)
