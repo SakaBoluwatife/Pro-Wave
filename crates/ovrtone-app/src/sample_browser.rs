@@ -7,7 +7,7 @@
 //! removed drive never stalls the interface. The open tree is flattened into a list of rows and
 //! only the visible ones are drawn. The preview is decoded off the audio thread and played by the
 //! engine (`Command::SetPreview`), independently of the transport.
-use crate::widgets::{TEXT, TEXT_DIM};
+use crate::widgets::{text_col, text_dim_col};
 use crate::UiState;
 use egui::{pos2, vec2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder};
 use ovrtone_engine::{AudioFile, Command, Engine, Preview};
@@ -20,9 +20,15 @@ use std::time::{Duration, Instant};
 
 const ROW_H: f32 = 20.0;
 const INDENT: f32 = 12.0;
-const PANEL_BG: Color32 = crate::theme::PANEL_BG;
-const SEL_BG: Color32 = crate::theme::SELECTED;
-const HOVER_BG: Color32 = crate::theme::HOVERED;
+fn panel_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
+fn sel_bg_col() -> Color32 {
+    crate::theme::selected()
+}
+fn hover_bg_col() -> Color32 {
+    crate::theme::hovered()
+}
 const GREEN: Color32 = crate::theme::GOOD;
 const GOLD: Color32 = crate::theme::SOLO;
 /// A folder with more entries than this shows only these.
@@ -504,7 +510,21 @@ fn walk(
             if folder && depth < MAX_DEPTH {
                 stack.push((path.clone(), depth + 1));
             }
-            if (folder || is_sample(&path)) && matches_all(&name, terms) {
+            let found = if folder {
+                matches_all(&name, terms)
+            } else {
+                // The name, the tags, and the tempo and key the name gives ("101 bpm", "F#m").
+                let tags = crate::sample_tags::tags_of(&path).join(" ");
+                let (bpm, key) = crate::sample_tags::name_info(&name);
+                let extra = format!(
+                    "{} {} {}",
+                    tags,
+                    bpm.map_or_else(String::new, |b| format!("{b}bpm")),
+                    key.unwrap_or_default()
+                );
+                matches_all(&format!("{name} {extra}"), terms)
+            };
+            if (folder || is_sample(&path)) && found {
                 batch.push(Entry { path, name, folder });
                 total += 1;
                 if total >= MAX_HITS {
@@ -582,7 +602,7 @@ impl SampleBrowser {
     }
 
     /// Plays the sample or stops it, from a row or from the panel.
-    fn toggle_preview(&mut self, path: PathBuf) {
+    pub(crate) fn toggle_preview(&mut self, path: PathBuf) {
         if self.preview.playing.as_ref() == Some(&path) {
             self.preview.stop = true;
         } else {
@@ -614,10 +634,15 @@ fn wave_panel(ui: &mut Ui, b: &mut SampleBrowser) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
     let playing = b.preview.playing.as_ref() == Some(&path);
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, crate::theme::BORDER);
+    g.rect_filled(rect, 2.0, crate::theme::border());
     let mid = rect.center().y;
     let half = rect.height() * 0.5 - 4.0;
     let position = b.wave_position();
+    // The zero line across the whole length, so silence shows as silence, as in an audio region.
+    g.line_segment(
+        [pos2(rect.left(), mid), pos2(rect.right(), mid)],
+        Stroke::new(1.0, crate::theme::accent().gamma_multiply(0.55)),
+    );
     match &b.wave {
         Some(info) if !info.peaks.is_empty() => {
             let peak = info
@@ -656,7 +681,7 @@ fn wave_panel(ui: &mut Ui, b: &mut SampleBrowser) {
                 egui::Align2::CENTER_CENTER,
                 "Reading…",
                 FontId::proportional(11.0),
-                TEXT_DIM,
+                text_dim_col(),
             );
         }
     }
@@ -983,7 +1008,7 @@ fn disclosure(g: &egui::Painter, c: Pos2, open: bool) {
             c + vec2(-2.5, 4.0),
         ]
     };
-    g.add(Shape::convex_polygon(pts, TEXT_DIM, Stroke::NONE));
+    g.add(Shape::convex_polygon(pts, text_dim_col(), Stroke::NONE));
 }
 
 /// What a click on a row asked for.
@@ -1019,7 +1044,7 @@ fn note_row(ui: &mut Ui, r: &Row) {
         egui::Align2::LEFT_CENTER,
         &r.name,
         FontId::proportional(11.5),
-        TEXT_DIM,
+        text_dim_col(),
     );
 }
 
@@ -1038,9 +1063,9 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
     }
     let g = ui.painter();
     if look.selected {
-        g.rect_filled(rect, 0.0, SEL_BG);
+        g.rect_filled(rect, 0.0, sel_bg_col());
     } else if resp.hovered() {
-        g.rect_filled(rect, 0.0, HOVER_BG);
+        g.rect_filled(rect, 0.0, hover_bg_col());
     }
     let text_rect = Rect::from_min_max(rect.min, pos2(end_rect.left(), rect.bottom()));
     let clip = g.with_clip_rect(text_rect);
@@ -1076,7 +1101,7 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
         egui::Align2::LEFT_CENTER,
         &r.name,
         FontId::proportional(12.5),
-        TEXT,
+        text_col(),
     );
     if let Some(parent) = look.parent {
         clip.text(
@@ -1084,8 +1109,43 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
             egui::Align2::LEFT_CENTER,
             parent,
             FontId::proportional(11.0),
-            TEXT_DIM,
+            text_dim_col(),
         );
+    }
+    if !is_folder {
+        let (bpm, key) = crate::sample_tags::name_info(&r.name);
+        let tags = crate::sample_tags::tags_of(&r.path);
+        let mut info: Vec<String> = Vec::new();
+        if let Some(b) = bpm {
+            info.push(format!("{b} BPM"));
+        }
+        if let Some(k) = key {
+            info.push(k);
+        }
+        info.extend(tags.iter().map(|t| format!("#{t}")));
+        if !info.is_empty() {
+            let text = info.join(" · ");
+            let at = pos2(text_rect.right() - 4.0, rect.center().y);
+            let galley = g.layout_no_wrap(text, FontId::proportional(10.5), text_dim_col());
+            let room = Rect::from_min_max(pos2(at.x - galley.size().x - 6.0, rect.top()), pos2(at.x + 2.0, rect.bottom()));
+            // Only where the name leaves room for it.
+            if room.left() > name.right() + 6.0 {
+                g.galley(pos2(room.left() + 4.0, rect.center().y - galley.size().y / 2.0), galley, text_dim_col());
+            }
+        }
+        crate::widgets::context_menu(&resp, |ui| {
+            ui.label(egui::RichText::new("Tags, with commas between").small());
+            let id = egui::Id::unique(("sample_tags_edit", r.path.display().to_string()));
+            let mut text: String = ui
+                .ctx()
+                .data(|d| d.get_temp(id))
+                .unwrap_or_else(|| crate::sample_tags::tags_of(&r.path).join(", "));
+            let edit = ui.add(egui::TextEdit::singleline(&mut text).hint_text("kick, dark, 808").desired_width(200.0));
+            if edit.changed() {
+                crate::sample_tags::set_tags(&r.path, crate::sample_tags::parse(&text));
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(id, text));
+        });
     }
     let hot = end_resp.hovered() || resp.hovered();
     if r.location {
@@ -1095,7 +1155,7 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
                 egui::Align2::CENTER_CENTER,
                 "×",
                 FontId::proportional(14.0),
-                if end_resp.hovered() { TEXT } else { TEXT_DIM },
+                if end_resp.hovered() { text_col() } else { text_dim_col() },
             );
         }
     } else if look.favorite || hot {
@@ -1103,7 +1163,7 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
             g,
             end_rect.center(),
             look.favorite,
-            if look.favorite { GOLD } else { TEXT_DIM },
+            if look.favorite { GOLD } else { text_dim_col() },
         );
     }
     if r.location {
@@ -1154,10 +1214,10 @@ pub fn show(ui: &mut Ui, s: &mut UiState) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
     let g = ui.painter_at(panel);
-    g.rect_filled(panel, 0.0, PANEL_BG);
+    g.rect_filled(panel, 0.0, panel_bg_col());
     g.line_segment(
         [panel.right_top(), panel.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     let ctx = ui.ctx().clone();
     let inner = panel.shrink2(vec2(6.0, 4.0));
@@ -1270,7 +1330,7 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         ui.add_space(8.0);
         ui.add(
             egui::Label::new(
-                egui::RichText::new("Add a folder with your samples to start.").color(TEXT_DIM),
+                egui::RichText::new("Add a folder with your samples to start.").color(text_dim_col()),
             )
             .wrap(),
         );
@@ -1340,7 +1400,7 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         b.message.clone()
     };
     if let Some(text) = status {
-        ui.add(egui::Label::new(egui::RichText::new(text).small().color(TEXT_DIM)).truncate());
+        ui.add(egui::Label::new(egui::RichText::new(text).small().color(text_dim_col())).truncate());
     }
 
     wave_panel(ui, b);

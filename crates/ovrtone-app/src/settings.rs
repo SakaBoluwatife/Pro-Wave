@@ -10,7 +10,7 @@ use std::sync::mpsc::{channel, Receiver};
 
 const AUDIO_FILE: &str = "audio-setup";
 const TYPING_OFF_FILE: &str = "typing-off";
-const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+pub(crate) const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
 pub(crate) const RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
 
 /// Which driver, device and buffer size to play through. Empty means the usual choice.
@@ -43,12 +43,19 @@ impl AudioSetup {
         }
     }
 
-    /// What was saved, or the usual choice.
+    /// What was saved, or the usual choice. With nothing saved yet, the buffer size that suits
+    /// this computer's class (see `hardware.rs`); the driver's own if it refuses that.
     pub fn load() -> Self {
-        crate::recent_files::config_dir()
-            .filter(|_| !cfg!(test))
-            .and_then(|d| std::fs::read_to_string(d.join(AUDIO_FILE)).ok())
-            .map_or_else(Self::default, |t| Self::from_text(&t))
+        let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) else {
+            return Self::default();
+        };
+        match std::fs::read_to_string(dir.join(AUDIO_FILE)) {
+            Ok(t) => Self::from_text(&t),
+            Err(_) => Self {
+                buffer: Some(crate::hardware::quick().tier().buffer()),
+                ..Self::default()
+            },
+        }
     }
 
     pub(crate) fn save(&self) {
@@ -174,6 +181,47 @@ impl SettingsView {
         }
         self.look_for_devices(ctx);
     }
+}
+
+/// Whether playback renders ahead of the device while nothing is live (on unless turned off).
+pub fn render_ahead() -> bool {
+    match RENDER_AHEAD_CACHE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let on = !render_ahead_file().is_some_and(|f| f.exists());
+            set_render_ahead_cache(on);
+            on
+        }
+    }
+}
+
+fn set_render_ahead_cache(on: bool) {
+    RENDER_AHEAD_CACHE.store(u8::from(on), std::sync::atomic::Ordering::Relaxed);
+}
+
+static RENDER_AHEAD_CACHE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+/// Turns rendering ahead on or off, and remembers it (a marker file means off).
+pub fn set_render_ahead(on: bool) {
+    set_render_ahead_cache(on);
+    let Some(f) = render_ahead_file() else {
+        return;
+    };
+    if on {
+        let _ = std::fs::remove_file(f);
+    } else {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(f, "off\n");
+    }
+}
+
+fn render_ahead_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir()
+        .filter(|_| !cfg!(test))
+        .map(|d| d.join("render-ahead-off"))
 }
 
 fn worker_limit_file() -> Option<std::path::PathBuf> {
@@ -324,6 +372,19 @@ static OCTAVE_NAMING: AtomicI32 = AtomicI32::new(-2);
 static PEAK_HOLD_MS: AtomicU32 = AtomicU32::new(0);
 static OPEN_ON_INSERT: AtomicBool = AtomicBool::new(true);
 static SHOW_RECENT: AtomicBool = AtomicBool::new(true);
+/// Pictures of instruments on the track headers and mixer strips: off unless asked for.
+static SHOW_ICONS: AtomicBool = AtomicBool::new(false);
+
+/// Stereo Out on the mixer's left edge rather than its right.
+static MASTER_LEFT: AtomicBool = AtomicBool::new(false);
+
+pub fn master_on_left() -> bool {
+    MASTER_LEFT.load(Ordering::Relaxed)
+}
+
+pub fn show_track_icons() -> bool {
+    SHOW_ICONS.load(Ordering::Relaxed)
+}
 
 pub fn wide_playhead() -> bool {
     WIDE_PLAYHEAD.load(Ordering::Relaxed)
@@ -371,6 +432,12 @@ pub fn load_view() {
     if let Some(v) = next() {
         SHOW_RECENT.store(v != 0, Ordering::Relaxed);
     }
+    if let Some(v) = next() {
+        SHOW_ICONS.store(v != 0, Ordering::Relaxed);
+    }
+    if let Some(v) = next() {
+        MASTER_LEFT.store(v != 0, Ordering::Relaxed);
+    }
 }
 
 fn save_view() {
@@ -378,12 +445,14 @@ fn save_view() {
         return;
     };
     let text = format!(
-        "{}\n{}\n{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         i32::from(wide_playhead()),
         octave_naming(),
         peak_hold_ms(),
         i32::from(open_on_insert()),
         i32::from(show_recent_plugins()),
+        i32::from(show_track_icons()),
+        i32::from(master_on_left()),
     );
     let saved = file
         .parent()
@@ -399,7 +468,7 @@ fn accent_row(ui: &mut Ui) {
     let now = crate::theme::accent();
     let mut picked = None;
     ui.horizontal(|ui| {
-        ui.label("Theme");
+        ui.label("Accent");
         for (name, color) in crate::theme::ACCENTS {
             if ui.selectable_label(now == color, name).clicked() {
                 picked = Some(color);
@@ -416,13 +485,73 @@ fn accent_row(ui: &mut Ui) {
     }
 }
 
+/// The typeface and the size of text.
+fn type_row(ui: &mut Ui) {
+    use crate::theme::{chosen_face, set_type, text_percent, FACES, TEXT_PERCENT_RANGE};
+    let (face, percent) = (chosen_face(), text_percent());
+    let (mut new_face, mut new_percent) = (face, percent);
+    ui.horizontal(|ui| {
+        ui.label("Type");
+        let shown = face.map_or("As the theme has it", |f| FACES[f].name);
+        egui::ComboBox::from_id_salt(egui::Id::unique("type_face"))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(face.is_none(), "As the theme has it").clicked() {
+                    new_face = None;
+                }
+                for (k, f) in FACES.iter().enumerate() {
+                    if ui.selectable_label(face == Some(k), f.name).clicked() {
+                        new_face = Some(k);
+                    }
+                }
+            });
+        ui.add(
+            egui::Slider::new(&mut new_percent, TEXT_PERCENT_RANGE)
+                .step_by(5.0)
+                .suffix("%")
+                .text("Text size"),
+        )
+        .on_hover_text("For a bigger interface overall, use View > Interface Size");
+    });
+    if (new_face, new_percent) != (face, percent) {
+        set_type(ui.ctx(), new_face, new_percent);
+    }
+}
+
 fn display_tab(ui: &mut Ui) {
+    crate::themes::section(ui);
+    ui.add_space(6.0);
     accent_row(ui);
+    ui.add_space(6.0);
+    type_row(ui);
+    ui.add_space(6.0);
+    let (mut high, mut ring) = crate::theme::access();
+    let a = ui
+        .checkbox(&mut high, "High contrast")
+        .on_hover_text("Text at full strength and every control's edge drawn plainly");
+    let b = ui
+        .checkbox(&mut ring, "Show keyboard focus")
+        .on_hover_text("A strong ring round the control Tab has moved to");
+    if a.changed() || b.changed() {
+        crate::theme::set_access(ui.ctx(), high, ring);
+    }
     ui.add_space(6.0);
     let mut changed = false;
     let mut wide = wide_playhead();
     changed |= ui.checkbox(&mut wide, "Wide playhead").changed();
     WIDE_PLAYHEAD.store(wide, Ordering::Relaxed);
+    let mut icons = show_track_icons();
+    changed |= ui
+        .checkbox(&mut icons, "Show track icons")
+        .on_hover_text("Pictures of instruments on the track headers and mixer strips")
+        .changed();
+    SHOW_ICONS.store(icons, Ordering::Relaxed);
+    let mut left = master_on_left();
+    changed |= ui
+        .checkbox(&mut left, "Stereo Out on the left of the mixer")
+        .on_hover_text("Where the master strip stays while the tracks scroll")
+        .changed();
+    MASTER_LEFT.store(left, Ordering::Relaxed);
     ui.add_space(6.0);
     let mut naming = octave_naming();
     ui.horizontal(|ui| {
@@ -644,6 +773,19 @@ fn audio_tab(ui: &mut Ui, s: &mut UiState) {
             .small(),
     );
     ui.add_space(6.0);
+    let mut ahead = render_ahead();
+    if ui
+        .checkbox(&mut ahead, "Render ahead during playback")
+        .on_hover_text(
+            "While nothing is recording, monitoring or being played in, the song is worked out \
+             about 50 ms early, so heavy passages have more time. Live playing still uses the \
+             buffer above.",
+        )
+        .changed()
+    {
+        set_render_ahead(ahead);
+    }
+    ui.add_space(6.0);
     if ui
         .button("Apply")
         .on_hover_text("Sound stops for a moment while it changes")
@@ -815,7 +957,60 @@ fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
     }
 }
 
+/// How many backups of a project are kept beside it (Settings > General); 0 keeps none.
+pub fn backups_kept() -> usize {
+    crate::recent_files::config_dir()
+        .filter(|_| !cfg!(test))
+        .and_then(|d| std::fs::read_to_string(d.join("backups-kept")).ok())
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(10)
+}
+
+fn set_backups_kept(n: usize) {
+    if let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("backups-kept"), n.to_string());
+    }
+}
+
+/// Minutes between crash-recovery copies (Settings > General); 0 is never.
+pub fn autosave_minutes() -> u32 {
+    crate::recent_files::config_dir()
+        .filter(|_| !cfg!(test))
+        .and_then(|d| std::fs::read_to_string(d.join("autosave-minutes")).ok())
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(2)
+}
+
+fn set_autosave_minutes(m: u32) {
+    if let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("autosave-minutes"), m.to_string());
+    }
+}
+
 fn general_tab(ui: &mut Ui, s: &mut UiState) {
+    let mut every = s.autosave_minutes;
+    ui.horizontal(|ui| {
+        ui.label("Crash-recovery copy");
+        for (name, m) in [("Every minute", 1), ("2 minutes", 2), ("5 minutes", 5), ("10 minutes", 10), ("Off", 0)] {
+            ui.selectable_value(&mut every, m, name);
+        }
+    })
+    .response
+    .on_hover_text("While a project has unsaved changes, a copy is kept this often and offered after a crash");
+    if every != s.autosave_minutes {
+        s.autosave_minutes = every;
+        set_autosave_minutes(every);
+    }
+    let mut kept = s.backups_kept;
+    ui.horizontal(|ui| {
+        ui.label("Backups kept on save");
+        if ui.add(egui::DragValue::new(&mut kept).range(0..=100)).changed() {
+            s.backups_kept = kept;
+            set_backups_kept(kept);
+        }
+    });
     ui.horizontal(|ui| {
         ui.label(format!("Interface size: {:.0} %", s.ui_scale * 100.0));
         for (text, dir) in [("Smaller", -1), ("100 %", 0), ("Bigger", 1)] {

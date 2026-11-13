@@ -37,7 +37,6 @@ fn semitone_of(key: Key) -> Option<i32> {
         Key::W => 14,
         Key::Num3 => 15,
         Key::E => 16,
-        Key::R => 17,
         Key::Num5 => 18,
         Key::T => 19,
         Key::Num6 => 20,

@@ -41,6 +41,7 @@ fn current(t: &Track, target: AutoTarget) -> f32 {
     match target {
         AutoTarget::Volume => t.volume_db,
         AutoTarget::Pan => t.pan,
+        AutoTarget::Object(axis) => t.object.map_or(0.0, |o| o.get(axis)),
         AutoTarget::Fx { slot, param } => t
             .inserts
             .get(slot as usize)
@@ -448,6 +449,11 @@ fn set_control(t: &mut Track, target: AutoTarget, value: f32) {
     match target {
         AutoTarget::Volume => t.volume_db = value.clamp(-60.0, 6.0),
         AutoTarget::Pan => t.pan = value.clamp(-1.0, 1.0),
+        AutoTarget::Object(axis) => {
+            if let Some(object) = t.object.as_mut() {
+                object.set(axis, value);
+            }
+        }
         AutoTarget::Fx { slot, param } => {
             if let Some(ins) = t.inserts.get_mut(slot as usize) {
                 if let Some(info) = ins.kind.params().get(param as usize) {
@@ -500,6 +506,7 @@ pub fn lane_label(t: &Track, target: AutoTarget) -> String {
     match target {
         AutoTarget::Volume => tr("Volume").to_string(),
         AutoTarget::Pan => tr("Pan").to_string(),
+        AutoTarget::Object(axis) => format!("Object: {}", axis.name()),
         AutoTarget::Fx { slot, param } => {
             match t
                 .inserts
@@ -526,6 +533,10 @@ pub fn lane_label(t: &Track, target: AutoTarget) -> String {
 pub fn value_text(t: &Track, target: AutoTarget, v: f32) -> String {
     match target {
         AutoTarget::Volume => format!("{v:.1} dB"),
+        AutoTarget::Object(
+            ovrtone_engine::ObjectAxis::Around | ovrtone_engine::ObjectAxis::Height,
+        ) => format!("{v:.0}°"),
+        AutoTarget::Object(_) => format!("{:.0}%", v * 100.0),
         AutoTarget::Pan => {
             let n = (v * 64.0).round() as i32;
             match n {
@@ -564,6 +575,10 @@ fn frac_of(target: AutoTarget, v: f32) -> f32 {
     match target {
         AutoTarget::Volume => db_to_frac(v),
         AutoTarget::Pan => (v.clamp(-1.0, 1.0) + 1.0) / 2.0,
+        AutoTarget::Object(axis) => {
+            let (lo, hi) = axis.range();
+            ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+        }
         AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => v.clamp(0.0, 1.0),
     }
 }
@@ -573,6 +588,7 @@ fn value_of(target: AutoTarget, f: f32) -> f32 {
     match target {
         AutoTarget::Volume => frac_to_db(f).clamp(lo, hi),
         AutoTarget::Pan => (f.clamp(0.0, 1.0) * 2.0 - 1.0).clamp(lo, hi),
+        AutoTarget::Object(_) => (lo + f.clamp(0.0, 1.0) * (hi - lo)).clamp(lo, hi),
         AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => f.clamp(lo, hi),
     }
 }
@@ -796,6 +812,9 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 /// Every control of track `t` that can have a lane.
 pub fn lane_choices(t: &Track) -> Vec<AutoTarget> {
     let mut choices = vec![AutoTarget::Volume, AutoTarget::Pan];
+    if t.object.is_some() {
+        choices.extend(ovrtone_engine::ObjectAxis::ALL.map(AutoTarget::Object));
+    }
     for (slot, ins) in t.inserts.iter().enumerate() {
         for k in 0..ins.kind.params().len() {
             choices.push(AutoTarget::Fx {
@@ -1036,7 +1055,7 @@ pub fn track_lane(
                 let fill = if points[i].curve != 0.0 {
                     colour
                 } else {
-                    crate::theme::BORDER
+                    crate::theme::border()
                 };
                 g.add(Shape::convex_polygon(shape, fill, Stroke::new(1.0, colour)));
             }
@@ -1050,7 +1069,7 @@ pub fn track_lane(
                     colour
                 };
                 g.circle_filled(c, 3.5, fill);
-                g.circle_stroke(c, 3.5, Stroke::new(1.0, Color32::from_gray(0x09)));
+                g.circle_stroke(c, 3.5, Stroke::new(1.0, crate::theme::gray(0x09)));
             }
         }
     }
@@ -1277,6 +1296,7 @@ fn lane_colour(target: AutoTarget) -> Color32 {
     match target {
         AutoTarget::Volume => Color32::from_rgb(0x6c, 0xd0, 0x5a),
         AutoTarget::Pan => Color32::from_rgb(0x5a, 0xa8, 0xf0),
+        AutoTarget::Object(_) => Color32::from_rgb(0xc0, 0x7a, 0xf0),
         AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => Color32::from_rgb(0xe6, 0x9a, 0x2e),
     }
 }
@@ -1293,7 +1313,7 @@ fn canvas(
     let width = ui.available_width().max(200.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, CANVAS_H), Sense::click_and_drag());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 3.0, crate::theme::BORDER);
+    g.rect_filled(rect, 3.0, crate::theme::border());
     let (from, span) = (ed.from, ed.span.max(1.0));
     // Bar lines.
     for bar in p.bars_in(from, from + span) {
@@ -1303,7 +1323,7 @@ fn canvas(
         }
         g.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x1d)),
+            Stroke::new(1.0, crate::theme::gray(0x1d)),
         );
         if span <= 128.0 || bar.bar0 % 4 == 0 {
             g.text(
@@ -1311,7 +1331,7 @@ fn canvas(
                 Align2::LEFT_TOP,
                 format!("{}", bar.bar0 + 1),
                 FontId::proportional(10.0),
-                Color32::from_gray(0x50),
+                crate::theme::gray(0x50),
             );
         }
     }
@@ -1334,20 +1354,23 @@ fn canvas(
     let marks: &[f32] = match target {
         AutoTarget::Volume => &[6.0, 0.0, -6.0, -20.0, -40.0],
         AutoTarget::Pan => &[-1.0, 0.0, 1.0],
+        AutoTarget::Object(ovrtone_engine::ObjectAxis::Around) => &[-180.0, -90.0, 0.0, 90.0, 180.0],
+        AutoTarget::Object(ovrtone_engine::ObjectAxis::Height) => &[0.0, 45.0, 90.0],
+        AutoTarget::Object(_) => &[0.0, 0.5, 1.0],
         AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => &[0.0, 0.25, 0.5, 0.75, 1.0],
     };
     for m in marks {
         let y = rect.bottom() - frac_of(target, *m) * rect.height();
         g.line_segment(
             [pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(1.0, Color32::from_gray(if *m == 0.0 { 0x4a } else { 0x30 })),
+            Stroke::new(1.0, crate::theme::gray(if *m == 0.0 { 0x4a } else { 0x30 })),
         );
         g.text(
             pos2(rect.right() - 4.0, y - 1.0),
             Align2::RIGHT_BOTTOM,
             value_text(&p.tracks[ti], target, *m),
             FontId::proportional(9.0),
-            Color32::from_gray(0x40),
+            crate::theme::gray(0x40),
         );
     }
     let colour = lane_colour(target);
@@ -1398,7 +1421,7 @@ fn canvas(
                 if bent || ed.drag == Some(Drag::Curve(i)) {
                     colour
                 } else {
-                    crate::theme::BORDER
+                    crate::theme::border()
                 },
                 Stroke::new(1.0, colour),
             ));
@@ -1417,7 +1440,7 @@ fn canvas(
                     colour
                 },
             );
-            g.circle_stroke(c, 4.0, Stroke::new(1.0, Color32::from_gray(0x09)));
+            g.circle_stroke(c, 4.0, Stroke::new(1.0, crate::theme::gray(0x09)));
         }
     } else {
         g.text(
@@ -1425,7 +1448,7 @@ fn canvas(
             Align2::CENTER_CENTER,
             tr("Click to add a point"),
             FontId::proportional(12.0),
-            Color32::from_gray(0x40),
+            crate::theme::gray(0x40),
         );
     }
     // The playhead.
@@ -1439,7 +1462,7 @@ fn canvas(
     g.rect_stroke(
         rect,
         3.0,
-        Stroke::new(1.0, Color32::from_gray(0x09)),
+        Stroke::new(1.0, crate::theme::gray(0x09)),
         StrokeKind::Inside,
     );
 

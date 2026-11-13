@@ -70,6 +70,10 @@ pub struct Take {
     pub window: Option<(f32, f32)>,
     /// The gain it had as a region, in dB, on top of the folder's.
     pub gain_db: f32,
+    /// The name it shows in its row (empty: "Take n").
+    pub name: String,
+    /// The colour it is drawn in, when the user gave it one.
+    pub color: Option<egui::Color32>,
 }
 
 /// The file of a take, with its waveform. Two are the same when they read the same file.
@@ -150,6 +154,8 @@ pub struct Region {
     pub auto: Vec<RegionLane>,
     /// A Pattern or Drummer region: the settings its `notes` are made from.
     pub generated: Option<Generated>,
+    /// Clip gain as a line (audio regions): (beats from the region's start, dB), in order.
+    pub gain_line: Vec<(f32, f32)>,
 }
 
 /// What makes the notes of a Pattern or Drummer region (see `pattern.rs`).
@@ -269,6 +275,7 @@ impl RegionParams {
             reverse: self.reverse,
             source_start_secs: f64::from(self.source_start),
             length_secs: f64::from(self.source_len),
+            ..Default::default()
         }
     }
 
@@ -278,6 +285,36 @@ impl RegionParams {
         (peak.is_finite() && peak > 1e-6)
             .then(|| (-20.0 * peak.log10()).clamp(MIN_REGION_GAIN, MAX_REGION_GAIN))
     }
+}
+
+/// The place the effect windows use for Stereo Out's own effects.
+pub const MASTER_STRIP: usize = usize::MAX;
+
+impl Project {
+    /// The strip at `i`: a track, or [`MASTER_STRIP`] for Stereo Out's own effects.
+    pub fn strip(&self, i: usize) -> Option<&Track> {
+        if i == MASTER_STRIP {
+            Some(&self.master_strip)
+        } else {
+            self.tracks.get(i)
+        }
+    }
+
+    pub fn strip_mut(&mut self, i: usize) -> Option<&mut Track> {
+        if i == MASTER_STRIP {
+            Some(&mut self.master_strip)
+        } else {
+            self.tracks.get_mut(i)
+        }
+    }
+}
+
+/// A spatial bus of the project.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpatialBusDef {
+    pub name: String,
+    pub layout: ovrtone_engine::SpeakerLayout,
+    pub place: ovrtone_engine::BusPlace,
 }
 
 /// One send slot of a channel strip (Logic: "Bus 1" with a level knob). The engine copies the
@@ -302,6 +339,8 @@ pub struct Insert {
     pub kind: ovrtone_engine::FxKind,
     pub bypass: bool,
     pub params: [f32; ovrtone_engine::MAX_FX_PARAMS],
+    /// The track whose sound keys it (a side chain), for the effects that take one.
+    pub sidechain: Option<usize>,
 }
 
 impl Insert {
@@ -311,6 +350,7 @@ impl Insert {
             kind,
             bypass: false,
             params: kind.defaults(),
+            sidechain: None,
         }
     }
 
@@ -406,6 +446,8 @@ pub struct Automation {
     pub pan: Vec<AutoPoint>,
     pub fx: Vec<FxLane>,
     pub plugin_lanes: Vec<PluginLane>,
+    /// The lanes of a track's place as an object, by [`ovrtone_engine::ObjectAxis`].
+    pub object: [Vec<AutoPoint>; 9],
     /// The control held (Touch), or held and let go but still writing (Latch): the strip
     /// plays that control's own value, not its lane. Not saved.
     pub held: Option<AutoTarget>,
@@ -432,6 +474,7 @@ impl Automation {
         match target {
             AutoTarget::Volume => &self.volume,
             AutoTarget::Pan => &self.pan,
+            AutoTarget::Object(axis) => &self.object[axis as usize],
             AutoTarget::Fx { slot, param } => self
                 .fx
                 .iter()
@@ -450,6 +493,7 @@ impl Automation {
         match target {
             AutoTarget::Volume => &mut self.volume,
             AutoTarget::Pan => &mut self.pan,
+            AutoTarget::Object(axis) => &mut self.object[axis as usize],
             AutoTarget::Fx { slot, param } => {
                 let i = match self
                     .fx
@@ -497,6 +541,11 @@ impl Automation {
             (AutoTarget::Pan, &self.pan[..]),
         ]
         .into_iter()
+        .chain(
+            ovrtone_engine::ObjectAxis::ALL
+                .into_iter()
+                .map(|axis| (AutoTarget::Object(axis), &self.object[axis as usize][..])),
+        )
         .chain(self.fx.iter().map(|l| {
             (
                 AutoTarget::Fx {
@@ -577,6 +626,7 @@ impl Automation {
             AutoTarget::Volume => (-60.0, 6.0),
             AutoTarget::Pan => (-1.0, 1.0),
             AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => (0.0, 1.0),
+            AutoTarget::Object(axis) => axis.range(),
         }
     }
 
@@ -591,6 +641,8 @@ impl Automation {
             AutoTarget::Volume => 0.1,
             AutoTarget::Pan => 0.01,
             AutoTarget::Fx { .. } | AutoTarget::Plugin { .. } => 0.004,
+            AutoTarget::Object(ovrtone_engine::ObjectAxis::Around | ovrtone_engine::ObjectAxis::Height) => 0.5,
+            AutoTarget::Object(_) => 0.01,
         };
         let last = self.last.filter(|(b, _)| beat >= *b);
         if let Some((lb, lv)) = last {
@@ -614,6 +666,7 @@ impl Automation {
         self.volume.clear();
         self.pan.clear();
         self.fx.clear();
+        self.object.iter_mut().for_each(Vec::clear);
         self.last = None;
     }
 
@@ -622,6 +675,14 @@ impl Automation {
         self.fx.retain(|l| l.slot as usize != slot);
         for l in self.fx.iter_mut().filter(|l| l.slot as usize > slot) {
             l.slot -= 1;
+        }
+        self.drop_stale_state();
+    }
+
+    /// An effect was put in at `slot`: the lanes of it and the later effects move down one.
+    pub fn insert_added(&mut self, slot: usize) {
+        for l in self.fx.iter_mut().filter(|l| l.slot as usize >= slot) {
+            l.slot = l.slot.saturating_add(1);
         }
         self.drop_stale_state();
     }
@@ -909,6 +970,15 @@ pub struct Track {
     pub hardware_out: u8,
     /// The bus an Aux listens to, when it was chosen. 0: the next one free.
     pub aux_bus: u16,
+    /// Its place in the room, if it is placed in the spatial mix: as an object, or (with `bed_pan`)
+    /// panned around the bed.
+    pub object: Option<ovrtone_engine::ObjectPlace>,
+    /// Its place is a surround pan inside the bed (as a DAW's surround panner does), not an object:
+    /// it is heard the same, and a spatial file has it mixed into the bed's channels.
+    pub bed_pan: bool,
+    /// Input trim in dB: the level going into the track's effects, the fader untouched. What
+    /// Auto Gain Staging sets.
+    pub trim_db: f32,
     /// How far a slide note can bend, in semitones: what the track's instrument is set to.
     pub slide_range: u8,
     pub volume_db: f32,
@@ -933,6 +1003,11 @@ pub struct Track {
     pub on_timeline: bool,
     /// Switched off with its power button: silent, and its plugins rest.
     pub off: bool,
+    /// Its regions cannot be selected, moved or edited.
+    pub locked: bool,
+    /// A reference track (a finished song to compare with): heard while mixing, left out of
+    /// bounces, exports and gain staging.
+    pub reference: bool,
     /// The icon chosen with Assign Track Icon; else one follows from the patch.
     pub icon: Option<crate::track_icons::IconKind>,
     /// Library category of the loaded patch (drives the track icon), if any.
@@ -1006,6 +1081,9 @@ impl Track {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            object: None,
+            bed_pan: false,
+            trim_db: 0.0,
             slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: 0.0,
             pan: 0.0,
@@ -1022,6 +1100,8 @@ impl Track {
             frozen: None,
             on_timeline: false,
             off: false,
+            locked: false,
+            reference: false,
             height: 1.0,
             indent: 0,
             folded: false,
@@ -1122,6 +1202,8 @@ pub struct Project {
     pub smpte_start: [u8; 4],
     /// MIDI output port (by name) that sends MIDI Time Code while the project plays.
     pub mtc_out: Option<String>,
+    /// The MIDI port MIDI Clock (24 a beat, with Start, Stop and the song position) goes to.
+    pub clock_out: Option<String>,
     /// MIDI input port (by name) the transport chases MIDI Time Code from.
     pub mtc_in: Option<String>,
     pub key: &'static str,
@@ -1132,6 +1214,27 @@ pub struct Project {
     pub metronome: bool,
     /// Count-in before recording (the purple "1234" button).
     pub count_in: bool,
+    /// What the spatial bus goes to; off is plain stereo.
+    pub spatial_mode: ovrtone_engine::SpatialMode,
+    /// How much room the headphone render has, 0..=1.
+    pub spatial_room: f32,
+    /// The bed format, kept while spatial audio is off.
+    pub spatial_bed: ovrtone_engine::SpeakerLayout,
+    /// How objects are panned to the speakers. Projects from before VBAP keep the Smooth law.
+    pub spatial_law: ovrtone_engine::SpatialLaw,
+    /// The bus channel playing the test signal (Speaker Setup). Not saved.
+    pub spatial_test: Option<usize>,
+    /// Multichannel spatial buses (a 7.1.2 bus, say): objects routed to one are panned in its layout,
+    /// and its panner places the whole of it in the room.
+    pub spatial_buses: Vec<SpatialBusDef>,
+    /// The renderer's volume, and how far each channel sounds on headphones.
+    pub spatial_volume_db: f32,
+    pub spatial_channels: ovrtone_engine::ChannelSetup,
+    /// Channels muted and soloed in the renderer, to listen with. Not saved.
+    pub spatial_mute: [bool; ovrtone_engine::SPATIAL_CHANNELS],
+    pub spatial_solo: [bool; ovrtone_engine::SPATIAL_CHANNELS],
+    /// Mixer snapshots, oldest first.
+    pub mixer_snapshots: Vec<MixerSnapshot>,
     /// The count-in is running: Play is on, the song has not started yet. Not saved.
     pub counting_in: bool,
     /// The Note Pad's text.
@@ -1172,12 +1275,23 @@ pub struct Project {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// Bars played before a recording starts from a stop, and after it ends (0: none), as Pro
+    /// Tools' pre-roll and post-roll.
+    pub pre_roll: f32,
+    pub post_roll: f32,
+    /// While a pre-roll's recording runs: the punch settings to put back when the song stops.
+    pub roll_restore: Option<(bool, f64, f64)>,
+    /// Where the song stops on its own: the end of a post-roll.
+    pub stop_at: Option<f64>,
     /// A new recording takes away what it was recorded over, instead of making takes of it.
     pub rec_replace: bool,
     /// Cuts and trims of audio regions land on the nearest place the waveform crosses zero.
     pub snap_zero: bool,
     /// The plugins on the output (Stereo Out), after everything is mixed.
     pub master_plugins: Vec<PluginInsert>,
+    /// Stereo Out's own effects (Ovrtone's), before its plugins: kept as a strip of their own so the
+    /// effect windows work on them as on a track's. See [`MASTER_STRIP`].
+    pub master_strip: Track,
     /// Hardware controls assigned with MIDI learn.
     pub midi_map: Vec<MidiMapping>,
     /// Groove templates, offered by Quantize (see `groove_template`).
@@ -1230,6 +1344,9 @@ impl Project {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            object: None,
+            bed_pan: false,
+            trim_db: 0.0,
             slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: 0.0,
             pan: 0.0,
@@ -1243,6 +1360,8 @@ impl Project {
             frozen: None,
             on_timeline: false,
             off: false,
+            locked: false,
+            reference: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1288,6 +1407,9 @@ impl Project {
             output: 0,
             hardware_out: 0,
             aux_bus: 0,
+            object: None,
+            bed_pan: false,
+            trim_db: 0.0,
             slide_range: DEFAULT_SLIDE_RANGE,
             volume_db: vol,
             pan: 0.0,
@@ -1307,6 +1429,7 @@ impl Project {
                 folder: None,
                 auto: Vec::new(),
                 generated: None,
+                gain_line: Vec::new(),
                 audio: None,
                 params: RegionParams::default(),
             }],
@@ -1316,6 +1439,8 @@ impl Project {
             frozen: None,
             on_timeline: false,
             off: false,
+            locked: false,
+            reference: false,
             sends: Vec::new(),
             auto: Automation::default(),
             group: None,
@@ -1402,6 +1527,7 @@ impl Project {
             tempo: 120.0,
             patterns: Vec::new(),
             master_plugins: Vec::new(),
+            master_strip: Track::new("Stereo Out", TrackKind::Output),
             midi_map: Vec::new(),
             grooves: Vec::new(),
             screensets: Vec::new(),
@@ -1416,6 +1542,10 @@ impl Project {
             out_dim: false,
             keep_plugins_running: false,
             punch: false,
+            pre_roll: 0.0,
+            post_roll: 0.0,
+            roll_restore: None,
+            stop_at: None,
             punch_start: 0.0,
             punch_end: 0.0,
             rec_replace: false,
@@ -1430,6 +1560,17 @@ impl Project {
             cycle: false,
             metronome: false,
             count_in: false,
+            spatial_mode: ovrtone_engine::SpatialMode::Off,
+            spatial_room: 0.3,
+            spatial_bed: ovrtone_engine::SpeakerLayout::Surround714,
+            spatial_law: ovrtone_engine::SpatialLaw::Vbap,
+            spatial_test: None,
+            spatial_buses: Vec::new(),
+            spatial_volume_db: 0.0,
+            spatial_channels: ovrtone_engine::ChannelSetup::default(),
+            spatial_mute: [false; ovrtone_engine::SPATIAL_CHANNELS],
+            spatial_solo: [false; ovrtone_engine::SPATIAL_CHANNELS],
+            mixer_snapshots: Vec::new(),
             counting_in: false,
             notes: String::new(),
             end_beat: None,
@@ -1450,6 +1591,7 @@ impl Project {
             smpte_rate: ovrtone_engine::SmpteRate::Fps25,
             smpte_start: [1, 0, 0, 0],
             mtc_out: None,
+            clock_out: None,
             mtc_in: None,
         }
     }
@@ -1731,6 +1873,16 @@ impl Project {
         let (fade_in, fade_out) = self.effective_fades(ti, ri);
         edit.fade_in_beats = fade_in as f64;
         edit.fade_out_beats = fade_out as f64;
+        // Fit to Tempo: the engine plays it faster or slower, live, from the tempo it was made at.
+        if let Some(a) = self.tracks[ti].regions[ri].audio.as_ref() {
+            if let Some(bpm) = a.follow_bpm {
+                edit.follow_bpm = bpm;
+                edit.keep_pitch = a
+                    .flex
+                    .as_ref()
+                    .is_none_or(|f| f.mode != ovrtone_engine::FlexMode::Speed);
+            }
+        }
         edit
     }
 
@@ -2041,9 +2193,54 @@ impl Project {
     pub fn press_record(&mut self) {
         if self.recording && self.playing {
             self.recording = false;
+            // Post-roll: the song plays on for a while, then stops.
+            if self.post_roll > 0.0 {
+                self.stop_at = Some(self.position_beats + self.bars_as_beats(self.post_roll));
+            }
         } else {
+            // Pre-roll: from a stop, the song starts earlier and the recording comes in where the
+            // playhead was (a punch-in there, put back when the song stops).
+            if !self.playing && self.pre_roll > 0.0 && self.roll_restore.is_none() {
+                let at = self.position_beats.max(0.0);
+                self.roll_restore = Some((self.punch, self.punch_start, self.punch_end));
+                self.punch = true;
+                self.punch_start = at;
+                self.punch_end = f64::from(f32::MAX);
+                self.position_beats = (at - self.bars_as_beats(self.pre_roll)).max(0.0);
+            }
             self.recording = true;
             self.playing = true;
+        }
+    }
+
+    /// `bars` bars of the first time signature, in beats.
+    pub fn bars_as_beats(&self, bars: f32) -> f64 {
+        let (num, den) = (f64::from(self.sig.0.max(1)), f64::from(self.sig.1.max(1)));
+        f64::from(bars) * num * 4.0 / den
+    }
+
+    /// Call once per frame: ends a post-roll, and puts back what a pre-roll changed once the song
+    /// stops.
+    pub fn follow_rolls(&mut self) {
+        if self.playing {
+            // Punching out with a post-roll set: stop that long after the punch's end.
+            if self.recording && self.punch && self.post_roll > 0.0 && self.stop_at.is_none()
+                && self.roll_restore.is_none() && self.position_beats >= self.punch_end
+            {
+                self.stop_at = Some(self.punch_end + self.bars_as_beats(self.post_roll));
+            }
+            if self.stop_at.is_some_and(|at| self.position_beats >= at) {
+                self.playing = false;
+                self.recording = false;
+            }
+        }
+        if !self.playing {
+            self.stop_at = None;
+            if let Some((on, start, end)) = self.roll_restore.take() {
+                self.punch = on;
+                self.punch_start = start;
+                self.punch_end = end;
+            }
         }
     }
 
@@ -2147,6 +2344,19 @@ impl Project {
         best
     }
 
+    /// In a spatial project a new track that makes sound starts surround panned in the bed (as a
+    /// spatial DAW's tracks do); it can be set to Stereo or Object from there.
+    pub fn spatial_default(&self, track: &mut Track) {
+        let sounds = matches!(
+            track.kind,
+            TrackKind::Instrument | TrackKind::Audio | TrackKind::Drummer | TrackKind::Aux
+        );
+        if sounds && self.spatial_mode != ovrtone_engine::SpatialMode::Off && track.object.is_none() {
+            track.object = Some(ovrtone_engine::ObjectPlace::default());
+            track.bed_pan = true;
+        }
+    }
+
     pub fn add_track(&mut self, kind: TrackKind) -> usize {
         let n = self.tracks.iter().filter(|t| t.kind == kind).count() + 1;
         let name = match kind {
@@ -2164,6 +2374,7 @@ impl Project {
         if !matches!(kind, TrackKind::Bus | TrackKind::Output) {
             track.color = self.next_track_color();
         }
+        self.spatial_default(&mut track);
         self.tracks.push(track);
         self.selected_track = self.tracks.len() - 1;
         self.song_rev += 1;
@@ -2302,6 +2513,7 @@ impl Project {
             folder: None,
             auto: Vec::new(),
             generated: None,
+            gain_line: Vec::new(),
             audio: None,
             params: RegionParams::default(),
         });
@@ -2336,6 +2548,7 @@ impl Project {
             params: RegionParams::default(),
             auto: Vec::new(),
             generated: Some(Generated::new(source)),
+            gain_line: Vec::new(),
         });
         let ri = track.regions.len() - 1;
         self.regenerate(ti, ri);
@@ -2490,6 +2703,11 @@ impl Project {
         }
         for plugin in self.all_hosted_mut() {
             if let Some(source) = plugin.sidechain.as_mut() {
+                *source = new_place.get(*source).copied().unwrap_or(*source);
+            }
+        }
+        for fx in self.tracks.iter_mut().flat_map(|t| t.inserts.iter_mut()) {
+            if let Some(source) = fx.sidechain.as_mut() {
                 *source = new_place.get(*source).copied().unwrap_or(*source);
             }
         }
@@ -2744,6 +2962,13 @@ impl Project {
                 }
             }
         }
+        for fx in self.tracks.iter_mut().flat_map(|t| t.inserts.iter_mut()) {
+            if let Some(source) = fx.sidechain.as_mut() {
+                if *source >= at {
+                    *source += 1;
+                }
+            }
+        }
         for m in &mut self.midi_map {
             if let LearnTarget::Volume(t) | LearnTarget::Pan(t) = &mut m.target {
                 if *t >= at {
@@ -2766,6 +2991,13 @@ impl Project {
         // The same for side chains: a plugin keyed by it has no source any more.
         for plugin in self.all_hosted_mut() {
             plugin.sidechain = match plugin.sidechain {
+                Some(s) if s == removed => None,
+                Some(s) if s > removed => Some(s - 1),
+                other => other,
+            };
+        }
+        for fx in self.tracks.iter_mut().flat_map(|t| t.inserts.iter_mut()) {
+            fx.sidechain = match fx.sidechain {
                 Some(s) if s == removed => None,
                 Some(s) if s > removed => Some(s - 1),
                 other => other,
@@ -3595,6 +3827,7 @@ mod tests {
                 folder: None,
                 auto: Vec::new(),
                 generated: None,
+                gain_line: Vec::new(),
                 audio: Some(test_audio()),
                 params: RegionParams::default(),
             });
@@ -4549,5 +4782,78 @@ mod tests {
             .made_for ^= 1;
         p.song_rev += 1;
         assert!(p.refresh_generated());
+    }
+}
+
+/// One strip as a mixer snapshot holds it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripSnapshot {
+    pub name: String,
+    pub volume_db: f32,
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    pub trim_db: f32,
+    pub inserts: Vec<Insert>,
+    pub sends: Vec<SendSlot>,
+}
+
+/// The mixer at one moment, to go back to: every strip's fader, pan, mute, solo and input trim,
+/// its built-in effects with their settings, and its sends. Hosted plugins keep their own state
+/// and are not part of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MixerSnapshot {
+    pub name: String,
+    pub strips: Vec<StripSnapshot>,
+}
+
+impl Project {
+    /// Keeps the mixer as it is now as a new snapshot.
+    pub fn take_mixer_snapshot(&mut self) {
+        let strips = self
+            .tracks
+            .iter()
+            .map(|t| StripSnapshot {
+                name: t.name.clone(),
+                volume_db: t.volume_db,
+                pan: t.pan,
+                mute: t.mute,
+                solo: t.solo,
+                trim_db: t.trim_db,
+                inserts: t.inserts.clone(),
+                sends: t.sends.clone(),
+            })
+            .collect();
+        let name = format!("Snapshot {}", self.mixer_snapshots.len() + 1);
+        self.mixer_snapshots.push(MixerSnapshot { name, strips });
+    }
+
+    /// Puts the mixer back as snapshot `k` has it. A strip is found by its place, or by its name
+    /// if the tracks were moved since; one that is gone is skipped.
+    pub fn recall_mixer_snapshot(&mut self, k: usize) {
+        let Some(snapshot) = self.mixer_snapshots.get(k).cloned() else {
+            return;
+        };
+        for (i, strip) in snapshot.strips.iter().enumerate() {
+            let at = if self.tracks.get(i).is_some_and(|t| t.name == strip.name) {
+                Some(i)
+            } else {
+                self.tracks.iter().position(|t| t.name == strip.name)
+            };
+            let Some(t) = at.and_then(|at| self.tracks.get_mut(at)) else {
+                continue;
+            };
+            t.volume_db = strip.volume_db;
+            t.pan = strip.pan;
+            t.mute = strip.mute;
+            t.solo = strip.solo;
+            t.trim_db = strip.trim_db;
+            if t.inserts != strip.inserts {
+                t.inserts = strip.inserts.clone();
+            }
+            if t.sends != strip.sends {
+                t.sends = strip.sends.clone();
+            }
+        }
     }
 }

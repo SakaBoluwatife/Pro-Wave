@@ -10,6 +10,8 @@ mod arrangement_track;
 mod audio_encode;
 mod audio_rec;
 mod automation;
+mod audio_file_editor;
+mod audio_track_editor;
 mod autosave;
 mod bench;
 mod bounce;
@@ -49,11 +51,13 @@ mod note_tools;
 mod pattern;
 #[cfg(test)]
 mod perf;
+mod performance;
 mod piano_roll;
 mod plugin_guard;
 mod plugin_presets;
 mod plugin_rack;
 mod plugin_scan;
+mod project_history;
 mod project_io;
 mod project_thumbs;
 mod quick_dialogs;
@@ -66,6 +70,8 @@ mod reliability_tests;
 mod routing_matrix;
 mod sample_browser;
 mod sample_place;
+mod session_import;
+mod session_organizer;
 mod sampler_window;
 mod score;
 mod screensets;
@@ -78,6 +84,17 @@ mod smart_tempo;
 mod song_pattern;
 mod start_screen;
 mod stem_splitter;
+mod adm;
+mod audio_tags;
+mod dock;
+mod sample_tags;
+mod plugin_favourites;
+mod gain_staging;
+mod hardware;
+mod hrtf;
+mod spatial_window;
+mod spatial_export;
+mod speaker_setup;
 mod stem_worker;
 mod step_editor;
 mod strip_silence;
@@ -85,6 +102,7 @@ mod sync_menu;
 mod takes;
 mod tempo_track;
 mod theme;
+mod themes;
 mod track_icons;
 mod tracks_area;
 mod transform;
@@ -133,6 +151,10 @@ pub struct UiState {
     pub show_toolbar: bool,
     /// The entries of the Toolbar, in order.
     pub toolbar: Vec<&'static str>,
+    /// The mode buttons after the control bar display.
+    pub header_modes: Vec<transport::HeaderMode>,
+    /// A track whose ARA plugin (Melodyne) is to be asked for its notes, to make a MIDI track.
+    pub ara_midi: Option<usize>,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -171,6 +193,8 @@ pub struct UiState {
     pub score_heard: Option<(u8, f64)>,
     /// Flex Time and Flex Pitch work running in the background.
     pub flex: flex_edit::FlexState,
+    /// The Audio File Editor window (edits that change a file itself).
+    pub file_edit: audio_file_editor::FileEditor,
     /// The audio Groove Track's hits being read.
     pub groove: groove::GrooveState,
     /// An audio region being read to make a groove template.
@@ -191,6 +215,14 @@ pub struct UiState {
     pub smart: smart_controls::SmartControls,
     pub midi_learn: midi_learn::MidiLearn,
     pub stems: stem_splitter::StemSplitter,
+    pub spatial: spatial_window::SpatialView,
+    pub gain_staging: gain_staging::GainStagingView,
+    pub organizer: session_organizer::OrganizerView,
+    pub performance: performance::PerformanceView,
+    /// Where each panel is docked.
+    pub layout: dock::Layout,
+    /// While the plugins of a project just opened load: the most that were left.
+    pub opening_plugins: Option<usize>,
     pub strip_silence: strip_silence::StripSilence,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
@@ -222,6 +254,18 @@ pub struct UiState {
     pub recent: recent_files::Recent,
     /// DSP load shown by the LCD's CPU meter (1.0 = full budget); peak-held, falls slowly.
     pub cpu_load: f32,
+    /// When a note was last played in from a MIDI or computer keyboard: render-ahead waits for
+    /// a quiet spell after it.
+    pub live_note_at: Option<std::time::Instant>,
+    /// What opening another DAW's session left behind, to show once.
+    pub import_log: Option<(String, Vec<String>)>,
+    /// Minutes between crash-recovery copies (0: never), and backups kept on save.
+    pub autosave_minutes: u32,
+    pub backups_kept: usize,
+    /// The Project History window (File > Project History).
+    pub history_open: bool,
+    /// A project that would not open, and its newest backup, offered instead.
+    pub damaged: Option<(std::path::PathBuf, std::path::PathBuf, String)>,
     /// Light (white) menu bar and menus, toggled by the Smart Controls button.
     pub light_menus: bool,
     /// The Project Chooser, while it covers the window (File > New from Template…).
@@ -267,6 +311,8 @@ impl UiState {
             show_quick_help: false,
             show_toolbar: false,
             toolbar: side_panes::load_toolbar(),
+            header_modes: vec![transport::HeaderMode::Typing, transport::HeaderMode::LowLatency],
+            ara_midi: None,
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
@@ -293,6 +339,7 @@ impl UiState {
             screenset_on: None,
             score_heard: None,
             flex: flex_edit::FlexState::default(),
+            file_edit: audio_file_editor::FileEditor::default(),
             groove: groove::GrooveState::default(),
             groove_make: groove_template::MakeState::default(),
             midi_cmd: None,
@@ -306,6 +353,12 @@ impl UiState {
             smart: smart_controls::SmartControls::default(),
             midi_learn: midi_learn::MidiLearn::default(),
             stems: stem_splitter::StemSplitter::default(),
+            spatial: spatial_window::SpatialView::default(),
+            gain_staging: gain_staging::GainStagingView::default(),
+            organizer: session_organizer::OrganizerView::default(),
+            performance: performance::PerformanceView::default(),
+            layout: dock::Layout::load(),
+            opening_plugins: None,
             strip_silence: strip_silence::StripSilence::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
@@ -324,6 +377,12 @@ impl UiState {
             recent_pick: None,
             recent: recent_files::Recent::default(),
             cpu_load: 0.0,
+            live_note_at: None,
+            import_log: None,
+            autosave_minutes: settings::autosave_minutes(),
+            backups_kept: settings::backups_kept(),
+            history_open: false,
+            damaged: None,
             light_menus: false,
             chooser: None,
             new_details: None,
@@ -545,6 +604,11 @@ impl App {
         let mut controls = Vec::new();
         if let Some(midi) = self.midi.as_mut() {
             midi.poll(&mut input, &mut ages);
+        }
+        if !input.is_empty() {
+            self.ui.live_note_at = Some(std::time::Instant::now());
+        }
+        if let Some(midi) = self.midi.as_mut() {
             midi.poll_controls(&mut controls);
         }
         let p = &mut self.project;
@@ -576,6 +640,25 @@ impl App {
                     value: val,
                 },
             });
+        }
+        // Step input in the Piano Roll: the notes go in at its cursor instead of being recorded.
+        if s.piano.step_input && s.bottom == Bottom::PianoRoll && !s.rec.active() {
+            if let Some(at) = s.tracks.selected {
+                let played: Vec<(u8, u8)> = input
+                    .iter()
+                    .filter_map(|n| match *n {
+                        recorder::LiveNote::On { pitch, vel } => Some((pitch, vel)),
+                        _ => None,
+                    })
+                    .collect();
+                piano_roll::step_input(p, &mut s.piano, at, &played);
+                piano_roll::step_keys(p, &mut s.piano, at, ctx);
+                if !played.is_empty() {
+                    ctx.request_repaint();
+                }
+                // Placed, so not recorded too.
+                input.retain(|n| !matches!(n, recorder::LiveNote::On { .. }));
+            }
         }
         // Record on an audio track is the audio recorder's (see `record_audio`).
         // Both record when the selected track is an instrument and an audio track is armed.
@@ -711,8 +794,50 @@ impl App {
 
 impl App {
     /// Gives the Mastering window a copy of the output while it is open.
+    /// Gives the effect window in front a copy of its effect's input and output (the analyzer and
+    /// the moving levels), and stops it when that window closes or another comes to the front.
+    fn connect_fx_listen(&mut self) {
+        let want = self.ui.mixer.fx_window.filter(|(t, s)| {
+            self.project.strip(*t).is_some_and(|tr| *s < tr.inserts.len())
+        });
+        let have = self.ui.mixer.listen.as_ref().map(|l| l.key);
+        // A tap that hears nothing was lost (its strip had no effects yet): ask again.
+        let lost = self.ui.mixer.listen.as_ref().is_some_and(|l| l.lost());
+        if want == have && !lost {
+            return;
+        }
+        let Some(sync) = self.sync.as_mut() else {
+            return;
+        };
+        if let Some((t, _)) = have {
+            let stop = ovrtone_engine::Command::SetFxTap {
+                track: t as u16,
+                tap: None,
+            };
+            if !sync.engine.send(stop) {
+                return;
+            }
+            self.ui.mixer.listen = None;
+        }
+        if let Some((t, s)) = want {
+            let rate = sync.engine.sample_rate();
+            let (tx, rx) = rtrb::RingBuffer::new(fx_ui::Listen::capacity(rate));
+            let start = ovrtone_engine::Command::SetFxTap {
+                track: t as u16,
+                tap: Some(ovrtone_engine::FxTap {
+                    slot: s,
+                    out: Box::new(tx),
+                }),
+            };
+            if sync.engine.send(start) {
+                self.ui.mixer.listen = Some(fx_ui::Listen::new((t, s), rx, rate));
+            }
+        }
+    }
+
     fn connect_mastering(&mut self) {
-        let wanted = self.ui.mastering.open;
+        // The Spatial Renderer shows the loudness too.
+        let wanted = self.ui.mastering.open || self.ui.spatial.open;
         if wanted == self.ui.mastering.tap.is_some() {
             return;
         }
@@ -820,8 +945,93 @@ impl App {
         ovrtone_host::splash::step("Opening the window", 0.97);
     }
 
+    /// Holds the launch until the plugins of the project asked for are loaded, or have failed, showing
+    /// it on the launch screen: the window then opens ready, with nothing left to do behind it.
+    fn load_plugins_on_launch_screen(&mut self) {
+        if !cfg!(windows) {
+            return;
+        }
+        let Some(sync) = self.sync.as_mut() else {
+            return;
+        };
+        let total = sync.plugins_left(&mut self.project).0;
+        let (mut last, mut since) = (total, std::time::Instant::now());
+        loop {
+            let (left, next) = sync.plugins_left(&mut self.project);
+            if left == 0 {
+                break;
+            }
+            if left != last {
+                (last, since) = (left, std::time::Instant::now());
+            }
+            // The audio thread takes them. If it stops taking them, what is left loads in the window.
+            if since.elapsed() > std::time::Duration::from_secs(30) {
+                break;
+            }
+            let done = total.saturating_sub(left);
+            let name = next.unwrap_or_default();
+            let part = done as f32 / total.max(1) as f32;
+            ovrtone_host::splash::step(
+                &format!("Loading plugins: {} of {total}, {name}", done + 1),
+                0.95 + 0.04 * part,
+            );
+            sync.sync(&mut self.project);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// While a project's plugins load one by one, the window says so and takes no clicks, as they
+    /// would go unanswered while each loads.
+    fn plugin_load_screen(&mut self, ctx: &egui::Context) {
+        let Some(sync) = self.sync.as_ref() else {
+            return;
+        };
+        let (left, next) = sync.plugins_left(&mut self.project);
+        if left == 0 {
+            self.ui.opening_plugins = None;
+            return;
+        }
+        let Some(most) = self.ui.opening_plugins.as_mut() else {
+            return;
+        };
+        *most = (*most).max(left);
+        let total = *most;
+        ctx.request_repaint();
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::unique("plugin_load_screen"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let (r, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                let g = ui.painter();
+                g.rect_filled(r, 0.0, egui::Color32::from_black_alpha(170));
+                let text = theme::text();
+                let c = r.center();
+                let done = total - left;
+                g.text(
+                    c + egui::vec2(0.0, -16.0),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Loading plugins: {} of {total}", done + 1),
+                    egui::FontId::proportional(15.0),
+                    text,
+                );
+                g.text(
+                    c + egui::vec2(0.0, 22.0),
+                    egui::Align2::CENTER_CENTER,
+                    next.unwrap_or_default(),
+                    egui::FontId::proportional(12.5),
+                    theme::text_dim(),
+                );
+                let bar = egui::Rect::from_center_size(c + egui::vec2(0.0, 3.0), egui::vec2(320.0, 4.0));
+                g.rect_filled(bar, 2.0, theme::gray(0x40));
+                let mut lit = bar;
+                lit.set_width(bar.width() * done as f32 / total.max(1) as f32);
+                g.rect_filled(lit, 2.0, theme::accent());
+            });
+    }
+
     /// The launch screen goes once the scan is done and the main window has drawn.
-    fn follow_launch_scan(&mut self) {
+    fn follow_launch_scan(&mut self, ctx: &egui::Context) {
         if !self.ui.launching {
             return;
         }
@@ -833,6 +1043,9 @@ impl App {
         }
         self.ui.launching = false;
         ovrtone_host::splash::close();
+        // The window opened under the launch screen and may not have the keyboard: take it, or the
+        // first keys go to whatever had it before (Windows answers those with its error sound).
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }
 
@@ -864,7 +1077,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.follow_launch_scan();
+        self.follow_launch_scan(ui.ctx());
         self.take_thumbnail(ui.ctx());
         let ctx = ui.ctx().clone();
         // Before anything else looks at the keys: while it is on, the note keys are its own.
@@ -889,8 +1102,25 @@ impl eframe::App for App {
         tracks_area::poll_normalize(&ctx, &mut self.project, &mut self.ui);
         smart_tempo::poll(&ctx, &mut self.project, &mut self.ui);
         flex_edit::poll(&ctx, &mut self.project, &mut self.ui);
+        audio_file_editor::poll(&ctx, &mut self.project, &mut self.ui);
+        audio_file_editor::show(&ctx, &mut self.project, &mut self.ui);
         groove::poll(&ctx, &mut self.project, &mut self.ui);
         groove_template::poll(&ctx, &mut self.project, &mut self.ui);
+        menus::expire_status(&ctx, &mut self.ui);
+        // MIDI from Melodyne: the plugin is asked for the notes it found.
+        if let Some(t) = self.ui.ara_midi.take() {
+            let result = match self.sync.as_mut() {
+                Some(sync) => sync.ara_notes(t),
+                None => Err("No audio engine".to_string()),
+            };
+            self.ui.status = Some(match result {
+                Ok(notes) => {
+                    let n = flex_edit::midi_track_from_song(&mut self.project, t, &notes);
+                    format!("MIDI from Melodyne: {n} notes on a new track")
+                }
+                Err(e) => e,
+            });
+        }
         if let Some(probe) = self.bench.as_mut() {
             if probe.frame(&ctx) {
                 self.bench = None;
@@ -905,6 +1135,7 @@ impl eframe::App for App {
         }
         self.autosave_tick();
         self.show_recovery(&ctx);
+        self.show_history(&ctx);
         if self.ui.chooser.is_some() {
             self.chooser_ui(ui, &ctx);
             return;
@@ -926,8 +1157,27 @@ impl eframe::App for App {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        for path in dropped {
-            self.import(&path, &ctx);
+        // One sample dragged in from File Explorer asks what it becomes, as a sample from the
+        // Browser does; several at once are imported as audio clips.
+        if let [path] = dropped.as_slice() {
+            if import::is_audio_path(path) {
+                let at = ctx
+                    .input(|i| i.pointer.hover_pos())
+                    .unwrap_or_else(|| ctx.content_rect().center());
+                let bar = self.project.beats_to_bar(self.project.position_beats).floor() + 1.0;
+                self.ui.sample_drop = Some(sample_place::SampleDrop {
+                    path: path.clone(),
+                    at,
+                    bar,
+                    track: Some(self.project.selected_track),
+                });
+            } else {
+                self.import(path, &ctx);
+            }
+        } else {
+            for path in dropped {
+                self.import(&path, &ctx);
+            }
         }
         if let Some(out) = self.midi_out.as_mut() {
             out.sync(&self.project);
@@ -937,8 +1187,17 @@ impl eframe::App for App {
         self.project.refresh_generated();
         takes::record_commands(&mut self.project, &mut self.ui);
         self.ui.stems.hold_playback(&mut self.project);
+        self.plugin_load_screen(&ctx);
         if let Some(sync) = self.sync.as_mut() {
             sync.sync(&mut self.project);
+            if self.ui.spatial.open || self.ui.spatial.panner_open {
+                self.ui.spatial.device_channels = sync.output_channels();
+                self.ui.spatial.hrtf_error.clone_from(&sync.hrtf_error);
+                let peaks = sync.take_spatial_peaks();
+                for (now, new) in self.ui.spatial.peaks.iter_mut().zip(peaks) {
+                    *now = new.max(*now * 0.85);
+                }
+            }
             sync.set_pre_fader(self.ui.mixer.pre_fader);
             for (uid, param, value) in std::mem::take(&mut self.ui.smart.moves) {
                 sync.smart_move(uid, param, value);
@@ -1026,6 +1285,21 @@ impl eframe::App for App {
                 }
             }
             let load = sync.take_dsp_load();
+            performance::sample(&mut self.ui.performance, sync, self.project.tracks.len(), load);
+            // Render ahead only while nothing is live: no recording, no armed or monitoring track,
+            // and no notes played in for a few seconds.
+            let live = self.project.recording
+                || self.project.tracks.iter().any(|t| t.rec || t.monitor)
+                || self
+                    .ui
+                    .live_note_at
+                    .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(3));
+            let ahead = if settings::render_ahead() && self.project.playing && !live {
+                sync.engine.sample_rate() / 20
+            } else {
+                0
+            };
+            sync.engine.set_render_ahead(ahead);
             self.ui.cpu_load = load.max(self.ui.cpu_load - dt as f32 * 0.8);
             // Only when it happens, not on every frame from then on.
             let underruns = sync.underruns();
@@ -1037,6 +1311,7 @@ impl eframe::App for App {
             }
             self.ui.underruns_told = underruns;
         } else if self.project.playing {
+            performance::no_engine(&mut self.ui.performance);
             // No audio device: fall back to a UI-driven clock.
             let map = self.project.tempo_map();
             self.project.position_beats = map.advance(self.project.position_beats, dt);
@@ -1048,6 +1323,7 @@ impl eframe::App for App {
         let mut meters = match self.sync.as_mut() {
             Some(sync) => mixer::Meters {
                 tracks: sync.track_meters(self.project.tracks.len()),
+                rms: sync.track_rms(self.project.tracks.len()),
                 reduction: sync.gain_reduction(self.project.tracks.len()),
                 master: sync.master_peaks(),
                 clips: sync.track_clips(self.project.tracks.len()),
@@ -1064,24 +1340,32 @@ impl eframe::App for App {
         top_bar(ui, p, s);
         egui::Panel::top("control")
             .exact_size(58.0)
-            .frame(egui::Frame::new().fill(theme::TOOLBAR))
+            .frame(egui::Frame::new().fill(theme::toolbar()))
             .show(ui, |ui| transport::control_bar(ui, p, s, master_peaks));
         let mut cards: Vec<egui::Rect> = Vec::new();
+        // Each panel where the layout puts it (Window > Panel Layout).
+        let mut layout = std::mem::take(&mut s.layout);
         if s.show_library {
-            let shown = egui::Panel::left("library")
-                .resizable(true)
-                .default_size(420.0)
-                .size_range(330.0..=720.0)
-                .frame(egui::Frame::new())
-                .show(ui, |ui| left_panel::show(ui, p, s));
-            cards.push(shown.response.rect);
+            let size = dock::Size {
+                default: 420.0,
+                range: 330.0..=720.0,
+                exact: None,
+            };
+            let shown = dock::show(ui, &mut layout, dock::Pane::Library, size, egui::Frame::new(), |ui| {
+                left_panel::show(ui, p, s)
+            });
+            cards.extend(shown);
         }
         if s.show_inspector {
-            let shown = egui::Panel::left("inspector")
-                .exact_size(244.0)
-                .frame(egui::Frame::new())
-                .show(ui, |ui| inspector::show(ui, p, s, &meters));
-            cards.push(shown.response.rect);
+            let size = dock::Size {
+                default: 244.0,
+                range: 244.0..=244.0,
+                exact: Some(244.0),
+            };
+            let shown = dock::show(ui, &mut layout, dock::Pane::Inspector, size, egui::Frame::new(), |ui| {
+                inspector::show(ui, p, s, &meters)
+            });
+            cards.extend(shown);
         }
         if s.show_toolbar {
             egui::Panel::top("toolbar")
@@ -1089,44 +1373,56 @@ impl eframe::App for App {
                 .show(ui, |ui| side_panes::toolbar(ui, p, s));
         }
         if s.browser.open.is_some() {
-            egui::Panel::right("browser")
-                .resizable(true)
-                .default_size(file_browser::WIDTH)
-                .size_range(220.0..=560.0)
-                .show(ui, |ui| file_browser::show(ui, p, s));
+            let size = dock::Size {
+                default: file_browser::WIDTH,
+                range: 220.0..=560.0,
+                exact: None,
+            };
+            dock::show(ui, &mut layout, dock::Pane::Files, size, egui::Frame::side_top_panel(ui.style()), |ui| {
+                file_browser::show(ui, p, s)
+            });
         }
         if s.show_notes {
-            egui::Panel::right("notes")
-                .resizable(true)
-                .default_size(side_panes::NOTES_WIDTH)
-                .size_range(180.0..=560.0)
-                .show(ui, |ui| side_panes::note_pad(ui, p));
+            let size = dock::Size {
+                default: side_panes::NOTES_WIDTH,
+                range: 180.0..=560.0,
+                exact: None,
+            };
+            dock::show(ui, &mut layout, dock::Pane::Notes, size, egui::Frame::side_top_panel(ui.style()), |ui| {
+                side_panes::note_pad(ui, p)
+            });
         }
         if s.show_lists {
-            egui::Panel::right("lists")
-                .resizable(true)
-                .default_size(event_list::WIDTH)
-                .size_range(event_list::WIDTH..=640.0)
-                .frame(egui::Frame::new())
-                .show(ui, |ui| event_list::show(ui, p, s));
+            let size = dock::Size {
+                default: event_list::WIDTH,
+                range: event_list::WIDTH..=640.0,
+                exact: None,
+            };
+            dock::show(ui, &mut layout, dock::Pane::Lists, size, egui::Frame::new(), |ui| {
+                event_list::show(ui, p, s)
+            });
         }
         if s.show_mixer || s.bottom == Bottom::PianoRoll {
             // More than half of the space under the control bar (620 points at most), so the Tracks
-            // area keeps room on short screens.
+            // area keeps room on short screens. Pull it taller for longer faders; it stays inside
+            // the window when the window shrinks.
             let room = ui.available_height();
             let usual = (room * 0.55).clamp(160.0, 620.0);
-            let panel = egui::Panel::bottom("bottom").frame(egui::Frame::new());
-            // Pull it taller for longer faders. It stays inside the window when the window shrinks.
-            let panel = panel
-                .resizable(true)
-                .default_size(usual)
-                .size_range(160.0..=(room * 0.85).max(160.0));
-            let shown = panel.show(ui, |ui| match s.bottom {
-                Bottom::Mixer => mixer::show(ui, p, s, &meters),
-                Bottom::PianoRoll => piano_roll::show(ui, p, s),
+            let size = dock::Size {
+                default: usual,
+                range: 160.0..=(room * 0.85).max(160.0),
+                exact: None,
+            };
+            let shown = dock::show(ui, &mut layout, dock::Pane::Bottom, size, egui::Frame::new(), |ui| {
+                match s.bottom {
+                    Bottom::Mixer => mixer::show(ui, p, s, &meters),
+                    Bottom::PianoRoll => piano_roll::show(ui, p, s),
+                }
             });
-            cards.push(shown.response.rect);
+            cards.extend(shown);
         }
+        dock::layout_window(&ctx, &mut layout);
+        s.layout = layout;
         let shown = egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| tracks_area::show(ui, p, s, &meters));
@@ -1165,6 +1461,30 @@ impl eframe::App for App {
         stem_splitter::show(&ctx, p, s);
         strip_silence::show(&ctx, p, s);
         mastering::show(&ctx, s);
+        if std::mem::take(&mut s.mixer.open_renderer) {
+            s.spatial.open = true;
+        }
+        if std::mem::take(&mut s.mixer.open_spatial) {
+            s.spatial.panner_open = true;
+        }
+        spatial_window::show(&ctx, p, s);
+        if let Some(m) = s.tracks.stretch_status.take() {
+            s.status = Some(m);
+        }
+        if std::mem::take(&mut s.tracks.consolidate) {
+            bounce::bounce_selection(p, s, true);
+            s.status = Some("Consolidating the selected regions into one".to_string());
+        }
+        if let Some(task) = s.mixer.file_task.take() {
+            s.file_task = Some(task);
+        }
+        if std::mem::take(&mut s.mixer.open_gain_staging) {
+            s.gain_staging.open = true;
+        }
+        gain_staging::show(&ctx, p, s);
+        session_organizer::show(&ctx, p, s);
+        performance::show(&ctx, p, s);
+        import_log_window(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
         automation::show(&ctx, p, s);
 
@@ -1199,6 +1519,7 @@ impl eframe::App for App {
             self.restart_audio(&setup);
         }
         self.connect_mastering();
+        self.connect_fx_listen();
         if self.ui.settings.open {
             self.ui.settings.current = self.sync.as_ref().map_or("nothing".to_string(), |s| {
                 format!(
@@ -1222,6 +1543,7 @@ impl eframe::App for App {
         let engine = self.sync.as_mut().map(|sync| &mut sync.engine);
         self.ui.samples.pump(engine, &ctx);
         self.record_audio(&ctx);
+        self.project.follow_rolls();
         self.play_and_record_midi(&ctx);
         if std::mem::take(&mut self.ui.update_check) {
             self.updater.start_check(true);
@@ -1564,7 +1886,12 @@ fn leave_now(code: i32) -> ! {
 fn main() -> eframe::Result {
     // Before anything reads a setting.
     recent_files::migrate_old_settings();
-    ovrtone_engine::Engine::set_worker_limit(settings::worker_limit());
+    // Automatic: from the physical cores the system reports (half of them, at least one).
+    let workers = match settings::worker_limit() {
+        0 => ovrtone_engine::parallel::default_workers(hardware::physical_cores()),
+        n => n,
+    };
+    ovrtone_engine::Engine::set_worker_limit(workers);
     ovrtone_engine::set_plugin_block(settings::plugin_block());
     settings::load_view();
     #[cfg(windows)]
@@ -1599,7 +1926,15 @@ fn main() -> eframe::Result {
         ovrtone_engine::set_built_in_voices(false);
     }
     if !measuring {
-        let logo = include_bytes!("../assets/brand/ovrtone-wordmark-white.png");
+        // In the theme's colours: the program opens looking as it was left.
+        themes::load_chosen();
+        let rgb = |c: egui::Color32| [c.r(), c.g(), c.b()];
+        let colors = ovrtone_host::splash::SplashColors {
+            background: rgb(theme::panel_bg()),
+            text: rgb(theme::text()),
+            dim: rgb(theme::text_dim()),
+        };
+        let logo = include_bytes!("../assets/brand/ovrtone-wordmark-black.png");
         if let Ok(logo) = eframe::icon_data::from_png_bytes(logo) {
             ovrtone_host::splash::show(
                 &logo.rgba,
@@ -1608,6 +1943,7 @@ fn main() -> eframe::Result {
                     "Version {}   |   Bankz Sound Lab",
                     env!("CARGO_PKG_VERSION")
                 ),
+                colors,
             );
         }
     }
@@ -1656,6 +1992,8 @@ fn main() -> eframe::Result {
         opts,
         Box::new(|cc| {
             ovrtone_host::splash::step("Loading the interface", 0.1);
+            themes::load_chosen();
+            theme::load_type();
             theme::install_fonts(&cc.egui_ctx);
             theme::load_accent();
             theme::apply(&cc.egui_ctx);
@@ -1820,6 +2158,19 @@ fn main() -> eframe::Result {
                 if let Some(kind) = scene.strip_prefix("flex") {
                     shot_flex_scene(&mut app, &cc.egui_ctx, kind);
                 }
+                // The Spatial Renderer and a panner, with two objects in a 7.1.4 room on headphones.
+                if scene == "spatial" {
+                    use ovrtone_engine::{ObjectPlace, SpatialMode, SpeakerLayout};
+                    let pr = &mut app.project;
+                    pr.spatial_mode = SpatialMode::Binaural(SpeakerLayout::Surround714);
+                    pr.tracks[0].object = Some(ObjectPlace { azimuth: -40.0, elevation: 20.0, ..ObjectPlace::default() });
+                    if let Some(t) = pr.tracks.get_mut(1) {
+                        t.object = Some(ObjectPlace { azimuth: 120.0, elevation: 50.0, size: 0.4, ..ObjectPlace::default() });
+                    }
+                    pr.selected_track = 0;
+                    app.ui.spatial.open = true;
+                    app.ui.spatial.panner_open = true;
+                }
                 if let Some(kind) = scene.strip_prefix("mix") {
                     shot_mixer_scene(&mut app, kind);
                 }
@@ -1872,6 +2223,7 @@ fn main() -> eframe::Result {
                     app.import(std::path::Path::new(arg), &cc.egui_ctx);
                 }
             }
+            app.load_plugins_on_launch_screen();
             Ok(Box::new(app))
         }),
     );
@@ -1916,5 +2268,33 @@ mod tests {
         let icon = eframe::icon_data::from_png_bytes(super::APP_ICON_PNG).unwrap();
         assert_eq!((icon.width, icon.height), (256, 256));
         assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
+}
+
+/// What opening another DAW's session could not carry over.
+fn import_log_window(ctx: &egui::Context, s: &mut UiState) {
+    let Some((name, log)) = s.import_log.as_ref() else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(format!("Opened {name}"))
+        .id(egui::Id::unique("import_log"))
+        .open(&mut open)
+        .default_width(460.0)
+        .show(ctx, |ui| {
+            if log.is_empty() {
+                ui.label("Everything in the session was carried over.");
+            } else {
+                ui.label("Opened. These were not carried over:");
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    for line in log {
+                        ui.label(format!("• {line}"));
+                    }
+                });
+            }
+            ui.label(egui::RichText::new("Save it to keep it as an Ovrtone project.").weak());
+        });
+    if !open {
+        s.import_log = None;
     }
 }

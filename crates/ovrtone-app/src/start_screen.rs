@@ -20,14 +20,16 @@ pub enum Template {
     Songwriter,
     Electronic,
     Podcast,
+    Surround,
 }
 
 impl Template {
-    pub const ALL: [Template; 4] = [
+    pub const ALL: [Template; 5] = [
         Template::Empty,
         Template::Songwriter,
         Template::Electronic,
         Template::Podcast,
+        Template::Surround,
     ];
 
     pub fn name(self) -> &'static str {
@@ -36,6 +38,7 @@ impl Template {
             Template::Songwriter => "Songwriter",
             Template::Electronic => "Electronic",
             Template::Podcast => "Podcast",
+            Template::Surround => "Mix in Surround",
         }
     }
 
@@ -45,6 +48,7 @@ impl Template {
             Template::Songwriter => "Piano, drummer, bass and vocal tracks.",
             Template::Electronic => "Synths, drum machine and a reverb aux.",
             Template::Podcast => "Two voice tracks and a music bed.",
+            Template::Surround => "A spatial mix: a 7.1.2 bed heard on headphones, set in the Spatial Renderer.",
         }
     }
 
@@ -54,6 +58,7 @@ impl Template {
             Template::Songwriter => IconKind::Piano,
             Template::Electronic => IconKind::Synth,
             Template::Podcast => IconKind::Mic,
+            Template::Surround => IconKind::Aux,
         }
     }
 
@@ -79,6 +84,14 @@ impl Template {
                     track("Pad", TrackKind::Instrument),
                     track("Reverb", TrackKind::Aux),
                 ];
+            }
+            Template::Surround => {
+                use ovrtone_engine::{SpatialMode, SpeakerLayout};
+                p.spatial_bed = SpeakerLayout::Surround712;
+                p.spatial_mode = SpatialMode::Binaural(SpeakerLayout::Surround712);
+                // Empty: each track added is set to Stereo, Surround Pan or Object as wanted (its
+                // strip's menu, or its panner). The renderer is on Stereo Out's strip.
+                p.tracks.clear();
             }
             Template::Podcast => {
                 p.tracks = vec![
@@ -339,13 +352,27 @@ fn set_audio(details: &Details, s: &mut UiState) {
     }
 }
 
-const SCRIM: Color32 = Color32::from_rgb(0x12, 0x12, 0x14);
-const BG: Color32 = Color32::from_rgb(0x1f, 0x20, 0x23);
-const SIDEBAR: Color32 = Color32::from_rgb(0x28, 0x29, 0x2c);
-const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
-const DIM: Color32 = Color32::from_rgb(0x96, 0x96, 0x9a);
-const TILE: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3d);
-const LINE: Color32 = Color32::from_rgb(0x38, 0x39, 0x3c);
+fn scrim_col() -> Color32 {
+    crate::theme::grey_rgb(0x12, 0x12, 0x14)
+}
+fn bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x1f, 0x20, 0x23)
+}
+fn sidebar_col() -> Color32 {
+    crate::theme::grey_rgb(0x28, 0x29, 0x2c)
+}
+fn text_col() -> Color32 {
+    crate::theme::grey_rgb(0xe6, 0xe6, 0xe6)
+}
+fn dim_col() -> Color32 {
+    crate::theme::grey_rgb(0x96, 0x96, 0x9a)
+}
+fn tile_col() -> Color32 {
+    crate::theme::grey_rgb(0x3a, 0x3a, 0x3d)
+}
+fn line_col() -> Color32 {
+    crate::theme::grey_rgb(0x38, 0x39, 0x3c)
+}
 const TILE_W: f32 = 168.0;
 const PICTURE_H: f32 = 105.0;
 const CELL_H: f32 = PICTURE_H + 46.0;
@@ -372,9 +399,9 @@ fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bo
         }
         None => {
             let fill = if resp.hovered() {
-                TILE.lerp_to_gamma(Color32::WHITE, 0.06)
+                tile_col().lerp_to_gamma(Color32::WHITE, 0.06)
             } else {
-                TILE
+                tile_col()
             };
             g.rect_filled(picture, 6.0, fill);
             let icon = Rect::from_center_size(picture.center(), vec2(52.0, 52.0));
@@ -395,7 +422,7 @@ fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bo
         if selected {
             crate::theme::on_accent()
         } else {
-            TEXT
+            text_col()
         },
     );
     let width = name.size().x.min(TILE_W);
@@ -405,7 +432,7 @@ fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bo
         g.rect_filled(pill, 4.0, crate::theme::accent());
     }
     g.with_clip_rect(r.expand2(vec2(8.0, 0.0)))
-        .galley(at, name, TEXT);
+        .galley(at, name, text_col());
     (resp.clicked(), resp.double_clicked())
 }
 
@@ -630,7 +657,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
     look_for_devices(&mut c, s, &ctx);
     let area = ui.available_rect_before_wrap();
     ui.allocate_rect(area, Sense::hover());
-    ui.painter().rect_filled(area, 0.0, SCRIM);
+    ui.painter().rect_filled(area, 0.0, scrim_col());
     let panel = Rect::from_center_size(
         area.center(),
         vec2(
@@ -639,7 +666,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         ),
     );
     let g = ui.painter().clone();
-    g.rect_filled(panel, 10.0, BG);
+    g.rect_filled(panel, 10.0, bg_col());
 
     // Sidebar.
     let side = Rect::from_min_size(panel.min, vec2(210.0, panel.height()));
@@ -651,7 +678,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
             ne: 0,
             se: 0,
         },
-        SIDEBAR,
+        sidebar_col(),
     );
     match crate::quick_dialogs::wordmark(&ctx, true) {
         Some(logo) => {
@@ -670,7 +697,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
                 Align2::LEFT_CENTER,
                 "Ovrtone",
                 FontId::proportional(18.0),
-                TEXT,
+                text_col(),
             );
         }
     }
@@ -692,7 +719,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
             Align2::LEFT_CENTER,
             sec.label(),
             FontId::proportional(13.0),
-            TEXT,
+            text_col(),
         );
         if resp.clicked() && c.section != sec {
             c.section = sec;
@@ -709,14 +736,14 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         Align2::CENTER_CENTER,
         "Start or open a project",
         FontId::proportional(13.0),
-        DIM,
+        dim_col(),
     );
     g.line_segment(
         [
             pos2(main.left(), main.top() + title_h),
             pos2(main.right(), main.top() + title_h),
         ],
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, line_col()),
     );
     let list = items(c.section, &recent, &mine);
     let takes_details = c.section != Section::Recent;
@@ -754,7 +781,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
                         "No templates of your own yet. Save one with File > Save as Template."
                     };
                     ui.add_space(8.0);
-                    ui.colored_label(DIM, words);
+                    ui.colored_label(dim_col(), words);
                 }
                 // Room for the highlight around the first row and column.
                 ui.add_space(4.0);
@@ -789,10 +816,10 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
 
     // The bar over the panel: says what is chosen, and folds the panel.
     let g = ui.painter().clone();
-    g.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, LINE));
+    g.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, line_col()));
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, line_col()),
     );
     let about = list.get(c.selected).map_or("", |i| i.about.as_str());
     g.with_clip_rect(bar).text(
@@ -800,7 +827,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         Align2::CENTER_CENTER,
         about,
         FontId::proportional(12.5),
-        DIM,
+        dim_col(),
     );
     if takes_details {
         let fold = Rect::from_min_size(bar.min, vec2(90.0, bar_h));
@@ -819,13 +846,13 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
                 at + vec2(-2.5, 4.0),
             ]
         };
-        g.add(egui::Shape::convex_polygon(mark, TEXT, Stroke::NONE));
+        g.add(egui::Shape::convex_polygon(mark, text_col(), Stroke::NONE));
         g.text(
             fold.left_center() + vec2(28.0, 0.0),
             Align2::LEFT_CENTER,
             "Details",
             FontId::proportional(12.5),
-            TEXT,
+            text_col(),
         );
         if resp.clicked() {
             c.details_open = !c.details_open;
@@ -846,7 +873,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
     // Footer: Open… on the left; Cancel and Choose on the right.
     ui.painter().line_segment(
         [footer.left_top(), footer.right_top()],
-        Stroke::new(1.0, LINE),
+        Stroke::new(1.0, line_col()),
     );
     let mut cancel = false;
     let picked = || list.get(c.selected).map(|i| i.choice.clone());

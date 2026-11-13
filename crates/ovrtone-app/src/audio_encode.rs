@@ -275,3 +275,46 @@ mod tests {
         assert_eq!(resample(&tone, 48_000, 48_000), tone);
     }
 }
+
+/// A sample rate as the 80-bit number AIFF keeps it in.
+fn extended(rate: u32) -> [u8; 10] {
+    let mut out = [0u8; 10];
+    if rate == 0 {
+        return out;
+    }
+    let shift = rate.leading_zeros();
+    let exponent = (16383 + 31 - shift) as u16;
+    let mantissa = u64::from(rate) << (32 + shift);
+    out[..2].copy_from_slice(&exponent.to_be_bytes());
+    out[2..].copy_from_slice(&mantissa.to_be_bytes());
+    out
+}
+
+/// An AIFF file from the 16-bit or 24-bit stereo `wav`: the same samples, most significant byte
+/// first, as AIFF has them.
+pub fn aiff(wav: &Path, out: &Path, bits: usize, rate: u32) -> Result<(), String> {
+    let bytes = std::fs::read(wav).map_err(|e| e.to_string())?;
+    let data = bytes.get(WAV_HEADER as usize..).unwrap_or(&[]);
+    let width = if bits == 16 { 2 } else { 3 };
+    let frames = data.len() / (width * 2);
+    let sound = frames * width * 2;
+    let mut file = Vec::with_capacity(sound + 54);
+    file.extend_from_slice(b"FORM");
+    file.extend_from_slice(&((4 + 26 + 16 + sound) as u32).to_be_bytes());
+    file.extend_from_slice(b"AIFF");
+    file.extend_from_slice(b"COMM");
+    file.extend_from_slice(&18u32.to_be_bytes());
+    file.extend_from_slice(&2u16.to_be_bytes());
+    file.extend_from_slice(&(frames as u32).to_be_bytes());
+    file.extend_from_slice(&((width * 8) as u16).to_be_bytes());
+    file.extend_from_slice(&extended(rate));
+    file.extend_from_slice(b"SSND");
+    file.extend_from_slice(&((8 + sound) as u32).to_be_bytes());
+    file.extend_from_slice(&[0u8; 8]);
+    for sample in data[..sound].chunks_exact(width) {
+        file.extend(sample.iter().rev());
+    }
+    let part = part_of(out);
+    std::fs::write(&part, &file).map_err(|e| e.to_string())?;
+    std::fs::rename(&part, out).map_err(|e| e.to_string())
+}

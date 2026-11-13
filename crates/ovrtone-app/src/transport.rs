@@ -15,16 +15,36 @@ use egui::{
     StrokeKind, Ui,
 };
 
-const BAR_BG: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-const SEG_BG: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-const SEG_BORDER: Color32 = crate::theme::PANEL_BG;
-const SEG_ON: Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
-const ICON: Color32 = Color32::from_rgb(0xd2, 0xd2, 0xd2);
-const ICON_ON: Color32 = Color32::from_rgb(0xec, 0xec, 0xec);
-const LCD_BG: Color32 = Color32::from_rgb(0x0f, 0x0f, 0x11);
-const LCD_TEXT: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
-const LCD_MID: Color32 = Color32::from_rgb(0x88, 0x88, 0x88);
-const LCD_DIM: Color32 = Color32::from_rgb(0x2a, 0x2a, 0x2b);
+fn bar_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x30, 0x30, 0x30)
+}
+fn seg_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x3a, 0x3a, 0x3a)
+}
+fn seg_border_col() -> Color32 {
+    crate::theme::panel_bg()
+}
+fn seg_on_col() -> Color32 {
+    crate::theme::grey_rgb(0x1f, 0x1f, 0x1f)
+}
+fn icon_col() -> Color32 {
+    crate::theme::grey_rgb(0xd2, 0xd2, 0xd2)
+}
+fn icon_on_col() -> Color32 {
+    crate::theme::grey_rgb(0xec, 0xec, 0xec)
+}
+fn lcd_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x0f, 0x0f, 0x11)
+}
+fn lcd_text_col() -> Color32 {
+    crate::theme::grey_rgb(0xe8, 0xe8, 0xe8)
+}
+fn lcd_mid_col() -> Color32 {
+    crate::theme::grey_rgb(0x88, 0x88, 0x88)
+}
+fn lcd_dim_col() -> Color32 {
+    crate::theme::grey_rgb(0x2a, 0x2a, 0x2b)
+}
 /// The LCD while recording turns red, as in Logic.
 const LCD_REC_BG: Color32 = Color32::from_rgb(19, 10, 10);
 const LCD_REC_TEXT: Color32 = Color32::from_rgb(244, 98, 86);
@@ -52,10 +72,10 @@ impl LcdColors {
             }
         } else {
             Self {
-                bg: LCD_BG,
-                text: LCD_TEXT,
-                mid: LCD_MID,
-                dim: LCD_DIM,
+                bg: lcd_bg_col(),
+                text: lcd_text_col(),
+                mid: lcd_mid_col(),
+                dim: lcd_dim_col(),
             }
         }
     }
@@ -79,6 +99,7 @@ fn button_name(key: &str) -> Option<&'static str> {
         "capture" => "Capture Recording (Shift+R)",
         "cycle" => "Cycle (C)",
         "lowlat" => "Low Latency Mode: plugins with a long delay step aside",
+        "typing" => "Typing Keyboard: play notes on the computer keyboard (Ctrl+K). Numpad + and - change the octave",
         "countin" => "Count-in",
         "metronome" => "Metronome (K)",
         "view0" => "Library (Y)",
@@ -107,6 +128,21 @@ fn clicked(ui: &Ui, rect: Rect, key: &str) -> bool {
 // ---------------------------------------------------------------- icons
 
 type IconFn = fn(&Painter, Rect, Color32);
+
+/// How far apart the mode buttons after the display are.
+const MODE_STEP: f32 = 32.0;
+
+/// A mode button the control bar can show after the display (right-click there to choose).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderMode {
+    /// Play notes on the computer keyboard (Ctrl+K).
+    Typing,
+    LowLatency,
+}
+
+fn icon_typing(g: &Painter, r: Rect, c: Color32) {
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::Keyboard, c);
+}
 
 fn icon_library(g: &Painter, r: Rect, c: Color32) {
     // Inbox tray.
@@ -386,7 +422,7 @@ fn icon_browsers(g: &Painter, r: Rect, c: Color32) {
     let back = Rect::from_center_size(p + vec2(2.5, -2.0), vec2(11.0, 9.0));
     let front = Rect::from_center_size(p + vec2(-2.0, 2.5), vec2(11.0, 9.0));
     g.rect_stroke(back, 1.5, stroke(c), StrokeKind::Middle);
-    g.rect_filled(front, 1.5, BAR_BG);
+    g.rect_filled(front, 1.5, bar_bg_col());
     g.rect_stroke(front, 1.5, stroke(c), StrokeKind::Middle);
 }
 
@@ -417,7 +453,7 @@ fn segmented(
                 ne: if i + 1 == items.len() { 5 } else { 0 },
                 se: if i + 1 == items.len() { 5 } else { 0 },
             };
-            g.rect_filled(r, cr, SEG_ON);
+            g.rect_filled(r, cr, seg_on_col());
         }
         if i > 0 {
             g.line_segment(
@@ -425,10 +461,10 @@ fn segmented(
                     pos2(r.left(), r.top() + 4.0),
                     pos2(r.left(), r.bottom() - 4.0),
                 ],
-                Stroke::new(1.0, SEG_BORDER),
+                Stroke::new(1.0, seg_border_col()),
             );
         }
-        draw(g, r, if *on { ICON_ON } else { ICON });
+        draw(g, r, if *on { icon_on_col() } else { icon_col() });
         if clicked(ui, r, &format!("{key}{i}")) {
             hit = Some(i);
         }
@@ -587,7 +623,7 @@ fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
     g.rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, Color32::from_gray(0x09)),
+        Stroke::new(1.0, crate::theme::gray(0x09)),
         StrokeKind::Inside,
     );
     let x0 = rect.left();
@@ -784,11 +820,11 @@ pub(crate) fn time_text(p: &Project) -> String {
 
 /// The display's simpler forms: beats, time, or both.
 fn lcd_text(g: &Painter, p: &Project, rect: Rect, mode: u8) {
-    g.rect_filled(rect, 5.0, Color32::from_rgb(0x0a, 0x0a, 0x0b));
+    g.rect_filled(rect, 5.0, crate::theme::grey_rgb(0x0a, 0x0a, 0x0b));
     let ink = if p.recording {
         Color32::from_rgb(0xff, 0x70, 0x60)
     } else {
-        Color32::from_gray(0xe8)
+        crate::theme::gray(0xe8)
     };
     let text = |at: egui::Pos2, what: String, size: f32| {
         g.text(
@@ -839,7 +875,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
     g.rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, Color32::from_gray(0x09)),
+        Stroke::new(1.0, crate::theme::gray(0x09)),
         StrokeKind::Inside,
     );
     let top = rect.top() + 4.0;
@@ -972,7 +1008,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
             pal.dim,
         );
         let m = Rect::from_min_size(pos2(x0 + 490.0, y - 2.0), vec2(40.0, 4.0));
-        g.rect_filled(m, 1.0, Color32::from_gray(0x18));
+        g.rect_filled(m, 1.0, crate::theme::gray(0x18));
         if i == 0 {
             let load = cpu_load.clamp(0.0, 1.0);
             let fill = Rect::from_min_size(m.min, vec2(m.width() * load, m.height()));
@@ -1000,7 +1036,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
             pos2(rect.right() - 22.0, rect.top() + 6.0),
             pos2(rect.right() - 22.0, rect.bottom() - 6.0),
         ],
-        Stroke::new(1.0, Color32::from_gray(0x17)),
+        Stroke::new(1.0, crate::theme::gray(0x17)),
     );
 }
 
@@ -1028,17 +1064,17 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
 
     // Pill with a soft inner edge.
     let r = rect.height() / 2.0;
-    g.rect_filled(rect, r, Color32::from_gray(0x18));
+    g.rect_filled(rect, r, crate::theme::gray(0x18));
     g.rect_stroke(
         rect,
         r,
-        Stroke::new(1.0, Color32::from_gray(0x29)),
+        Stroke::new(1.0, crate::theme::gray(0x29)),
         egui::StrokeKind::Inside,
     );
     g.rect_stroke(
         rect.shrink(1.5),
         r - 1.5,
-        Stroke::new(1.0, Color32::from_gray(0x0f)),
+        Stroke::new(1.0, crate::theme::gray(0x0f)),
         egui::StrokeKind::Inside,
     );
 
@@ -1055,7 +1091,7 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
     for (i, peak) in [l, rr].into_iter().enumerate() {
         let y = inner.top() + i as f32 * (bar_h + 2.0);
         let bar = Rect::from_min_size(pos2(inner.left(), y), vec2(inner.width(), bar_h));
-        g.rect_filled(bar, 2.0, Color32::from_gray(0x10));
+        g.rect_filled(bar, 2.0, crate::theme::gray(0x10));
         let f = meter_frac(peak);
         for (lo, hi, col) in [
             (0.0f32, 0.82f32, green),
@@ -1115,10 +1151,10 @@ pub fn control_bar(
 ) {
     let bar = ui.max_rect();
     let g = ui.painter_at(bar);
-    g.rect_filled(bar, 0.0, BAR_BG);
+    g.rect_filled(bar, 0.0, bar_bg_col());
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     let cy = bar.center().y;
 
@@ -1225,7 +1261,7 @@ pub fn control_bar(
     );
 
     let tx = |dx: f32| pos2(lcd_rect.left() + dx, cy);
-    if tbutton(ui, &g, tx(-198.0), "rew", icon_rewind, None, ICON) {
+    if tbutton(ui, &g, tx(-198.0), "rew", icon_rewind, None, icon_col()) {
         // Back to the start of this bar, or of the one before when already there.
         let bar = p.beats_to_bar(p.position_beats);
         let back = if bar.fract() < 1e-6 {
@@ -1235,10 +1271,10 @@ pub fn control_bar(
         };
         p.position_beats = p.bar_to_beats(back.max(0.0));
     }
-    if tbutton(ui, &g, tx(-170.0), "ffw", icon_forward, None, ICON) {
+    if tbutton(ui, &g, tx(-170.0), "ffw", icon_forward, None, icon_col()) {
         p.position_beats = p.next_bar_start(p.position_beats);
     }
-    if tbutton(ui, &g, tx(-142.0), "start", icon_to_start, None, ICON) {
+    if tbutton(ui, &g, tx(-142.0), "start", icon_to_start, None, icon_col()) {
         p.position_beats = 0.0;
     }
     // Logic keeps the triangle while playing; only the background turns green.
@@ -1254,7 +1290,7 @@ pub fn control_bar(
         if p.playing {
             crate::theme::on_accent()
         } else {
-            ICON
+            icon_col()
         },
     ) {
         p.playing = !p.playing;
@@ -1294,39 +1330,96 @@ pub fn control_bar(
         if p.cycle {
             crate::theme::on_accent()
         } else {
-            ICON
+            icon_col()
         },
     ) {
         crate::key_commands::toggle_cycle(p, &s.tracks);
     }
 
-    let rx = |dx: f32| pos2(lcd_rect.right() + dx, cy);
-    let low_bg = p.low_latency.then_some(crate::theme::accent());
-    let low_icon = if p.low_latency { Color32::WHITE } else { ICON };
-    if tbutton(
-        ui,
-        &g,
-        rx(24.0),
-        "lowlat",
-        icon_low_latency,
-        low_bg,
-        low_icon,
-    ) {
-        p.low_latency = !p.low_latency;
+    let rx0 = |dx: f32| pos2(lcd_rect.right() + dx, cy);
+    // Mode buttons after the display: Typing Keyboard by default; right-click to choose.
+    let modes = s.header_modes.clone();
+    let mut menu_rect = Rect::from_center_size(rx0(24.0), vec2(30.0, 26.0));
+    for (k, mode) in modes.iter().enumerate() {
+        let c = rx0(24.0 + k as f32 * MODE_STEP);
+        menu_rect = menu_rect.union(Rect::from_center_size(c, vec2(30.0, 26.0)));
+        let on = match mode {
+            HeaderMode::Typing => s.typing.on,
+            HeaderMode::LowLatency => p.low_latency,
+        };
+        let bg = on.then_some(crate::theme::accent());
+        let icon = if on { Color32::WHITE } else { icon_col() };
+        let (key, draw): (&str, IconFn) = match mode {
+            HeaderMode::Typing => ("typing", icon_typing),
+            HeaderMode::LowLatency => ("lowlat", icon_low_latency),
+        };
+        if tbutton(ui, &g, c, key, draw, bg, icon) {
+            match mode {
+                HeaderMode::Typing => s.typing.on = !s.typing.on,
+                HeaderMode::LowLatency => p.low_latency = !p.low_latency,
+            }
+        }
     }
+    if modes.is_empty() {
+        g.text(menu_rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional(14.0), icon_col());
+    }
+    let menu = ui
+        .interact(menu_rect, egui::Id::unique(("control_bar", "modes_menu")), Sense::click())
+        .on_hover_text("Right-click to choose the mode buttons shown here");
+    menu.context_menu(|ui| {
+        for (mode, label) in [
+            (HeaderMode::Typing, "Typing Keyboard (Ctrl+K)"),
+            (HeaderMode::LowLatency, "Low Latency Mode"),
+        ] {
+            let mut shown = s.header_modes.contains(&mode);
+            if ui.checkbox(&mut shown, label).changed() {
+                if shown {
+                    s.header_modes.push(mode);
+                } else {
+                    s.header_modes.retain(|m| *m != mode);
+                }
+            }
+        }
+    });
+    if modes.is_empty() && menu.clicked() {
+        s.header_modes.push(HeaderMode::Typing);
+    }
+    // What follows moves along by the extra mode buttons.
+    let shift = modes.len().saturating_sub(1) as f32 * MODE_STEP;
+    let rx = |dx: f32| pos2(lcd_rect.right() + dx + shift, cy);
     // Count-in "1234": purple when on.
     let ci = Rect::from_center_size(rx(68.0), vec2(28.0, 24.0));
-    g.rect_filled(ci, 5.0, if p.count_in { PURPLE } else { SEG_BG });
+    g.rect_filled(ci, 5.0, if p.count_in { PURPLE } else { seg_bg_col() });
     g.text(
         ci.center(),
         Align2::CENTER_CENTER,
         "1234",
         FontId::proportional(10.0),
-        Color32::WHITE,
+        if p.count_in { Color32::WHITE } else { icon_col() },
     );
-    if clicked(ui, ci, "countin") {
+    let resp = ui
+        .interact(ci, egui::Id::unique(("control_bar", "countin")), Sense::click())
+        .on_hover_text("Count-in. Right-click for pre-roll and post-roll");
+    if resp.clicked() {
         p.count_in = !p.count_in;
     }
+    if p.pre_roll > 0.0 || p.post_roll > 0.0 {
+        // A dot under it says a roll is set.
+        g.circle_filled(ci.center_bottom() + vec2(0.0, 3.0), 2.0, PURPLE);
+    }
+    resp.context_menu(|ui| {
+        for (label, roll) in [("Pre-roll", &mut p.pre_roll), ("Post-roll", &mut p.post_roll)] {
+            ui.menu_button(label, |ui| {
+                for (name, bars) in [("Off", 0.0f32), ("1 bar", 1.0), ("2 bars", 2.0), ("4 bars", 4.0)] {
+                    if ui.selectable_label(*roll == bars, name).clicked() {
+                        *roll = bars;
+                        ui.close();
+                    }
+                }
+            });
+        }
+        ui.label(egui::RichText::new("Pre-roll: recording from a stop starts earlier and comes in where the playhead was. Post-roll: the song plays on after the recording ends.").small());
+    });
     let met_bg = p.metronome.then_some(PURPLE);
     if tbutton(
         ui,
@@ -1335,11 +1428,7 @@ pub fn control_bar(
         "metronome",
         icon_metronome,
         met_bg,
-        if p.metronome {
-            Color32::WHITE
-        } else {
-            Color32::from_rgb(0xc0, 0xa8, 0xd8)
-        },
+        if p.metronome { Color32::WHITE } else { icon_col() },
     ) {
         p.metronome = !p.metronome;
     }
@@ -1361,7 +1450,7 @@ pub fn control_bar(
             _ => s.browser.open == Some(Tab::Files),
         };
         let on = shown.then_some(crate::widgets::blue());
-        let color = if on.is_some() { Color32::WHITE } else { ICON };
+        let color = if on.is_some() { Color32::WHITE } else { icon_col() };
         if tbutton(ui, &g, c, &format!("right{i}"), *draw, on, color) {
             match i {
                 0 => s.show_lists = !s.show_lists,
@@ -1393,7 +1482,7 @@ fn volume_span(after: f32, right: f32) -> (f32, f32) {
 /// fixed width, and some languages need more room (German, Finnish).
 fn fitting_font(g: &Painter, text: &str, size: f32, max_w: f32) -> FontId {
     let w = g
-        .layout_no_wrap(text.to_owned(), FontId::proportional(size), LCD_TEXT)
+        .layout_no_wrap(text.to_owned(), FontId::proportional(size), lcd_text_col())
         .size()
         .x;
     FontId::proportional(if w > max_w {

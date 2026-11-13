@@ -6,6 +6,13 @@
 //! - `dsp24_load`: time to render 24 playing software-instrument tracks, as a share of the
 //!   audio's own length (0.15 = 15 % of one CPU core)
 //! - `dsp24_rss_mb`: memory in use after that render
+//! - `session_<name>_load`, `_worst_us`, `_deadline_us`, `_misses`, `_rss_mb`: the standard
+//!   sessions of [`SESSIONS`] (light to heavy, many effects, complex routing), each rendered for
+//!   [`SESSION_SECS`] in blocks of [`BLOCK_FRAMES`]: average load, the longest block against its
+//!   deadline, and the blocks that took longer than the sound they made
+//! - `disk_<n>_load`, `_worst_us`, `_misses`, `_wait_ms`, `_underruns`: `n` audio tracks streamed
+//!   from files on disk (written to the temp folder first); `wait_ms` is the time the engine had
+//!   to wait for the disk over the render, `underruns` the blocks it played without its data
 //!
 //! `ovrtone --layout-shots <folder>`: opens the demo song, resizes the window to each size in
 //! [`LAYOUT_SIZES`] and saves a picture of what it drew as `layout-<w>x<h>.png`, to check the
@@ -150,6 +157,9 @@ pub struct Render {
     pub non_finite: usize,
     /// Tracks whose peak meter went NaN or infinite at some point.
     pub bad_meters: Vec<usize>,
+    /// The longest block, and the blocks that took longer than the sound they made.
+    pub worst_block: Duration,
+    pub misses: usize,
 }
 
 /// Plays `p` from the start for `secs` through the engine, offline (no sound card), with each
@@ -194,11 +204,19 @@ pub fn render(p: &Project, secs: f64) -> Render {
         peak: 0.0,
         non_finite: 0,
         bad_meters: Vec::new(),
+        worst_block: Duration::ZERO,
+        misses: 0,
     };
+    let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / SAMPLE_RATE as f64);
     for _ in 0..blocks {
         let t0 = Instant::now();
         core.process(&mut out);
-        r.busy += t0.elapsed();
+        let took = t0.elapsed();
+        r.busy += took;
+        r.worst_block = r.worst_block.max(took);
+        if took > deadline {
+            r.misses += 1;
+        }
         for s in &out {
             if s.is_finite() {
                 r.peak = r.peak.max(s.abs());
@@ -278,6 +296,173 @@ fn dsp_lines(report: &mut String) {
     let _ = writeln!(report, "dsp24_peak={peak:.3}");
     if let Some(mb) = rss_mb() {
         let _ = writeln!(report, "dsp24_rss_mb={mb:.1}");
+    }
+    session_lines(report);
+    disk_lines(report);
+}
+
+/// Length of each standard session's render.
+const SESSION_SECS: f64 = 10.0;
+
+/// The standard sessions, lightest first: (name, tracks, stock effects per track, auxes with
+/// sends from every track).
+pub const SESSIONS: [(&str, usize, usize, usize); 5] = [
+    ("light", 8, 1, 0),
+    ("medium", 24, 3, 1),
+    ("heavy", 64, 4, 2),
+    ("effects", 16, 16, 0),
+    ("routing", 32, 2, 4),
+];
+
+/// Effects for the sessions, a mix of light and costly ones, taken in turn.
+const SESSION_FX: [ovrtone_engine::FxKind; 8] = [
+    ovrtone_engine::FxKind::Prism,
+    ovrtone_engine::FxKind::Press,
+    ovrtone_engine::FxKind::Heat,
+    ovrtone_engine::FxKind::Halo,
+    ovrtone_engine::FxKind::Drift,
+    ovrtone_engine::FxKind::Swirl,
+    ovrtone_engine::FxKind::Wall,
+    ovrtone_engine::FxKind::Freq,
+];
+
+/// A standard session: `tracks` instrument tracks from the demo's, each with `fx` stock effects;
+/// `auxes` Aux strips with a reverb or delay, which every track sends to.
+pub fn session(tracks: usize, fx: usize, auxes: usize) -> Project {
+    let mut p = dsp_project();
+    let base = p.tracks.clone();
+    p.tracks = (0..tracks)
+        .map(|i| {
+            let mut t = base[i % base.len()].clone();
+            t.name = format!("Track {}", i + 1);
+            t.inserts = (0..fx)
+                .map(|k| crate::model::Insert::new(SESSION_FX[(i + k) % SESSION_FX.len()]))
+                .collect();
+            t.sends.clear();
+            t
+        })
+        .collect();
+    for a in 0..auxes {
+        let Some(aux) = p.new_aux_for(0, true) else {
+            break;
+        };
+        let kind = if a % 2 == 0 {
+            ovrtone_engine::FxKind::Halo
+        } else {
+            ovrtone_engine::FxKind::Drift
+        };
+        p.tracks[aux].inserts = vec![crate::model::Insert::new(kind)];
+        let bus = p.aux_bus_of(aux);
+        for t in 1..tracks {
+            if p.tracks[t].sends.len() < crate::model::MAX_SENDS {
+                p.tracks[t].sends.push(crate::model::SendSlot {
+                    bus: Some(bus),
+                    level: 0.5,
+                    pre: false,
+                });
+            }
+        }
+    }
+    p.position_beats = 0.0;
+    p
+}
+
+/// Audio tracks streamed from disk in the disk measurement.
+const DISK_TRACKS: [usize; 3] = [8, 32, 96];
+
+fn disk_lines(report: &mut String) {
+    use ovrtone_engine::{Command, Engine};
+    let dir = std::env::temp_dir().join("ovrtone-bench");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let wav = dir.join("stream.wav");
+    // Twenty seconds of a quiet tone, longer than the render, so every block reads the disk.
+    let tone: Vec<f32> = (0..SAMPLE_RATE as usize * 2 * 20)
+        .map(|i| (i as f32 * 0.037).sin() * 0.2)
+        .collect();
+    if let Err(e) = ovrtone_engine::write_wav(&wav, &tone, SAMPLE_RATE) {
+        let _ = writeln!(report, "disk_error={e}");
+        return;
+    }
+    let ctx = egui::Context::default();
+    let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / SAMPLE_RATE as f64);
+    for n in DISK_TRACKS {
+        let mut p = Project::empty();
+        p.tracks.clear();
+        for _ in 0..n {
+            if crate::import::import_audio_at(&mut p, &wav, &ctx, 1.0, None).is_err() {
+                break;
+            }
+        }
+        let (engine, mut core) = Engine::offline(SAMPLE_RATE);
+        let mut sync = crate::engine_sync::EngineSync::new(engine, &p);
+        let mut settled = 0;
+        for _ in 0..4096 {
+            sync.sync(&mut p);
+            core.process(&mut []);
+            settled = if sync.needs_retry() { 0 } else { settled + 1 };
+            if settled >= 3 {
+                break;
+            }
+        }
+        sync.engine.send(Command::SetPosition { beat: 0.0 });
+        sync.engine.send(Command::Play);
+        core.process(&mut []);
+        let mut out = vec![0.0f32; BLOCK_FRAMES * 2];
+        let blocks = (SESSION_SECS * SAMPLE_RATE as f64 / BLOCK_FRAMES as f64) as usize;
+        let (mut busy, mut worst, mut misses, mut wait) =
+            (Duration::ZERO, Duration::ZERO, 0usize, Duration::ZERO);
+        let underruns_before = sync.underruns();
+        for _ in 0..blocks {
+            // Real time gives the disk thread a block's time to read; here, waiting longer than
+            // that is what a device would have heard as a gap.
+            let waited = Instant::now();
+            while !core.clips_ready(BLOCK_FRAMES) && waited.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            wait += waited.elapsed().saturating_sub(deadline);
+            let t0 = Instant::now();
+            core.process(&mut out);
+            let took = t0.elapsed();
+            busy += took;
+            worst = worst.max(took);
+            if took > deadline {
+                misses += 1;
+            }
+        }
+        let audio = blocks as f64 * deadline.as_secs_f64();
+        let _ = writeln!(report, "disk_{n}_load={:.4}", busy.as_secs_f64() / audio.max(1e-9));
+        let _ = writeln!(report, "disk_{n}_worst_us={:.0}", worst.as_secs_f64() * 1e6);
+        let _ = writeln!(report, "disk_{n}_misses={misses}");
+        let _ = writeln!(report, "disk_{n}_wait_ms={:.1}", wait.as_secs_f64() * 1e3);
+        let _ = writeln!(
+            report,
+            "disk_{n}_underruns={}",
+            sync.underruns().saturating_sub(underruns_before)
+        );
+    }
+    let _ = std::fs::remove_file(&wav);
+}
+
+fn session_lines(report: &mut String) {
+    for (name, tracks, fx, auxes) in SESSIONS {
+        let r = render(&session(tracks, fx, auxes), SESSION_SECS);
+        let deadline = BLOCK_FRAMES as f64 / SAMPLE_RATE as f64 * 1e6;
+        let _ = writeln!(report, "session_{name}_load={:.4}", r.busy.as_secs_f64() / r.audio_secs);
+        let _ = writeln!(
+            report,
+            "session_{name}_worst_us={:.0}",
+            r.worst_block.as_secs_f64() * 1e6
+        );
+        let _ = writeln!(report, "session_{name}_deadline_us={deadline:.0}");
+        let _ = writeln!(report, "session_{name}_misses={}", r.misses);
+        if r.non_finite > 0 {
+            let _ = writeln!(report, "session_{name}_non_finite={}", r.non_finite);
+        }
+        if let Some(mb) = rss_mb() {
+            let _ = writeln!(report, "session_{name}_rss_mb={mb:.1}");
+        }
     }
 }
 

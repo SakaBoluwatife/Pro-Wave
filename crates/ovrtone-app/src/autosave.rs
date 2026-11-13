@@ -151,7 +151,13 @@ impl App {
         if Instant::now() < self.autosave.next {
             return;
         }
-        self.autosave.next = Instant::now() + EVERY;
+        // As often as Settings > General says; never when it is off.
+        let minutes = self.ui.autosave_minutes;
+        self.autosave.next = Instant::now()
+            + if minutes == 0 { EVERY } else { Duration::from_secs(u64::from(minutes) * 60) };
+        if minutes == 0 {
+            return;
+        }
         let Some(dir) = folder() else { return };
         if self.ui.rec.active() || self.ui.audio_rec.active() {
             return;

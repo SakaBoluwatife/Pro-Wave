@@ -13,7 +13,7 @@
 use crate::i18n::{tr, trf};
 use crate::model::{AutoMode, AutoTarget, Insert, Project, SendSlot, TrackKind, MAX_SENDS};
 use crate::widgets::{
-    back_chevron, blue, menu_title, popup_button, stroke, todo_item, TEXT, TEXT_DIM,
+    back_chevron, blue, menu_title, popup_button, stroke, todo_item, text_col, text_dim_col,
 };
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, StrokeKind, Ui};
@@ -24,16 +24,32 @@ const TOOLBAR_H: f32 = 30.0;
 const LABEL_W: f32 = 88.0;
 const GAP: f32 = 2.0;
 
-const TOOLBAR_BG: Color32 = crate::theme::TOOLBAR;
-const MIXER_BG: Color32 = crate::theme::MIXER_BG;
-const STRIP_BG: Color32 = crate::theme::STRIP;
-const STRIP_SEL: Color32 = crate::theme::STRIP_SELECTED;
-const SLOT_EMPTY: Color32 = crate::theme::SLOT_EMPTY;
-const SLOT_GRAY: Color32 = crate::theme::SLOT;
+fn toolbar_bg_col() -> Color32 {
+    crate::theme::toolbar()
+}
+fn mixer_bg_col() -> Color32 {
+    crate::theme::mixer_bg()
+}
+fn strip_bg_col() -> Color32 {
+    crate::theme::strip()
+}
+fn strip_sel_col() -> Color32 {
+    crate::theme::strip_selected()
+}
+fn slot_empty_col() -> Color32 {
+    crate::theme::slot_empty()
+}
+fn slot_gray_col() -> Color32 {
+    crate::theme::slot()
+}
 /// A strip that makes no sound (muted, or another track is soloed): instruments, plug-ins
 /// and sends turn grey, and so do the meters.
-const PLUGIN_OFF: Color32 = crate::theme::SLOT_OFF;
-const METER_OFF: Color32 = crate::theme::METER_OFF;
+fn plugin_off_col() -> Color32 {
+    crate::theme::slot_off()
+}
+fn meter_off_col() -> Color32 {
+    crate::theme::meter_off()
+}
 const READ_GREEN: Color32 = crate::theme::GOOD;
 const MUTE_ON: Color32 = crate::theme::MUTE;
 const SOLO_ON: Color32 = crate::theme::SOLO;
@@ -104,8 +120,14 @@ pub struct MixerView {
     pub peak_hold_at: HashMap<StripKey, std::time::Instant>,
     /// The output strip's Bnc was pressed.
     pub want_bounce: bool,
-    /// The effect whose window is open: (track, slot).
+    /// The effect whose window was opened last, and is in front: (track, slot).
     pub fx_window: Option<(usize, usize)>,
+    /// Every effect window open, oldest first (the one in front among them).
+    pub fx_open: Vec<(usize, usize)>,
+    /// The window last brought to the front, so a click on a slot brings its window forward once.
+    pub fx_front: Option<(usize, usize)>,
+    /// What the window in front hears from its effect (the analyzer and its meters).
+    pub listen: Option<crate::fx_ui::Listen>,
     /// A hosted plugin whose editor was asked for: its uid and its name. Run by `App`, which has
     /// the running plugins.
     pub open_plugin: Option<(u64, String)>,
@@ -113,6 +135,17 @@ pub struct MixerView {
     pub track_clicked: bool,
     /// What a strip's right-click menu asked of the Tracks area.
     pub strip_request: Option<StripRequest>,
+    /// A click asked for the Spatial Audio window.
+    pub open_spatial: bool,
+    /// The renderer was asked for from Stereo Out's strip.
+    pub open_renderer: bool,
+    /// An effect copied from a slot, to paste into another: an Ovrtone effect, or a plugin.
+    pub fx_clipboard: Option<Insert>,
+    pub plugin_clipboard: Option<crate::model::PluginInsert>,
+    /// A template to save or load, asked for from a strip's menu.
+    pub file_task: Option<crate::file_commands::FileTask>,
+    /// Auto Gain Staging was asked for from a strip's menu.
+    pub open_gain_staging: bool,
     /// The Automation editor window.
     pub auto_editor: crate::automation::AutoEditor,
     /// Sends on Faders: the bus whose send levels the faders set.
@@ -200,6 +233,12 @@ impl CopiedStrip {
 impl Default for MixerView {
     fn default() -> Self {
         Self {
+            open_spatial: false,
+            open_renderer: false,
+            file_task: None,
+            fx_clipboard: None,
+            plugin_clipboard: None,
+            open_gain_staging: false,
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
             preset_cmd: None,
@@ -220,6 +259,9 @@ impl Default for MixerView {
             peak_hold_at: HashMap::new(),
             want_bounce: false,
             fx_window: None,
+            fx_open: Vec::new(),
+            fx_front: None,
+            listen: None,
             open_plugin: None,
             track_clicked: false,
             strip_request: None,
@@ -238,6 +280,8 @@ impl Default for MixerView {
 #[derive(Default)]
 pub struct Meters {
     pub tracks: Vec<(f32, f32)>,
+    /// Each track's RMS, linear.
+    pub rms: Vec<f32>,
     /// Gain reduction in dB of each track's compressors.
     pub reduction: Vec<f32>,
     pub master: (f32, f32),
@@ -346,11 +390,11 @@ fn small_button(
     if !hint.is_empty() {
         resp = resp.on_hover_text(hint);
     }
-    g.rect_filled(r, 3.0, if on { on_col } else { SLOT_GRAY });
+    g.rect_filled(r, 3.0, if on { on_col } else { slot_gray_col() });
     let txt = if on && on_col == SOLO_ON {
         Color32::BLACK
     } else {
-        Color32::from_gray(0xe8)
+        crate::theme::gray(0xe8)
     };
     g.text(
         r.center(),
@@ -403,7 +447,7 @@ fn pan_knob(
     // Off centre, the knob says how far.
     let amount = (value * 64.0).round() as i32;
     if amount != 0 {
-        g.circle_filled(c, 8.5, Color32::from_gray(0x68));
+        g.circle_filled(c, 8.5, crate::theme::gray(0x68));
         g.text(
             c,
             Align2::CENTER_CENTER,
@@ -446,6 +490,7 @@ fn fader_and_meter(
     db: f32,
     editable: bool,
     peaks: (f32, f32),
+    rms: f32,
     inactive: bool,
     clipped: bool,
 ) -> Moved {
@@ -454,7 +499,7 @@ fn fader_and_meter(
     let h = (bottom - top).max(1.0);
     let y_of = |f: f32| bottom - f * h;
     let w = area.width();
-    let scale_col = Color32::from_gray(0x6c);
+    let scale_col = crate::theme::gray(0x6c);
     let tiny = FontId::proportional(6.5);
 
     // Columns, proportional to the strip width (Logic: fader left of centre, meter right).
@@ -493,10 +538,10 @@ fn fader_and_meter(
 
     // Fader slot.
     let slot_r = Rect::from_min_max(pos2(fader_x - 2.0, top), pos2(fader_x + 2.0, bottom));
-    g.rect_filled(slot_r, 2.0, Color32::from_gray(0x0b));
+    g.rect_filled(slot_r, 2.0, crate::theme::gray(0x0b));
     g.line_segment(
         [slot_r.right_top(), slot_r.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x2b)),
+        Stroke::new(1.0, crate::theme::gray(0x2b)),
     );
 
     // Meter bars with peak-hold lines (hold falls back at 12 dB/s).
@@ -514,11 +559,11 @@ fn fader_and_meter(
         pos2(meter_left - 2.0, top - 1.0),
         pos2(meter_left + 2.0 * bar_w + 3.0, bottom + 1.0),
     );
-    g.rect_filled(housing, 2.5, Color32::from_gray(0x09));
+    g.rect_filled(housing, 2.5, crate::theme::gray(0x09));
     g.rect_stroke(
         housing,
         2.5,
-        Stroke::new(1.0, Color32::from_gray(0x19)),
+        Stroke::new(1.0, crate::theme::gray(0x19)),
         StrokeKind::Inside,
     );
     // The clip light above the bars: on since the meter last went over full scale.
@@ -526,7 +571,7 @@ fn fader_and_meter(
     let light_color = if clipped {
         Color32::from_rgb(0xf0, 0x30, 0x24)
     } else {
-        Color32::from_gray(0x14)
+        crate::theme::gray(0x14)
     };
     g.rect_filled(light, 1.0, light_color);
     for (i, (lvl, hd)) in [(levels.0, hold.0), (levels.1, hold.1)]
@@ -535,7 +580,7 @@ fn fader_and_meter(
     {
         let x0 = meter_left + i as f32 * (bar_w + 1.0);
         let bar = Rect::from_min_max(pos2(x0, top), pos2(x0 + bar_w, bottom));
-        g.rect_filled(bar, 0.5, Color32::from_gray(0x04));
+        g.rect_filled(bar, 0.5, crate::theme::gray(0x04));
         let f = db_to_frac(lvl);
         if f > 0.0 {
             let bands = [(-120.0f32, -6.0f32), (-6.0, 0.0), (0.0, 12.0)];
@@ -545,7 +590,7 @@ fn fader_and_meter(
                     let seg =
                         Rect::from_min_max(pos2(bar.left(), y_of(fb)), pos2(bar.right(), y_of(fa)));
                     let col = if inactive {
-                        METER_OFF
+                        meter_off_col()
                     } else {
                         meter_colour((lo + hi) * 0.5)
                     };
@@ -575,7 +620,7 @@ fn fader_and_meter(
                 Stroke::new(
                     1.5,
                     if inactive {
-                        METER_OFF
+                        meter_off_col()
                     } else {
                         meter_colour(hd)
                     }
@@ -583,6 +628,20 @@ fn fader_and_meter(
                 ),
             );
         }
+    }
+    // RMS: a bright line across both bars at the average level, with the body below it lit.
+    let rms_db = lin_to_db(rms);
+    if rms_db > -60.0 && !inactive {
+        let y = y_of(db_to_frac(rms_db));
+        let both = Rect::from_min_max(
+            pos2(meter_left, y),
+            pos2(meter_left + 2.0 * bar_w + 1.0, bottom),
+        );
+        g.rect_filled(both, 0.0, Color32::from_white_alpha(28));
+        g.line_segment(
+            [pos2(both.left(), y), pos2(both.right(), y)],
+            Stroke::new(1.5, Color32::from_white_alpha(200)),
+        );
     }
     if levels.0 > -60.0 || levels.1 > -60.0 || hold.0 > -60.0 || hold.1 > -60.0 {
         ui.ctx().request_repaint();
@@ -628,7 +687,7 @@ fn fader_and_meter(
         2.0,
         Color32::from_black_alpha(110),
     );
-    g.rect_filled(cap, 2.0, Color32::from_gray(0x88));
+    g.rect_filled(cap, 2.0, crate::theme::gray(0x88));
     g.rect_filled(
         Rect::from_min_max(
             pos2(cap.left() + 1.5, cap.top() + 1.0),
@@ -640,7 +699,7 @@ fn fader_and_meter(
             sw: 0,
             se: 0,
         },
-        Color32::from_gray(0xd4),
+        crate::theme::gray(0xd4),
     );
     g.rect_filled(
         Rect::from_min_max(
@@ -653,12 +712,12 @@ fn fader_and_meter(
             sw: 1,
             se: 1,
         },
-        Color32::from_gray(0xb2),
+        crate::theme::gray(0xb2),
     );
     g.rect_stroke(
         cap,
         2.0,
-        Stroke::new(1.0, Color32::from_gray(0x25)),
+        Stroke::new(1.0, crate::theme::gray(0x25)),
         StrokeKind::Inside,
     );
     for dy in [-9.0f32, -6.0, -3.0, 4.5, 7.5, 10.5] {
@@ -667,14 +726,14 @@ fn fader_and_meter(
                 pos2(cap.left() + 2.5, cap_y + dy),
                 pos2(cap.right() - 2.5, cap_y + dy),
             ],
-            Stroke::new(0.8, Color32::from_gray(0x50)),
+            Stroke::new(0.8, crate::theme::gray(0x50)),
         );
         g.line_segment(
             [
                 pos2(cap.left() + 2.5, cap_y + dy + 1.0),
                 pos2(cap.right() - 2.5, cap_y + dy + 1.0),
             ],
-            Stroke::new(0.6, Color32::from_gray(0xe4)),
+            Stroke::new(0.6, crate::theme::gray(0xe4)),
         );
     }
     g.line_segment(
@@ -682,14 +741,14 @@ fn fader_and_meter(
             pos2(cap.left() + 1.0, cap_y),
             pos2(cap.right() - 1.0, cap_y),
         ],
-        Stroke::new(1.8, crate::theme::BORDER),
+        Stroke::new(1.8, crate::theme::border()),
     );
     g.line_segment(
         [
             pos2(cap.left() + 1.0, cap_y + 1.4),
             pos2(cap.right() - 1.0, cap_y + 1.4),
         ],
-        Stroke::new(0.8, Color32::from_gray(0xee)),
+        Stroke::new(0.8, crate::theme::gray(0xee)),
     );
     out
 }
@@ -697,15 +756,15 @@ fn fader_and_meter(
 /// Vertical positions of the strip rows (shared by every strip so rows line up).
 pub struct Rows {
     /// Insert slots there are, and the first shown, when not all of them fit.
-    fx_total: usize,
+    pub(crate) fx_total: usize,
     fx_first: usize,
     setting: f32,
     gain_red: f32,
     midi_fx: f32,
     icon: f32,
     input: f32,
-    fx: f32,
-    fx_rows: usize,
+    pub(crate) fx: f32,
+    pub(crate) fx_rows: usize,
     sends: f32,
     send_rows: usize,
     output: f32,
@@ -730,10 +789,16 @@ pub fn rows_fit(top: f32, bottom: f32, fx_rows: usize, send_rows: usize, scroll:
     if spare >= 0.0 {
         return full;
     }
-    let shown = total.saturating_sub((-spare / 17.0).ceil() as usize).max(2);
+    // At least three, so the last effect, the one before it and the plus stay in sight.
+    let shown = total
+        .saturating_sub((-spare / 17.0).ceil() as usize)
+        .max(3)
+        .min(total);
     let mut fit = rows(top, shown, send_rows);
     fit.fx_total = total;
-    fit.fx_first = (scroll.max(0.0).round() as usize).min(total - shown);
+    // Counted back from the end: the newest slots and the one with the plus are in sight, and the
+    // wheel goes back to the first ones.
+    fit.fx_first = (total - shown).saturating_sub(scroll.max(0.0).round() as usize);
     fit
 }
 
@@ -744,7 +809,8 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
     let gain_red = setting + 20.0;
     let midi_fx = gain_red + 12.0;
     let input = midi_fx + 20.0;
-    let fx = input + 22.0;
+    // Room under the input for the line that parts an instrument from its effects.
+    let fx = input + 32.0;
     let sends = fx + fx_rows as f32 * 17.0 + 4.0;
     let output = sends + send_rows as f32 * 17.0 + 3.0;
     let group = output + 20.0;
@@ -781,12 +847,12 @@ pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
                 crate::model::next_plugin_row(t.inserts.len(), &t.plugins)
             }),
             StripKey::StereoOut => {
-                crate::model::next_plugin_row(0, &p.master_plugins)
+                crate::model::next_plugin_row(p.master_strip.inserts.len(), &p.master_plugins)
             }
         })
         .max()
         .unwrap_or(0)
-        // The row with the plus.
+        // The row with the plus: one more appears each time a slot is used.
         + 1
 }
 
@@ -830,7 +896,7 @@ fn send_slots(
         } else if k == sends.len() && sends.len() < MAX_SENDS {
             let resp = ui.interact(r, uid.with(("empty", k)), Sense::click());
             let resp = resp.on_hover_text("Add a send");
-            slot(g, r, "+", SLOT_EMPTY, TEXT);
+            slot(g, r, "+", slot_empty_col(), text_col());
             let mut picked = None;
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(130.0);
@@ -889,12 +955,12 @@ fn send_slot(
         slot_r,
         &trf("Bus {}", &[&bus]),
         if inactive {
-            PLUGIN_OFF
+            plugin_off_col()
         } else {
             crate::theme::accent()
         },
         if inactive {
-            TEXT_DIM
+            text_dim_col()
         } else {
             crate::theme::on_accent()
         },
@@ -943,8 +1009,8 @@ fn send_slot(
         send.level = 0.0;
     }
     crate::widgets::value_arc(g, knob_c, 8.2, -1.0, send.level * 2.0 - 1.0);
-    g.circle_filled(knob_c, 6.5, Color32::from_gray(0x32));
-    g.circle_stroke(knob_c, 6.5, Stroke::new(1.0, Color32::from_gray(0x15)));
+    g.circle_filled(knob_c, 6.5, crate::theme::gray(0x32));
+    g.circle_stroke(knob_c, 6.5, Stroke::new(1.0, crate::theme::gray(0x15)));
     let a = -std::f32::consts::FRAC_PI_2 - 2.3 + send.level * 4.6;
     g.line_segment(
         [
@@ -956,8 +1022,69 @@ fn send_slot(
     keep
 }
 
-/// The effects an Audio FX slot can hold, in the order of its menu.
-const FX_MENU: [ovrtone_engine::FxKind; 11] = ovrtone_engine::FxKind::ALL;
+/// Ovrtone's own effects as a maker's folder in a slot's menu: the current set, and the first set
+/// under Classic. The kind picked, if any (`now` is ticked).
+fn stock_folder(ui: &mut Ui, now: Option<ovrtone_engine::FxKind>) -> Option<ovrtone_engine::FxKind> {
+    let mut picked = None;
+    let mut entry = |ui: &mut Ui, kind: ovrtone_engine::FxKind| {
+        let text = format!("{}  ·  {}", kind.name(), kind.kind_word());
+        if ui.selectable_label(now == Some(kind), text).clicked() {
+            picked = Some(kind);
+            ui.close();
+        }
+    };
+    ui.menu_button("Ovrtone", |ui| {
+        for kind in ovrtone_engine::FxKind::MENU {
+            entry(ui, kind);
+        }
+        ui.separator();
+        ui.menu_button("Classic", |ui| {
+            for kind in ovrtone_engine::FxKind::CLASSIC {
+                entry(ui, kind);
+            }
+        });
+    });
+    picked
+}
+
+/// A stock effect carried from the Plugins list to a slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StockDrag(pub ovrtone_engine::FxKind);
+
+/// Puts a stock effect after the effects of track `i`.
+pub fn add_stock(p: &mut Project, i: usize, kind: ovrtone_engine::FxKind) -> Result<(), String> {
+    let Some(t) = p.tracks.get_mut(i) else {
+        return Err("Select a track first.".to_string());
+    };
+    if t.inserts.len() + t.plugins.len() >= ovrtone_engine::MAX_INSERTS {
+        return Err("This track has no free effect slot.".to_string());
+    }
+    t.inserts.push(Insert::new(kind));
+    Ok(())
+}
+
+/// A stock effect dropped on slot `k` of track `i` goes in there, and its window opens.
+fn stock_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, k: usize) {
+    let Some(drag) = egui::DragAndDrop::payload::<StockDrag>(ui.ctx()) else {
+        return;
+    };
+    let over = ui
+        .input(|inp| inp.pointer.hover_pos())
+        .is_some_and(|at| r.contains(at));
+    if !over {
+        return;
+    }
+    g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+    if ui.input(|inp| inp.pointer.any_released()) {
+        egui::DragAndDrop::clear_payload(ui.ctx());
+        if add_stock(p, i, drag.0).is_ok() {
+            let last = p.tracks[i].inserts.len() - 1;
+            apply_insert(p, v, i, last, InsertAct::MoveTo(k));
+            let at = k.min(last);
+            v.fx_window = Some((i, at));
+        }
+    }
+}
 
 /// What the user chose in an Audio FX slot's menu.
 enum InsertAct {
@@ -967,6 +1094,12 @@ enum InsertAct {
     Bypass,
     Open,
     Move(isize),
+    /// To slot n (past the last: to the end).
+    MoveTo(usize),
+    /// A copy right after it.
+    Duplicate,
+    /// The copied effect into this slot.
+    Paste(Insert),
 }
 
 /// The right-click menu of a track's strip.
@@ -985,6 +1118,149 @@ fn strip_menu(resp: &egui::Response, p: &mut Project, v: &mut MixerView, i: usiz
     let feeds = p.feeds_of(i);
     let is_aux = t_is_aux(p, i);
     crate::widgets::context_menu(resp, |ui| {
+        // The level going into the strip's effects; the fader comes after them.
+        ui.horizontal(|ui| {
+            ui.label("Input Trim");
+            if let Some(t) = p.tracks.get_mut(i) {
+                ui.add(
+                    egui::DragValue::new(&mut t.trim_db)
+                        .speed(0.1)
+                        .range(-36.0..=36.0)
+                        .suffix(" dB"),
+                );
+            }
+        });
+        {
+            if let Some(t) = p.tracks.get_mut(i) {
+                let now = match (t.object.is_some(), t.bed_pan) {
+                    (false, _) => 0,
+                    (true, true) => 1,
+                    (true, false) => 2,
+                };
+                ui.menu_button("Spatial", |ui| {
+                    for (k, name) in [(0, "Stereo"), (1, "Surround Pan"), (2, "Object")] {
+                        if ui.selectable_label(now == k, name).clicked() {
+                            match k {
+                                0 => t.object = None,
+                                _ => {
+                                    t.object.get_or_insert_with(ovrtone_engine::ObjectPlace::default);
+                                    t.bed_pan = k == 1;
+                                }
+                            }
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Open Panner…").clicked() {
+                        p.selected_track = i;
+                        v.open_spatial = true;
+                        ui.close();
+                    }
+                });
+            }
+        }
+        if ui.button("Auto Gain Staging…").clicked() {
+            v.open_gain_staging = true;
+            ui.close();
+        }
+        // Templates: the track, its effect chain, or the whole mixer, for other projects.
+        ui.menu_button("Templates", |ui| {
+            use crate::file_commands::{templates, FileTask, TemplateKind};
+            if ui.button("Save Track as Template…").clicked() {
+                v.file_task = Some(FileTask::SaveTrackTemplate(i));
+                ui.close();
+            }
+            if ui.button("Save Effect Chain…").clicked() {
+                v.file_task = Some(FileTask::SaveChainPreset(i));
+                ui.close();
+            }
+            if ui.button("Save Mixer as Template…").clicked() {
+                v.file_task = Some(FileTask::SaveMixerTemplate);
+                ui.close();
+            }
+            ui.separator();
+            for (label, kind) in [
+                ("New Track from Template", TemplateKind::Track),
+                ("Load Effect Chain", TemplateKind::Chain),
+                ("New Tracks from Mixer Template", TemplateKind::Mixer),
+            ] {
+                ui.menu_button(label, |ui| {
+                    let list = templates(kind);
+                    if list.is_empty() {
+                        ui.weak("None saved yet");
+                    }
+                    for (name, file) in list {
+                        if ui.button(name.as_str()).clicked() {
+                            v.file_task = Some(match kind {
+                                TemplateKind::Chain => FileTask::LoadChain(file, i),
+                                _ => FileTask::LoadTracks(file),
+                            });
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        });
+        // Which strips the mixer shows and how: kept for every project.
+        ui.menu_button("Mixer Layouts", |ui| {
+            if ui
+                .button("Save Layout")
+                .on_hover_text("Single, Tracks or All, the strip types shown, and wide or narrow strips")
+                .clicked()
+            {
+                save_layout(v);
+            }
+            let layouts = load_layouts();
+            let mut forget = None;
+            for (k, (name, mode, filters, wide)) in layouts.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.button(name.as_str()).clicked() {
+                        v.mode = *mode;
+                        v.filters = *filters;
+                        v.wide = *wide;
+                        ui.close();
+                    }
+                    if ui.small_button("Delete").clicked() {
+                        forget = Some(k);
+                    }
+                });
+            }
+            if let Some(k) = forget {
+                let mut layouts = layouts;
+                layouts.remove(k);
+                write_layouts(&layouts);
+            }
+        });
+        // The whole mixer kept as it is, to go back to.
+        ui.menu_button("Mixer Snapshots", |ui| {
+            if ui
+                .button("Save Snapshot")
+                .on_hover_text("Faders, pans, mutes, solos, input trims, Ovrtone effects and sends of every strip")
+                .clicked()
+            {
+                p.take_mixer_snapshot();
+            }
+            let (mut recall, mut delete) = (None, None);
+            for (k, m) in p.mixer_snapshots.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(120.0));
+                    if ui.button("Recall").clicked() {
+                        recall = Some(k);
+                    }
+                    if ui.small_button("Delete").clicked() {
+                        delete = Some(k);
+                    }
+                });
+            }
+            if let Some(k) = recall {
+                p.recall_mixer_snapshot(k);
+                ui.close();
+            }
+            if let Some(k) = delete {
+                p.mixer_snapshots.remove(k);
+            }
+        });
+        ui.separator();
         if is_aux {
             ui.menu_button("Fed By", |ui| {
                 if feeds.is_empty() {
@@ -1183,14 +1459,12 @@ fn insert_slot(
         return;
     }
     slot_drop(ui, g, r, p, Home::Track(i), k);
+    fx_drop(ui, g, r, p, v, i, k);
     if i >= p.tracks.len() {
         return;
     }
-    // The slots end at a plus. Gaps left above it can be filled too.
+    // The next free slot has a plus. Every empty slot takes an effect, gaps included.
     let next = rows.last().map_or(count, |row| row + 1);
-    if have.is_none() && k > next {
-        return;
-    }
     let full = count + plugins >= ovrtone_engine::MAX_INSERTS;
     match have {
         Some(fx) => {
@@ -1201,12 +1475,12 @@ fn insert_slot(
                 fx.name(),
                 2,
                 if off {
-                    PLUGIN_OFF
+                    plugin_off_col()
                 } else {
                     crate::theme::accent()
                 },
                 if off {
-                    TEXT_DIM
+                    text_dim_col()
                 } else {
                     crate::theme::on_accent()
                 },
@@ -1216,14 +1490,31 @@ fn insert_slot(
             g,
             r,
             if k == next && !full { "+" } else { "" },
-            SLOT_EMPTY,
-            TEXT,
+            slot_empty_col(),
+            text_col(),
         ),
     }
     if have.is_none() && full {
         return;
     }
-    let resp = ui.interact(r, uid, Sense::click());
+    let sense = if have.is_some() {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let resp = ui.interact(r, uid, sense);
+    if have.is_some() && resp.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), FxDrag(i, k));
+    }
+    if let (Some(fx), true) = (have, resp.dragged()) {
+        // The effect's name follows the pointer while it is carried.
+        if let Some(at) = ui.ctx().pointer_interact_pos() {
+            let layer = egui::LayerId::new(egui::Order::Tooltip, uid.with("carried"));
+            let tag = Rect::from_center_size(at + vec2(0.0, -14.0), r.size());
+            let lg = ui.ctx().layer_painter(layer);
+            named_slot(&lg, tag, fx.name(), 2, crate::theme::accent(), crate::theme::on_accent());
+        }
+    }
     let resp = if have.is_none() {
         resp.on_hover_text_at_pointer("Add an effect")
     } else {
@@ -1231,12 +1522,19 @@ fn insert_slot(
     };
     // A click opens the effect. An empty slot's click offers what can go in it.
     if have.is_some() && resp.clicked() {
-        v.fx_window = Some((i, k));
+        // A click opens the window, brings it forward, or (in front already) closes it.
+        if v.fx_window == Some((i, k)) && v.fx_open.contains(&(i, k)) {
+            v.fx_open.retain(|w| *w != (i, k));
+            v.fx_window = v.fx_open.last().copied();
+            v.fx_front = v.fx_window;
+        } else {
+            v.fx_window = Some((i, k));
+        }
     }
     let mut act = (have.is_some() && delete_pressed(ui, &resp)).then_some(InsertAct::Remove);
     if let Some(fx) = have {
         let color = if inactive || fx.bypass {
-            TEXT_DIM
+            text_dim_col()
         } else {
             Color32::WHITE
         };
@@ -1249,6 +1547,9 @@ fn insert_slot(
     }
     let installed = v.installed.clone();
     let mut pick = None;
+    let (clipboard, plugin_clip) = (v.fx_clipboard, v.plugin_clipboard.clone());
+    let mut copied: Option<Insert> = None;
+    let mut paste_plugin = false;
     let mut items = |ui: &mut Ui| {
         ui.set_min_width(150.0);
         if let Some(fx) = have {
@@ -1273,12 +1574,17 @@ fn insert_slot(
                 }
             });
             ui.separator();
+            if ui.button("Copy Effect").clicked() {
+                copied = Some(fx);
+                ui.close();
+            }
+            if ui.button("Duplicate Effect").clicked() {
+                act = Some(InsertAct::Duplicate);
+                ui.close();
+            }
             ui.menu_button(tr("Replace With"), |ui| {
-                for kind in FX_MENU {
-                    if ui.selectable_label(kind == fx.kind, kind.name()).clicked() {
-                        act = Some(InsertAct::Replace(kind));
-                        ui.close();
-                    }
+                if let Some(kind) = stock_folder(ui, Some(fx.kind)) {
+                    act = Some(InsertAct::Replace(kind));
                 }
             });
             if ui.button(tr("Remove")).clicked() {
@@ -1286,19 +1592,50 @@ fn insert_slot(
                 ui.close();
             }
         } else {
-            if installed.iter().any(|info| !info.is_instrument) {
-                plugin_menu(ui, &installed, false, &mut pick);
-                ui.separator();
-            }
-            for kind in FX_MENU {
-                if ui.button(kind.name()).clicked() {
-                    act = Some(InsertAct::Add(kind));
+            // What was copied from another slot, then Ovrtone's own effects in a folder like a
+            // plugin maker's.
+            if let Some(fx) = clipboard {
+                if ui.button(format!("Paste {}", fx.name())).clicked() {
+                    act = Some(InsertAct::Paste(fx));
                     ui.close();
                 }
+            }
+            if let Some(plugin) = plugin_clip.as_ref() {
+                if ui.button(format!("Paste {}", plugin.name)).clicked() {
+                    paste_plugin = true;
+                    ui.close();
+                }
+            }
+            if clipboard.is_some() || plugin_clip.is_some() {
+                ui.separator();
+            }
+            if let Some(kind) = stock_folder(ui, None) {
+                act = Some(InsertAct::Add(kind));
+            }
+            if installed.iter().any(|info| !info.is_instrument) {
+                ui.separator();
+                plugin_menu(ui, &installed, false, &mut pick);
             }
         }
     };
     slot_menu(&resp, have.is_none()).show(&mut items);
+    if let Some(fx) = copied {
+        v.fx_clipboard = Some(fx);
+    }
+    if paste_plugin {
+        if let Some(mut plugin) = plugin_clip {
+            // A new instance of it, with the settings it had when copied.
+            plugin.uid = crate::plugin_rack::new_uid();
+            plugin.sidechain = None;
+            plugin.failed = None;
+            let t = &mut p.tracks[i];
+            if t.inserts.len() + t.plugins.len() < ovrtone_engine::MAX_INSERTS {
+                let first = t.inserts.len();
+                crate::model::place_plugin_in_row(first, &mut t.plugins, plugin, k);
+                p.song_rev += 1;
+            }
+        }
+    }
     if let Some(info) = pick {
         if let Err(e) = crate::plugin_rack::add_effect_in_row(p, i, &info, k) {
             v.message = Some(e);
@@ -1394,6 +1731,32 @@ fn side_chain_sources(p: &Project, own: Option<usize>) -> Vec<(usize, String)> {
         .filter(|(i, t)| Some(*i) != own && crate::model::can_key(Some(t.kind)))
         .map(|(i, t)| (i, t.name.clone()))
         .collect()
+}
+
+/// A stock effect being dragged to another slot of its track: (track, slot).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FxDrag(usize, usize);
+
+/// Drops a dragged stock effect on slot `k` of track `i`: it moves there (past the last effect:
+/// to the end), and the others close up around it.
+#[allow(clippy::too_many_arguments)]
+fn fx_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, k: usize) {
+    stock_drop(ui, g, r, p, v, i, k);
+    let Some(drag) = egui::DragAndDrop::payload::<FxDrag>(ui.ctx()) else {
+        return;
+    };
+    let FxDrag(from_t, from) = *drag;
+    let over = ui
+        .input(|inp| inp.pointer.hover_pos())
+        .is_some_and(|at| r.contains(at));
+    if !over || from_t != i {
+        return;
+    }
+    g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+    if ui.input(|inp| inp.pointer.any_released()) {
+        egui::DragAndDrop::clear_payload(ui.ctx());
+        apply_insert(p, v, i, from, InsertAct::MoveTo(k));
+    }
 }
 
 /// A plugin being dragged to another slot.
@@ -1546,24 +1909,48 @@ fn master_slot(
     k: usize,
     uid: egui::Id,
 ) {
-    let rows = crate::model::plugin_rows(0, &p.master_plugins);
+    // Ovrtone's own effects first, then the plugins, as on a track.
+    let own = p.master_strip.inserts.len();
+    if let Some(fx) = p.master_strip.inserts.get(k).copied() {
+        let (fill, ink) = if fx.bypass {
+            (plugin_off_col(), text_dim_col())
+        } else {
+            (crate::theme::accent(), crate::theme::on_accent())
+        };
+        named_slot(g, r, fx.name(), 0, fill, ink);
+        let resp = ui
+            .interact(r, uid, Sense::click())
+            .on_hover_text_at_pointer("Click to open; right-click to bypass or remove");
+        if resp.clicked() {
+            v.fx_window = Some((crate::model::MASTER_STRIP, k));
+        }
+        resp.context_menu(|ui| {
+            if ui.button(if fx.bypass { "Turn On" } else { "Bypass" }).clicked() {
+                p.master_strip.inserts[k].bypass = !fx.bypass;
+                ui.close();
+            }
+            if ui.button("Remove").clicked() {
+                p.master_strip.inserts.remove(k);
+                ui.close();
+            }
+        });
+        return;
+    }
+    let rows = crate::model::plugin_rows(own, &p.master_plugins);
     if let Some(j) = rows.iter().position(|row| *row == k) {
         plugin_slot(ui, g, r, p, v, Home::Master, j, uid, false);
         slot_drop(ui, g, r, p, Home::Master, k);
         return;
     }
     slot_drop(ui, g, r, p, Home::Master, k);
-    let next = rows.last().map_or(0, |row| row + 1);
-    let full = p.master_plugins.len() >= ovrtone_engine::MAX_INSERTS;
-    if k > next {
-        return;
-    }
+    let next = rows.last().map_or(own, |row| row + 1);
+    let full = p.master_plugins.len() + own >= ovrtone_engine::MAX_INSERTS;
     slot(
         g,
         r,
         if k == next && !full { "+" } else { "" },
-        SLOT_EMPTY,
-        TEXT,
+        slot_empty_col(),
+        text_col(),
     );
     if full {
         return;
@@ -1573,14 +1960,24 @@ fn master_slot(
         .on_hover_text_at_pointer("Add an effect plugin on the whole mix");
     let installed = v.installed.clone();
     let mut pick = None;
+    let mut stock = None;
     slot_menu(&resp, true).show(|ui: &mut Ui| {
         ui.set_min_width(170.0);
+        // Ovrtone's own effects, then the plugins.
+        if let Some(kind) = stock_folder(ui, None) {
+            stock = Some(kind);
+        }
         if installed.iter().any(|info| !info.is_instrument) {
             plugin_menu(ui, &installed, false, &mut pick);
         } else {
             ui.label("No effect plugins found");
         }
     });
+    if let Some(kind) = stock {
+        // Before the plugins, as on a track; the plugins keep their order after them.
+        p.master_strip.inserts.push(Insert::new(kind));
+        v.fx_window = Some((crate::model::MASTER_STRIP, p.master_strip.inserts.len() - 1));
+    }
     if let Some(info) = pick {
         if let Err(e) = crate::plugin_rack::add_master_effect(p, &info, k) {
             v.message = Some(e);
@@ -1654,6 +2051,46 @@ fn plugin_menu(
                 ui.close();
             }
         }
+        ui.separator();
+    }
+    let favourites: Vec<&PluginInfo> = installed
+        .iter()
+        .filter(|i| i.is_instrument == instruments && crate::plugin_favourites::is_favourite(&i.id))
+        .collect();
+    if !favourites.is_empty() {
+        ui.menu_button("★ Favourites", |ui| {
+            for info in &favourites {
+                if ui.button(info.name.as_str()).clicked() {
+                    *pick = Some((*info).clone());
+                    ui.close();
+                }
+            }
+        });
+    }
+    if !instruments {
+        ui.menu_button("By Type", |ui| {
+            for kind in crate::plugin_favourites::KINDS.iter().skip(1) {
+                let of_kind: Vec<&PluginInfo> = installed
+                    .iter()
+                    .filter(|i| !i.is_instrument && crate::plugin_favourites::kind_of(i) == *kind)
+                    .collect();
+                if of_kind.is_empty() {
+                    continue;
+                }
+                ui.menu_button(*kind, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.ctx().content_rect().height() * 0.7)
+                        .show(ui, |ui| {
+                            for info in &of_kind {
+                                if ui.button(info.name.as_str()).clicked() {
+                                    *pick = Some((*info).clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+            }
+        });
         ui.separator();
     }
     let mut makers: BTreeMap<String, Vec<&PluginInfo>> = BTreeMap::new();
@@ -1756,14 +2193,14 @@ fn plugin_slot(
     let (plugin_uid, name, loaded) = (plugin.uid, plugin.name.clone(), plugin.failed.is_none());
     let off = inactive || plugin.bypass || plugin.failed.is_some();
     let bypass = plugin.bypass;
-    let text_color = if off { TEXT_DIM } else { Color32::WHITE };
+    let text_color = if off { text_dim_col() } else { Color32::WHITE };
     named_slot(
         g,
         r,
         &plugin.name,
         2,
         if off {
-            PLUGIN_OFF
+            plugin_off_col()
         } else {
             crate::theme::accent()
         },
@@ -1781,6 +2218,7 @@ fn plugin_slot(
         .on_hover_text_at_pointer(hover);
     resp.dnd_set_drag_payload(SlotDrag { home, index: j });
     let mut moved = None;
+    let mut copy_plugin = false;
     let mut remove = delete_pressed(ui, &resp);
     let mut flip_bypass = slot_bypass_button(ui, g, r, uid, bypass, text_color);
     remove |= slot_remove_button(ui, g, r, uid, text_color);
@@ -1823,6 +2261,14 @@ fn plugin_slot(
                 ui.close();
             }
         });
+        if ui
+            .button("Copy Plugin")
+            .on_hover_text("With its settings as they were last saved")
+            .clicked()
+        {
+            copy_plugin = true;
+            ui.close();
+        }
         preset_items(ui, plugin_uid, &plugin_id, &name, &mut preset);
         if loaded {
             compare_items(ui, plugin_uid, on_b, &mut preset);
@@ -1837,6 +2283,9 @@ fn plugin_slot(
         }
     };
     slot_menu(&resp, false).show(&mut items);
+    if copy_plugin {
+        v.plugin_clipboard = Some(plugin.clone());
+    }
     if preset.is_some() {
         v.preset_cmd = preset;
     }
@@ -1910,7 +2359,7 @@ fn instrument_plugin_slot(
     }
     let loaded = plugin.failed.is_none();
     let on = loaded && !plugin.bypass;
-    let text_color = if on { Color32::WHITE } else { TEXT_DIM };
+    let text_color = if on { crate::theme::on_accent() } else { text_dim_col() };
     named_slot(
         g,
         r,
@@ -1919,7 +2368,7 @@ fn instrument_plugin_slot(
         if on {
             crate::theme::accent()
         } else {
-            PLUGIN_OFF
+            plugin_off_col()
         },
         text_color,
     );
@@ -1993,6 +2442,21 @@ fn instrument_plugin_slot(
 /// Carries out what the user chose in the menu of Audio FX slot `k` of track `i`. Choices that
 /// do not fit (a slot that is not there) do nothing.
 fn apply_insert(p: &mut Project, v: &mut MixerView, i: usize, k: usize, act: InsertAct) {
+    if let InsertAct::MoveTo(to) = act {
+        let count = p.tracks.get(i).map_or(0, |t| t.inserts.len());
+        if k >= count {
+            return;
+        }
+        // One step at a time, so automation lanes and open windows follow as for Move.
+        let to = to.min(count - 1);
+        let mut at = k;
+        while at != to {
+            let d: isize = if to > at { 1 } else { -1 };
+            apply_insert(p, v, i, at, InsertAct::Move(d));
+            at = (at as isize + d) as usize;
+        }
+        return;
+    }
     let Some(t) = p.tracks.get_mut(i) else {
         return;
     };
@@ -2012,13 +2476,31 @@ fn apply_insert(p: &mut Project, v: &mut MixerView, i: usize, k: usize, act: Ins
         InsertAct::Remove if filled => {
             inserts.remove(k);
             t.auto.insert_removed(k);
-            v.fx_window = match v.fx_window {
-                Some((t, s)) if t == i && s == k => None,
-                Some((t, s)) if t == i && s > k => Some((t, s - 1)),
-                other => other,
+            let after = |w: (usize, usize)| match w {
+                (t, s) if t == i && s == k => None,
+                (t, s) if t == i && s > k => Some((t, s - 1)),
+                other => Some(other),
             };
+            v.fx_window = v.fx_window.and_then(after);
+            v.fx_open = v.fx_open.iter().filter_map(|w| after(*w)).collect();
         }
         InsertAct::Bypass if filled => inserts[k].bypass = !inserts[k].bypass,
+        InsertAct::Duplicate if filled => {
+            if inserts.len() < ovrtone_engine::MAX_INSERTS {
+                let copy = inserts[k];
+                inserts.insert(k + 1, copy);
+                t.auto.insert_added(k + 1);
+            }
+        }
+        InsertAct::Paste(fx) => {
+            if inserts.len() < ovrtone_engine::MAX_INSERTS {
+                inserts.push(Insert {
+                    sidechain: None,
+                    ..fx
+                });
+                v.fx_window = Some((i, inserts.len() - 1));
+            }
+        }
         InsertAct::Open if filled => v.fx_window = Some((i, k)),
         InsertAct::Move(d) if filled => {
             let to = k as isize + d;
@@ -2028,11 +2510,17 @@ fn apply_insert(p: &mut Project, v: &mut MixerView, i: usize, k: usize, act: Ins
             let to = to as usize;
             inserts.swap(k, to);
             t.auto.insert_swapped(k, to);
-            if v.fx_window == Some((i, k)) {
-                v.fx_window = Some((i, to));
-            } else if v.fx_window == Some((i, to)) {
-                v.fx_window = Some((i, k));
+            let swap = |w: &mut (usize, usize)| {
+                if *w == (i, k) {
+                    *w = (i, to);
+                } else if *w == (i, to) {
+                    *w = (i, k);
+                }
+            };
+            if let Some(w) = v.fx_window.as_mut() {
+                swap(w);
             }
+            v.fx_open.iter_mut().for_each(swap);
         }
         _ => {}
     }
@@ -2041,7 +2529,7 @@ fn apply_insert(p: &mut Project, v: &mut MixerView, i: usize, k: usize, act: Ins
 /// The colour of an automation mode's label in the strip.
 fn mode_colour(mode: AutoMode, held: bool) -> Color32 {
     match mode {
-        AutoMode::Off => TEXT_DIM,
+        AutoMode::Off => text_dim_col(),
         AutoMode::Read => READ_GREEN,
         AutoMode::Touch | AutoMode::Latch | AutoMode::Trim if held => {
             Color32::from_rgb(0xff, 0xa8, 0x3c)
@@ -2063,7 +2551,7 @@ fn automation_slot(
     uid: egui::Id,
 ) {
     let (mode, held) = (p.tracks[i].auto.mode, p.tracks[i].auto.held.is_some());
-    slot(g, r, tr(mode.label()), SLOT_EMPTY, mode_colour(mode, held));
+    slot(g, r, tr(mode.label()), slot_empty_col(), mode_colour(mode, held));
     let has_lane = !p.tracks[i].auto.volume.is_empty() || !p.tracks[i].auto.pan.is_empty();
     if has_lane {
         // A small dot: this strip has automation.
@@ -2127,7 +2615,7 @@ pub fn channel_strip(
     let inactive = matches!(key, StripKey::Track(i)
         if p.is_muted(i) || crate::tracks_area::silenced_by_solo(p, i));
     let (plug, plug_text) = if inactive {
-        (PLUGIN_OFF, TEXT_DIM)
+        (plugin_off_col(), text_dim_col())
     } else {
         (crate::theme::accent(), crate::theme::on_accent())
     };
@@ -2143,9 +2631,9 @@ pub fn channel_strip(
     }
     let linked = matches!(key, StripKey::Track(i) if p.linked_strips.contains(&i));
     let bg = if (selected && name_style == NameStyle::Coloured) || linked {
-        STRIP_SEL
+        strip_sel_col()
     } else {
-        STRIP_BG
+        strip_bg_col()
     };
     g.rect_filled(strip, 2.0, bg);
     let inner_w = strip.width() - 8.0;
@@ -2184,16 +2672,16 @@ pub fn channel_strip(
             Align2::CENTER_CENTER,
             tr("VCA"),
             FontId::proportional(12.0),
-            TEXT_DIM,
+            text_dim_col(),
         );
     }
     if !vca_strip {
-        slot(g, row(r.setting, 16.0), tr("Setting"), SLOT_GRAY, TEXT);
+        slot(g, row(r.setting, 16.0), tr("Setting"), slot_gray_col(), text_col());
         if let StripKey::Track(i) = key {
             setting_menu(ui, row(r.setting, 16.0), p, v, i, id(ns, (key, "setting")));
         }
         let gr_bar = row(r.gain_red + 1.0, 6.0);
-        g.rect_filled(gr_bar, 1.0, SLOT_EMPTY);
+        g.rect_filled(gr_bar, 1.0, slot_empty_col());
         if reduction > 0.05 {
             // Gain reduction grows from the right, in orange.
             let w = gr_bar.width() * (reduction / 24.0).min(1.0);
@@ -2201,7 +2689,7 @@ pub fn channel_strip(
                 Rect::from_min_max(pos2(gr_bar.right() - w, gr_bar.top()), gr_bar.max),
                 1.0,
                 if inactive {
-                    METER_OFF
+                    meter_off_col()
                 } else {
                     Color32::from_rgb(0xe6, 0xa0, 0x2a)
                 },
@@ -2219,7 +2707,7 @@ pub fn channel_strip(
                 } else {
                     "MIDI FX".to_string()
                 };
-                slot(g, fx_r, &text, SLOT_EMPTY, TEXT_DIM);
+                slot(g, fx_r, &text, slot_empty_col(), text_dim_col());
                 let opened = ui
                     .interact(fx_r, id(ns, (key, "midi_fx")), Sense::click())
                     .on_hover_text("Open this track's MIDI FX")
@@ -2242,7 +2730,7 @@ pub fn channel_strip(
                 }
             }
             (Some(TrackKind::Instrument | TrackKind::Drummer), Some(inst)) => {
-                slot(g, input_r, inst, SLOT_EMPTY, TEXT);
+                slot(g, input_r, inst, slot_empty_col(), text_col());
                 if let StripKey::Track(i) = key {
                     let resp = ui
                         .interact(input_r, id(ns, (key, "choose")), Sense::click())
@@ -2307,7 +2795,22 @@ pub fn channel_strip(
                     input_slot(ui, g, input_r, p, &mut v.inputs, i, slot_id);
                 }
             }
-            _ => slot(g, input_r, "", SLOT_EMPTY, TEXT),
+            _ => slot(g, input_r, "", slot_empty_col(), text_col()),
+        }
+        // An instrument strip: a line with its name between the instrument and the effects after it.
+        if matches!(kind, Some(TrackKind::Instrument | TrackKind::Drummer)) {
+            let y = (input_r.bottom() + row(r.fx, 15.0).top()) * 0.5;
+            let line = Stroke::new(1.0, crate::theme::accent().gamma_multiply(0.55));
+            let mid = input_r.center().x;
+            g.line_segment([pos2(input_r.left() + 2.0, y), pos2(mid - 18.0, y)], line);
+            g.line_segment([pos2(mid + 18.0, y), pos2(input_r.right() - 2.0, y)], line);
+            g.text(
+                pos2(mid, y),
+                Align2::CENTER_CENTER,
+                "FX",
+                FontId::proportional(9.0),
+                text_dim_col(),
+            );
         }
         for shown in 0..r.fx_rows {
             let k = shown + r.fx_first;
@@ -2341,7 +2844,7 @@ pub fn channel_strip(
                     v.new_aux = Some((i, true));
                 }
             }
-            StripKey::StereoOut => slot(g, row(r.sends, 16.0), "", SLOT_EMPTY, TEXT),
+            StripKey::StereoOut => slot(g, row(r.sends, 16.0), "", slot_empty_col(), text_col()),
         }
         if let StripKey::Track(_) = key {
             let out = if name_style == NameStyle::Plain {
@@ -2368,7 +2871,7 @@ pub fn channel_strip(
                 g,
                 rr,
                 tr("Read"),
-                SLOT_EMPTY,
+                slot_empty_col(),
                 Color32::from_rgb(0xa8, 0x9c, 0xf2),
             );
             g.rect_stroke(
@@ -2389,7 +2892,7 @@ pub fn channel_strip(
             );
         }
     }
-    if let StripKey::Track(i) = key {
+    if let (StripKey::Track(i), true) = (key, crate::settings::show_track_icons()) {
         let icon = Rect::from_center_size(pos2(strip.center().x, r.icon + 12.0), vec2(22.0, 22.0));
         crate::track_icons::draw_tinted(
             g,
@@ -2401,6 +2904,67 @@ pub fn channel_strip(
     let pan_c = pos2(strip.center().x, r.pan + 12.0);
     match key {
         _ if vca_strip => {}
+        // The spatial mix's renderer lives on the master: its bed format and where it is heard.
+        StripKey::StereoOut if p.spatial_mode != ovrtone_engine::SpatialMode::Off => {
+            let spot = Rect::from_center_size(pan_c, vec2(strip.width() - 10.0, 22.0));
+            let resp = ui
+                .interact(spot, id(ns, (key, "renderer")), Sense::click())
+                .on_hover_text("The spatial renderer: bed format, output, speakers and exports");
+            let fill = if resp.hovered() {
+                crate::spatial_window::PANEL.gamma_multiply(1.3)
+            } else {
+                crate::spatial_window::PANEL
+            };
+            g.rect_filled(spot, 4.0, fill);
+            let bed = p.spatial_mode.layout().map_or("", |l| l.name());
+            g.text(
+                spot.center(),
+                Align2::CENTER_CENTER,
+                format!("Renderer {bed}"),
+                FontId::proportional(9.5),
+                crate::spatial_window::VALUE,
+            );
+            if resp.clicked() {
+                v.open_renderer = true;
+            }
+        }
+        // An object has a place in the room, not a pan: its knob opens where that is set.
+        StripKey::Track(i)
+            if p.tracks[i].object.is_some() =>
+        {
+            let spot = Rect::from_center_size(pan_c, vec2(26.0, 26.0));
+            let resp = ui
+                .interact(spot, id(ns, (key, "object")), Sense::click())
+                .on_hover_text(if p.tracks[i].bed_pan {
+                    "Surround panned in the bed. Click to place it."
+                } else {
+                    "An object of the spatial mix. Click to place it."
+                });
+            // A small room seen from above, with the track where it is.
+            let room = crate::spatial_window::DARK_ROOM;
+            g.circle_filled(pan_c, 12.0, room);
+            g.circle_stroke(pan_c, 12.0, Stroke::new(1.0, crate::spatial_window::RING));
+            g.circle_stroke(pan_c, 6.0, Stroke::new(0.6, crate::spatial_window::RING));
+            if let Some(o) = p.tracks[i].object {
+                let reach = (1.0 - o.elevation.clamp(0.0, 90.0) / 90.0) * 10.0 * o.radius.clamp(0.0, 1.0).max(0.15);
+                let a = o.azimuth.to_radians();
+                let at = pan_c + vec2(a.sin(), -a.cos()) * reach;
+                let dot = if p.tracks[i].bed_pan {
+                    crate::spatial_window::SURROUND
+                } else {
+                    crate::spatial_window::OBJECT
+                };
+                g.line_segment([pan_c, at], Stroke::new(1.0, dot.gamma_multiply(0.6)));
+                g.circle_filled(at, 3.2, dot);
+            }
+            if resp.hovered() {
+                g.circle_stroke(pan_c, 13.0, Stroke::new(1.0, crate::theme::accent()));
+            }
+            if resp.clicked() {
+                p.selected_track = i;
+                v.open_spatial = true;
+            }
+        }
         StripKey::Track(i) => {
             let t = &p.tracks[i];
             let shown = crate::automation::shown_value(t, AutoTarget::Pan, beat);
@@ -2478,8 +3042,8 @@ pub fn channel_strip(
         g,
         vol_r,
         &format!("{vol_db:.1}"),
-        crate::theme::BORDER,
-        TEXT,
+        crate::theme::border(),
+        text_col(),
     );
     let hold_db = lin_to_db(*hold);
     let pk_text = if *hold <= 1e-5 {
@@ -2496,7 +3060,7 @@ pub fn channel_strip(
     if hold_db > 0.0 {
         slot(g, pk_r, &pk_text, crate::theme::DANGER, Color32::WHITE);
     } else {
-        slot(g, pk_r, &pk_text, crate::theme::BORDER, pk_col);
+        slot(g, pk_r, &pk_text, crate::theme::border(), pk_col);
     }
     if ui
         .interact(pk_r, id(ns, (key, "peak")), Sense::click())
@@ -2526,6 +3090,10 @@ pub fn channel_strip(
         vol_db,
         fader_free,
         peaks,
+        match key {
+            StripKey::Track(i) => meters.rms.get(i).copied().unwrap_or(0.0),
+            StripKey::StereoOut => 0.0,
+        },
         inactive,
         clipped,
     );
@@ -2615,9 +3183,9 @@ pub fn channel_strip(
                     v.want_bounce = true;
                 }
                 let bounce = crate::icons::Icon::Bounce;
-                crate::icons::paint(g, s_r.center(), 12.0, bounce, Color32::from_gray(0xe8));
+                crate::icons::paint(g, s_r.center(), 12.0, bounce, crate::theme::gray(0xe8));
             } else {
-                slot(g, m_r, "M", SLOT_GRAY, TEXT_DIM);
+                slot(g, m_r, "M", slot_gray_col(), text_dim_col());
             }
         }
     }
@@ -2677,7 +3245,7 @@ pub fn channel_strip(
         g.rect_stroke(
             strip,
             2.0,
-            Stroke::new(1.0, Color32::from_gray(0x64)),
+            Stroke::new(1.0, crate::theme::gray(0x64)),
             StrokeKind::Inside,
         );
     }
@@ -2801,7 +3369,7 @@ fn output_slot(
     } else {
         trf("Bus {}", &[&current])
     };
-    slot(g, r, &text, SLOT_GRAY, TEXT);
+    slot(g, r, &text, slot_gray_col(), text_col());
     let resp = ui.interact(r, id, Sense::click());
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(150.0);
@@ -2859,12 +3427,12 @@ fn input_slot(
     use crate::audio_rec::input_label;
     use ovrtone_engine::InputSource;
     let source = p.tracks[i].input;
-    slot(g, r, &input_label(source), SLOT_GRAY, TEXT);
+    slot(g, r, &input_label(source), slot_gray_col(), text_col());
     // One ring for a mono input, two for a stereo pair.
     let ring = pos2(r.left() + 8.0, r.center().y);
-    g.circle_stroke(ring, 3.5, stroke(TEXT));
+    g.circle_stroke(ring, 3.5, stroke(text_col()));
     if matches!(source, InputSource::Stereo(_)) {
-        g.circle_stroke(ring + vec2(3.0, 0.0), 3.5, stroke(TEXT));
+        g.circle_stroke(ring + vec2(3.0, 0.0), 3.5, stroke(text_col()));
     }
     let resp = ui.interact(r, id, Sense::click());
     if resp.clicked() {
@@ -2923,16 +3491,16 @@ fn group_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, i: usize, id: egui
         None => p.vca_of(i).map(|v| v.name.clone()).unwrap_or_default(),
     };
     let fill = if name.is_empty() {
-        SLOT_EMPTY
+        slot_empty_col()
     } else {
-        SLOT_GRAY
+        slot_gray_col()
     };
     slot(
         g,
         r,
         &elide(g, &name, &FontId::proportional(10.5), r.width() - 8.0),
         fill,
-        TEXT,
+        text_col(),
     );
     let vcas: Vec<(usize, String)> = p
         .tracks
@@ -3017,10 +3585,10 @@ fn group_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, i: usize, id: egui
 fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
     const NS: &str = "mixer_toolbar";
     let g = ui.painter_at(bar);
-    g.rect_filled(bar, 0.0, TOOLBAR_BG);
+    g.rect_filled(bar, 0.0, toolbar_bg_col());
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     let cy = bar.center().y;
     back_chevron(&g, pos2(bar.left() + 16.0, cy));
@@ -3130,17 +3698,17 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
         let r = Rect::from_min_size(pos2(rx - 26.0, cy - 10.0), vec2(26.0, 20.0));
         let resp = ui.interact(r, id(NS, key), Sense::click());
         if v.wide == wide {
-            g.rect_filled(r, 4.0, Color32::from_gray(0x30));
+            g.rect_filled(r, 4.0, crate::theme::gray(0x30));
         }
         let c = r.center();
         let iw = if wide { 13.0 } else { 9.0 };
         g.rect_stroke(
             Rect::from_center_size(c, vec2(iw, 11.0)),
             1.5,
-            stroke(TEXT),
+            stroke(text_col()),
             StrokeKind::Middle,
         );
-        g.line_segment([c + vec2(0.0, -5.5), c + vec2(0.0, 5.5)], stroke(TEXT));
+        g.line_segment([c + vec2(0.0, -5.5), c + vec2(0.0, 5.5)], stroke(text_col()));
         if resp.clicked() {
             v.wide = wide;
         }
@@ -3150,7 +3718,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
     let filter_widths: Vec<f32> = FILTERS
         .iter()
         .map(|label| {
-            g.layout_no_wrap(tr(label).into(), FontId::proportional(12.5), TEXT)
+            g.layout_no_wrap(tr(label).into(), FontId::proportional(12.5), text_col())
                 .size()
                 .x
                 + 16.0
@@ -3165,13 +3733,13 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             let r = Rect::from_min_size(pos2(rx - w, cy - 10.0), vec2(w, 20.0));
             let resp = ui.interact(r, id(NS, ("filter", i)), Sense::click());
             let on = v.filters[i];
-            g.rect_filled(r, 4.0, if on { blue() } else { Color32::from_gray(0x2b) });
+            g.rect_filled(r, 4.0, if on { blue() } else { crate::theme::gray(0x2b) });
             g.text(
                 r.center(),
                 Align2::CENTER_CENTER,
                 tr(label),
                 FontId::proportional(12.5),
-                if on { Color32::WHITE } else { TEXT_DIM },
+                if on { crate::theme::on_accent() } else { text_dim_col() },
             );
             if resp.clicked() {
                 v.filters[i] = !v.filters[i];
@@ -3225,7 +3793,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
             Align2::CENTER_CENTER,
             *label,
             FontId::proportional(12.5),
-            if on { Color32::WHITE } else { TEXT },
+            if on { crate::theme::on_accent() } else { text_col() },
         );
         if resp.clicked() {
             v.mode = *m;
@@ -3287,17 +3855,17 @@ fn draw_sends_on_faders(
         Align2::LEFT_CENTER,
         tr("Sends on Faders:"),
         FontId::proportional(12.5),
-        TEXT_DIM,
+        text_dim_col(),
     );
     let pw = pos2(x + 112.0, cy + 1.0);
-    g.circle_stroke(pw, 5.5, stroke(TEXT_DIM));
+    g.circle_stroke(pw, 5.5, stroke(text_dim_col()));
     g.line_segment(
         [pw + vec2(0.0, -7.5), pw + vec2(0.0, -1.5)],
-        Stroke::new(3.0, TOOLBAR_BG),
+        Stroke::new(3.0, toolbar_bg_col()),
     );
     g.line_segment(
         [pw + vec2(0.0, -7.0), pw + vec2(0.0, -2.0)],
-        stroke(TEXT_DIM),
+        stroke(text_dim_col()),
     );
     let sof = Rect::from_min_size(pos2(x + 126.0, cy - 10.0), vec2(110.0, 20.0));
     let label = match bus {
@@ -3352,7 +3920,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     let labels = Rect::from_min_max(body.min, pos2(body.left() + LABEL_W, body.bottom()));
     let strips_area = Rect::from_min_max(pos2(labels.right(), body.top()), body.max);
     let g = ui.painter_at(body);
-    g.rect_filled(body, 0.0, MIXER_BG);
+    g.rect_filled(body, 0.0, mixer_bg_col());
 
     // Which strips, in order.
     let filters = v.filters;
@@ -3375,24 +3943,46 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     }
 
     let strip_w = if v.wide { 96.0 } else { 80.0 };
+    // Stereo Out stays at the mixer's right edge (its left, in Settings > Display), out of the
+    // scroll, as the master strip of a console does. The signal-flow view keeps it in its place.
+    let all_keys = keys.clone();
+    let pinned = !v.signal_flow && keys.contains(&StripKey::StereoOut);
+    if pinned {
+        keys.retain(|k| *k != StripKey::StereoOut);
+    }
+    let on_left = crate::settings::master_on_left();
+    let (strips_area, master_area) = if pinned {
+        let w = strip_w + 10.0;
+        if on_left {
+            (
+                Rect::from_min_max(pos2(strips_area.left() + w, strips_area.top()), strips_area.max),
+                Some(Rect::from_min_max(strips_area.min, pos2(strips_area.left() + w, strips_area.bottom()))),
+            )
+        } else {
+            (
+                Rect::from_min_max(strips_area.min, pos2(strips_area.right() - w, strips_area.bottom())),
+                Some(Rect::from_min_max(pos2(strips_area.right() - w, strips_area.top()), strips_area.max)),
+            )
+        }
+    } else {
+        (strips_area, None)
+    };
     let total_w = keys.len() as f32 * (strip_w + GAP);
     let r = rows_fit(
         body.top(),
         body.bottom(),
-        fx_rows_for(p, &keys),
-        send_rows_for(p, &keys),
+        fx_rows_for(p, &all_keys),
+        send_rows_for(p, &all_keys),
         v.fx_scroll,
     );
-    let hover = ui
-        .input(|i| i.pointer.hover_pos())
-        .filter(|pt| strips_area.contains(*pt));
+    let hover = crate::widgets::wheel_pointer(ui).filter(|pt| strips_area.contains(*pt));
     if let Some(pt) = hover {
         let d = ui.input(|i| i.smooth_scroll_delta);
         // The wheel over the insert slots goes through them, when some are out of sight.
         let over_slots = pt.y >= r.fx && pt.y < r.fx + r.fx_rows as f32 * 17.0;
         if over_slots && r.fx_total > r.fx_rows {
             let last = (r.fx_total - r.fx_rows) as f32;
-            v.fx_scroll = (v.fx_scroll - d.y / 17.0).clamp(0.0, last);
+            v.fx_scroll = (v.fx_scroll + d.y / 17.0).clamp(0.0, last);
         } else {
             v.scroll_x -= d.x + d.y;
         }
@@ -3410,7 +4000,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             Align2::RIGHT_CENTER,
             t,
             FontId::proportional(10.5),
-            TEXT_DIM,
+            text_dim_col(),
         );
     };
     label_at(r.setting, 16.0, tr("Setting"));
@@ -3445,6 +4035,30 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             &gs,
             strip,
             *key,
+            p,
+            v,
+            meters,
+            &r,
+            "mixer",
+            NameStyle::Coloured,
+        );
+    }
+
+    if let Some(area) = master_area {
+        let gm = ui.painter_at(area);
+        gm.rect_filled(area, 0.0, mixer_bg_col());
+        let edge = if on_left { area.right() - 1.0 } else { area.left() + 1.0 };
+        gm.line_segment(
+            [pos2(edge, area.top()), pos2(edge, area.bottom())],
+            Stroke::new(1.0, crate::theme::border()),
+        );
+        let x = area.left() + 5.0;
+        let strip = Rect::from_min_max(pos2(x, body.top() + 2.0), pos2(x + strip_w, body.bottom() - 2.0));
+        channel_strip(
+            ui,
+            &gm,
+            strip,
+            StripKey::StereoOut,
             p,
             v,
             meters,
@@ -3756,9 +4370,11 @@ mod tests {
             );
             assert!(r.fx_first + r.fx_rows <= r.fx_total);
         }
-        // Scrolled, the last slots come into sight and it goes no further.
-        let r = rows_fit(top, bottom, 32, 1, 1000.0);
+        // The last slots, with the plus, are in sight; scrolled back, the first ones, and no further.
+        let r = rows_fit(top, bottom, 32, 1, 0.0);
         assert_eq!(r.fx_first + r.fx_rows, 32);
+        let r = rows_fit(top, bottom, 32, 1, 1000.0);
+        assert_eq!(r.fx_first, 0);
         // A tall one shows them all.
         let r = rows_fit(top, 2000.0, 32, 1, 5.0);
         assert_eq!((r.fx_first, r.fx_rows), (0, 32));
@@ -4110,4 +4726,70 @@ mod tests {
         h.key(egui::Key::Delete, |ui| draw_slot(ui, &mut p, &mut v));
         assert!(p.tracks[0].plugins.is_empty());
     }
+}
+
+/// A saved mixer layout: its name, the mode, the strip types shown and wide strips.
+type SavedLayout = (String, MixerMode, [bool; 8], bool);
+
+fn layouts_file() -> Option<std::path::PathBuf> {
+    crate::recent_files::config_dir().map(|d| d.join("mixer-layouts"))
+}
+
+/// The saved mixer layouts, one a line: name, mode, the eight filters as 0 and 1, wide.
+fn load_layouts() -> Vec<SavedLayout> {
+    let text = layouts_file()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.rsplitn(4, '\t');
+            let wide = parts.next()? == "1";
+            let bits = parts.next()?;
+            let mode = match parts.next()? {
+                "single" => MixerMode::Single,
+                "all" => MixerMode::All,
+                _ => MixerMode::Tracks,
+            };
+            let name = parts.next()?.to_string();
+            let mut filters = [true; 8];
+            for (f, c) in filters.iter_mut().zip(bits.chars()) {
+                *f = c == '1';
+            }
+            Some((name, mode, filters, wide))
+        })
+        .collect()
+}
+
+fn write_layouts(layouts: &[SavedLayout]) {
+    let Some(file) = layouts_file() else {
+        return;
+    };
+    let text: String = layouts
+        .iter()
+        .map(|(name, mode, filters, wide)| {
+            let mode = match mode {
+                MixerMode::Single => "single",
+                MixerMode::Tracks => "tracks",
+                MixerMode::All => "all",
+            };
+            let bits: String = filters.iter().map(|f| if *f { '1' } else { '0' }).collect();
+            let name = name.replace('\t', " ");
+            format!("{name}\t{mode}\t{bits}\t{}\n", if *wide { "1" } else { "0" })
+        })
+        .collect();
+    let saved = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&file, text));
+    if let Err(e) = saved {
+        tracing::warn!("could not save the mixer layouts: {e}");
+    }
+}
+
+/// Keeps the mixer's layout as it is now, as "Layout n".
+fn save_layout(v: &MixerView) {
+    let mut layouts = load_layouts();
+    let name = format!("Layout {}", layouts.len() + 1);
+    layouts.push((name, v.mode, v.filters, v.wide));
+    write_layouts(&layouts);
 }

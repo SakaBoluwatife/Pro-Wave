@@ -20,8 +20,12 @@ pub const HEIGHT: f32 = 46.0;
 
 const LINE: Color32 = crate::theme::GOOD;
 const FILL: Color32 = Color32::from_rgba_premultiplied(0x18, 0x34, 0x1b, 0x60);
-const BG: Color32 = crate::theme::LANE;
-const HEADER_BG: Color32 = crate::theme::PANEL_BG;
+fn bg_col() -> Color32 {
+    crate::theme::lane()
+}
+fn header_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
 /// Margin above and below the slowest and fastest tempo, in BPM.
 const MARGIN: f32 = 8.0;
 /// Padding inside the lane, in points.
@@ -75,17 +79,17 @@ pub fn show(
 
     // ---- header
     let gh = ui.painter_at(header);
-    gh.rect_filled(header, 0.0, HEADER_BG);
+    gh.rect_filled(header, 0.0, header_bg_col());
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y - 7.0),
         Align2::LEFT_CENTER,
         tr("Tempo"),
         FontId::proportional(13.0),
-        Color32::from_gray(0xdc),
+        crate::theme::gray(0xdc),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y + 9.0),
@@ -99,12 +103,12 @@ pub fn show(
         Align2::RIGHT_CENTER,
         format!("{:.0}–{:.0}", r.0, r.1),
         FontId::proportional(10.0),
-        Color32::from_gray(0x64),
+        crate::theme::gray(0x64),
     );
 
     // ---- lane: double-click an empty spot to add a tempo change
     let g = ui.painter_at(lane);
-    g.rect_filled(lane, 0.0, BG);
+    g.rect_filled(lane, 0.0, bg_col());
     let lane_resp = ui.interact(lane, egui::Id::unique("tempo_track_lane"), Sense::click());
     if lane_resp.double_clicked() {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
@@ -242,7 +246,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x0e)),
+        Stroke::new(1.0, crate::theme::gray(0x0e)),
     );
 }
 

@@ -180,6 +180,7 @@ pub fn frozen_region(p: &Project, path: &Path, ctx: &egui::Context) -> Result<Re
         folder: None,
         auto: Vec::new(),
         generated: None,
+        gain_line: Vec::new(),
         audio: Some(audio_region(file, ctx)),
         params: RegionParams::default(),
     })
@@ -215,6 +216,7 @@ pub fn import_audio_at(
         folder: None,
         auto: Vec::new(),
         generated: None,
+        gain_line: Vec::new(),
         audio: Some(audio_region(file, ctx)),
         params: RegionParams::default(),
     };
@@ -235,6 +237,9 @@ pub fn import_audio_at(
         monitor: false,
         hardware_out: 0,
         aux_bus: 0,
+        object: None,
+        bed_pan: false,
+        trim_db: 0.0,
         slide_range: crate::model::DEFAULT_SLIDE_RANGE,
         input: ovrtone_engine::InputSource::Mono(0),
         output: 0,
@@ -257,6 +262,8 @@ pub fn import_audio_at(
         vca: None,
         on_timeline: false,
         off: false,
+        locked: false,
+        reference: false,
         midi_port: None,
         midi_channel: 1,
         midi_fx: Vec::new(),
@@ -264,6 +271,10 @@ pub fn import_audio_at(
         alternatives: Vec::new(),
         active_alt: 0,
     });
+    if let Some(mut track) = p.tracks.pop() {
+        p.spatial_default(&mut track);
+        p.tracks.push(track);
+    }
     p.selected_track = p.tracks.len() - 1;
     p.song_rev += 1;
     Ok(())

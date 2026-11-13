@@ -76,6 +76,26 @@ pub fn items(ui: &mut egui::Ui, p: &mut Project) {
             }
         }
     });
+    ui.menu_button("Send MIDI Clock", |ui| {
+        let current = p.clock_out.clone();
+        if ui.selectable_label(current.is_none(), tr("Off")).clicked() {
+            p.clock_out = None;
+            ui.close();
+        }
+        let ports = crate::midi_out::ports();
+        if ports.is_empty() {
+            ui.add_enabled(false, egui::Button::new(tr("No MIDI ports found")));
+        }
+        for name in ports {
+            if ui
+                .selectable_label(current.as_deref() == Some(&name), &name)
+                .clicked()
+            {
+                p.clock_out = Some(name);
+                ui.close();
+            }
+        }
+    });
     ui.menu_button(tr("Follow MIDI Time Code"), |ui| {
         let current = p.mtc_in.clone();
         if ui.selectable_label(current.is_none(), tr("Off")).clicked() {

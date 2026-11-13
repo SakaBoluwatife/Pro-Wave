@@ -78,10 +78,21 @@ pub fn routes_of(p: &Project) -> Vec<Route> {
         .collect()
 }
 
+/// What MIDI Clock follows: the port, and where the song was and how fast, at a moment.
+#[derive(Clone, Debug, Default)]
+struct ClockState {
+    port: Option<String>,
+    playing: bool,
+    beat: f64,
+    bpm: f64,
+    at: Option<Instant>,
+}
+
 /// The sending thread and the routes it follows.
 pub struct MidiOut {
     routes: Arc<Mutex<Vec<Route>>>,
     mtc_port: Arc<Mutex<Option<String>>>,
+    clock: Arc<Mutex<ClockState>>,
     last: Vec<Route>,
     last_mtc: Option<String>,
     stop: Arc<AtomicBool>,
@@ -93,15 +104,21 @@ impl MidiOut {
     pub fn start(events: Consumer<MidiOutEvent>, mtc: Consumer<MtcMessage>) -> Self {
         let routes = Arc::new(Mutex::new(Vec::new()));
         let mtc_port = Arc::new(Mutex::new(None));
+        let clock = Arc::new(Mutex::new(ClockState::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (r, m, s) = (routes.clone(), mtc_port.clone(), stop.clone());
+        let (r, m, s, c) = (routes.clone(), mtc_port.clone(), stop.clone(), clock.clone());
         let thread = std::thread::Builder::new()
             .name("ovrtone-midi-out".into())
-            .spawn(move || Sender::new(events, mtc, r, m, s).run())
+            .spawn(move || {
+                let mut sender = Sender::new(events, mtc, r, m, s);
+                sender.clock = Some(c);
+                sender.run()
+            })
             .ok();
         Self {
             routes,
             mtc_port,
+            clock,
             last: Vec::new(),
             last_mtc: None,
             stop,
@@ -118,6 +135,14 @@ impl MidiOut {
                 routes.clone_from(&now);
             }
             self.last = now;
+        }
+        // MIDI Clock: the port, and the song's place and speed now, for the thread to run on from.
+        if let Ok(mut c) = self.clock.lock() {
+            c.port.clone_from(&p.clock_out);
+            c.playing = p.playing;
+            c.beat = p.position_beats;
+            c.bpm = f64::from(p.tempo_at(p.position_beats));
+            c.at = Some(Instant::now());
         }
         if p.mtc_out != self.last_mtc {
             if let Ok(mut port) = self.mtc_port.lock() {
@@ -147,6 +172,10 @@ struct Sender {
     failed: HashMap<String, Instant>,
     /// Notes that were started and not yet released: (port, channel, pitch).
     sounding: HashSet<(String, u8, u8)>,
+    clock: Option<Arc<Mutex<ClockState>>>,
+    /// The clock ticks sent since the song started playing, and whether it is playing.
+    clock_ticks: i64,
+    clock_running: bool,
 }
 
 impl Sender {
@@ -166,6 +195,9 @@ impl Sender {
             connections: HashMap::new(),
             failed: HashMap::new(),
             sounding: HashSet::new(),
+            clock: None,
+            clock_ticks: 0,
+            clock_running: false,
         }
     }
 
@@ -177,6 +209,7 @@ impl Sender {
             while let Ok(m) = self.mtc.pop() {
                 self.send_mtc(&m);
             }
+            self.send_clock();
             std::thread::sleep(POLL);
         }
         self.release_all();
@@ -207,6 +240,55 @@ impl Sender {
         }
         if let Some(conn) = self.connection(&port) {
             let _ = conn.send(&message(ev.on, channel, ev.pitch, ev.vel));
+        }
+    }
+
+    /// MIDI Clock: 24 ticks a beat while the song plays, worked out from the last place and speed
+    /// the interface gave and the time since; Start (with the song position) and Stop around them.
+    fn send_clock(&mut self) {
+        let Some(state) = self.clock.as_ref().and_then(|c| c.lock().ok().map(|s| s.clone())) else {
+            return;
+        };
+        let Some(port) = state.port.clone() else {
+            self.clock_running = false;
+            return;
+        };
+        let beat_now = match state.at {
+            Some(at) if state.playing => {
+                state.beat + at.elapsed().as_secs_f64() * state.bpm.max(1.0) / 60.0
+            }
+            _ => state.beat,
+        };
+        if state.playing && !self.clock_running {
+            // Song position in sixteenths, then Continue from there.
+            let sixteenths = (beat_now.max(0.0) * 4.0) as u32;
+            let spp = [0xF2, (sixteenths & 0x7f) as u8, ((sixteenths >> 7) & 0x7f) as u8];
+            if let Some(conn) = self.connection(&port) {
+                let _ = conn.send(&spp);
+                let _ = conn.send(&[if sixteenths == 0 { 0xFA } else { 0xFB }]);
+            }
+            self.clock_ticks = (beat_now.max(0.0) * 24.0).floor() as i64;
+            self.clock_running = true;
+        } else if !state.playing && self.clock_running {
+            if let Some(conn) = self.connection(&port) {
+                let _ = conn.send(&[0xFC]);
+            }
+            self.clock_running = false;
+        }
+        if !self.clock_running {
+            return;
+        }
+        // The ticks due by now; a jump of the song (a cycle back, a locate) starts the count again.
+        let due = (beat_now.max(0.0) * 24.0).floor() as i64;
+        if due < self.clock_ticks || due - self.clock_ticks > 96 {
+            self.clock_running = false;
+            return;
+        }
+        while self.clock_ticks < due {
+            if let Some(conn) = self.connection(&port) {
+                let _ = conn.send(&[0xF8]);
+            }
+            self.clock_ticks += 1;
         }
     }
 

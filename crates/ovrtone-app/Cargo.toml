@@ -1,6 +1,6 @@
 [package]
 name = "ovrtone-app"
-version = "0.2.1"
+version = "0.4.0"
 edition = "2021"
 description = "Ovrtone desktop app (egui) - clean-room DAW UI inspired by Logic Pro"
 license = "GPL-3.0-or-later"
@@ -12,6 +12,9 @@ path = "src/main.rs"
 [features]
 # ASIO drivers on Windows. Needs the ASIO SDK at build time: see cpal's documentation.
 asio = ["ovrtone-engine/asio"]
+# Measured heads (SOFA files) for the headphone render. Off, the modelled head is used.
+sofa = ["dep:sofar"]
+default = ["sofa"]
 
 [dependencies]
 assert_no_alloc = "1.1.2"
@@ -26,6 +29,8 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 raw-window-handle = "0.6"
 rfd = "0.17.2"
 rtrb = "0.4.0"
+# Reads SOFA (AES69) head-related impulse responses for the headphone render (MIT OR Apache-2.0).
+sofar = { version = "0.4.0", default-features = false, features = ["resample"], optional = true }
 sysinfo = { version = "0.38.4", default-features = false, features = ["system", "disk"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
@@ -36,11 +41,14 @@ sha2 = "0.10"
 serde_json = "1.0.154"
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
+# Reading other DAWs' sessions (DAWproject, Ableton Live), in `session_import.rs`.
+roxmltree = "0.21"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 rhai = { version = "1", features = ["no_module"] }
 flacenc = { version = "0.5.1", default-features = false, features = ["par"] }
 mp3lame-encoder = "0.3.0"
 # The Stem Splitter (src/stem_worker.rs). The library itself is loaded from the stems folder.
+rustfft = "6.4.1"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"] }
 
 # The menus in the macOS system menu bar (see src/native_menu.rs).

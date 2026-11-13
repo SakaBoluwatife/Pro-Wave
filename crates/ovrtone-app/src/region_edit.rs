@@ -23,6 +23,20 @@ fn seconds_between(p: &Project, from: f64, to: f64) -> f32 {
     (map.seconds_at(to) - map.seconds_at(from)) as f32
 }
 
+/// Seconds of its file a region plays per second of the song: more than 1 when it follows a
+/// tempo faster than the one it was made at (Fit to Tempo), else 1.
+pub(crate) fn file_speed(p: &Project, region: &Region) -> f32 {
+    region
+        .audio
+        .as_ref()
+        .and_then(|a| a.follow_bpm)
+        .filter(|b| *b > 0.0)
+        .map_or(1.0, |bpm| {
+            let tempo = f64::from(p.tempo_at(p.region_start_beats(region)));
+            (tempo / bpm).clamp(0.05, 20.0) as f32
+        })
+}
+
 /// How much of its file an audio region plays, from its `source_start`, in seconds.
 pub(crate) fn played_seconds(region: &Region) -> f32 {
     let Some(a) = region.audio.as_ref() else {
@@ -113,7 +127,7 @@ pub fn split(p: &mut Project, t: usize, r: usize, beat: f64) -> Result<usize, St
     if beat <= start + EDGE_BEATS || beat >= end - EDGE_BEATS {
         return Err("The cut has to be inside the region".to_string());
     }
-    let cut_seconds = seconds_between(p, start, beat);
+    let cut_seconds = seconds_between(p, start, beat) * file_speed(p, region);
     let cut_bar = p.beats_to_bar(beat) as f32;
     let at = (beat - start) as f32;
     let played = played_seconds(region);
@@ -262,14 +276,15 @@ pub fn trim_end(p: &mut Project, t: usize, r: usize, beat: f64) -> Result<(), St
     let region = region_at(p, t, r)?;
     let start = p.region_start_beats(region);
     let beat = beat.max(start + EDGE_BEATS * 4.0);
-    let mut seconds = seconds_between(p, start, beat);
+    let speed = file_speed(p, region);
+    let mut seconds = seconds_between(p, start, beat) * speed;
     let mut beat = beat;
     if let Some(a) = region.audio.as_ref() {
         let room = (a.file.duration_secs() as f32 - region.params.source_start).max(0.0);
         if seconds > room {
             seconds = room;
             let map = p.tempo_map();
-            beat = map.beat_at(map.seconds_at(start) + f64::from(room));
+            beat = map.beat_at(map.seconds_at(start) + f64::from(room / speed));
         }
     }
     let bar = p.beats_to_bar(beat) as f32;
@@ -284,9 +299,9 @@ pub fn trim_end(p: &mut Project, t: usize, r: usize, beat: f64) -> Result<(), St
 /// What a trim of a region's start works from, so a drag can go back the way it came.
 #[derive(Clone)]
 pub struct TrimStart {
-    beat: f64,
+    pub(crate) beat: f64,
     end: f64,
-    source_start: f32,
+    pub(crate) source_start: f32,
     played: f32,
     notes: Vec<Note>,
     controls: Vec<Control>,
@@ -314,11 +329,12 @@ pub fn trim_start(p: &mut Project, t: usize, r: usize, from: &TrimStart, beat: f
     crate::song_pattern::make_unique(p, t, r);
     let mut beat = beat.clamp(0.0, from.end - EDGE_BEATS * 4.0);
     let is_audio = region_at(p, t, r).is_ok_and(|x| x.audio.is_some());
+    let speed = region_at(p, t, r).map_or(1.0, |x| file_speed(p, x));
     if is_audio {
         // It cannot start before the beginning of the file.
         let map = p.tempo_map();
         let earliest = map
-            .beat_at(map.seconds_at(from.beat) - f64::from(from.source_start))
+            .beat_at(map.seconds_at(from.beat) - f64::from(from.source_start / speed))
             .max(0.0);
         beat = beat.max(earliest);
     }
@@ -327,7 +343,7 @@ pub fn trim_start(p: &mut Project, t: usize, r: usize, from: &TrimStart, beat: f
         seconds_between(p, from.beat, beat)
     } else {
         -seconds_between(p, beat, from.beat)
-    };
+    } * speed;
     let start_bar = p.beats_to_bar(beat) as f32 + 1.0;
     let end_bar = p.beats_to_bar(from.end) as f32 + 1.0;
     let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) else {
@@ -809,6 +825,80 @@ pub fn transients(peaks: &[(f32, f32)], seconds_per_point: f64) -> Vec<f64> {
         }
     }
     found
+}
+
+/// The hits in region `r` of track `t`, in beats of the song, in order. Empty for a region that is
+/// not audio or whose waveform is not read yet.
+pub fn region_hits(p: &Project, t: usize, r: usize) -> Vec<f64> {
+    let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+        return Vec::new();
+    };
+    let Some(audio) = region.audio.as_ref() else {
+        return Vec::new();
+    };
+    let Some(peaks) = audio.fine_peaks.get().or(audio.peaks.get()) else {
+        return Vec::new();
+    };
+    let seconds = audio.file.duration_secs();
+    if peaks.is_empty() || seconds <= 0.0 {
+        return Vec::new();
+    }
+    let map = p.tempo_map();
+    let start = p.region_start_beats(region);
+    let end = start + p.region_len_beats(region);
+    let from = f64::from(region.params.source_start);
+    let began = map.seconds_at(start);
+    transients(peaks, seconds / peaks.len() as f64)
+        .into_iter()
+        .filter(|at| *at >= from)
+        .map(|at| map.beat_at(began + at - from))
+        .filter(|beat| *beat < end)
+        .collect()
+}
+
+/// `beat` moved to the nearest hit on track `t` when one is within `within` beats of it.
+pub fn snap_to_hit(p: &Project, t: usize, beat: f64, within: f64) -> f64 {
+    let Some(track) = p.tracks.get(t) else {
+        return beat;
+    };
+    (0..track.regions.len())
+        .flat_map(|r| region_hits(p, t, r))
+        .filter(|h| (h - beat).abs() <= within)
+        .min_by(|a, b| (a - beat).abs().total_cmp(&(b - beat).abs()))
+        .unwrap_or(beat)
+}
+
+/// Audio alignment: moves each of `others` so that its first hit falls on the first hit of region
+/// `to`. How many moved.
+pub fn align_hits(p: &mut Project, to: (usize, usize), others: &[(usize, usize)]) -> usize {
+    let Some(target) = region_hits(p, to.0, to.1).first().copied() else {
+        return 0;
+    };
+    let mut moved = 0;
+    for &(t, r) in others {
+        if (t, r) == to {
+            continue;
+        }
+        let Some(first) = region_hits(p, t, r).first().copied() else {
+            continue;
+        };
+        let Some(region) = p.tracks.get(t).and_then(|x| x.regions.get(r)) else {
+            continue;
+        };
+        let start = p.region_start_beats(region) + (target - first);
+        if start < 0.0 {
+            continue;
+        }
+        let bar = p.beats_to_bar(start) as f32 + 1.0;
+        if let Some(region) = p.tracks.get_mut(t).and_then(|x| x.regions.get_mut(r)) {
+            region.start_bar = bar;
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        p.song_rev += 1;
+    }
+    moved
 }
 
 /// Tab to Transient: the next or last stop for the playhead on the selected track's audio regions,

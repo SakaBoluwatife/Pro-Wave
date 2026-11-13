@@ -6,7 +6,7 @@
 
 use crate::i18n::tr;
 use crate::model::{Project, TrackKind};
-use crate::widgets::{blue, TEXT, TEXT_DIM};
+use crate::widgets::{blue, text_col, text_dim_col};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, Ui};
 
@@ -15,14 +15,26 @@ const ROW_H: f32 = 17.5;
 const TICKS_PER_BEAT: i64 = 960;
 const TICKS_PER_DIVISION: i64 = 240;
 
-const BG: Color32 = Color32::from_rgb(0x12, 0x12, 0x12);
-const TAB_ON: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
-const TAB_OFF: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
-const TOOLBAR_BG: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
-const FILTER_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
+fn bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x12, 0x12, 0x12)
+}
+fn tab_on_col() -> Color32 {
+    crate::theme::grey_rgb(0x22, 0x22, 0x22)
+}
+fn tab_off_col() -> Color32 {
+    crate::theme::grey_rgb(0x1a, 0x1a, 0x1a)
+}
+fn toolbar_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x1e, 0x1e, 0x1e)
+}
+fn filter_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x24, 0x24, 0x24)
+}
 const FILTER_BLUE: Color32 = Color32::from_rgb(29, 74, 134);
 const FILTER_TEXT: Color32 = Color32::from_rgb(190, 214, 245);
-const HEAD_BG: Color32 = Color32::from_rgb(0x19, 0x19, 0x19);
+fn head_bg_col() -> Color32 {
+    crate::theme::grey_rgb(0x19, 0x19, 0x19)
+}
 
 /// The list's own state.
 pub struct ListView {
@@ -184,7 +196,7 @@ fn followed_scroll(scroll: f32, line_y: f32, view_h: f32, max_scroll: f32) -> f3
 }
 
 fn chevron_down(g: &Painter, c: egui::Pos2) {
-    let st = Stroke::new(1.2, TEXT_DIM);
+    let st = Stroke::new(1.2, text_dim_col());
     g.line_segment([c + vec2(-3.0, -1.5), c + vec2(0.0, 1.5)], st);
     g.line_segment([c + vec2(0.0, 1.5), c + vec2(3.0, -1.5)], st);
 }
@@ -192,7 +204,7 @@ fn chevron_down(g: &Painter, c: egui::Pos2) {
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let area = ui.max_rect();
     let g = ui.painter_at(area);
-    g.rect_filled(area, 0.0, BG);
+    g.rect_filled(area, 0.0, bg_col());
     let events = events(p, s);
 
     // Tabs: Event / Marker / Tempo / Signature (only the Event list exists so far).
@@ -201,16 +213,16 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let tab_w = area.width() / tabs.len() as f32;
     for (i, label) in tabs.iter().enumerate() {
         let r = Rect::from_min_size(pos2(area.left() + i as f32 * tab_w, y), vec2(tab_w, 26.0));
-        g.rect_filled(r, 0.0, if i == 0 { TAB_ON } else { TAB_OFF });
+        g.rect_filled(r, 0.0, if i == 0 { tab_on_col() } else { tab_off_col() });
         g.text(
             r.center(),
             Align2::CENTER_CENTER,
             *label,
             FontId::proportional(12.0),
             if i == 0 {
-                TEXT
+                text_col()
             } else {
-                Color32::from_gray(0xb4)
+                crate::theme::gray(0xb4)
             },
         );
     }
@@ -218,21 +230,21 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     // Toolbar: back, Edit / Functions / View, Catch Playhead.
     let bar = Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), 28.0));
-    g.rect_filled(bar, 0.0, TOOLBAR_BG);
-    let st = Stroke::new(1.4, Color32::from_gray(0xc8));
+    g.rect_filled(bar, 0.0, toolbar_bg_col());
+    let st = Stroke::new(1.4, crate::theme::gray(0xc8));
     let cb = pos2(bar.left() + 16.0, bar.center().y);
     g.line_segment([cb + vec2(3.0, -4.0), cb + vec2(-2.0, 0.0)], st);
     g.line_segment([cb + vec2(-2.0, 0.0), cb + vec2(3.0, 4.0)], st);
     let mut x = bar.left() + 44.0;
     for label in [tr("Edit"), tr("Functions"), tr("View")] {
-        let galley = g.layout_no_wrap(label.into(), FontId::proportional(12.5), TEXT);
+        let galley = g.layout_no_wrap(label.into(), FontId::proportional(12.5), text_col());
         let w = galley.size().x;
         g.text(
             pos2(x, bar.center().y),
             Align2::LEFT_CENTER,
             label,
             FontId::proportional(12.5),
-            TEXT,
+            text_col(),
         );
         chevron_down(&g, pos2(x + w + 8.0, bar.center().y + 1.0));
         x += w + 24.0;
@@ -252,7 +264,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         if s.lists.follow {
             blue()
         } else {
-            Color32::from_gray(0x2f)
+            crate::theme::gray(0x2f)
         },
     );
     g.text(
@@ -280,7 +292,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ],
     ];
     let block = Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), 52.0));
-    g.rect_filled(block, 0.0, FILTER_BG);
+    g.rect_filled(block, 0.0, filter_bg_col());
     let bw = (area.width() - 10.0 - 3.0 * 4.0) / 4.0;
     for (row, labels) in filters.iter().enumerate() {
         for (col, label) in labels.iter().enumerate() {
@@ -301,9 +313,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 
     // The list's own header: add, title and quantize.
     let head = Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), 26.0));
-    g.rect_filled(head, 0.0, HEAD_BG);
+    g.rect_filled(head, 0.0, head_bg_col());
     let plus = pos2(head.left() + 16.0, head.center().y);
-    let st = Stroke::new(1.4, Color32::from_gray(0xc8));
+    let st = Stroke::new(1.4, crate::theme::gray(0xc8));
     g.line_segment([plus + vec2(-5.0, 0.0), plus + vec2(5.0, 0.0)], st);
     g.line_segment([plus + vec2(0.0, -5.0), plus + vec2(0.0, 5.0)], st);
     g.text(
@@ -311,26 +323,26 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         Align2::LEFT_CENTER,
         tr("Notes"),
         FontId::proportional(12.5),
-        TEXT,
+        text_col(),
     );
     g.text(
         pos2(head.right() - 110.0, head.center().y),
         Align2::RIGHT_CENTER,
         tr("Quantize:"),
         FontId::proportional(11.5),
-        TEXT_DIM,
+        text_dim_col(),
     );
     let qbox = Rect::from_min_size(
         pos2(head.right() - 104.0, head.top() + 4.0),
         vec2(70.0, 18.0),
     );
-    g.rect_filled(qbox, 3.0, Color32::from_gray(0x14));
+    g.rect_filled(qbox, 3.0, crate::theme::gray(0x14));
     g.text(
         qbox.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
         tr("Off"),
         FontId::proportional(11.5),
-        TEXT,
+        text_col(),
     );
     chevron_down(&g, qbox.right_center() - vec2(9.0, 0.0));
     g.text(
@@ -338,15 +350,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         Align2::CENTER_CENTER,
         "Q",
         FontId::proportional(11.5),
-        TEXT,
+        text_col(),
     );
     y += 26.0;
 
     // Column titles.
     let cols = Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), 20.0));
-    g.rect_filled(cols, 0.0, Color32::from_rgb(0x1a, 0x1a, 0x1a));
+    g.rect_filled(cols, 0.0, crate::theme::grey_rgb(0x1a, 0x1a, 0x1a));
     let f = FontId::proportional(10.5);
-    let dim = Color32::from_gray(0xc0);
+    let dim = crate::theme::gray(0xc0);
     let cx = |v: f32| area.left() + v;
     for (v, label) in [(6.0, "L"), (20.0, "M")] {
         g.text(
@@ -400,12 +412,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let first = (s.lists.scroll / ROW_H).floor() as usize;
     let last = (((s.lists.scroll + list.height()) / ROW_H).ceil() as usize).min(events.len());
     let font = FontId::monospace(11.0);
-    let ink = Color32::from_gray(0xde);
+    let ink = crate::theme::gray(0xde);
     for (i, e) in events.iter().enumerate().take(last).skip(first) {
         let cy = list.top() + i as f32 * ROW_H - s.lists.scroll + ROW_H / 2.0;
         let ([bar, beat, div], tick) = position_in(p, e.beats);
         let l = length_parts(e.len, p.bar_len_at(e.beats));
-        let color = if e.dim { Color32::from_gray(0x3f) } else { ink };
+        let color = if e.dim { crate::theme::gray(0x3f) } else { ink };
         let at = |x: f32, align: Align2, text: String| {
             gl.text(pos2(cx(x), cy), align, text, font.clone(), color);
         };

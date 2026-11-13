@@ -331,11 +331,6 @@ pub fn repoint(
             changed += 1;
         }
     }
-    let listed = p.audio_pool.iter().position(|f| f.path == old.path);
-    match listed {
-        Some(i) => p.audio_pool[i] = new.file.clone(),
-        None => p.audio_pool.push(new.file.clone()),
-    }
     p.song_rev += 1;
     changed
 }
@@ -394,7 +389,13 @@ impl FileEditor {
         self.versions
             .iter()
             .rev()
-            .find(|v| p.audio_pool.iter().any(|f| f.path == v.file.path))
+            .find(|v| {
+                p.tracks
+                    .iter()
+                    .flat_map(|t| &t.regions)
+                    .filter_map(|r| r.audio.as_ref())
+                    .any(|a| a.file.path == v.file.path)
+            })
     }
 }
 
@@ -475,7 +476,7 @@ fn waveform(ui: &mut egui::Ui, v: &mut FileEditor, file: &AudioRegion) {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 170.0), egui::Sense::drag());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x0e));
+    g.rect_filled(rect, 2.0, crate::theme::gray(0x0e));
     let seconds = file.file.duration_secs().max(1e-6);
     let x_of = |t: f64| rect.left() + (t / seconds) as f32 * rect.width();
     let time_at = |x: f32| (f64::from((x - rect.left()) / rect.width()) * seconds).clamp(0.0, seconds);
@@ -793,7 +794,6 @@ mod tests {
         assert!(history.record(&p), "an edit is a step of its own");
         assert!(history.undo(&mut p));
         assert_eq!(path_of(&p), file.path);
-        assert!(p.audio_pool.iter().any(|f| f.path == file.path));
         assert!(history.redo(&mut p));
         assert_eq!(path_of(&p), done.file.path);
     }

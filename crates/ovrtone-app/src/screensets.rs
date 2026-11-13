@@ -58,6 +58,7 @@ pub fn capture(s: &UiState, slot: u8, name: String) -> ScreensetDoc {
         show_markers: s.tracks.show_markers,
         show_signatures: s.tracks.show_signatures,
         bar_w: s.tracks.bar_w,
+        panels: s.layout.to_text(),
     }
 }
 
@@ -88,6 +89,8 @@ pub fn recall(s: &mut UiState, set: &ScreensetDoc) {
     s.tracks.show_tempo = set.show_tempo;
     s.tracks.show_markers = set.show_markers;
     s.tracks.show_signatures = set.show_signatures;
+    // Where the panels are docked, for screensets that kept it.
+    s.layout.apply_text(&set.panels);
     if set.bar_w.is_finite() && set.bar_w > 0.0 {
         s.tracks.bar_w = set
             .bar_w

@@ -26,6 +26,27 @@ pub struct RackView {
     current: u64,
     /// Channels showing the small piano roll rather than steps.
     roll: HashMap<u64, bool>,
+    /// The step buttons set each step's pan instead of switching it.
+    pan_mode: bool,
+    /// The region selected in the Tracks area when last seen, so selecting a pattern clip
+    /// there shows its pattern here.
+    seen_selection: Option<(usize, usize)>,
+    /// A channel goes on the Playlist as soon as it has steps (off by default: make the
+    /// patterns, then Dump to Playlist, as in FL Studio).
+    pub auto_place: bool,
+}
+
+impl RackView {
+    /// The pattern on show, making one when there is none.
+    pub fn current_pattern(&mut self, p: &mut Project) -> u64 {
+        if p.patterns.is_empty() {
+            self.current = sp::new_pattern(p);
+        }
+        if !p.patterns.iter().any(|x| x.id == self.current) {
+            self.current = p.patterns[0].id;
+        }
+        self.current
+    }
 }
 
 fn toggle(ui: &mut Ui, on: bool, text: &str, hint: &str) -> bool {
@@ -48,7 +69,8 @@ fn open_in_piano_roll(p: &mut Project, s: &mut UiState, t: usize, id: u64) {
     s.bottom = Bottom::PianoRoll;
 }
 
-fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
+/// Each step's pan: drag a step up or down (up is right), double-click to centre it.
+fn pan_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
     let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
         return false;
     };
@@ -63,25 +85,127 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
             vec2(STEP_W, ROW_H),
         )
         .shrink(1.5);
+        let resp = ui
+            .interact(
+                cell,
+                egui::Id::unique(("rack_pan", id, channel, step)),
+                Sense::click_and_drag(),
+            )
+            .on_hover_text("Pan: drag up for right, down for left; double-click to centre");
+        let mut pan = lane.pan_of(step);
+        if resp.double_clicked() {
+            pan = 0;
+        } else if resp.dragged() {
+            let dy = resp.drag_delta().y;
+            pan = (f32::from(pan) - dy).round().clamp(-64.0, 63.0) as i8;
+        }
+        if pan != lane.pan_of(step) {
+            lane.set_pan(step, pan);
+            changed = true;
+        }
+        let share = if (step / 4) % 2 == 0 { 0.22 } else { 0.13 };
+        g.rect_filled(cell, 2.0, crate::theme::ink_on(crate::theme::panel(), share));
+        let mid = cell.center().y;
+        g.line_segment([pos2(cell.left(), mid), pos2(cell.right(), mid)], Stroke::new(1.0, crate::theme::ink_on(crate::theme::panel(), 0.4)));
+        let h = f32::from(pan) / 64.0 * cell.height() * 0.5;
+        if pan != 0 {
+            let bar = Rect::from_min_max(pos2(cell.left() + 2.0, mid.min(mid - h)), pos2(cell.right() - 2.0, mid.max(mid - h)));
+            g.rect_filled(bar, 1.0, crate::theme::accent());
+        }
+        if !lane.step_is_on(step) {
+            g.rect_filled(cell, 2.0, Color32::from_black_alpha(90));
+        }
+    }
+    changed
+}
+
+/// The step of pattern `id` under the playhead, where the pattern is placed and the playhead is
+/// inside one of its regions (a region longer than its pattern loops it).
+fn playhead_step(p: &Project, id: u64) -> Option<usize> {
+    let pattern = p.patterns.iter().find(|x| x.id == id)?;
+    let len = f64::from(pattern.len_beats()).max(f64::from(STEP_BEATS));
+    let at = p.position_beats;
+    p.tracks.iter().flat_map(|t| &t.regions).find_map(|r| {
+        if r.params.pattern != id {
+            return None;
+        }
+        let (start, end) = (p.region_start_beats(r), p.region_end_beats(r));
+        (at >= start && at < end).then(|| ((at - start) % len / f64::from(STEP_BEATS)) as usize)
+    })
+}
+
+fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
+    let now = playhead_step(p, id);
+    if p.playing {
+        ui.ctx().request_repaint();
+    }
+    let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
+        return false;
+    };
+    let steps = pattern.steps;
+    let lane = pattern.lane_mut(channel);
+    let (rect, _) = ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROW_H), Sense::click_and_drag());
+    let g = ui.painter_at(rect);
+    let mut changed = false;
+    // FL-style painting: press a step and drag across the row. Left paints steps on (or off,
+    // when the first one was on), right drags erase. What it paints is kept while a button is held.
+    let paint_key = egui::Id::unique("rack_step_paint");
+    let (pointer, primary, secondary, pressed_primary, pressed_secondary) = ui.input(|i| {
+        (
+            i.pointer.hover_pos(),
+            i.pointer.primary_down(),
+            i.pointer.secondary_down(),
+            i.pointer.primary_pressed(),
+            i.pointer.secondary_pressed(),
+        )
+    });
+    if !primary && !secondary {
+        ui.ctx().data_mut(|d| d.remove::<(u64, u64, bool)>(paint_key));
+    }
+    let under = pointer
+        .filter(|pt| rect.contains(*pt))
+        .map(|pt| (((pt.x - rect.left()) / STEP_W) as usize).min(steps.saturating_sub(1)));
+    if let Some(step) = under {
+        if pressed_primary || pressed_secondary {
+            let target = pressed_primary && !lane.step_is_on(step);
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(paint_key, (id, channel, target)));
+        }
+        let paint = ui.ctx().data(|d| d.get_temp::<(u64, u64, bool)>(paint_key));
+        if let Some((pid, pch, target)) = paint {
+            if pid == id && pch == channel && lane.step_is_on(step) != target {
+                lane.toggle_step(step);
+                changed = true;
+            }
+        }
+    }
+    for step in 0..steps {
+        let cell = Rect::from_min_size(
+            rect.min + vec2(step as f32 * STEP_W, 0.0),
+            vec2(STEP_W, ROW_H),
+        )
+        .shrink(1.5);
         let resp = ui.interact(
             cell,
             egui::Id::unique(("rack_step", id, channel, step)),
-            Sense::click(),
+            Sense::hover(),
         );
-        let on = lane.step_is_on(step);
-        if resp.clicked() || (on && resp.secondary_clicked()) {
-            lane.toggle_step(step);
-            changed = true;
-        }
-        let shade = if (step / 4) % 2 == 0 { 0x4a } else { 0x3a };
+        // Off steps: a share of the text colour on the panel, alternating by beat, so they show in
+        // every theme.
+        let share = if (step / 4) % 2 == 0 { 0.22 } else { 0.13 };
         let fill = if lane.step_is_on(step) {
             Color32::from_rgb(0x8f, 0xd0, 0x6a)
         } else if resp.hovered() {
-            Color32::from_gray(shade + 0x14)
+            crate::theme::ink_on(crate::theme::panel(), share + 0.12)
         } else {
-            Color32::from_gray(shade)
+            crate::theme::ink_on(crate::theme::panel(), share)
         };
         g.rect_filled(cell, 2.0, fill);
+        // The playhead: the step playing now lights up.
+        if now == Some(step) {
+            g.rect_filled(cell, 2.0, Color32::from_white_alpha(70));
+            g.rect_stroke(cell, 2.0, Stroke::new(1.5, crate::theme::accent()), egui::StrokeKind::Inside);
+        }
     }
     // What the buttons cannot show is marked, never lost.
     for note in lane.off_grid() {
@@ -118,13 +242,13 @@ fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
     let rows = (i32::from(high) + 3 - low).max(12);
     let (rect, resp) = ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROLL_H), Sense::click());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, Color32::from_gray(0x17));
+    g.rect_filled(rect, 2.0, crate::theme::gray(0x17));
     let row_h = ROLL_H / rows as f32;
     for step in (0..steps).step_by(4) {
         let x = rect.left() + step as f32 * STEP_W;
         g.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, Color32::from_gray(0x25)),
+            Stroke::new(1.0, crate::theme::ink_on(crate::theme::gray(0x17), 0.2)),
         );
     }
     let box_of = |start: f32, len: f32, pitch: u8| {
@@ -245,11 +369,18 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
         }
         let changed = if roll {
             small_roll(ui, p, id, channel)
+        } else if s.rack.pan_mode {
+            pan_grid(ui, p, id, channel)
         } else {
             step_grid(ui, p, id, channel)
         };
         if changed {
             sp::push(p, id);
+            // With Auto Place, a channel given its first steps shows up on the Playlist at once.
+            if s.rack.auto_place {
+                let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+                sp::fill_placements(p, id, bar, None);
+            }
         }
     });
     // A sample let go on the row is loaded there.
@@ -322,6 +453,8 @@ fn pattern_bar(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 }
             });
         let resized = steps != pattern.steps;
+        ui.checkbox(&mut s.rack.pan_mode, "Step Pan")
+            .on_hover_text("The steps show and set each step's pan, sent to the instrument as controller 10");
         pattern.steps = steps;
         if resized || before != pattern.color {
             sp::push(p, current);
@@ -336,6 +469,37 @@ fn pattern_bar(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 s.status = Some("This pattern has no notes yet".to_string());
             }
         }
+        if ui
+            .button("Dump to Playlist")
+            .on_hover_text("Every pattern not on the Playlist yet, one after another from the playhead, each channel on its own track")
+            .clicked()
+        {
+            let mut bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+            let mut placed = 0;
+            let ids: Vec<u64> = p.patterns.iter().map(|x| x.id).collect();
+            for id in ids {
+                let on_playlist = p
+                    .tracks
+                    .iter()
+                    .any(|t| t.regions.iter().any(|r| r.params.pattern == id));
+                if on_playlist {
+                    continue;
+                }
+                let len = p.patterns.iter().find(|x| x.id == id).map_or(0.0, |x| f64::from(x.len_beats()));
+                if sp::place(p, id, bar) > 0 {
+                    placed += 1;
+                    let beats = p.bar_to_beats(f64::from(bar) - 1.0) + len;
+                    bar = (p.beats_to_bar(beats).ceil() as f32 + 1.0).max(bar + 1.0);
+                }
+            }
+            s.status = Some(if placed == 0 {
+                "Every pattern with notes is on the Playlist already".to_string()
+            } else {
+                format!("{placed} patterns on the Playlist, each channel on its own track")
+            });
+        }
+        ui.checkbox(&mut s.rack.auto_place, "Auto Place")
+            .on_hover_text("On: a channel shows up on the Playlist as soon as it has steps. Off: make your patterns first, then Dump to Playlist");
         if button(ui, Icon::Copy, "Clone this pattern").clicked() {
             if let Some(new) = sp::clone_pattern(p, current) {
                 s.rack.current = new;
@@ -360,6 +524,21 @@ fn body(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
     if !p.patterns.iter().any(|x| x.id == s.rack.current) {
         s.rack.current = p.patterns[0].id;
+    }
+    // A pattern clip selected on the Playlist opens its pattern here, and its channel is selected.
+    if s.tracks.selected != s.rack.seen_selection {
+        s.rack.seen_selection = s.tracks.selected;
+        if let Some((t, r)) = s.tracks.selected {
+            let id = p
+                .tracks
+                .get(t)
+                .and_then(|x| x.regions.get(r))
+                .map_or(0, |x| x.params.pattern);
+            if p.patterns.iter().any(|x| x.id == id) {
+                s.rack.current = id;
+                p.selected_track = t;
+            }
+        }
     }
     pattern_bar(ui, p, s);
     ui.separator();

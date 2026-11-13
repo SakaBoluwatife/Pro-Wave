@@ -21,6 +21,8 @@ pub enum FileCmd {
     SaveCopy,
     /// Reloads the project from its file, after asking.
     Revert,
+    /// The Project History window: the backups, to open one.
+    History,
     /// Opens `UiState::recent_pick` (File > Open Recent).
     OpenRecent,
     /// Starts a new project from a template (Project Chooser).
@@ -44,6 +46,7 @@ impl FileCmd {
             FileCmd::Close
             | FileCmd::SaveCopy
             | FileCmd::Revert
+            | FileCmd::History
             | FileCmd::OpenRecent
             | FileCmd::NewFromFile
             | FileCmd::NewFrom(_) => return None,
@@ -61,6 +64,7 @@ impl FileCmd {
             "Save As…" => Some(FileCmd::SaveAs),
             "Save A Copy As…" => Some(FileCmd::SaveCopy),
             "Revert to Saved" => Some(FileCmd::Revert),
+            "Project History…" => Some(FileCmd::History),
             _ => None,
         }
     }
@@ -75,6 +79,96 @@ pub enum FileTask {
     Reveal,
     SaveTemplate,
     Rename(String),
+    /// Track `n` with its effects, plugins (their settings too), sends and mix, no regions.
+    SaveTrackTemplate(usize),
+    /// The effects and plugins of track `n`.
+    SaveChainPreset(usize),
+    /// Every track's set-up, no regions: a starting mixer for other projects.
+    SaveMixerTemplate,
+    /// A new track (or tracks) from a template file.
+    LoadTracks(PathBuf),
+    /// The effects and plugins of a chain preset onto track `n`, in place of its own.
+    LoadChain(PathBuf, usize),
+}
+
+/// Where track templates, effect chains and mixer templates are kept.
+pub fn template_dir(kind: TemplateKind) -> Option<PathBuf> {
+    let name = match kind {
+        TemplateKind::Track => "track-templates",
+        TemplateKind::Chain => "effect-chains",
+        TemplateKind::Mixer => "mixer-templates",
+    };
+    crate::recent_files::config_dir().map(|d| d.join(name))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplateKind {
+    Track,
+    Chain,
+    Mixer,
+}
+
+/// The templates of one kind: their names and files, by name.
+pub fn templates(kind: TemplateKind) -> Vec<(String, PathBuf)> {
+    let Some(dir) = template_dir(kind) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+        .map(|it| {
+            it.flatten()
+                .map(|e| e.path())
+                .filter(|p| ovrtone_project::is_project_file(p))
+                .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by_key(|(n, _)| n.to_lowercase());
+    out
+}
+
+/// Copies the project file at `path` (if there is one) into `Backups` beside it, named with the
+/// time, and lets the oldest go past `kept`. A failure only goes to the log: the save goes
+/// ahead.
+fn keep_backup(path: &Path, kept: usize) {
+    if !path.is_file() || kept == 0 {
+        return;
+    }
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let backups = dir.join("Backups");
+    if let Err(e) = std::fs::create_dir_all(&backups) {
+        tracing::warn!("cannot make {}: {e}", backups.display());
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or(ovrtone_project::EXTENSION);
+    let copy = backups.join(format!("{stem} backup {stamp}.{ext}"));
+    if let Err(e) = std::fs::copy(path, &copy) {
+        tracing::warn!("cannot back up {}: {e}", path.display());
+        return;
+    }
+    let prefix = format!("{stem} backup ");
+    let mut older: Vec<PathBuf> = std::fs::read_dir(&backups)
+        .map(|it| {
+            it.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(&prefix))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // The names end in the time, so the oldest sort first.
+    older.sort();
+    while older.len() > kept {
+        let gone = older.remove(0);
+        let _ = std::fs::remove_file(gone);
+    }
 }
 
 /// Whether `name` can be a file name on every system.
@@ -104,7 +198,7 @@ pub fn content(p: &Project) -> ProjectDoc {
 }
 
 /// Shows the file in the system's file manager.
-fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
+pub(crate) fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -129,7 +223,11 @@ fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
 }
 
 fn dialog() -> FileDialog {
-    FileDialog::new().add_filter(tr("Ovrtone Project"), &ovrtone_project::OPEN_EXTENSIONS)
+    FileDialog::new()
+        .add_filter(tr("Ovrtone Project"), &ovrtone_project::OPEN_EXTENSIONS)
+        .add_filter("Other DAW Sessions (DAWproject, REAPER, Ableton Live, Ardour)", &["dawproject", "rpp", "als", "ardour"])
+        .add_filter("Logic Pro project (pick a file inside the .logicx folder)", &["plist", "logicx"])
+        .add_filter("Pro Tools Session Info as Text", &["txt"])
 }
 
 /// The answer to the "save changes?" prompt.
@@ -209,6 +307,7 @@ impl App {
                 }
             }
             FileCmd::Revert => self.revert(ctx),
+            FileCmd::History => self.ui.history_open = true,
         }
     }
 
@@ -382,7 +481,91 @@ impl App {
             },
             FileTask::Rename(name) => self.rename_project(name.trim()),
             FileTask::SaveTemplate => self.save_template(),
+            FileTask::SaveTrackTemplate(t) => self.save_tracks_as(TemplateKind::Track, Some(t)),
+            FileTask::SaveChainPreset(t) => self.save_tracks_as(TemplateKind::Chain, Some(t)),
+            FileTask::SaveMixerTemplate => self.save_tracks_as(TemplateKind::Mixer, None),
+            FileTask::LoadTracks(file) => match project_io::open_project(&file, ctx) {
+                Ok((from, _)) => {
+                    let picks = vec![true; from.tracks.len()];
+                    let n = self.project.import_tracks(&from, &picks);
+                    self.ui.status = Some(format!("{n} tracks added from the template"));
+                }
+                Err(e) => self.ui.status = Some(format!("cannot open {}: {e}", file.display())),
+            },
+            FileTask::LoadChain(file, t) => match project_io::open_project(&file, ctx) {
+                Ok((from, _)) => {
+                    let Some(chain) = from.tracks.first() else {
+                        return;
+                    };
+                    let Some(track) = self.project.tracks.get_mut(t) else {
+                        return;
+                    };
+                    track.inserts = chain.inserts.clone();
+                    track.plugins = chain.plugins.clone();
+                    for fx in track.inserts.iter_mut() {
+                        fx.sidechain = None;
+                    }
+                    for plugin in track.plugins.iter_mut() {
+                        plugin.sidechain = None;
+                    }
+                    self.project.song_rev += 1;
+                    self.ui.status = Some("Effect chain loaded".to_string());
+                }
+                Err(e) => self.ui.status = Some(format!("cannot open {}: {e}", file.display())),
+            },
         }
+    }
+
+    /// Saves track `only` (or every track) as a template of `kind`: their set-up with the plugins'
+    /// settings, and no regions, in the templates folder under a name the user gives.
+    fn save_tracks_as(&mut self, kind: TemplateKind, only: Option<usize>) {
+        let Some(dir) = template_dir(kind) else {
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.ui.status = Some(e.to_string());
+            return;
+        }
+        self.collect_plugin_states();
+        let mut copy = self.project.clone();
+        if let Some(t) = only {
+            let Some(track) = copy.tracks.get(t).cloned() else {
+                return;
+            };
+            copy.tracks = vec![track];
+        }
+        for track in copy.tracks.iter_mut() {
+            track.regions.clear();
+            track.auto = Default::default();
+            if kind != TemplateKind::Mixer {
+                track.output = 0;
+                track.sends.clear();
+                track.group = None;
+                track.vca = None;
+            }
+        }
+        copy.mixer_snapshots.clear();
+        let title = match kind {
+            TemplateKind::Track => "Save Track as Template",
+            TemplateKind::Chain => "Save Effect Chain",
+            TemplateKind::Mixer => "Save Mixer as Template",
+        };
+        let name = match only {
+            Some(t) => self.project.tracks.get(t).map_or_else(String::new, |x| x.name.clone()),
+            None => self.project.name.clone(),
+        };
+        let file = dialog()
+            .set_title(title)
+            .set_directory(&dir)
+            .set_file_name(format!("{name}.{}", ovrtone_project::EXTENSION))
+            .save_file();
+        let Some(file) = file else {
+            return;
+        };
+        self.ui.status = Some(match project_io::save_project(&copy, &file) {
+            Ok(saved) => format!("Saved {}", saved.display()),
+            Err(e) => format!("cannot save {}: {e}", file.display()),
+        });
     }
 
     /// File > Save as Template: the project as it is, for New from Template. It stays the project
@@ -466,9 +649,27 @@ impl App {
 
     /// Opens `path`, replacing the current project (no prompt; callers ask first).
     pub fn open(&mut self, path: &Path, ctx: &egui::Context) {
+        // Another DAW's session: read into a new, unsaved project, with what was left behind.
+        if crate::session_import::can_open(path) {
+            match crate::session_import::open(path, ctx) {
+                Ok((p, log)) => {
+                    self.replace(p, None);
+                    self.ui.opening_plugins = Some(0);
+                    let name = path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    self.ui.import_log = Some((name, log));
+                }
+                Err(e) => {
+                    self.ui.status = Some(format!("cannot open {}: {e}", path.display()));
+                }
+            }
+            return;
+        }
         match project_io::open_project(path, ctx) {
             Ok((p, warnings)) => {
                 self.replace(p, Some(path.to_path_buf()));
+                self.ui.opening_plugins = Some(0);
                 self.ui.recent.add(path);
                 self.ui.thumbnail_wanted = Some((path.to_path_buf(), 30));
                 if !warnings.is_empty() {
@@ -476,6 +677,11 @@ impl App {
                 }
             }
             Err(e) => {
+                // A damaged or half-copied file: its newest backup is offered instead.
+                if let Some(newest) = crate::project_history::backups_of(path).into_iter().next() {
+                    self.ui.damaged = Some((path.to_path_buf(), newest.path, e.to_string()));
+                    return;
+                }
                 self.ui.recent.remove(path);
                 self.ui.status = Some(trf("cannot open {}: {}", &[&path.display(), &e]));
             }
@@ -533,6 +739,8 @@ impl App {
 
     pub fn save_to(&mut self, path: &Path) -> bool {
         self.collect_plugin_states();
+        // The file as it was before this save goes into a Backups folder beside it.
+        keep_backup(path, self.ui.backups_kept);
         match project_io::save_project(&self.project, path) {
             Ok(path) => {
                 if let Some(sync) = self.sync.as_mut() {

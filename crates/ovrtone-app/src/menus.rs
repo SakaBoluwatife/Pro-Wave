@@ -12,6 +12,7 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Key, KeyboardShortcut, Modifiers
 const FILE: &[&str] = &[
     "New…",
     "New from Template…",
+    "New Surround Project",
     "Open…",
     "Open Recent",
     "-",
@@ -47,7 +48,7 @@ const FILE: &[&str] = &[
 /// Entries that open a submenu (▸), as in Logic, and what is in each. "Open Recent" is filled
 /// with the remembered projects instead.
 const SUBMENUS: &[(&str, &[&str])] = &[
-    ("Revert to", &["Revert to Saved"]),
+    ("Revert to", &["Revert to Saved", "Project History…"]),
     (
         "Alternatives",
         &[
@@ -234,6 +235,9 @@ const MIX: &[&str] = &[
     "Pre-Fader Metering",
     "Mastering",
     "Routing Matrix…",
+    "Spatial Audio…",
+    "Organize Mix Session…",
+    "Auto Gain Staging…",
     "Create Mastering Track",
     "Stem Splitter…",
     "Varispeed…",
@@ -304,6 +308,8 @@ const WINDOW: &[&str] = &[
     "Mixer",
     "Plugin Manager",
     "Screensets…",
+    "Panel Layout…",
+    "Performance…",
     "Video",
     "-",
     "Bring All to Front",
@@ -452,7 +458,7 @@ struct Look {
 
 const DARK: Look = Look {
     bar: Color32::from_rgb(0x3a, 0x3a, 0x3c),
-    bar_text: crate::theme::TEXT,
+    bar_text: Color32::from_rgb(0xe6, 0xe7, 0xea),
     menu: Color32::from_rgb(0x4a, 0x4a, 0x4c),
     text: Color32::from_rgb(0xe6, 0xe6, 0xe6),
     dim: Color32::from_rgb(0x8a, 0x8a, 0x8c),
@@ -471,11 +477,21 @@ const LIGHT: Look = Look {
     separator: Color32::from_rgb(0xd2, 0xd2, 0xd4),
 };
 
-fn look(light: bool) -> &'static Look {
+fn look(light: bool) -> Look {
     if light {
-        &LIGHT
+        LIGHT
+    } else if crate::theme::themed() {
+        Look {
+            bar: crate::theme::toolbar(),
+            bar_text: crate::theme::text(),
+            menu: crate::theme::gray(0x3a),
+            text: crate::theme::text(),
+            dim: crate::theme::text_dim(),
+            hover_text: crate::theme::on_accent(),
+            separator: crate::theme::border(),
+        }
     } else {
-        &DARK
+        DARK
     }
 }
 
@@ -529,7 +545,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Track Header" | "Show Ruler" | "Show Colors" | "Show Grid" => true,
         "Configure Track Header…" | "Pre-Fader Metering" | "Save as Template…" => true,
         "Assign Track Icon…" => !p.tracks.is_empty(),
-        "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…"
+        "Organize Mix Session…" | "Auto Gain Staging…" | "Spatial Audio…" | "Settings…" | "Mastering" | "Autopunch" | "Go to Position…" | "Undo History…"
         | "Routing Matrix…" | "General…" | "Synchronization…" | "Metronome…" | "Recording…"
         | "Audio…" | "MIDI…" => true,
         "Rename Track" | "Assign Track Color…" => !p.tracks.is_empty(),
@@ -618,7 +634,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         }
         "Other Projects…" | "Consolidate…" | "Clean Up…" => true,
         "Logic-style Key Commands…" | "About Ovrtone" | "Customize Toolbar…" => true,
-        "Create Mastering Track" | "Plugin Manager" | "Screensets…" => true,
+        "Create Mastering Track" | "Plugin Manager" | "Screensets…" | "Panel Layout…" | "Performance…" => true,
         "Show Master Track" => p.mastering_track().is_some(),
         "Show Region Automation" => s.tracks.selected.is_some(),
         "Convert Automation" => s
@@ -649,6 +665,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
             p.tracks.iter().any(|t| !t.regions.is_empty())
         }
         "New from Template…"
+        | "New Surround Project"
         | "New"
         | "New Tracks…"
         | "New Aux Track"
@@ -923,6 +940,8 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.show_toolbar = true;
         }
         "Screensets…" => s.dialogs.screensets = !s.dialogs.screensets,
+        "Panel Layout…" => s.layout.open = !s.layout.open,
+        "Performance…" => s.performance.open = !s.performance.open,
         "Other Projects…" => s.file_task = Some(FileTask::ImportProject),
         "Consolidate…" => s.file_task = Some(FileTask::Consolidate),
         "Clean Up…" => s.dialogs.clean_up = Some(crate::bounce::unused_freeze_files(p)),
@@ -1015,6 +1034,9 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         }
         "Go to Position…" => s.dialogs.open_go_to(),
         "Routing Matrix…" => s.dialogs.routing = true,
+        "Spatial Audio…" => s.spatial.open = !s.spatial.open,
+        "Auto Gain Staging…" => s.gain_staging.open = !s.gain_staging.open,
+        "Organize Mix Session…" => s.organizer.open = !s.organizer.open,
         "General…" | "Synchronization…" | "Metronome…" | "Recording…" => {
             s.dialogs.project_settings = true;
         }
@@ -1077,6 +1099,11 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             }
         }
         "New from Template…" => s.chooser = Some(crate::start_screen::Chooser::templates()),
+        "New Surround Project" => {
+            s.file_cmd = Some(crate::file_commands::FileCmd::NewFrom(
+                crate::start_screen::Template::Surround,
+            ));
+        }
         // Track > New: a software instrument track, as the + button above the tracks adds.
         "New" => {
             p.add_track(TrackKind::Instrument);
@@ -1464,7 +1491,7 @@ fn recent_items(ui: &mut egui::Ui, s: &mut crate::UiState, look: &Look) {
 
 /// The entries of one menu or submenu.
 fn entries(ui: &mut egui::Ui, items: &[&str], p: &mut Project, s: &mut crate::UiState) {
-    let look = look(s.light_menus);
+    let look = &look(s.light_menus);
     let labels: Vec<String> = items.iter().map(|it| it.to_string()).collect();
     ui.set_width(menu_width(ui, &labels));
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1505,9 +1532,9 @@ fn menu(ui: &mut egui::Ui, title: &str, items: &[&str], p: &mut Project, s: &mut
 fn menu_style(light: bool) -> impl Fn(&mut egui::Style) + Send + Sync + 'static {
     move |style: &mut egui::Style| {
         egui::containers::menu::menu_style(style);
-        let l = look(light);
+        let l = &look(light);
         let hover_fill = if light {
-            crate::theme::TEXT
+            crate::theme::text()
         } else {
             Color32::from_rgb(0x55, 0x55, 0x58)
         };
@@ -1515,7 +1542,7 @@ fn menu_style(light: bool) -> impl Fn(&mut egui::Style) + Send + Sync + 'static 
         v.window_fill = if light {
             l.menu
         } else {
-            crate::theme::GLASS_FILL
+            crate::theme::glass_fill()
         };
         v.window_stroke = Stroke::new(1.0, crate::theme::GLASS_EDGE);
         v.menu_corner_radius = egui::CornerRadius::same(8);
@@ -1600,6 +1627,37 @@ pub fn bar_text(light: bool) -> Color32 {
     look(light).bar_text
 }
 
+/// How long a status message stays up.
+const STATUS_SECONDS: f64 = 6.0;
+
+/// Clears a status message once it has been up for [`STATUS_SECONDS`]; a new message starts
+/// its own time. Call once per frame.
+pub fn expire_status(ctx: &egui::Context, s: &mut crate::UiState) {
+    let key = egui::Id::unique("ovrtone_status_since");
+    let now = ctx.input(|i| i.time);
+    let Some(msg) = s.status.clone() else {
+        ctx.data_mut(|d| d.remove::<(String, f64)>(key));
+        return;
+    };
+    let since = ctx.data(|d| d.get_temp::<(String, f64)>(key));
+    match since {
+        Some((shown, at)) if shown == msg => {
+            if now - at >= STATUS_SECONDS {
+                s.status = None;
+                ctx.data_mut(|d| d.remove::<(String, f64)>(key));
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                    STATUS_SECONDS - (now - at) + 0.05,
+                ));
+            }
+        }
+        _ => {
+            ctx.data_mut(|d| d.insert_temp(key, (msg, now)));
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(STATUS_SECONDS + 0.05));
+        }
+    }
+}
+
 /// Whether [`status_line`] has anything to say.
 pub fn has_status(p: &Project, s: &crate::UiState) -> bool {
     s.status.is_some() || p.tracks.len() > ovrtone_engine::MAX_TRACKS
@@ -1614,7 +1672,16 @@ pub fn status_line(ui: &mut egui::Ui, p: &Project, s: &crate::UiState) {
         Color32::from_rgb(0xff, 0xb0, 0x40)
     };
     if let Some(msg) = &s.status {
-        ui.colored_label(warn, msg);
+        // Clicking it dismisses it at once (see `expire_status`, which clears it on its own).
+        if ui
+            .add(egui::Label::new(egui::RichText::new(msg).color(warn)).sense(egui::Sense::click()))
+            .on_hover_text("Click to dismiss")
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::unique("ovrtone_status_since"), (msg.clone(), f64::MIN))
+            });
+        }
     }
     // The engine plays only its first MAX_TRACKS tracks; say so instead of failing silently.
     let max = ovrtone_engine::MAX_TRACKS;
@@ -1684,6 +1751,7 @@ mod tests {
                     s.tracks.show_tempo,
                     s.tracks.show_markers,
                     s.tracks.show_signatures,
+                    s.spatial.open,
                     s.tracks.show_chords,
                     s.tracks.show_arrangement,
                     s.tracks.flex_view,

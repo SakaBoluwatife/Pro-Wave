@@ -38,6 +38,12 @@ pub fn add_plugin(p: &mut Project, track: usize, info: &PluginInfo) -> Result<()
                 info.name
             ));
         }
+        // A track still called what it was made as ("Inst 3"), or after the instrument it had, takes
+        // the new instrument's name. A name the user chose stays.
+        let old = t.instrument_plugin.as_ref().map(|old| old.name.clone());
+        if auto_named(&t.name) || old.as_deref() == Some(t.name.as_str()) {
+            t.name = info.name.clone();
+        }
         t.instrument_plugin = Some(PluginInsert::new(info));
         p.selected_track = track;
         return Ok(());
@@ -126,6 +132,36 @@ fn plan(want: &[(u64, Place)], live: &HashMap<u64, Place>) -> Vec<Step> {
 
 /// Where each plugin of the project goes in the engine. One that failed to load is left out, and
 /// so is what does not fit the engine, but the slots of those behind it stay as they are.
+/// The song's tempo map and bar signatures, as an ARA plugin reads them (Melodyne puts its notes
+/// and the MIDI it makes on this grid). Ramps are followed beat by beat.
+fn ara_timeline(p: &Project) -> ovrtone_host::AraTimeline {
+    let map = p.tempo_map();
+    let mut beats = vec![0.0f64];
+    let mut from = 0.0f64;
+    let mut ramp = p.tempo_ramp;
+    for c in &p.tempo_changes {
+        if ramp {
+            let mut b = from + 1.0;
+            while b < c.beat && beats.len() < 4096 {
+                beats.push(b);
+                b += 1.0;
+            }
+        }
+        beats.push(c.beat);
+        from = c.beat;
+        ramp = c.ramp;
+    }
+    // ARA wants two entries at least: one more, a bar on, holds the last tempo.
+    beats.push(from + 4.0);
+    let tempo = beats.iter().map(|b| (map.seconds_at(*b), *b)).collect();
+    let mut bars = vec![(i32::from(p.sig.0), i32::from(p.sig.1), 0.0)];
+    for c in &p.sig_changes {
+        let at = p.bar_to_beats(f64::from(c.bar.saturating_sub(1)));
+        bars.push((i32::from(c.num), i32::from(c.den), at));
+    }
+    ovrtone_host::AraTimeline { tempo, bars }
+}
+
 /// The audio regions a track plays, for a plugin that plays them itself.
 fn ara_regions(p: &Project, t: usize) -> Vec<AraRegion> {
     let Some(track) = p.tracks.get(t) else {
@@ -704,11 +740,27 @@ impl Rack {
     /// `message` gets what went wrong for the status line. At most one plugin loads per call, so
     /// a project with many stays responsive while it opens.
     /// Tells plugins that play their track's audio about changes to the regions.
+    /// The notes the ARA plugin on track `t` (Melodyne) found in the track's audio. Err with why not.
+    pub fn ara_notes(&mut self, t: usize) -> Result<Vec<(f64, f64, f32, f32)>, String> {
+        let live = self
+            .live
+            .values_mut()
+            .find(|l| usize::from(l.place.0) == t && l.loaded.is_ara())
+            .ok_or("Put Melodyne (or another ARA plugin) on this track first")?;
+        live.loaded
+            .ara_notes()
+            .ok_or_else(|| "The plugin has no notes yet: let it finish analysing, then try again".to_string())
+    }
+
     fn sync_ara(&mut self, p: &Project, message: &mut Option<String>) {
+        let mut timeline = None;
         for live in self.live.values_mut() {
             if !live.loaded.is_ara() {
                 continue;
             }
+            // The song's tempo and signatures first, so the plugin's grid is the song's.
+            let timeline = timeline.get_or_insert_with(|| ara_timeline(p));
+            live.loaded.ara_timeline(timeline);
             let now = (p.song_rev, live.place.0);
             if live.ara_seen == Some(now) {
                 continue;
@@ -726,6 +778,22 @@ impl Rack {
                 }
             }
         }
+    }
+
+    /// How many of the project's plugins are still to load, and the name of the next.
+    pub fn loads_left(&self, p: &mut Project) -> (usize, Option<String>) {
+        let places: HashMap<u64, Place> = self.live.iter().map(|(u, l)| (*u, l.place)).collect();
+        let mut left = 0;
+        let mut next = None;
+        for step in plan(&wanted_places(p), &places) {
+            if let Step::Load(uid, _) = step {
+                left += 1;
+                if next.is_none() {
+                    next = p.all_hosted_mut().find(|i| i.uid == uid).map(|i| i.name.clone());
+                }
+            }
+        }
+        (left, next)
     }
 
     pub fn sync(
@@ -1355,5 +1423,26 @@ mod tests {
         assert!(p.tracks[0].hosted().next().unwrap().failed.is_some());
         assert!(rack.sync(&mut p, &mut engine, &mut message));
         assert_eq!(message, None, "it is not tried again");
+    }
+}
+
+/// Whether a track still has the name it was made with: "Inst 3", "Drummer 1", "Instrument" and
+/// the like.
+fn auto_named(name: &str) -> bool {
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == ' ');
+    matches!(base, "Inst" | "Instrument" | "Drummer" | "Software Instrument" | "")
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::auto_named;
+
+    #[test]
+    fn a_track_with_its_first_name_takes_its_instrument_name() {
+        assert!(auto_named("Inst 3"));
+        assert!(auto_named("Instrument"));
+        assert!(auto_named("Drummer 12"));
+        assert!(!auto_named("Lead Vox"));
+        assert!(!auto_named("Keys 2"));
     }
 }

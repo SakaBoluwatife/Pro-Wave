@@ -13,8 +13,12 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui};
 /// Height of the Marker track, in points.
 pub const HEIGHT: f32 = 24.0;
 
-const BG: Color32 = crate::theme::LANE;
-const HEADER_BG: Color32 = crate::theme::PANEL_BG;
+fn bg_col() -> Color32 {
+    crate::theme::lane()
+}
+fn header_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
 
 /// What a right-click or double-click asked for, run after drawing.
 enum Action {
@@ -39,17 +43,17 @@ pub fn show(
 
     // ---- header
     let gh = ui.painter_at(header);
-    gh.rect_filled(header, 0.0, HEADER_BG);
+    gh.rect_filled(header, 0.0, header_bg_col());
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),
         Align2::LEFT_CENTER,
         tr("Marker"),
         FontId::proportional(13.0),
-        Color32::from_gray(0xdc),
+        crate::theme::gray(0xdc),
     );
     if let Some(i) = p.marker_at(p.position_beats) {
         gh.text(
@@ -57,13 +61,13 @@ pub fn show(
             Align2::RIGHT_CENTER,
             &p.markers[i].name,
             FontId::proportional(11.0),
-            Color32::from_gray(0xa8),
+            crate::theme::gray(0xa8),
         );
     }
 
     // ---- lane: double-click an empty spot to add a marker
     let g = ui.painter_at(lane);
-    g.rect_filled(lane, 0.0, BG);
+    g.rect_filled(lane, 0.0, bg_col());
     let lane_resp = ui.interact(lane, egui::Id::unique("marker_track_lane"), Sense::click());
     if lane_resp.double_clicked() {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
@@ -220,6 +224,6 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x0e)),
+        Stroke::new(1.0, crate::theme::gray(0x0e)),
     );
 }

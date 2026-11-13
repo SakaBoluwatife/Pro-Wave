@@ -114,7 +114,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                                 } else if send {
                                     (Color32::from_rgb(0x8a, 0x6a, 0x2a), "Send")
                                 } else {
-                                    (Color32::from_gray(0x1c), "")
+                                    (crate::theme::gray(0x1c), "")
                                 };
                                 let g = ui.painter_at(rect);
                                 g.rect_filled(rect, 2.0, fill);

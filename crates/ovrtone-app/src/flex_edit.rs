@@ -105,12 +105,18 @@ pub enum Command {
     /// Flex markers on the hits, moved to the nearest step of `grid` beats.
     Quantize { grid: f64 },
     /// Flex markers on the beats, moved to the project's beats: the region follows the
-    /// project's tempo (Smart Tempo: Adapt Region Tempo).
+    /// project's tempo once (the menus now use Fit to Tempo, which keeps following).
+    #[allow(dead_code)]
     FollowProjectTempo,
     /// Flex Pitch: every note moved to the nearest note of the project's key.
     CorrectPitch,
     /// A new software instrument track with the notes Flex Pitch hears.
     MidiFromPitch,
+    /// A new software instrument track with a note on each hit (drums: one pitch, the velocity
+    /// from how hard the hit is).
+    MidiFromHits,
+    /// The region cut into separate regions at its hits.
+    SliceAtHits,
 }
 
 /// What the background work found.
@@ -122,6 +128,8 @@ enum Outcome {
     },
     Pitch(Vec<PitchShift>),
     Notes(Vec<ovrtone_engine::DetectedNote>),
+    /// The hits, in seconds into the file, to cut the region at.
+    Cuts(Vec<f64>),
 }
 
 struct Task {
@@ -233,11 +241,51 @@ pub fn follow_source_tempo(p: &mut Project, t: usize, r: usize, bpm: f64) {
     };
     let start_bar = f64::from(region.start_bar);
     let start = p.bar_to_beats(start_bar - 1.0);
-    let length = duration * bpm / f64::from(p.tempo_at(start)).max(1.0);
-    let map = p.tempo_map();
-    let end = map.beat_at(map.seconds_at(start) + length);
+    // As many beats as the audio has at the tempo it was made at, whatever the song's tempo does.
+    let end = start + duration * bpm / 60.0;
     let bars = p.beats_to_bar(end) - (start_bar - 1.0);
     p.tracks[t].regions[r].len_bars = (bars as f32).max(1.0 / 64.0);
+}
+
+/// Time-stretches audio region `r` of track `t` so that it ends at `end_beat` (Alt-drag of its end):
+/// the audio is made to follow the project's tempo, as if made at the tempo that fills the new length.
+/// `old` is its length in beats before the drag. Err with why not.
+pub fn stretch_region_to(
+    p: &mut Project,
+    t: usize,
+    r: usize,
+    old: f64,
+    end_beat: f64,
+) -> Result<(), String> {
+    let Some(region) = p.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+        return Err("No region".to_string());
+    };
+    let Some(a) = region.audio.as_ref() else {
+        return Err("Only audio regions stretch".to_string());
+    };
+    if a.flex.is_some() && a.follow_bpm.is_none() {
+        return Err("This region has Flex edits: stretch it with its Flex markers".to_string());
+    }
+    let start = p.region_start_beats(region);
+    let new = end_beat - start;
+    if old <= 1e-6 || new < 1.0 / 64.0 {
+        return Err("Too short to stretch".to_string());
+    }
+    let ratio = new / old;
+    // The tempo it was made at, as heard now: following, its own; else the song's where it starts.
+    let made_at = a
+        .follow_bpm
+        .unwrap_or_else(|| f64::from(p.tempo_at(start)).max(1.0));
+    let bpm = (made_at * ratio).clamp(5.0, 2000.0);
+    if let Some(a) = p.tracks[t].regions[r].audio.as_mut() {
+        a.follow_bpm = Some(bpm);
+    }
+    update_follower(p, t, r);
+    let start_bar = f64::from(p.tracks[t].regions[r].start_bar);
+    let bars = p.beats_to_bar(end_beat) - (start_bar - 1.0);
+    p.tracks[t].regions[r].len_bars = (bars as f32).max(1.0 / 64.0);
+    p.song_rev += 1;
+    Ok(())
 }
 
 /// Sets the stretch of a region that follows the tempo for the tempo where it starts now. False if
@@ -249,25 +297,65 @@ fn update_follower(p: &mut Project, t: usize, r: usize) -> bool {
     let Some(a) = region.audio.as_ref() else {
         return false;
     };
+    if a.follow_bpm.is_none() {
+        return false;
+    }
+    // The engine stretches it live (see `Project::clip_edit_of`): the region plays its recording,
+    // with no stretched copy to wait for. Markers made by older versions are cleared.
+    if a.flex.as_ref().is_some_and(|f| !f.markers.is_empty()) {
+        if let Some(f) = p.tracks[t].regions[r].audio.as_mut().and_then(|a| a.flex.as_mut()) {
+            f.markers.clear();
+        }
+        p.song_rev += 1;
+        return true;
+    }
+    false
+}
+
+/// The old way of following the tempo: markers that make a stretched copy. Kept for reference.
+#[allow(dead_code)]
+fn follower_markers(p: &mut Project, t: usize, r: usize) -> bool {
+    let Some(region) = p.tracks.get(t).and_then(|t| t.regions.get(r)) else {
+        return false;
+    };
+    let Some(a) = region.audio.as_ref() else {
+        return false;
+    };
     let Some(bpm) = a.follow_bpm else {
         return false;
     };
     let original = a.flex.as_ref().map_or(&a.file, |f| &f.original).clone();
     let duration = original.duration_secs();
+    if duration <= 0.0 || !bpm.is_finite() || bpm <= 0.0 {
+        return false;
+    }
     let start = p.bar_to_beats(f64::from(region.start_bar) - 1.0);
-    let tempo = f64::from(p.tempo_at(start)).max(1.0);
-    let length = duration * bpm / tempo;
-    let markers = if (length - duration).abs() < 0.001 {
-        Vec::new()
-    } else {
-        vec![
-            WarpPoint { src: 0.0, dst: 0.0 },
+    // Each beat of the audio lands on a beat of the song, through every change of tempo under
+    // the region: a marker per beat, or just the two ends where the tempo does not change.
+    let map = p.tempo_map();
+    let beats = duration * bpm / 60.0;
+    let first = map.seconds_at(start);
+    let mut markers: Vec<WarpPoint> = (0..=(beats.ceil() as usize).min(8192))
+        .map(|k| {
+            let b = (k as f64).min(beats);
             WarpPoint {
-                src: duration,
-                dst: length,
-            },
-        ]
-    };
+                src: b * 60.0 / bpm,
+                dst: map.seconds_at(start + b) - first,
+            }
+        })
+        .collect();
+    if let Some(&end) = markers.last() {
+        let rate = end.dst / end.src.max(1e-9);
+        let steady = markers.iter().all(|m| (m.dst - m.src * rate).abs() < 1e-4);
+        if steady {
+            markers = if (end.dst - duration).abs() < 0.001 {
+                Vec::new()
+            } else {
+                vec![WarpPoint { src: 0.0, dst: 0.0 }, end]
+            };
+        }
+    }
+    let length = markers.last().map_or(duration, |m| m.dst);
     let same = a.flex.as_ref().is_some_and(|f| {
         f.markers.len() == markers.len()
             && f.markers
@@ -282,12 +370,10 @@ fn update_follower(p: &mut Project, t: usize, r: usize) -> bool {
     if let Some(a) = region.audio.as_mut() {
         let flex = a
             .flex
-            .get_or_insert_with(|| FlexEdit::new(original, FlexMode::Rhythmic));
-        // A trimmed or split part keeps playing the same music in the file's new length.
-        let was = flex.markers.last().map_or(duration, |m| m.dst).max(1e-6);
-        let scale = (length / was) as f32;
-        region.params.source_start *= scale;
-        region.params.source_len *= scale;
+            .get_or_insert_with(|| FlexEdit::new(original, FlexMode::Complex));
+        // A trimmed or split part is rescaled to the new file when that file is ready (see
+        // `poll_renders`): until then the region keeps playing the file it has, where it was.
+        let _ = length;
         flex.markers = markers;
     }
     p.song_rev += 1;
@@ -387,7 +473,10 @@ fn poll_detections(p: &mut Project, s: &mut UiState) {
             follow_source_tempo(p, t, r, bpm);
             s.status = Some(format!("Follows the project tempo: made at {bpm:.1} BPM"));
         } else if same && std::mem::take(&mut s.flex.tempo_asked) {
-            s.status = Some("No clear tempo found: type the sample's BPM in".to_string());
+            s.status = Some(
+                "No clear tempo found: type the sample's BPM in the Inspector (Sample BPM)"
+                    .to_string(),
+            );
         }
     }
 }
@@ -399,6 +488,8 @@ pub struct FlexState {
     renders: Vec<Render>,
     /// Regions whose edits are to be removed (it needs the context, which the menus lack).
     removals: Vec<(usize, usize)>,
+    /// Regions to fit to the tempo (it needs the context, which the menus lack).
+    fits: Vec<(usize, usize)>,
     /// Clips being listened to for their tempo.
     detecting: Vec<Detection>,
     /// The user pressed Find, so finding nothing is worth saying.
@@ -413,6 +504,7 @@ impl FlexState {
         !self.tasks.is_empty()
             || !self.renders.is_empty()
             || !self.removals.is_empty()
+            || !self.fits.is_empty()
             || !self.detecting.is_empty()
     }
 
@@ -462,6 +554,12 @@ impl FlexState {
     pub fn remove_later(&mut self, t: usize, r: usize) {
         self.removals.push((t, r));
     }
+
+    /// Fits region `r` of track `t` to the project tempo on the next [`poll`] (Fit to Tempo):
+    /// it then follows every change of tempo.
+    pub fn fit_later(&mut self, t: usize, r: usize) {
+        self.fits.push((t, r));
+    }
 }
 
 fn audio_of(p: &Project, t: usize, r: usize) -> Option<&AudioRegion> {
@@ -484,6 +582,7 @@ pub fn mode_label(mode: FlexMode) -> &'static str {
         FlexMode::Polyphonic => tr("Polyphonic"),
         FlexMode::Speed => tr("Speed"),
         FlexMode::Tempophone => tr("Tempophone"),
+        FlexMode::Complex => "Complex",
     }
 }
 
@@ -712,6 +811,38 @@ fn work(
             let (markers, length) = follow_tempo(&found.beats, file.duration_secs(), map, origin);
             Ok(Outcome::Markers { markers, length })
         }
+        Command::SliceAtHits => {
+            if found.onsets.is_empty() {
+                return Err("no hits found to slice at".into());
+            }
+            Ok(Outcome::Cuts(found.onsets.iter().map(|t| place(*t)).collect()))
+        }
+        Command::MidiFromHits => {
+            if found.onsets.is_empty() {
+                return Err("no hits found".into());
+            }
+            let stereo = file.read_stereo().map_err(|e| e.to_string())?;
+            let rate = f64::from(file.sample_rate.max(1));
+            let frames = stereo.len() / 2;
+            // Each hit's level: the loudest point in the 30 ms after it.
+            let notes = found
+                .onsets
+                .iter()
+                .map(|t| {
+                    let from = ((t * rate) as usize).min(frames);
+                    let to = (from + (0.03 * rate) as usize).min(frames);
+                    let level = stereo[from * 2..to * 2].iter().fold(0f32, |m, v| m.max(v.abs()));
+                    ovrtone_engine::DetectedNote {
+                        start: place(*t),
+                        end: place(*t + 0.1),
+                        // C1 in Logic's naming: the kick of most drum instruments.
+                        pitch: 36.0,
+                        level: level.clamp(0.0, 1.0),
+                    }
+                })
+                .collect();
+            Ok(Outcome::Notes(notes))
+        }
         Command::CorrectPitch | Command::MidiFromPitch => {
             let stereo = file.read_stereo().map_err(|e| e.to_string())?;
             let mono: Vec<f32> = stereo.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
@@ -748,12 +879,41 @@ fn work(
     }
 }
 
+/// Fit to Tempo: the region follows the project tempo from now on, at the tempo it was made at
+/// (from its name, or else by listening). Says what happened, or how to give the tempo.
+fn fit_to_tempo(ctx: &egui::Context, p: &mut Project, s: &mut UiState, t: usize, r: usize) {
+    let Some(a) = audio_of(p, t, r) else {
+        s.status = Some("Fit to Tempo: only audio regions".to_string());
+        return;
+    };
+    if let Some(bpm) = a.follow_bpm {
+        s.status = Some(format!("Already follows the project tempo: made at {bpm:.1} BPM"));
+        return;
+    }
+    if recording_of(a).duration_secs() < MIN_LOOP_SECONDS {
+        s.status = Some("Too short to be a loop: type its BPM in the Inspector".to_string());
+        return;
+    }
+    s.flex.tempo_asked = true;
+    s.flex.detect_tempo(p, t, r, ctx);
+    match audio_of(p, t, r).and_then(|a| a.follow_bpm) {
+        Some(bpm) => {
+            s.flex.tempo_asked = false;
+            s.status = Some(format!("Follows the project tempo: made at {bpm:.1} BPM"));
+        }
+        None => s.status = Some("Fit to Tempo: listening for the sample's tempo…".to_string()),
+    }
+}
+
 /// Applies the commands that finished and the sounds that are ready, and starts making the
 /// sound of edits that changed. Call once per frame.
 pub fn poll(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     for (t, r) in std::mem::take(&mut s.flex.removals) {
         remove(p, t, r, ctx);
         fit_region(p, t, r);
+    }
+    for (t, r) in std::mem::take(&mut s.flex.fits) {
+        fit_to_tempo(ctx, p, s, t, r);
     }
     fit_regions_to_tempo(p, s);
     poll_tasks(p, s);
@@ -828,6 +988,21 @@ fn poll_tasks(p: &mut Project, s: &mut UiState) {
                 let made = midi_track_from(p, t, r, &notes);
                 s.status = Some(trf("Flex Pitch: {} notes on a new track", &[&made]));
             }
+            Outcome::Cuts(cuts) => {
+                let origin = p.region_start_beats(&p.tracks[t].regions[r]);
+                let map = p.tempo_map();
+                let s0 = map.seconds_at(origin);
+                // From the last hit back, so the region being cut stays region `r`.
+                let mut beats: Vec<f64> = cuts.iter().map(|c| map.beat_at(s0 + c)).collect();
+                beats.sort_by(|a, b| b.total_cmp(a));
+                let mut made = 0;
+                for beat in beats {
+                    if crate::region_edit::split(p, t, r, beat).is_ok() {
+                        made += 1;
+                    }
+                }
+                s.status = Some(format!("Sliced into {} regions at its hits", made + 1));
+            }
         }
         p.song_rev += 1;
     }
@@ -879,6 +1054,7 @@ fn midi_track_from(
         params: crate::model::RegionParams::default(),
         auto: Vec::new(),
         generated: None,
+        gain_line: Vec::new(),
     };
     let mut track = Track::new(
         format!("{} (Flex Pitch)", p.tracks[t].name),
@@ -888,6 +1064,58 @@ fn midi_track_from(
     track.regions.push(region);
     p.tracks.insert(t + 1, track);
     p.vca_inserted(t + 1);
+    made
+}
+
+/// A new instrument track under track `t` holding `notes` ((start, length) in song seconds, MIDI
+/// pitch, level), one region over the track's audio: what an ARA plugin such as Melodyne found.
+/// Returns how many notes it has.
+pub fn midi_track_from_song(p: &mut Project, t: usize, notes: &[(f64, f64, f32, f32)]) -> usize {
+    let Some(track) = p.tracks.get(t) else { return 0 };
+    let audio: Vec<&Region> = track.regions.iter().filter(|r| r.audio.is_some()).collect();
+    let start_bar = audio.iter().map(|r| r.start_bar).fold(f32::INFINITY, f32::min);
+    let end_bar = audio.iter().map(|r| r.start_bar + r.len_bars).fold(0.0, f32::max);
+    if !start_bar.is_finite() {
+        return 0;
+    }
+    let origin = p.bar_to_beats(f64::from(start_bar) - 1.0);
+    let map = p.tempo_map();
+    let beat = |sec: f64| (map.beat_at(sec) - origin) as f32;
+    let midi: Vec<Note> = notes
+        .iter()
+        .map(|&(at, len, pitch, level)| {
+            let start = beat(at).max(0.0);
+            Note {
+                start,
+                len: (beat(at + len) - start).max(1.0 / 32.0),
+                pitch: pitch.round().clamp(0.0, 127.0) as u8,
+                vel: (40.0 + 87.0 * level.clamp(0.0, 1.0)).round() as u8,
+                muted: false,
+                color: 0,
+                slide: false,
+            }
+        })
+        .collect();
+    let name = format!("{} (Melodyne)", track.name);
+    let region = Region {
+        name: name.clone(),
+        start_bar,
+        len_bars: (end_bar - start_bar).max(1.0),
+        notes: midi,
+        controls: Vec::new(),
+        folder: None,
+        audio: None,
+        params: crate::model::RegionParams::default(),
+        auto: Vec::new(),
+        generated: None,
+        gain_line: Vec::new(),
+    };
+    let made = region.notes.len();
+    let mut new = Track::new(name, TrackKind::Instrument);
+    new.regions.push(region);
+    p.tracks.insert(t + 1, new);
+    p.vca_inserted(t + 1);
+    p.song_rev += 1;
     made
 }
 
@@ -1029,12 +1257,31 @@ fn poll_renders(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 let Some(a) = region.audio.as_mut() else {
                     continue;
                 };
-                let Some(mut f) = a.flex.take().filter(|f| f.fingerprint() == fp) else {
+                // Only the region this sound was made for: any other keeps its edit (taking it
+                // first would drop the edit of a region whose newer render is still on its way).
+                if !a.flex.as_ref().is_some_and(|f| f.fingerprint() == fp) {
+                    continue;
+                }
+                let Some(mut f) = a.flex.take() else {
                     continue;
                 };
                 f.rendered = fp;
+                // A region that follows the tempo keeps doing so, and a trimmed or split part keeps
+                // playing the same music in the file's new length.
+                let follow = a.follow_bpm;
+                if follow.is_some() {
+                    let was = a.file.duration_secs();
+                    let now = file.duration_secs();
+                    if was > 1e-6 && now > 1e-6 {
+                        let scale = (now / was) as f32;
+                        region.params.source_start *= scale;
+                        region.params.source_len *= scale;
+                    }
+                }
+                let a = region.audio.get_or_insert_with(|| crate::import::audio_region(file.clone(), ctx));
                 *a = crate::import::audio_region(file.clone(), ctx);
                 a.flex = Some(f);
+                a.follow_bpm = follow;
                 p.song_rev += 1;
             }
         }

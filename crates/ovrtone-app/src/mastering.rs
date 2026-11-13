@@ -103,7 +103,7 @@ impl Loudness {
         }
     }
 
-    fn add(&mut self, frame: [f32; 2]) {
+    pub(crate) fn add(&mut self, frame: [f32; 2]) {
         let mut power = 0.0;
         for (ch, sample) in frame.iter().enumerate() {
             let mut x = f64::from(*sample);
@@ -205,7 +205,7 @@ impl Default for TruePeak {
 }
 
 impl TruePeak {
-    fn add(&mut self, frame: [f32; 2]) {
+    pub(crate) fn add(&mut self, frame: [f32; 2]) {
         for (ch, sample) in frame.iter().enumerate() {
             self.history[ch][self.at] = *sample;
             self.sample_peak = self.sample_peak.max(sample.abs());
@@ -267,7 +267,7 @@ fn fft(re: &mut [f32], im: &mut [f32]) {
 }
 
 /// The level in dB of each of `bands` bands from 20 Hz to the top, spaced evenly by octave.
-fn spectrum(samples: &[f32], rate: u32, bands: usize) -> Vec<f32> {
+pub(crate) fn spectrum(samples: &[f32], rate: u32, bands: usize) -> Vec<f32> {
     let n = samples.len();
     let mut re: Vec<f32> = samples
         .iter()
@@ -354,6 +354,15 @@ impl MasteringView {
         self.bands.clear();
     }
 
+    /// Integrated and short-term loudness (LUFS) and true peak (dBTP) of what has played since the
+    /// meter began, if it is running.
+    pub fn readings(&mut self) -> Option<(f64, f64, f32)> {
+        self.take_in();
+        let loudness = self.loudness.as_ref()?;
+        let true_peak = 20.0 * self.peak.peak.max(1e-6).log10();
+        Some((loudness.integrated(), loudness.short_term(), true_peak))
+    }
+
     fn take_in(&mut self) {
         let Some(tap) = self.tap.as_mut() else {
             return;
@@ -390,19 +399,19 @@ fn row(ui: &mut Ui, name: &str, value: f64, unit: &str) {
 fn draw_spectrum(ui: &mut Ui, bands: &[f32]) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 120.0), Sense::hover());
     let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, Color32::from_gray(0x12));
+    g.rect_filled(rect, 2.0, crate::theme::gray(0x12));
     for db in [-20.0f32, -40.0, -60.0] {
         let y = rect.top() + rect.height() * (-db / 80.0);
         g.line_segment(
             [pos2(rect.left(), y), pos2(rect.right(), y)],
-            Stroke::new(1.0, Color32::from_gray(0x1e)),
+            Stroke::new(1.0, crate::theme::gray(0x1e)),
         );
         g.text(
             pos2(rect.left() + 3.0, y),
             egui::Align2::LEFT_BOTTOM,
             format!("{db:.0}"),
             FontId::proportional(9.0),
-            Color32::from_gray(0x50),
+            crate::theme::gray(0x50),
         );
     }
     if bands.is_empty() {

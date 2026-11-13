@@ -10,7 +10,7 @@
 //! key), right-click a note to delete it.
 use crate::i18n::tr;
 use crate::model::{Note, Project};
-use crate::widgets::TEXT_DIM;
+use crate::widgets::text_dim_col;
 use crate::UiState;
 use egui::{
     epaint::CubicBezierShape, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Shape,
@@ -22,9 +22,15 @@ use std::sync::Arc;
 /// Distance between two staff lines, in points.
 const SPACE: f32 = 9.0;
 const HALF: f32 = SPACE / 2.0;
-const INK: Color32 = Color32::from_rgb(0xe8, 0xe8, 0xe8);
-const STAFF_INK: Color32 = Color32::from_rgb(0x84, 0x84, 0x84);
-const PAPER: Color32 = crate::theme::GRID_BG;
+fn ink_col() -> Color32 {
+    crate::theme::grey_rgb(0xe8, 0xe8, 0xe8)
+}
+fn staff_ink_col() -> Color32 {
+    crate::theme::grey_rgb(0x84, 0x84, 0x84)
+}
+fn paper_col() -> Color32 {
+    crate::theme::grid_bg()
+}
 /// Width reserved at the left for the clefs.
 const CLEF_W: f32 = 50.0;
 /// The height of the strip with the key picker above the staves.
@@ -515,14 +521,14 @@ fn bar_lines(p: &Project, origin: f64, len: f64) -> Vec<f32> {
 /// Draws the score of the (not generated) region `ri` of track `ti` in `body`.
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize, body: Rect) {
     let g = ui.painter_at(body);
-    g.rect_filled(body, 0.0, PAPER);
+    g.rect_filled(body, 0.0, paper_col());
     if p.tracks[ti].regions[ri].params.shape.hide_in_score {
         g.text(
             body.center(),
             Align2::CENTER_CENTER,
             "This region is left out of the Score (Region Inspector, More)",
             FontId::proportional(13.0),
-            TEXT_DIM,
+            text_dim_col(),
         );
         return;
     }
@@ -571,10 +577,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
     // What stands before the first note: the key signature and the time signature.
     let lead = 14.0 + fifths.unsigned_abs() as f32 * 9.0 + 30.0;
     let v = &mut s.score;
-    if ui
-        .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pt| body.contains(pt))
-    {
+    if crate::widgets::wheel_pointer(ui).is_some_and(|pt| body.contains(pt)) {
         let (d, m) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
         if m.command && d.y != 0.0 {
             v.beat_px = (v.beat_px * (1.0 + d.y * 0.003)).clamp(20.0, 200.0);
@@ -607,7 +610,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
             let y = bottom - k as f32 * SPACE;
             g.line_segment(
                 [pos2(body.left() + 6.0, y), pos2(body.right(), y)],
-                Stroke::new(1.0, STAFF_INK),
+                Stroke::new(1.0, staff_ink_col()),
             );
         }
         match staff {
@@ -634,7 +637,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
                 Align2::CENTER_CENTER,
                 text,
                 FontId::proportional(17.0),
-                INK,
+                ink_col(),
             );
         }
     }
@@ -643,7 +646,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
             pos2(body.left() + 6.0, lay.treble_bottom - 4.0 * SPACE),
             pos2(body.left() + 6.0, lay.bass_bottom),
         ],
-        Stroke::new(2.0, STAFF_INK),
+        Stroke::new(2.0, staff_ink_col()),
     );
     let bars = bar_lines(p, origin, len_beats);
     for (i, &b) in bars.iter().enumerate().take(bars.len().saturating_sub(1)) {
@@ -655,14 +658,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
             (lay.treble_bottom - 4.0 * SPACE, lay.treble_bottom),
             (lay.bass_bottom - 4.0 * SPACE, lay.bass_bottom),
         ] {
-            gs.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.0, STAFF_INK));
+            gs.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.0, staff_ink_col()));
         }
         gs.text(
             pos2(x + 3.0, lay.treble_bottom - 4.0 * SPACE - 14.0),
             Align2::LEFT_CENTER,
             format!("{}", i + 1),
             FontId::proportional(10.0),
-            TEXT_DIM,
+            text_dim_col(),
         );
     }
 
@@ -708,7 +711,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
         Align2::RIGHT_BOTTOM,
         tr("Click to add a note, right-click a note to delete it"),
         FontId::proportional(11.0),
-        TEXT_DIM,
+        text_dim_col(),
     );
 
     // ---- editing
@@ -768,7 +771,7 @@ fn draw_note(g: &egui::Painter, lay: &Staves, x: f32, n: &NoteItem) {
         let ly = lay.y(n.staff, step);
         g.line_segment(
             [pos2(x - 9.0, ly), pos2(x + 9.0, ly)],
-            Stroke::new(1.0, STAFF_INK),
+            Stroke::new(1.0, staff_ink_col()),
         );
     };
     if n.step < lo {
@@ -784,9 +787,9 @@ fn draw_note(g: &egui::Painter, lay: &Staves, x: f32, n: &NoteItem) {
     let head = pos2(x, y);
     let radius = vec2(5.6, 4.2);
     if n.value >= 2.0 {
-        g.add(Shape::ellipse_stroke(head, radius, Stroke::new(1.6, INK)));
+        g.add(Shape::ellipse_stroke(head, radius, Stroke::new(1.6, ink_col())));
     } else {
-        g.add(Shape::ellipse_filled(head, radius, INK));
+        g.add(Shape::ellipse_filled(head, radius, ink_col()));
     }
     match n.accidental {
         Some(Accidental::Sharp) => sharp(g, pos2(x - 13.0, y)),
@@ -795,7 +798,7 @@ fn draw_note(g: &egui::Painter, lay: &Staves, x: f32, n: &NoteItem) {
         None => {}
     }
     if dotted(n.value) {
-        g.circle_filled(pos2(x + 9.0, y - 2.0), 1.6, INK);
+        g.circle_filled(pos2(x + 9.0, y - 2.0), 1.6, ink_col());
     }
     if n.value < 4.0 {
         // The stem goes up for notes below the middle line of their staff.
@@ -805,7 +808,7 @@ fn draw_note(g: &egui::Painter, lay: &Staves, x: f32, n: &NoteItem) {
         } else {
             (x - 5.2, y + 1.0, y + 3.4 * SPACE)
         };
-        g.line_segment([pos2(sx, y0), pos2(sx, y1)], Stroke::new(1.2, INK));
+        g.line_segment([pos2(sx, y0), pos2(sx, y1)], Stroke::new(1.2, ink_col()));
         let flags = if n.value <= 0.375 {
             2
         } else if n.value <= 0.75 {
@@ -820,7 +823,7 @@ fn draw_note(g: &egui::Painter, lay: &Staves, x: f32, n: &NoteItem) {
             } else {
                 (pos2(sx, y1 - dy), pos2(sx + 8.0, y1 - 12.0 - dy))
             };
-            g.line_segment([a, b], Stroke::new(1.6, INK));
+            g.line_segment([a, b], Stroke::new(1.6, ink_col()));
         }
     }
 }
@@ -849,7 +852,7 @@ fn draw_tie(g: &egui::Painter, lay: &Staves, x0: f32, x1: f32, n: &NoteItem) {
         ],
         false,
         Color32::TRANSPARENT,
-        Stroke::new(1.3, INK),
+        Stroke::new(1.3, ink_col()),
     )));
 }
 
@@ -862,14 +865,14 @@ fn draw_rest(g: &egui::Painter, lay: &Staves, x: f32, r: &RestItem) {
         g.rect_filled(
             Rect::from_min_size(pos2(x - 5.0, line(3)), vec2(10.0, HALF)),
             0.0,
-            INK,
+            ink_col(),
         );
     } else if v >= 2.0 - 1e-3 {
         // A half rest sits on the middle line.
         g.rect_filled(
             Rect::from_min_size(pos2(x - 5.0, line(2) - HALF), vec2(10.0, HALF)),
             0.0,
-            INK,
+            ink_col(),
         );
     } else if v >= 1.0 - 1e-3 {
         // A quarter rest: a zigzag down the middle of the staff.
@@ -883,7 +886,7 @@ fn draw_rest(g: &egui::Painter, lay: &Staves, x: f32, r: &RestItem) {
             pos2(x - 3.0, top + SPACE * 2.0),
             pos2(x + 1.0, top + SPACE * 2.6),
         ];
-        g.add(Shape::line(pts, Stroke::new(1.6, INK)));
+        g.add(Shape::line(pts, Stroke::new(1.6, ink_col())));
     } else {
         // Eighth and sixteenth rests: a slanted stroke with a dot for each flag.
         let flags = if v <= 0.25 + 1e-3 { 2 } else { 1 };
@@ -893,13 +896,13 @@ fn draw_rest(g: &egui::Painter, lay: &Staves, x: f32, r: &RestItem) {
                 pos2(x + 3.0, top),
                 pos2(x - 2.0, top + SPACE * (1.5 + 0.8 * (flags - 1) as f32)),
             ],
-            Stroke::new(1.3, INK),
+            Stroke::new(1.3, ink_col()),
         );
         for f in 0..flags {
             g.circle_filled(
                 pos2(x - 2.5 - f as f32 * 1.5, top + 3.0 + f as f32 * 6.0),
                 1.9,
-                INK,
+                ink_col(),
             );
         }
     }
@@ -907,21 +910,21 @@ fn draw_rest(g: &egui::Painter, lay: &Staves, x: f32, r: &RestItem) {
 
 /// A sharp sign centred at `c`.
 fn sharp(g: &egui::Painter, c: Pos2) {
-    let stroke = Stroke::new(1.1, INK);
+    let stroke = Stroke::new(1.1, ink_col());
     for dx in [-1.8, 1.8] {
         g.line_segment([c + vec2(dx, -6.0), c + vec2(dx, 6.0)], stroke);
     }
     for dy in [-1.8, 1.8] {
         g.line_segment(
             [c + vec2(-4.0, dy + 1.0), c + vec2(4.0, dy - 1.0)],
-            Stroke::new(2.0, INK),
+            Stroke::new(2.0, ink_col()),
         );
     }
 }
 
 /// A flat sign centred at `c`: a stem and a belly.
 fn flat(g: &egui::Painter, c: Pos2) {
-    let stroke = Stroke::new(1.2, INK);
+    let stroke = Stroke::new(1.2, ink_col());
     g.line_segment([c + vec2(-2.0, -7.0), c + vec2(-2.0, 3.5)], stroke);
     g.add(Shape::CubicBezier(CubicBezierShape::from_points_stroke(
         [
@@ -938,16 +941,16 @@ fn flat(g: &egui::Painter, c: Pos2) {
 
 /// A natural sign centred at `c`.
 fn natural(g: &egui::Painter, c: Pos2) {
-    let stroke = Stroke::new(1.1, INK);
+    let stroke = Stroke::new(1.1, ink_col());
     g.line_segment([c + vec2(-2.5, -7.0), c + vec2(-2.5, 3.0)], stroke);
     g.line_segment([c + vec2(2.5, -3.0), c + vec2(2.5, 7.0)], stroke);
     g.line_segment(
         [c + vec2(-2.5, 3.0), c + vec2(2.5, 1.5)],
-        Stroke::new(2.0, INK),
+        Stroke::new(2.0, ink_col()),
     );
     g.line_segment(
         [c + vec2(-2.5, -1.5), c + vec2(2.5, -3.0)],
-        Stroke::new(2.0, INK),
+        Stroke::new(2.0, ink_col()),
     );
 }
 
@@ -962,7 +965,7 @@ fn curve(g: &egui::Painter, pts: [Pos2; 4], stroke: Stroke) {
 
 /// The treble clef, curled round the G line, which is where `at` is.
 fn treble_clef(g: &egui::Painter, at: Pos2) {
-    let stroke = Stroke::new(1.8, INK);
+    let stroke = Stroke::new(1.8, ink_col());
     let p = |x: f32, y: f32| at + vec2(x, y) * SPACE;
     // The tail below the staff, the long stroke up to the top, the hump, the big loop round
     // the G line and the small curl inside it.
@@ -996,14 +999,14 @@ fn treble_clef(g: &egui::Painter, at: Pos2) {
         [p(1.3, 0.6), p(1.0, -0.6), p(-0.5, -0.7), p(-0.3, 0.3)],
         stroke,
     );
-    g.circle_filled(p(-0.9, 3.0), 1.8, INK);
+    g.circle_filled(p(-0.9, 3.0), 1.8, ink_col());
 }
 
 /// The bass clef, with its dot on the F line, which is where `at` is.
 fn bass_clef(g: &egui::Painter, at: Pos2) {
-    let stroke = Stroke::new(1.9, INK);
+    let stroke = Stroke::new(1.9, ink_col());
     let p = |x: f32, y: f32| at + vec2(x, y) * SPACE;
-    g.circle_filled(p(-0.7, 0.0), 0.62 * SPACE, INK);
+    g.circle_filled(p(-0.7, 0.0), 0.62 * SPACE, ink_col());
     curve(
         g,
         [p(-0.7, 0.0), p(0.0, -1.9), p(2.0, -1.4), p(1.8, 0.5)],
@@ -1015,7 +1018,7 @@ fn bass_clef(g: &egui::Painter, at: Pos2) {
         stroke,
     );
     for dy in [-0.65, 0.65] {
-        g.circle_filled(p(2.45, dy), 0.28 * SPACE, INK);
+        g.circle_filled(p(2.45, dy), 0.28 * SPACE, ink_col());
     }
 }
 

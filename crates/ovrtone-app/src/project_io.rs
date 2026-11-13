@@ -188,6 +188,10 @@ fn inserts_from_doc(t: &ovrtone_project::TrackDoc) -> Vec<crate::model::Insert> 
                 kind,
                 bypass: d.bypass,
                 params: kind.clamp_params(params),
+                sidechain: d
+                    .sidechain
+                    .map(|v| v as usize)
+                    .filter(|_| kind.takes_side()),
             })
         })
         .take(ovrtone_engine::MAX_INSERTS)
@@ -256,6 +260,7 @@ fn region_lanes_to_doc(t: &Track, r: &Region) -> Vec<ovrtone_project::RegionLane
             let (kind, slot, param) = match l.target {
                 AutoTarget::Volume => ("volume", 0, 0),
                 AutoTarget::Pan => ("pan", 0, 0),
+                AutoTarget::Object(axis) => ("object", 0, axis as u32),
                 AutoTarget::Fx { slot, param } => ("fx", i32::from(slot), u32::from(param)),
                 AutoTarget::Plugin { uid, param } => {
                     let slot = if t.instrument_plugin.as_ref().is_some_and(|i| i.uid == uid) {
@@ -276,6 +281,41 @@ fn region_lanes_to_doc(t: &Track, r: &Region) -> Vec<ovrtone_project::RegionLane
         .collect()
 }
 
+/// The spatial mode as the file keeps it: `headphones:7.1.2`, `speakers:5.1` or `stereo:7.1.4`, and
+/// empty for off.
+fn spatial_mode_text(mode: ovrtone_engine::SpatialMode) -> String {
+    use ovrtone_engine::SpatialMode;
+    match mode {
+        SpatialMode::Off => String::new(),
+        SpatialMode::Binaural(l) => format!("headphones:{}", l.name()),
+        SpatialMode::Speakers(l) => format!("speakers:{}", l.name()),
+        SpatialMode::Folded(l) => format!("stereo:{}", l.name()),
+        SpatialMode::Downmix(l, to) => format!("downmix:{}:{}", l.name(), to.name()),
+    }
+}
+
+/// The spatial mode in a file. Files from before the bed format was its own setting have `headphones`
+/// alone, which was 7.1.4, or a layout alone, which was speakers.
+fn spatial_mode_of(text: &str) -> ovrtone_engine::SpatialMode {
+    use ovrtone_engine::{SpatialMode, SpeakerLayout};
+    let layout_of = |name: &str| SpeakerLayout::ALL.into_iter().find(|l| l.name() == name);
+    if let Some(rest) = text.strip_prefix("downmix:") {
+        if let Some((bed, to)) = rest.split_once(':') {
+            if let (Some(bed), Some(to)) = (layout_of(bed), layout_of(to)) {
+                return SpatialMode::Downmix(bed, to);
+            }
+        }
+        return SpatialMode::Off;
+    }
+    match text.split_once(':') {
+        Some(("headphones", bed)) => layout_of(bed).map_or(SpatialMode::Off, SpatialMode::Binaural),
+        Some(("speakers", bed)) => layout_of(bed).map_or(SpatialMode::Off, SpatialMode::Speakers),
+        Some(("stereo", bed)) => layout_of(bed).map_or(SpatialMode::Off, SpatialMode::Folded),
+        _ if text == "headphones" => SpatialMode::Binaural(SpeakerLayout::Surround714),
+        _ => layout_of(text).map_or(SpatialMode::Off, SpatialMode::Speakers),
+    }
+}
+
 /// Which lane a track shows: empty for the fader, `pan`, `fx:slot:param` or `plugin:slot:param`
 /// (slot -1 is the instrument). A plugin's number changes from run to run, so its place is saved.
 fn auto_lane_to_doc(t: &Track) -> String {
@@ -283,6 +323,7 @@ fn auto_lane_to_doc(t: &Track) -> String {
     match t.auto.shown {
         AutoTarget::Volume => String::new(),
         AutoTarget::Pan => "pan".into(),
+        AutoTarget::Object(axis) => format!("object:{}", axis as u8),
         AutoTarget::Fx { slot, param } => format!("fx:{slot}:{param}"),
         AutoTarget::Plugin { uid, param } => {
             let slot = if t.instrument_plugin.as_ref().is_some_and(|i| i.uid == uid) {
@@ -304,6 +345,11 @@ fn auto_lane_from_doc(t: &Track, text: &str) -> crate::model::AutoTarget {
     let mut parts = text.split(':');
     let target = match (parts.next(), parts.next(), parts.next()) {
         (Some("pan"), None, None) => Some(AutoTarget::Pan),
+        (Some("object"), Some(axis), None) => axis
+            .parse::<usize>()
+            .ok()
+            .and_then(|k| ovrtone_engine::ObjectAxis::ALL.get(k).copied())
+            .map(AutoTarget::Object),
         (Some("fx"), Some(slot), Some(param)) => slot
             .parse()
             .ok()
@@ -337,6 +383,10 @@ fn region_lanes_from_doc(r: &RegionDoc) -> Vec<crate::model::RegionLane> {
             let target = match l.kind.as_str() {
                 "volume" => AutoTarget::Volume,
                 "pan" => AutoTarget::Pan,
+                "object" => match ovrtone_engine::ObjectAxis::ALL.get(l.param as usize) {
+                    Some(axis) => AutoTarget::Object(*axis),
+                    None => return None,
+                },
                 "fx" => AutoTarget::Fx {
                     slot: u8::try_from(l.slot).ok()?,
                     param: u8::try_from(l.param).ok()?,
@@ -391,6 +441,9 @@ fn automation_from_doc(t: &ovrtone_project::TrackDoc) -> crate::model::Automatio
     };
     a.volume = points_from_doc(AutoTarget::Volume, &t.auto_volume);
     a.pan = points_from_doc(AutoTarget::Pan, &t.auto_pan);
+    for (axis, lane) in ovrtone_engine::ObjectAxis::ALL.into_iter().zip(&t.auto_object) {
+        a.object[axis as usize] = points_from_doc(AutoTarget::Object(axis), lane);
+    }
     for l in t.auto_fx.iter().take(MAX_FX_LANES) {
         let known = usize::from(l.slot) < ovrtone_engine::MAX_INSERTS
             && usize::from(l.param) < ovrtone_engine::MAX_FX_PARAMS;
@@ -458,6 +511,7 @@ fn region_to_doc(
 ) -> RegionDoc {
     RegionDoc {
         auto: region_lanes_to_doc(t, r),
+        gain_line: r.gain_line.iter().map(|(b, db)| [*b, *db]).collect(),
         song_pattern: r.params.pattern,
         name: r.name.clone(),
         start_bar: r.start_bar,
@@ -504,6 +558,8 @@ fn region_to_doc(
                     }),
                     window: t.window.map(|(a, b)| [a, b]),
                     gain_db: t.gain_db,
+                    name: t.name.clone(),
+                    color: t.color.map(|c| [c.r(), c.g(), c.b()]),
                     notes: t
                         .notes
                         .iter()
@@ -640,6 +696,30 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             solo: t.solo,
             volume_db: t.volume_db,
             pan: t.pan,
+            bed_pan: t.bed_pan && t.object.is_some(),
+            locked: t.locked,
+            reference: t.reference,
+            trim_db: if t.trim_db.is_finite() {
+                t.trim_db.clamp(-36.0, 36.0)
+            } else {
+                0.0
+            },
+            object: t.object.map(|o| ovrtone_project::ObjectDoc {
+                azimuth: o.azimuth,
+                elevation: o.elevation,
+                size: o.size,
+                lfe: o.lfe,
+                spread: o.spread,
+                center: o.center,
+                distance: o
+                    .distance
+                    .and_then(|d| ovrtone_engine::Distance::ALL.iter().position(|x| *x == d))
+                    .map(|k| k as u8),
+                radius: o.radius,
+                snap: o.snap,
+                divergence: o.divergence,
+                bus: o.bus,
+            }),
             inserts: t.inserts.iter().map(|s| s.name().to_string()).collect(),
             plugins: t.plugins.iter().map(plugin_to_doc).collect(),
             instrument_plugin: t.instrument_plugin.as_ref().map(plugin_to_doc),
@@ -650,6 +730,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                     kind: s.name().into(),
                     bypass: s.bypass,
                     params: s.params[..s.kind.params().len()].to_vec(),
+                    sidechain: s.sidechain.map(|v| v as u32),
                 })
                 .collect(),
             sends: t
@@ -681,6 +762,11 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             auto_lane: auto_lane_to_doc(t),
             auto_volume: points_to_doc(&t.auto.volume),
             auto_pan: points_to_doc(&t.auto.pan),
+            auto_object: if t.auto.object.iter().all(Vec::is_empty) {
+                Vec::new()
+            } else {
+                t.auto.object.iter().map(|l| points_to_doc(l)).collect()
+            },
             auto_fx: t
                 .auto
                 .fx
@@ -749,11 +835,24 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         tempo: p.tempo,
         sig: p.sig,
         punch: p.punch,
+        pre_roll: p.pre_roll,
+        post_roll: p.post_roll,
         punch_start: p.punch_start,
         punch_end: p.punch_end,
         rec_replace: p.rec_replace,
         snap_zero: p.snap_zero,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
+        master_fx: p
+            .master_strip
+            .inserts
+            .iter()
+            .map(|s| ovrtone_project::InsertDoc {
+                kind: s.name().into(),
+                bypass: s.bypass,
+                params: s.params[..s.kind.params().len()].to_vec(),
+                sidechain: None,
+            })
+            .collect(),
         midi_map: midi_map_to_doc(p),
         grooves: p.grooves.clone(),
         screensets: p.screensets.clone(),
@@ -771,6 +870,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                     .map(|l| ovrtone_project::LaneDoc {
                         channel: l.channel,
                         step_pitch: l.step_pitch,
+                        pan: l.pan.clone(),
                         notes: l
                             .notes
                             .iter()
@@ -795,6 +895,73 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         cycle_end: p.cycle_end,
         metronome: p.metronome,
         count_in: p.count_in,
+        spatial_mode: spatial_mode_text(p.spatial_mode),
+        spatial_law: p.spatial_law.name().to_ascii_lowercase(),
+        spatial_room: p.spatial_room,
+        spatial_volume_db: p.spatial_volume_db,
+        spatial_distance: p
+            .spatial_channels
+            .distance
+            .iter()
+            .map(|d| d.name().to_lowercase())
+            .collect(),
+        spatial_lfe_hz: p.spatial_channels.lfe_hz,
+        spatial_buses: p
+            .spatial_buses
+            .iter()
+            .map(|b| ovrtone_project::SpatialBusDoc {
+                name: b.name.clone(),
+                layout: b.layout.name().to_string(),
+                direction: b.place.direction,
+                elevation: b.place.elevation,
+                spread: b.place.spread,
+                size: b.place.size,
+                centre: b.place.centre,
+                lfe: b.place.lfe,
+                gain: b.place.gain,
+                muted: b.place.muted,
+            })
+            .collect(),
+        mixer_snapshots: p
+            .mixer_snapshots
+            .iter()
+            .map(|m| ovrtone_project::MixerSnapshotDoc {
+                name: m.name.clone(),
+                strips: m
+                    .strips
+                    .iter()
+                    .map(|s| ovrtone_project::SnapshotStripDoc {
+                        name: s.name.clone(),
+                        volume_db: s.volume_db,
+                        pan: s.pan,
+                        mute: s.mute,
+                        solo: s.solo,
+                        trim_db: s.trim_db,
+                        fx: s
+                            .inserts
+                            .iter()
+                            .map(|i| ovrtone_project::InsertDoc {
+                                kind: i.name().into(),
+                                bypass: i.bypass,
+                                params: i.params[..i.kind.params().len()].to_vec(),
+                                sidechain: i.sidechain.map(|v| v as u32),
+                            })
+                            .collect(),
+                        sends: s
+                            .sends
+                            .iter()
+                            .filter_map(|s| {
+                                Some(ovrtone_project::SendDoc {
+                                    bus: s.bus?,
+                                    level: s.level,
+                                    pre: s.pre,
+                                })
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
         auto_monitor: p.auto_monitor,
         wait_for_sound: p.wait_for_sound,
         trigger_db: p.trigger_db,
@@ -829,6 +996,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         smpte_rate: smpte_rate_name(p.smpte_rate).into(),
         smpte_start: p.smpte_start,
         mtc_out: p.mtc_out.clone(),
+        clock_out: p.clock_out.clone(),
         mtc_in: p.mtc_in.clone(),
         sig_changes: p
             .sig_changes
@@ -883,6 +1051,8 @@ fn folder_from_doc(r: &RegionDoc) -> Option<TakeFolder> {
         .takes
         .iter()
         .map(|t| Take {
+            name: t.name.chars().take(80).collect(),
+            color: t.color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)),
             audio_offset: t.audio_offset.filter(|o| o.is_finite()),
             file: None,
             window: t
@@ -1058,6 +1228,12 @@ fn regions_from_doc(
                 .collect(),
             folder: None,
             auto: region_lanes_from_doc(r),
+            gain_line: r
+                .gain_line
+                .iter()
+                .filter(|[b, db]| b.is_finite() && db.is_finite())
+                .map(|[b, db]| (b.max(0.0), db.clamp(-96.0, 24.0)))
+                .collect(),
             generated: generated_from_doc(r),
             audio,
             params: RegionParams {
@@ -1108,6 +1284,29 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             monitor: false,
             volume_db: t.volume_db.clamp(-60.0, 6.0),
             pan: t.pan.clamp(-1.0, 1.0),
+            bed_pan: t.bed_pan && t.object.is_some(),
+            locked: t.locked,
+            reference: t.reference,
+            trim_db: if t.trim_db.is_finite() {
+                t.trim_db.clamp(-36.0, 36.0)
+            } else {
+                0.0
+            },
+            object: t.object.map(|o| ovrtone_engine::ObjectPlace {
+                azimuth: o.azimuth,
+                elevation: o.elevation,
+                size: o.size,
+                lfe: o.lfe,
+                spread: o.spread,
+                center: o.center,
+                distance: o
+                    .distance
+                    .and_then(|k| ovrtone_engine::Distance::ALL.get(usize::from(k)).copied()),
+                radius: if o.radius.is_finite() { o.radius.clamp(0.0, 1.0) } else { 1.0 },
+                snap: o.snap,
+                divergence: if o.divergence.is_finite() { o.divergence.clamp(0.0, 1.0) } else { 0.0 },
+                bus: o.bus.min(ovrtone_engine::MAX_SPATIAL_BUSES as u8),
+            }),
             inserts: inserts_from_doc(t),
             plugins: t
                 .plugins
@@ -1207,6 +1406,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.smpte_rate = smpte_rate_from_name(&doc.smpte_rate);
     p.smpte_start = valid_smpte_start(doc.smpte_start, p.smpte_rate);
     p.mtc_out = port_name(&doc.mtc_out);
+    p.clock_out = port_name(&doc.clock_out);
     p.mtc_in = port_name(&doc.mtc_in);
     p.markers = doc
         .markers
@@ -1265,6 +1465,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .map(|l| crate::song_pattern::Lane {
                     channel: l.channel,
                     step_pitch: l.step_pitch.min(127),
+                    pan: l.pan.iter().take(64).map(|v| (*v).clamp(-64, 63)).collect(),
                     notes: l
                         .notes
                         .iter()
@@ -1285,6 +1486,8 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.grooves = crate::groove_template::from_docs(&doc.grooves);
     p.screensets = crate::screensets::from_doc(&doc.screensets);
     p.punch = doc.punch;
+    p.pre_roll = if doc.pre_roll.is_finite() { doc.pre_roll.clamp(0.0, 8.0) } else { 0.0 };
+    p.post_roll = if doc.post_roll.is_finite() { doc.post_roll.clamp(0.0, 8.0) } else { 0.0 };
     p.punch_start = doc.punch_start.max(0.0);
     p.punch_end = doc.punch_end.max(p.punch_start);
     p.cycle = doc.cycle;
@@ -1292,6 +1495,88 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     p.cycle_end = doc.cycle_end.max(p.cycle_start);
     p.metronome = doc.metronome;
     p.count_in = doc.count_in;
+    p.spatial_mode = spatial_mode_of(&doc.spatial_mode);
+    p.spatial_law = ovrtone_engine::SpatialLaw::ALL
+        .into_iter()
+        .find(|l| l.name().eq_ignore_ascii_case(&doc.spatial_law))
+        .unwrap_or(ovrtone_engine::SpatialLaw::Smooth);
+    p.spatial_volume_db = doc.spatial_volume_db.clamp(-24.0, 6.0);
+    p.mixer_snapshots = doc
+        .mixer_snapshots
+        .iter()
+        .take(64)
+        .map(|m| crate::model::MixerSnapshot {
+            name: m.name.chars().take(60).collect(),
+            strips: m
+                .strips
+                .iter()
+                .take(ovrtone_engine::MAX_TRACKS)
+                .map(|s| {
+                    // Read as a track's effects and sends are, with the same care.
+                    let as_track = ovrtone_project::TrackDoc {
+                        fx: s.fx.clone(),
+                        sends: s.sends.clone(),
+                        ..Default::default()
+                    };
+                    let number = |v: f32, lo: f32, hi: f32| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+                    crate::model::StripSnapshot {
+                        name: s.name.clone(),
+                        volume_db: number(s.volume_db, -60.0, 6.0),
+                        pan: number(s.pan, -1.0, 1.0),
+                        mute: s.mute,
+                        solo: s.solo,
+                        trim_db: number(s.trim_db, -36.0, 36.0),
+                        inserts: inserts_from_doc(&as_track),
+                        sends: sends_from_doc(&as_track),
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    p.spatial_buses = doc
+        .spatial_buses
+        .iter()
+        .take(ovrtone_engine::MAX_SPATIAL_BUSES)
+        .map(|b| {
+            let f = |v: f32, lo: f32, hi: f32, or: f32| if v.is_finite() { v.clamp(lo, hi) } else { or };
+            crate::model::SpatialBusDef {
+                name: b.name.clone(),
+                layout: ovrtone_engine::SpeakerLayout::ALL
+                    .into_iter()
+                    .find(|l| l.name() == b.layout)
+                    .unwrap_or(ovrtone_engine::SpeakerLayout::Surround712),
+                place: ovrtone_engine::BusPlace {
+                    direction: f(b.direction, -180.0, 180.0, 0.0),
+                    elevation: f(b.elevation, -90.0, 90.0, 0.0),
+                    spread: f(b.spread, 0.0, 1.0, 1.0),
+                    size: f(b.size, 0.0, 1.0, 0.0),
+                    centre: f(b.centre, 0.0, 1.0, 1.0),
+                    lfe: f(b.lfe, 0.0, 1.0, 1.0),
+                    gain: f(b.gain, 0.0, 4.0, 1.0),
+                    muted: b.muted,
+                },
+            }
+        })
+        .collect();
+    p.spatial_channels.lfe_hz = if doc.spatial_lfe_hz.is_finite() {
+        doc.spatial_lfe_hz.clamp(0.0, 500.0)
+    } else {
+        0.0
+    };
+    for (slot, text) in p.spatial_channels.distance.iter_mut().zip(&doc.spatial_distance) {
+        if let Some(d) = ovrtone_engine::Distance::ALL
+            .into_iter()
+            .find(|d| d.name().eq_ignore_ascii_case(text))
+        {
+            *slot = d;
+        }
+    }
+    if let Some(bed) = p.spatial_mode.layout() {
+        p.spatial_bed = bed;
+    }
+    if doc.spatial_room >= 0.0 {
+        p.spatial_room = doc.spatial_room.min(1.0);
+    }
     p.auto_monitor = doc.auto_monitor;
     p.wait_for_sound = doc.wait_for_sound;
     p.trigger_db = doc.trigger_db.clamp(-60.0, -6.0);
@@ -1342,8 +1627,17 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 .sidechain
                 .filter(|&s| s != i && crate::model::can_key(kinds.get(s).copied()));
         }
+        for fx in t.inserts.iter_mut() {
+            fx.sidechain = fx
+                .sidechain
+                .filter(|&s| s != i && crate::model::can_key(kinds.get(s).copied()));
+        }
     }
     p.tracks = tracks;
+    p.master_strip.inserts = inserts_from_doc(&ovrtone_project::TrackDoc {
+        fx: doc.master_fx.clone(),
+        ..ovrtone_project::TrackDoc::default()
+    });
     p.master_plugins = doc
         .master_plugins
         .iter()
@@ -1751,6 +2045,7 @@ pub fn strip_to_text(t: &Track) -> Result<String, String> {
                 kind: s.name().into(),
                 bypass: s.bypass,
                 params: s.params[..s.kind.params().len()].to_vec(),
+                sidechain: s.sidechain.map(|v| v as u32),
             })
             .collect(),
         plugins: t
@@ -2500,7 +2795,7 @@ pub(crate) mod tests {
 
         // Damaged: unknown effects, wild numbers, too many of everything.
         let mut doc = to_doc(&p).0;
-        let wild = ovrtone_project::InsertDoc {
+        let wild = ovrtone_project::InsertDoc { sidechain: None,
             kind: "Delay".into(),
             bypass: false,
             params: vec![f32::NAN, 1e30, -5.0],

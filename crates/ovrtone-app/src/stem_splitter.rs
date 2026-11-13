@@ -2,8 +2,10 @@
 //! on a new track in the same place, with the original muted. The work is done by a copy of this
 //! program started for it (see `stem_worker.rs`), with the model and ONNX Runtime from the `stems`
 //! folder next to Ovrtone. It is its own process, so a failure in it costs only the split.
-use crate::model::Project;
+use crate::icons::{self, Icon};
+use crate::model::{Project, Track, TrackKind};
 use crate::UiState;
+use egui::{pos2, vec2, Color32, Sense};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -90,22 +92,112 @@ fn stage_of(line: &str) -> Option<&'static str> {
     }
 }
 
-/// What can be asked for: its name in the window, and the helper's stems with the track each makes.
-const CHOICES: [(&str, &[(&str, &str)]); 3] = [
-    ("Vocals", &[("vocals", "Vocals")]),
-    ("Drums", &[("drums", "Drums")]),
-    ("Instruments", &[("bass", "Bass"), ("other", "Instruments")]),
+/// A row of the window: its name, the worker's stem, its picture and colour.
+struct Row {
+    name: &'static str,
+    stem: &'static str,
+    icon: Icon,
+    color: Color32,
+}
+
+const fn row(name: &'static str, stem: &'static str, icon: Icon, color: Color32) -> Row {
+    Row {
+        name,
+        stem,
+        icon,
+        color,
+    }
+}
+
+const DRUMS: usize = 1;
+const GUITAR: usize = 3;
+const PIANO: usize = 4;
+const MAIN: [Row; 6] = [
+    row("Vocals", "vocals", Icon::Mic, Color32::from_rgb(0x1f, 0xb8, 0xa6)),
+    row("Drums", "drums", Icon::Drum, Color32::from_rgb(0x1f, 0xa8, 0xc4)),
+    row("Bass", "bass", Icon::Wave, Color32::from_rgb(0x25, 0x95, 0xd8)),
+    row("Guitar", "guitar", Icon::Pick, Color32::from_rgb(0x2f, 0x80, 0xe0)),
+    row("Piano", "piano", Icon::Piano, Color32::from_rgb(0x46, 0x6c, 0xe6)),
+    row("Other", "other", Icon::Other, Color32::from_rgb(0x62, 0x58, 0xe0)),
+];
+/// The pieces of the kit, as the model gives them. It has no hi-hat of its own.
+const KIT: [(&str, &str); 4] = [
+    ("Kick", "kick"),
+    ("Snare", "snare"),
+    ("Cymbals and hi-hats", "cymbals"),
+    ("Toms", "toms"),
 ];
 
-/// The stems of what is chosen: the helper's name, and the track's.
-fn stems_of(chosen: [bool; 3]) -> Vec<(&'static str, &'static str)> {
-    CHOICES
-        .iter()
-        .zip(chosen)
-        .filter(|(_, on)| *on)
-        .flat_map(|(choice, _)| choice.1.iter().copied())
-        .collect()
+/// What is asked of a split.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Choice {
+    main: [bool; 6],
+    /// The drums come as the pieces of the kit.
+    kit_on: bool,
+    kit: [bool; 4],
+    /// All that is left out goes in one more file.
+    submix: bool,
 }
+
+impl Default for Choice {
+    fn default() -> Self {
+        Self {
+            main: [true; 6],
+            kit_on: false,
+            kit: [true; 4],
+            submix: false,
+        }
+    }
+}
+
+/// The ready-made choices: a name, and what it picks.
+const PRESETS: [(&str, Choice); 5] = [
+    ("None", Choice { main: [true; 6], kit_on: false, kit: [true; 4], submix: false }),
+    ("Vocals and the rest", Choice { main: [true, false, false, false, false, false], kit_on: false, kit: [true; 4], submix: true }),
+    ("Four stems", Choice { main: [true, true, true, false, false, true], kit_on: false, kit: [true; 4], submix: false }),
+    ("Six stems", Choice { main: [true; 6], kit_on: false, kit: [true; 4], submix: false }),
+    ("Every kit piece", Choice { main: [true; 6], kit_on: true, kit: [true; 4], submix: false }),
+];
+
+impl Choice {
+    /// The stems of this choice in the order they go on tracks: the worker's name, the track's, and
+    /// whether it is a piece of the kit.
+    fn stems(&self) -> Vec<(&'static str, &'static str, bool)> {
+        let mut stems = Vec::new();
+        for (k, row) in MAIN.iter().enumerate() {
+            if k == DRUMS && self.kit_on {
+                for (piece, on) in KIT.iter().zip(self.kit) {
+                    if on {
+                        stems.push((piece.1, piece.0, true));
+                    }
+                }
+            } else if self.main[k] {
+                stems.push((row.stem, row.name, false));
+            }
+        }
+        if self.submix {
+            stems.push((crate::stem_worker::SUBMIX, "Submix", false));
+        }
+        stems
+    }
+
+    /// Whether the stems hold all of the song, so that the original can go quiet. Other holds the
+    /// guitar and piano when neither is asked for.
+    fn covers_all(&self) -> bool {
+        let drums = if self.kit_on {
+            self.kit == [true; 4]
+        } else {
+            self.main[DRUMS]
+        };
+        self.submix
+            || (self.main[0]
+                && drums
+                && self.main[2]
+                && self.main[5]
+                && self.main[GUITAR] == self.main[PIANO])
+    }
+}
+
 /// What a split that was stopped on purpose reports. Not shown as an error.
 const STOPPED: &str = "stopped";
 
@@ -134,8 +226,9 @@ impl StemSplitter {
 }
 
 pub struct StemSplitter {
-    /// What to split out: vocals, drums, instruments.
-    chosen: [bool; 3],
+    chosen: Choice,
+    /// The ready-made choice in force, 0 for none.
+    preset: usize,
     /// What the window is showing: it is open while this is set.
     source: Option<Source>,
     job: Option<Receiver<Result<PathBuf, String>>>,
@@ -148,7 +241,8 @@ pub struct StemSplitter {
 impl Default for StemSplitter {
     fn default() -> Self {
         Self {
-            chosen: [true; 3],
+            chosen: Choice::default(),
+            preset: 0,
             source: None,
             job: None,
             control: JobControl::default(),
@@ -297,20 +391,29 @@ fn new_output_dir(name: &str) -> PathBuf {
     crate::project_io::recordings_dir().join(format!("stems-{safe}-{stamp}"))
 }
 
-/// Puts the stems in `dir` on new tracks, playing what the source region plays, and mutes it.
+/// Puts the stems in `dir` on new tracks, playing what the source region plays, and mutes it if they
+/// hold all of it. The pieces of the kit go in a stack of their own.
 fn place_stems(
     p: &mut Project,
     ctx: &egui::Context,
     source: &Source,
     dir: &Path,
-    chosen: [bool; 3],
+    chosen: &Choice,
 ) -> Result<(), String> {
-    for (stem, title) in stems_of(chosen) {
+    let mut stack = false;
+    for (stem, title, of_kit) in chosen.stems() {
+        if of_kit && !stack {
+            stack = true;
+            let mut folder = Track::new(format!("{} Drums", source.name), TrackKind::Folder);
+            folder.color = p.next_track_color();
+            p.tracks.push(folder);
+        }
         let path = dir.join(format!("{stem}.wav"));
         crate::import::import_audio_at(p, &path, ctx, f64::from(source.start_bar), None)
             .map_err(|e| format!("{stem}: {e}"))?;
         if let Some(track) = p.tracks.last_mut() {
             track.name = format!("{} {title}", source.name);
+            track.indent = u8::from(of_kit);
             if let Some(region) = track.regions.last_mut() {
                 region.name.clone_from(&track.name);
                 region.len_bars = source.len_bars;
@@ -320,7 +423,7 @@ fn place_stems(
         }
     }
     // With only part split out, the original goes on playing: nothing else has the rest.
-    if chosen != [true; 3] {
+    if !chosen.covers_all() {
         p.song_rev += 1;
         return Ok(());
     }
@@ -336,6 +439,110 @@ fn place_stems(
     Ok(())
 }
 
+/// A switch that slides.
+fn switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let (r, mut resp) = ui.allocate_exact_size(vec2(30.0, 16.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let g = ui.painter();
+    let track = if *on {
+        crate::theme::accent()
+    } else {
+        crate::theme::gray(0x50)
+    };
+    g.rect_filled(r, 8.0, track);
+    let x = if *on { r.right() - 8.0 } else { r.left() + 8.0 };
+    g.circle_filled(pos2(x, r.center().y), 6.0, Color32::WHITE);
+    resp
+}
+
+/// The left of a row: its picture on a coloured tile, and its name. Reserves the row.
+fn row_start(ui: &mut egui::Ui, name: &str, tile: Option<(Icon, Color32)>, indent: f32) {
+    if let Some((icon, color)) = tile {
+        let (r, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+        ui.painter().rect_filled(r, 6.0, color);
+        icons::paint(ui.painter(), r.center(), 17.0, icon, Color32::WHITE);
+    } else {
+        ui.add_space(indent);
+    }
+    ui.add_space(6.0);
+    ui.label(name);
+}
+
+/// The rows, in a panel of their own. True if the user changed any.
+fn rows(ui: &mut egui::Ui, c: &mut Choice, six_there: bool, kit_there: bool) -> bool {
+    let mut changed = false;
+    egui::Frame::new()
+        .fill(crate::theme::gray(0x22))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            for (k, row) in MAIN.iter().enumerate() {
+                let there = six_there || (k != GUITAR && k != PIANO);
+                ui.add_enabled_ui(there, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(28.0);
+                        let name = if k == DRUMS && c.kit_on {
+                            let n = c.kit.iter().filter(|on| **on).count();
+                            format!("{} ({n})", row.name)
+                        } else {
+                            row.name.to_string()
+                        };
+                        row_start(ui, &name, Some((row.icon, row.color)), 0.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if k == DRUMS && kit_there {
+                                if !c.kit_on {
+                                    changed |= ui.checkbox(&mut c.main[k], "").changed();
+                                }
+                                changed |= switch(ui, &mut c.kit_on)
+                                    .on_hover_text("Split the drums again, into the pieces of the kit")
+                                    .changed();
+                                ui.label("Split the kit");
+                            } else {
+                                changed |= ui.checkbox(&mut c.main[k], "").changed();
+                            }
+                        });
+                    });
+                    if !there {
+                        c.main[k] = false;
+                    }
+                });
+                if k == DRUMS && c.kit_on {
+                    for (piece, on) in KIT.iter().zip(&mut c.kit) {
+                        ui.horizontal(|ui| {
+                            ui.set_min_height(22.0);
+                            row_start(ui, piece.0, None, 34.0);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| changed |= ui.checkbox(on, "").changed(),
+                            );
+                        });
+                    }
+                }
+            }
+        });
+    ui.add_space(4.0);
+    egui::Frame::new()
+        .fill(crate::theme::gray(0x22))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.0);
+                row_start(ui, "Submix of the rest", Some((Icon::Stack, crate::theme::gray(0x60))), 0.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    changed |= ui
+                        .checkbox(&mut c.submix, "")
+                        .on_hover_text("One more track, with everything not ticked above")
+                        .changed();
+                });
+            });
+        });
+    changed
+}
+
 /// The window, and the split's end when it comes.
 pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     let Some(source) = s.stems.source.clone() else {
@@ -346,7 +553,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         match job.try_recv() {
             Ok(Ok(dir)) => {
                 s.stems.job = None;
-                match place_stems(p, ctx, &source, &dir, s.stems.chosen) {
+                match place_stems(p, ctx, &source, &dir, &s.stems.chosen) {
                     Ok(()) => {
                         s.status = Some(format!("{} split into stems", source.name));
                         s.stems.source = None;
@@ -367,30 +574,54 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         }
     }
     let dir = helper_dir();
-    let ready = dir.as_ref().is_some_and(|d| {
-        d.join(crate::stem_worker::RUNTIME).exists() && d.join(crate::stem_worker::MODEL).exists()
-    });
+    let has = |name: &str| dir.as_ref().is_some_and(|d| d.join(name).exists());
+    let ready = has(crate::stem_worker::RUNTIME) && has(crate::stem_worker::MODEL);
+    let (six_there, kit_there) = (
+        has(crate::stem_worker::MODEL_SIX),
+        has(crate::stem_worker::MODEL_KIT),
+    );
+    if !kit_there {
+        s.stems.chosen.kit_on = false;
+    }
     let (busy, mut start) = (s.stems.job.is_some(), false);
     let mut open = true;
+    let mut cancel = false;
     egui::Window::new("Stem Splitter")
         .id(egui::Id::unique("stem_splitter"))
         .open(&mut open)
         .resizable(false)
+        .default_width(380.0)
         .show(ctx, |ui| {
-            ui.label(format!(
-                "Split \"{}\" into drums, bass, vocals and other.",
-                source.name
-            ));
-            ui.add_space(2.0);
-            ui.label("What to split out:");
+            ui.set_width(380.0);
             ui.add_enabled_ui(!busy, |ui| {
-                ui.horizontal(|ui| {
-                    for (k, (name, _)) in CHOICES.iter().enumerate() {
-                        ui.checkbox(&mut s.stems.chosen[k], *name);
-                    }
-                });
+                egui::Frame::new()
+                    .fill(crate::theme::gray(0x22))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Preset");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let now = s.stems.preset.min(PRESETS.len() - 1);
+                                egui::ComboBox::from_id_salt(egui::Id::unique("stem_preset"))
+                                    .selected_text(PRESETS[now].0)
+                                    .show_ui(ui, |ui| {
+                                        for (k, preset) in PRESETS.iter().enumerate() {
+                                            if ui.selectable_label(now == k, preset.0).clicked() {
+                                                s.stems.preset = k;
+                                                s.stems.chosen = preset.1;
+                                            }
+                                        }
+                                    });
+                            });
+                        });
+                    });
+                ui.add_space(4.0);
+                if rows(ui, &mut s.stems.chosen, six_there, kit_there) {
+                    s.stems.preset = 0;
+                }
             });
-            ui.label("Each goes on a new track. With all three, the original region is muted.");
+            ui.add_space(4.0);
             if !ready {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
@@ -400,7 +631,6 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             if let Some(e) = &s.stems.error {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
-            ui.add_space(4.0);
             if busy {
                 let stage = s
                     .stems
@@ -420,7 +650,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     .unwrap_or_default();
                 let fraction = progress.fraction(now);
                 let bar = egui::ProgressBar::new(fraction)
-                    .desired_width(300.0)
+                    .desired_width(380.0)
                     .animate(true)
                     .text(format!("{:.0}%", fraction * 100.0));
                 ui.add(bar);
@@ -441,28 +671,39 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     elapsed % 60
                 ));
                 ui.label("Playback is paused until the split is done.");
-                if ui.button("Stop").clicked() {
-                    s.stems.control.stop.store(true, Ordering::Relaxed);
-                }
-            } else if ui
-                .add_enabled(
-                    ready && s.stems.chosen.contains(&true),
-                    egui::Button::new("Split"),
-                )
-                .clicked()
-            {
-                start = true;
             }
+            ui.add_space(2.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let can = ready && !busy && !s.stems.chosen.stems().is_empty();
+                let apply = egui::Button::new(
+                    egui::RichText::new("Split").color(crate::theme::on_accent()),
+                )
+                .fill(crate::theme::accent());
+                if ui.add_enabled(can, apply).clicked() {
+                    start = true;
+                }
+                let word = if busy { "Stop" } else { "Cancel" };
+                if ui.button(word).clicked() {
+                    if busy {
+                        s.stems.control.stop.store(true, Ordering::Relaxed);
+                    } else {
+                        cancel = true;
+                    }
+                }
+            });
         });
+    if cancel {
+        open = false;
+    }
     if let (true, Some(dir)) = (start, dir) {
         let (tx, rx) = channel();
         let (input, out) = (source.path.clone(), new_output_dir(&source.name));
-        let stems = stems_of(s.stems.chosen);
+        let stems = s.stems.chosen.stems();
         let control = JobControl::default();
         s.stems.control = control.clone();
         s.stems.began = Some(Instant::now());
         s.stems.thread = Some(std::thread::spawn(move || {
-            let names: Vec<&str> = stems.iter().map(|(stem, _)| *stem).collect();
+            let names: Vec<&str> = stems.iter().map(|(stem, ..)| *stem).collect();
             let result = std::env::current_exe()
                 .map_err(|e| e.to_string())
                 .and_then(|exe| split(&exe, &dir, &input, &out, &names, &control));
@@ -542,7 +783,7 @@ mod tests {
     #[test]
     fn stems_land_on_new_tracks_in_place_and_the_original_is_muted() {
         let dir = tempfile::tempdir().unwrap();
-        for (stem, _) in stems_of([true; 3]) {
+        for (stem, ..) in Choice::default().stems() {
             wav(&dir.path().join(format!("{stem}.wav")));
         }
         let song = dir.path().join("song.wav");
@@ -555,14 +796,35 @@ mod tests {
         let mut s = UiState::new();
         open(&p, &mut s, t, 0);
         let source = s.stems.source.clone().unwrap();
-        place_stems(&mut p, &ctx, &source, dir.path(), [true; 3]).unwrap();
-        assert_eq!(p.tracks.len(), tracks + 4);
+        place_stems(&mut p, &ctx, &source, dir.path(), &Choice::default()).unwrap();
+        assert_eq!(p.tracks.len(), tracks + 6);
         assert!(p.tracks[t].regions[0].params.mute);
         let vocals = &p.tracks[tracks];
         assert_eq!(vocals.name, "song Vocals");
         assert_eq!(vocals.kind, TrackKind::Audio);
         assert_eq!(vocals.regions[0].start_bar, 3.0);
         assert!(!vocals.regions[0].params.mute);
+    }
+
+    #[test]
+    fn the_kit_pieces_stand_in_for_the_drums_and_the_original_goes_quiet_only_when_all_is_there() {
+        let mut c = Choice {
+            kit_on: true,
+            ..Choice::default()
+        };
+        let names: Vec<&str> = c.stems().iter().map(|s| s.0).collect();
+        assert_eq!(
+            names,
+            ["vocals", "kick", "snare", "cymbals", "toms", "bass", "guitar", "piano", "other"]
+        );
+        assert!(c.covers_all());
+        c.kit[0] = false;
+        assert!(!c.covers_all(), "no kick anywhere");
+        c.submix = true;
+        assert!(c.covers_all(), "the kick is in the submix");
+        // Without guitar and piano, the four stem model keeps them in Other.
+        let four = PRESETS[2].1;
+        assert!(four.covers_all());
     }
 
     #[test]
@@ -577,7 +839,7 @@ mod tests {
         let mut s = UiState::new();
         open(&p, &mut s, t, 0);
         let source = s.stems.source.clone().unwrap();
-        assert!(place_stems(&mut p, &ctx, &source, dir.path(), [true; 3]).is_err());
+        assert!(place_stems(&mut p, &ctx, &source, dir.path(), &Choice::default()).is_err());
         assert!(!p.tracks[t].regions[0].params.mute);
     }
 }

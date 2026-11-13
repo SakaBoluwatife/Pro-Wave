@@ -5,12 +5,14 @@
 //! - **Plugins:** the CLAP and VST3 plugins found on this computer, ready to go on a track.
 use crate::model::Project;
 use crate::plugin_scan::PluginScan;
-use crate::widgets::{TEXT, TEXT_DIM};
+use crate::widgets::{text_col, text_dim_col};
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui, UiBuilder};
 use ovrtone_host::PluginInfo;
 
-const PANEL_BG: Color32 = crate::theme::PANEL_BG;
+fn panel_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
 const ROW_H: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,6 +45,23 @@ pub struct PluginList {
     kind: PluginKind,
     search: String,
     show_folders: bool,
+    /// The Ovrtone folder is folded away.
+    stock_closed: bool,
+    /// The saved chains and templates folder is folded away.
+    chains_closed: bool,
+    /// Only the starred plugins are listed.
+    only_favourites: bool,
+    /// How the list is ordered.
+    order: Order,
+}
+
+/// How the Plugins list is ordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Order {
+    #[default]
+    Name,
+    Maker,
+    Kind,
 }
 
 impl PluginList {
@@ -147,7 +166,7 @@ fn side_icon(g: &egui::Painter, c: egui::Pos2, which: usize, color: egui::Color3
 /// The tabs along the top: the Browser is this panel, and the Inspector goes beside it.
 fn tabs(ui: &mut Ui, s: &mut UiState, r: Rect) {
     let g = ui.painter_at(r);
-    g.rect_filled(r, 0.0, crate::theme::PANEL_BG);
+    g.rect_filled(r, 0.0, crate::theme::panel_bg());
     for (i, name) in ["Browser", "Inspector"].into_iter().enumerate() {
         let tab = Rect::from_min_size(
             pos2(r.left() + 8.0 + i as f32 * 88.0, r.top() + 5.0),
@@ -158,14 +177,14 @@ fn tabs(ui: &mut Ui, s: &mut UiState, r: Rect) {
         if on {
             g.rect_filled(tab, 5.0, crate::theme::accent());
         } else if resp.hovered() {
-            g.rect_filled(tab, 5.0, crate::theme::HOVERED);
+            g.rect_filled(tab, 5.0, crate::theme::hovered());
         }
         g.text(
             tab.center(),
             Align2::CENTER_CENTER,
             name,
             FontId::proportional(12.5),
-            if on { crate::theme::on_accent() } else { TEXT },
+            if on { crate::theme::on_accent() } else { text_col() },
         );
         if resp.clicked() {
             if i == 0 {
@@ -191,10 +210,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let rest = Rect::from_min_max(pos2(side.right(), panel.top()), panel.max);
     {
         let g = ui.painter_at(side);
-        g.rect_filled(side, 0.0, crate::theme::HEADER);
+        g.rect_filled(side, 0.0, crate::theme::header());
         g.line_segment(
             [side.right_top(), side.right_bottom()],
-            Stroke::new(1.0, crate::theme::BORDER),
+            Stroke::new(1.0, crate::theme::border()),
         );
     }
     let entries = [
@@ -222,19 +241,19 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         let on = s.left_tab == tab && kind.is_none_or(|k| s.plugins.kind == k);
         let g = ui.painter_at(r);
         if on {
-            g.rect_filled(r, 5.0, crate::theme::SELECTED);
+            g.rect_filled(r, 5.0, crate::theme::selected());
             g.rect_filled(
                 Rect::from_min_size(r.min + vec2(0.0, 5.0), vec2(2.5, r.height() - 10.0)),
                 1.0,
                 crate::theme::accent(),
             );
         } else if resp.hovered() {
-            g.rect_filled(r, 5.0, crate::theme::HOVERED);
+            g.rect_filled(r, 5.0, crate::theme::hovered());
         }
         let ink = if on {
             crate::theme::accent()
         } else {
-            crate::theme::TEXT_DIM
+            crate::theme::text_dim()
         };
         side_icon(&g, r.left_center() + vec2(15.0, 0.0), i, ink);
         g.text(
@@ -242,7 +261,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             Align2::LEFT_CENTER,
             name,
             FontId::proportional(12.5),
-            TEXT,
+            text_col(),
         );
     }
     ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| match s.left_tab {
@@ -254,17 +273,19 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
 fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
-    ui.painter_at(panel).rect_filled(panel, 0.0, PANEL_BG);
+    ui.painter_at(panel).rect_filled(panel, 0.0, panel_bg_col());
     let ctx = ui.ctx().clone();
     let list = &mut s.plugins;
     list.clap.ensure_started(&ctx);
     list.clap.drain();
     let mut add = None;
+    let mut stock_add = None;
+    let mut template_task: Option<(crate::file_commands::TemplateKind, std::path::PathBuf)> = None;
     let inner = panel.shrink2(vec2(8.0, 6.0));
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
         ui.horizontal(|ui| {
             let counts = format!("{} plugins", list.clap.plugins.len());
-            ui.label(egui::RichText::new(counts).color(TEXT));
+            ui.label(egui::RichText::new(counts).color(text_col()));
             let hint = "Look for new plugins and try the ones that failed again";
             if crate::icons::button(ui, crate::icons::Icon::Refresh, hint).clicked()
             {
@@ -302,7 +323,7 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             }
         }
         let note = |ui: &mut Ui, text: String| {
-            ui.add(egui::Label::new(egui::RichText::new(text).small().color(TEXT_DIM)).wrap())
+            ui.add(egui::Label::new(egui::RichText::new(text).small().color(text_dim_col())).wrap())
         };
         note(
             ui,
@@ -338,12 +359,39 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         );
         ui.add_space(4.0);
         let search = list.search.trim().to_lowercase();
-        let clap: Vec<&PluginInfo> = list
+        if list.kind != PluginKind::Instruments {
+            stock_add = stock_rows(ui, &mut list.stock_closed, &search).or(stock_add);
+            if let Some(t) = template_rows(ui, &mut list.chains_closed, &search) {
+                template_task = Some(t);
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.toggle_value(&mut list.only_favourites, "★ Favourites")
+                .on_hover_text("Only the plugins you starred");
+            ui.label("Order");
+            ui.selectable_value(&mut list.order, Order::Name, "Name");
+            ui.selectable_value(&mut list.order, Order::Maker, "Maker");
+            ui.selectable_value(&mut list.order, Order::Kind, "Type")
+                .on_hover_text("EQ, dynamics, reverb and so on, worked out from the plugin's name");
+        });
+        let mut clap: Vec<&PluginInfo> = list
             .clap
             .plugins
             .iter()
             .filter(|info| list.kind.shows(info, &search) && !list.clap.hidden.contains(&info.id))
+            .filter(|info| {
+                !list.only_favourites || crate::plugin_favourites::is_favourite(&info.id)
+            })
             .collect();
+        let kind_rank = |info: &PluginInfo| {
+            let k = crate::plugin_favourites::kind_of(info);
+            crate::plugin_favourites::KINDS.iter().position(|x| *x == k).unwrap_or(99)
+        };
+        match list.order {
+            Order::Name => clap.sort_by_key(|i| i.name.to_lowercase()),
+            Order::Maker => clap.sort_by_key(|i| (i.vendor.to_lowercase(), i.name.to_lowercase())),
+            Order::Kind => clap.sort_by_key(|i| (kind_rank(i), i.name.to_lowercase())),
+        }
         // `show_rows` places rows by this spacing, so it is set before the call.
         ui.spacing_mut().item_spacing.y = 0.0;
         egui::ScrollArea::vertical()
@@ -356,6 +404,18 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 }
             });
     });
+    if let Some((kind, file)) = template_task {
+        use crate::file_commands::{FileTask, TemplateKind};
+        s.file_task = Some(match kind {
+            TemplateKind::Chain => FileTask::LoadChain(file, p.selected_track),
+            _ => FileTask::LoadTracks(file),
+        });
+    }
+    if let Some(kind) = stock_add {
+        if let Err(e) = crate::mixer::add_stock(p, p.selected_track, kind) {
+            s.status = Some(e);
+        }
+    }
     if let Some(info) = add {
         if let Err(e) = crate::plugin_rack::add_plugin(p, p.selected_track, &info) {
             s.status = Some(e);
@@ -375,6 +435,161 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
 }
 
+/// The saved effect chains, track templates and mixer templates, in a folder under the Ovrtone one.
+/// Double-click a chain to put it on the selected track, a template to add its tracks.
+fn template_rows(
+    ui: &mut Ui,
+    closed: &mut bool,
+    search: &str,
+) -> Option<(crate::file_commands::TemplateKind, std::path::PathBuf)> {
+    use crate::file_commands::{templates, TemplateKind};
+    let mut all: Vec<(TemplateKind, String, std::path::PathBuf)> = Vec::new();
+    for kind in [TemplateKind::Chain, TemplateKind::Track, TemplateKind::Mixer] {
+        for (name, file) in templates(kind) {
+            if search.is_empty() || name.to_lowercase().contains(search) {
+                all.push((kind, name, file));
+            }
+        }
+    }
+    if all.is_empty() {
+        return None;
+    }
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    let g = ui.painter_at(rect);
+    if resp.hovered() {
+        g.rect_filled(rect, 0.0, crate::theme::gray(0x46));
+    }
+    let arrow = if *closed { "▸" } else { "▾" };
+    g.text(
+        pos2(rect.left() + 4.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        format!("{arrow}  Chains and Templates  ({})", all.len()),
+        FontId::proportional(12.5),
+        text_col(),
+    );
+    if resp.clicked() {
+        *closed = !*closed;
+    }
+    if *closed {
+        return None;
+    }
+    let mut picked = None;
+    for (kind, name, file) in all {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+        let g = ui.painter_at(rect);
+        if resp.hovered() {
+            g.rect_filled(rect, 0.0, crate::theme::gray(0x46));
+        }
+        let shown = g.text(
+            pos2(rect.left() + 18.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            &name,
+            FontId::proportional(12.5),
+            text_col(),
+        );
+        let what = match kind {
+            TemplateKind::Chain => "Effect chain",
+            TemplateKind::Track => "Track template",
+            TemplateKind::Mixer => "Mixer template",
+        };
+        g.text(
+            pos2(shown.right() + 8.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            what,
+            FontId::proportional(11.0),
+            text_dim_col(),
+        );
+        let hint = match kind {
+            TemplateKind::Chain => "Double-click: put this chain on the selected track, in place of its effects",
+            _ => "Double-click: add its tracks to the project",
+        };
+        if resp.on_hover_text(hint).double_clicked() {
+            picked = Some((kind, file));
+        }
+    }
+    ui.add_space(4.0);
+    picked
+}
+
+/// Ovrtone's own effects at the top of the Plugins list, in a folder that folds. Double-click
+/// one to put it on the selected track, or drag it to a mixer slot. The effect double-clicked.
+fn stock_rows(ui: &mut Ui, closed: &mut bool, search: &str) -> Option<ovrtone_engine::FxKind> {
+    let kinds: Vec<ovrtone_engine::FxKind> = ovrtone_engine::FxKind::MENU
+        .iter()
+        .chain(ovrtone_engine::FxKind::CLASSIC.iter())
+        .copied()
+        .filter(|k| {
+            search.is_empty()
+                || k.name().to_lowercase().contains(search)
+                || k.kind_word().to_lowercase().contains(search)
+                || "ovrtone".contains(search)
+        })
+        .collect();
+    if kinds.is_empty() {
+        return None;
+    }
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+    let g = ui.painter_at(rect);
+    if resp.hovered() {
+        g.rect_filled(rect, 0.0, crate::theme::gray(0x46));
+    }
+    let arrow = if *closed { "▸" } else { "▾" };
+    g.text(
+        pos2(rect.left() + 4.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        format!("{arrow}  Ovrtone  ({})", kinds.len()),
+        FontId::proportional(12.5),
+        text_col(),
+    );
+    if resp.clicked() {
+        *closed = !*closed;
+    }
+    if *closed {
+        return None;
+    }
+    let mut picked = None;
+    for kind in kinds {
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
+        resp.dnd_set_drag_payload(crate::mixer::StockDrag(kind));
+        let g = ui.painter_at(rect);
+        if resp.hovered() {
+            g.rect_filled(rect, 0.0, crate::theme::gray(0x46));
+        }
+        let name = g.text(
+            pos2(rect.left() + 18.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            kind.name(),
+            FontId::proportional(12.5),
+            text_col(),
+        );
+        g.text(
+            pos2(name.right() + 8.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            format!("Ovrtone, {}", kind.kind_word()),
+            FontId::proportional(11.0),
+            text_dim_col(),
+        );
+        if resp.double_clicked() {
+            picked = Some(kind);
+        }
+        if resp.dragged() {
+            if let Some(at) = ui.ctx().pointer_interact_pos() {
+                let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("stock_drag"));
+                ui.ctx().layer_painter(layer).text(
+                    at + vec2(14.0, 10.0),
+                    Align2::LEFT_TOP,
+                    kind.name(),
+                    FontId::proportional(12.5),
+                    text_col(),
+                );
+            }
+        }
+    }
+    ui.add_space(4.0);
+    picked
+}
+
 /// One plugin: its name, vendor and format, ready to drag. True when double-clicked.
 fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
     let (rect, resp) =
@@ -382,14 +597,14 @@ fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
     resp.dnd_set_drag_payload(PluginDrag(info.clone()));
     let g = ui.painter_at(rect);
     if resp.hovered() {
-        g.rect_filled(rect, 0.0, Color32::from_rgb(0x46, 0x46, 0x46));
+        g.rect_filled(rect, 0.0, crate::theme::gray(0x46));
     }
     let name = g.text(
         pos2(rect.left() + 4.0, rect.center().y),
         Align2::LEFT_CENTER,
         &info.name,
         FontId::proportional(12.5),
-        TEXT,
+        text_col(),
     );
     let kind = if info.is_instrument {
         ", instrument"
@@ -402,10 +617,31 @@ fn clap_row(ui: &mut Ui, info: &PluginInfo) -> bool {
         Align2::LEFT_CENTER,
         vendor,
         FontId::proportional(11.0),
-        TEXT_DIM,
+        text_dim_col(),
     );
+    // The star: click to make it a favourite or not.
+    let fav = crate::plugin_favourites::is_favourite(&info.id);
+    let star = Rect::from_center_size(pos2(rect.right() - 12.0, rect.center().y), vec2(18.0, ROW_H));
+    let star_resp = ui
+        .interact(star, egui::Id::unique(("plugin_star", info.id.as_str())), Sense::click())
+        .on_hover_text(if fav { "Remove from Favourites" } else { "Add to Favourites" });
+    let col = if fav {
+        crate::theme::SOLO
+    } else if star_resp.hovered() || resp.hovered() {
+        text_dim_col()
+    } else {
+        Color32::TRANSPARENT
+    };
+    g.text(star.center(), Align2::CENTER_CENTER, if fav { "★" } else { "☆" }, FontId::proportional(13.0), col);
+    if star_resp.clicked() {
+        crate::plugin_favourites::toggle(&info.id);
+    }
     let double = resp.double_clicked();
-    resp.on_hover_text(info.path.display().to_string());
+    resp.on_hover_text(format!(
+        "{}\n{}",
+        crate::plugin_favourites::kind_of(info),
+        info.path.display()
+    ));
     double
 }
 

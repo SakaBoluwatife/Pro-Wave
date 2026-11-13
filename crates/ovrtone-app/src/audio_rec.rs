@@ -502,6 +502,7 @@ impl AudioRecorder {
                 folder: None,
                 auto: Vec::new(),
                 generated: None,
+                gain_line: Vec::new(),
                 audio: None,
                 params: RegionParams::default(),
             });
@@ -680,6 +681,7 @@ impl AudioRecorder {
                         folder: None,
                         auto: Vec::new(),
                         generated: None,
+                        gain_line: Vec::new(),
                         audio: None,
                         params: RegionParams::default(),
                     });
@@ -925,6 +927,7 @@ mod tests {
             folder: None,
             auto: Vec::new(),
             generated: None,
+            gain_line: Vec::new(),
             audio: None,
             params: RegionParams::default(),
         });
@@ -951,6 +954,7 @@ mod tests {
             folder: None,
             auto: Vec::new(),
             generated: None,
+            gain_line: Vec::new(),
             audio: None,
             params: RegionParams::default(),
         });

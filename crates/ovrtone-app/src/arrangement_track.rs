@@ -558,20 +558,20 @@ pub fn show(
     let rename_id = egui::Id::unique("arrangement_rename");
     let grab_id = egui::Id::unique("arrangement_grab");
     let gh = ui.painter_at(header);
-    gh.rect_filled(header, 0.0, crate::theme::PANEL_BG);
+    gh.rect_filled(header, 0.0, crate::theme::panel_bg());
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),
         Align2::LEFT_CENTER,
         "Arrangement",
         FontId::proportional(13.0),
-        Color32::from_gray(0xdc),
+        crate::theme::gray(0xdc),
     );
     let g = ui.painter_at(lane);
-    g.rect_filled(lane, 0.0, crate::theme::LANE);
+    g.rect_filled(lane, 0.0, crate::theme::lane());
     let lane_resp = ui.interact(lane, egui::Id::unique("arrangement_lane"), Sense::click());
     if lane_resp.double_clicked() {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
@@ -783,7 +783,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x0e)),
+        Stroke::new(1.0, crate::theme::gray(0x0e)),
     );
     result
 }

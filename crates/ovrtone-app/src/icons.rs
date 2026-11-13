@@ -53,6 +53,12 @@ icons! {
     Mixer => "adjustments-horizontal",
     Bounce => "file-export",
     Piano => "piano",
+    Mic => "microphone-2",
+    Drum => "ovrtone-drum",
+    Pick => "guitar-pick",
+    Wave => "wave-sine",
+    Other => "wave-saw-tool",
+    Stack => "stack-2",
 }
 
 /// One stroke of an icon, on its grid.
@@ -106,9 +112,9 @@ pub fn toggle(ui: &mut Ui, icon: Icon, on: bool, hint: &str) -> Response {
     let color = if on {
         crate::theme::on_accent()
     } else if ui.is_enabled() {
-        crate::theme::TEXT
+        crate::theme::text()
     } else {
-        crate::theme::TEXT_DIM
+        crate::theme::text_dim()
     };
     if on {
         g.rect_filled(r, 4.0, crate::theme::accent());

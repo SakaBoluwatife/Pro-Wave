@@ -240,7 +240,7 @@ fn preview(ui: &mut egui::Ui, levels: &[f32], kept: &[(f64, f64)], window: (f64,
         let x = rect.left() + c as f32;
         g.line_segment(
             [pos2(x, mid - h), pos2(x, mid + h)],
-            Stroke::new(1.0, Color32::from_gray(0xc8)),
+            Stroke::new(1.0, crate::theme::gray(0xc8)),
         );
     }
 }

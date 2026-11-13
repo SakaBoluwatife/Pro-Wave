@@ -248,6 +248,7 @@ pub fn capture(rec: &mut Recorder, p: &mut Project) -> Option<(usize, usize)> {
         folder: None,
         auto: Vec::new(),
         generated: None,
+        gain_line: Vec::new(),
         audio: None,
         params: RegionParams::default(),
     });
@@ -299,6 +300,7 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         folder: None,
         auto: Vec::new(),
         generated: None,
+        gain_line: Vec::new(),
         audio: None,
         params: RegionParams::default(),
     });
@@ -835,6 +837,7 @@ mod tests {
             folder: None,
             auto: Vec::new(),
             generated: None,
+            gain_line: Vec::new(),
             audio: None,
             params: RegionParams::default(),
         });

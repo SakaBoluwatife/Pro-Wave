@@ -13,7 +13,7 @@ const EPS_BEATS: f64 = 1e-3;
 /// A pass shorter than this at the end of a recording is the moment Stop was pressed.
 const SHORTEST_PASS: f64 = 0.25;
 /// The joins of a comp are smoothed over this many beats, to not click.
-const JOIN_FADE: f64 = 0.01;
+const JOIN_FADE: f64 = 0.04;
 
 /// Where each pass of an audio recording lies in its file, as [`Take::audio_offset`] says. It began
 /// `lead` seconds into a cycle that lasts `pass` seconds, and the file is `file` seconds long.
@@ -52,8 +52,12 @@ pub fn audio_comp_clips<'a>(
             let (first, last_second) = take.window.map_or((0.0, file.duration_secs()), |w| {
                 (f64::from(w.0), f64::from(w.1).min(file.duration_secs()))
             });
-            let from = map.seconds_at(origin + f64::from(seg.start)) - start_secs;
-            let to = map.seconds_at(origin + f64::from(seg.end)) - start_secs;
+            // A join is a crossfade: the take before plays on for half the fade past it and the
+            // one after starts half the fade before it, each fading over the whole of it.
+            let lead = if i == 0 { 0.0 } else { JOIN_FADE / 2.0 };
+            let tail = if i == last { 0.0 } else { JOIN_FADE / 2.0 };
+            let from = map.seconds_at(origin + f64::from(seg.start) - lead).max(start_secs) - start_secs;
+            let to = map.seconds_at(origin + f64::from(seg.end) + tail) - start_secs;
             // The recording may start after this stretch does, and end before it does.
             let source = (offset + from).max(first);
             let from = source - offset;
@@ -120,7 +124,7 @@ fn takes_of(region: &Region, beats: f64, seconds: f64) -> Vec<Take> {
         return folder
             .takes
             .iter()
-            .map(|t| Take {
+            .map(|t| Take { name: String::new(), color: None,
                 notes: shift_notes(&t.notes),
                 controls: shift_controls(&t.controls),
                 audio_offset: t.audio_offset.map(|o| o - seconds as f32),
@@ -131,7 +135,7 @@ fn takes_of(region: &Region, beats: f64, seconds: f64) -> Vec<Take> {
             .collect();
     }
     let source = region.params.source_start;
-    vec![Take {
+    vec![Take { name: String::new(), color: None,
         notes: shift_notes(&region.notes),
         controls: shift_controls(&region.controls),
         audio_offset: region.audio.as_ref().map(|_| source - seconds as f32),
@@ -704,18 +708,23 @@ mod tests {
         let base = ovrtone_engine::ClipEdit::default();
         let main = audio_file("main.wav", 5.25);
         let clips = audio_comp_clips(&folder, &map, 8.0, base, &main);
+        // Each join is a crossfade: the takes overlap by its length, half each side (0.02 beats,
+        // 0.01 s here).
+        let half = 0.01;
         // Take 1's first half: nothing was recorded for the first half second of it.
         assert_eq!(clips[0].0, 9.0);
         assert_eq!(clips[0].1.source_start_secs, 0.0);
-        assert!((clips[0].1.length_secs - 0.5).abs() < 1e-9);
+        assert!((clips[0].1.length_secs - (0.5 + half)).abs() < 1e-6);
         // Take 2 from beat 2 of the region, one second in.
-        assert_eq!(clips[1].0, 10.0);
-        assert!((clips[1].1.source_start_secs - 2.5).abs() < 1e-6);
-        assert!((clips[1].1.length_secs - 0.5).abs() < 1e-9);
+        assert!((clips[1].0 - (10.0 - 2.0 * half)).abs() < 1e-6);
+        assert!((clips[1].1.source_start_secs - (2.5 - half)).abs() < 1e-6);
+        assert!((clips[1].1.length_secs - (0.5 + 2.0 * half)).abs() < 1e-6);
         // The last take from beat 3, cut where the file ends.
-        assert_eq!(clips[2].0, 11.0);
-        assert!((clips[2].1.source_start_secs - 5.0).abs() < 1e-6);
-        assert!((clips[2].1.length_secs - 0.25).abs() < 1e-6);
+        assert!((clips[2].0 - (11.0 - 2.0 * half)).abs() < 1e-6);
+        assert!((clips[2].1.source_start_secs - (5.0 - half)).abs() < 1e-6);
+        assert!((clips[2].1.length_secs - (0.25 + half)).abs() < 1e-6);
+        // They overlap where they join.
+        assert!(clips[1].0 < 9.0 + clips[0].1.length_secs * 2.0);
     }
 
     /// A file that is never opened, of `seconds` at 48 kHz.

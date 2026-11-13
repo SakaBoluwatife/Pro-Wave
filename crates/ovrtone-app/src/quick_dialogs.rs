@@ -152,7 +152,7 @@ fn giant_windows(ctx: &egui::Context, p: &Project, s: &mut UiState) {
     let ink = if p.recording {
         egui::Color32::from_rgb(0xff, 0x70, 0x60)
     } else {
-        egui::Color32::from_gray(0xee)
+        crate::theme::gray(0xee)
     };
     for (beats, shown, title) in [
         (true, s.dialogs.giant_beats, "Beats"),
@@ -433,7 +433,7 @@ fn big_meter(ui: &mut egui::Ui, level: f32) {
         egui::Sense::hover(),
     );
     let g = ui.painter();
-    g.rect_filled(rect, 2.0, egui::Color32::from_gray(0x0d));
+    g.rect_filled(rect, 2.0, crate::theme::gray(0x0d));
     let db = 20.0 * level.max(1e-6).log10();
     let x_of = |db: f32| rect.left() + rect.width() * ((db + 60.0) / 60.0).clamp(0.0, 1.0);
     let fill = if db >= -0.1 {
@@ -449,7 +449,7 @@ fn big_meter(ui: &mut egui::Ui, level: f32) {
         let x = x_of(mark);
         g.line_segment(
             [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(1.0, egui::Color32::from_gray(0x33)),
+            egui::Stroke::new(1.0, crate::theme::gray(0x33)),
         );
     }
     g.text(

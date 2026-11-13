@@ -13,6 +13,7 @@ struct Mix {
     mute: bool,
     solo: bool,
     pan: f32,
+    trim_db: f32,
 }
 
 /// Mirrors what the engine has accepted. Each field changes only when `Engine::send`
@@ -32,6 +33,24 @@ pub struct EngineSync {
     master: Option<f32>,
     position: Option<f64>,
     mixes: Vec<Mix>,
+    /// What the spatial mix was last told to go to, and each track's way into it.
+    spatial_mode: ovrtone_engine::SpatialMode,
+    /// Stereo Out's own effects as last sent.
+    master_fx: Vec<Insert>,
+    spatial_law: ovrtone_engine::SpatialLaw,
+    /// The speaker setup's change count when the renderer was made, and the test channel sent.
+    spatial_speakers: u64,
+    spatial_test: Option<usize>,
+    /// The spatial buses' layouts the renderer was made with, and their places as last sent.
+    spatial_bus_layouts: Vec<ovrtone_engine::SpeakerLayout>,
+    /// The HRTF choice's change count when the renderer was made.
+    spatial_hrtf: u64,
+    /// Why the chosen HRTF file could not be used, for the renderer to say.
+    pub hrtf_error: Option<String>,
+    spatial_bus_places: Vec<ovrtone_engine::BusPlace>,
+    objects: Vec<Option<ovrtone_engine::ObjectPlace>>,
+    spatial_room: f32,
+    spatial_channels: ovrtone_engine::ChannelSetup,
     /// Which tracks the engine was told are external, by track.
     externals: Vec<bool>,
     /// The controller changes the engine has.
@@ -132,7 +151,10 @@ fn chain_of(inserts: &[Insert], sample_rate: f32) -> Box<Chain> {
     Box::new(Chain::new(
         inserts
             .iter()
-            .map(|i| Fx::new(i.kind, i.params, i.bypass, sample_rate))
+            .map(|i| {
+                Fx::new(i.kind, i.params, i.bypass, sample_rate)
+                    .with_side(i.sidechain.and_then(|s| u16::try_from(s).ok()))
+            })
             .collect(),
     ))
 }
@@ -223,7 +245,7 @@ fn latency_of(t: &Track, sample_rate: f32, rack: &Rack) -> usize {
         .inserts
         .iter()
         .filter(|i| !i.bypass)
-        .map(|i| i.kind.latency_samples(sample_rate))
+        .map(|i| i.kind.latency_for(&i.params, sample_rate))
         .sum();
     let plugins =
         rack.chain_latency(t.instrument_plugin.iter()) + rack.chain_latency(t.plugins.iter());
@@ -279,6 +301,7 @@ fn mix_of(p: &Project, i: usize) -> Mix {
         mute,
         solo,
         pan: p.tracks[i].pan,
+        trim_db: p.tracks[i].trim_db,
     }
 }
 
@@ -291,6 +314,7 @@ fn track_mixes(p: &Project) -> Vec<TrackMix> {
             mute: m.mute,
             solo: m.solo,
             pan: m.pan,
+            trim_db: m.trim_db,
         })
         .collect()
 }
@@ -372,6 +396,31 @@ fn slide_bends(
             },
         ]
     };
+    // The same slide as the tuning of the bent note alone, for an instrument that can take it.
+    let tune = |beat: f32, key: u8, semitones: f32| {
+        let raw = (8192.0 + semitones.clamp(-64.0, 63.99) * 128.0).round() as u16;
+        let at = origin + f64::from(beat);
+        [
+            ControlEvent {
+                beat: at,
+                track,
+                number: ovrtone_engine::NOTE_TUNE_KEY_CONTROL,
+                value: key & 0x7f,
+            },
+            ControlEvent {
+                beat: at,
+                track,
+                number: ovrtone_engine::NOTE_TUNE_FINE_CONTROL,
+                value: (raw & 0x7f) as u8,
+            },
+            ControlEvent {
+                beat: at,
+                track,
+                number: ovrtone_engine::NOTE_TUNE_CONTROL,
+                value: ((raw >> 7) & 0x7f) as u8,
+            },
+        ]
+    };
     let mut out = Vec::new();
     let mut last: Option<(usize, f32)> = None;
     for (at, &(slide, base)) in slides.iter().enumerate() {
@@ -392,13 +441,16 @@ fn slide_bends(
             let part = k as f32 / steps as f32;
             let beat = s.start + s.len * part;
             if beat < end {
-                out.extend(event(beat, from + (to - from) * part));
+                let semis = from + (to - from) * part;
+                out.extend(event(beat, semis));
+                out.extend(tune(beat, b.pitch, semis));
             }
         }
         last = Some((base, to));
         // The next slide on this note carries on from here; else its end lets go of the bend.
         if slides.get(at + 1).is_none_or(|next| next.1 != base) {
             out.extend(event(end, 0.0));
+            out.extend(tune(end, b.pitch, 0.0));
         }
     }
     out
@@ -651,8 +703,8 @@ fn audio_layout(p: &Project) -> AudioLayout {
                 region_clips(p, t, r, origin)
                     .into_iter()
                     .map(move |(at, edit, file)| {
-                        // Gain, fades and reverse are set when a clip starts streaming.
-                        let edit = format!("{edit:?}");
+                        // Gain, fades, the gain line and reverse are set when a clip starts streaming.
+                        let edit = format!("{edit:?}{:?}", r.gain_line);
                         (file.path.clone(), track, at.to_bits(), edit)
                     })
             })
@@ -670,7 +722,10 @@ fn build_song(engine: &Engine, p: &Project) -> Song {
         .flat_map(|(track, t, r, origin)| {
             region_clips(p, t, r, origin)
                 .into_iter()
-                .map(move |(at, edit, file)| engine.stream_clip_in(file, track, at, edit, streamed))
+                .map(move |(at, edit, file)| {
+                    let line = r.gain_line.iter().map(|(b, db)| (origin + f64::from(*b), *db)).collect();
+                    engine.stream_clip_in(file, track, at, edit, streamed).with_gain_line(line)
+                })
         })
         .collect();
     let notes = song_notes(p);
@@ -710,6 +765,18 @@ impl EngineSync {
             master: None,
             position: None,
             mixes: Vec::new(),
+            spatial_mode: ovrtone_engine::SpatialMode::Off,
+            master_fx: Vec::new(),
+            spatial_law: ovrtone_engine::SpatialLaw::Smooth,
+            spatial_speakers: 0,
+            spatial_test: None,
+            spatial_bus_layouts: Vec::new(),
+            spatial_hrtf: 0,
+            hrtf_error: None,
+            spatial_bus_places: Vec::new(),
+            objects: Vec::new(),
+            spatial_room: 0.0,
+            spatial_channels: ovrtone_engine::ChannelSetup::default(),
             externals: Vec::new(),
             controls: Vec::new(),
             mtc: None,
@@ -728,6 +795,11 @@ impl EngineSync {
         };
         sync.push(p);
         sync
+    }
+
+    /// How many of the project's plugins are still to load, and the name of the next.
+    pub fn plugins_left(&self, p: &mut Project) -> (usize, Option<String>) {
+        self.rack.loads_left(p)
     }
 
     /// Call once per frame: push UI-side changes to the engine, then pull the playhead back.
@@ -877,6 +949,7 @@ impl EngineSync {
             self.externals[i] = external;
         }
         self.sync_strips(p);
+        self.sync_spatial(p);
         // Mixer moves. Until a song is accepted, its `SetSong` carries the mix instead.
         if self.layout.is_some() {
             for i in 0..p.tracks.len().min(MAX_TRACKS) {
@@ -889,6 +962,7 @@ impl EngineSync {
                     mute: m.mute,
                     solo: m.solo,
                     pan: m.pan,
+                    trim_db: m.trim_db,
                 };
                 if !self.send(Command::SetTrackMix {
                     track: i as u16,
@@ -902,6 +976,139 @@ impl EngineSync {
             }
         }
         seek_done
+    }
+
+    /// The spatial mix: where it goes, and how each object feeds it. Only what changed is sent.
+    fn sync_spatial(&mut self, p: &Project) {
+        use ovrtone_engine::{SpatialMode, SpatialRender};
+        // A stereo project with spatial tracks: they are rendered for headphones on their own, the
+        // rest of the mix as it is.
+        let light = p.spatial_mode == SpatialMode::Off && p.tracks.iter().any(|t| t.object.is_some());
+        let mode = if light {
+            SpatialMode::Binaural(p.spatial_bed)
+        } else {
+            p.spatial_mode
+        };
+        let (speakers, generation) = crate::speaker_setup::current();
+        let layouts: Vec<_> = p.spatial_buses.iter().map(|b| b.layout).collect();
+        let (_, hrtf_generation) = crate::hrtf::current();
+        if mode != self.spatial_mode
+            || p.spatial_law != self.spatial_law
+            || generation != self.spatial_speakers
+            || layouts != self.spatial_bus_layouts
+            || hrtf_generation != self.spatial_hrtf
+        {
+            let buses: Vec<_> = p.spatial_buses.iter().map(|b| (b.layout, b.place)).collect();
+            let render = SpatialRender::with_speakers(
+                mode,
+                self.engine.sample_rate(),
+                p.spatial_law,
+                speakers,
+            )
+            .with_buses(&buses);
+            // A measured head for headphones, when one is chosen; the modelled one otherwise.
+            let render = if light { render.with_dry_bed() } else { render };
+            let render = match (mode, crate::hrtf::current().0.is_some()) {
+                (SpatialMode::Binaural(layout), true) => {
+                    match crate::hrtf::set_for(layout, self.engine.sample_rate()) {
+                        Ok(Some(set)) => {
+                            self.hrtf_error = None;
+                            render.with_hrtf(&set)
+                        }
+                        Ok(None) => render,
+                        Err(e) => {
+                            self.hrtf_error = Some(e);
+                            render
+                        }
+                    }
+                }
+                _ => render,
+            };
+            if !self.send(Command::SetSpatial(render)) {
+                return;
+            }
+            self.spatial_mode = mode;
+            self.spatial_law = p.spatial_law;
+            self.spatial_speakers = generation;
+            self.spatial_bus_layouts = layouts;
+            self.spatial_hrtf = hrtf_generation;
+            self.spatial_bus_places = p.spatial_buses.iter().map(|b| b.place).collect();
+            // A new renderer has no test signal on.
+            self.spatial_test = None;
+        }
+        for (k, b) in p.spatial_buses.iter().enumerate() {
+            if self.spatial_bus_places.get(k) == Some(&b.place) {
+                continue;
+            }
+            if !self.send(Command::SetSpatialBus {
+                bus: k as u8,
+                place: b.place,
+            }) {
+                return;
+            }
+            if let Some(slot) = self.spatial_bus_places.get_mut(k) {
+                *slot = b.place;
+            }
+        }
+        if p.spatial_test != self.spatial_test {
+            let channel = p.spatial_test.and_then(|c| u8::try_from(c).ok());
+            if !self.send(Command::SetSpatialTest(channel)) {
+                return;
+            }
+            self.spatial_test = p.spatial_test;
+        }
+        let soloing = p.spatial_solo.contains(&true);
+        let mut channels = p.spatial_channels;
+        for c in 0..ovrtone_engine::SPATIAL_CHANNELS {
+            channels.muted[c] = p.spatial_mute[c] || (soloing && !p.spatial_solo[c]);
+        }
+        channels.gain = 10f32.powf(p.spatial_volume_db / 20.0);
+        if channels != self.spatial_channels {
+            if !self.send(Command::SetSpatialChannels(channels)) {
+                return;
+            }
+            self.spatial_channels = channels;
+        }
+        if p.spatial_room != self.spatial_room {
+            if !self.send(Command::SetSpatialRoom(p.spatial_room)) {
+                return;
+            }
+            self.spatial_room = p.spatial_room;
+        }
+        let count = p.tracks.len().min(MAX_TRACKS);
+        // Off, every strip is in the bed: this need not even be looked at.
+        if mode == SpatialMode::Off && self.objects.is_empty() {
+            return;
+        }
+        let known = self.objects.len();
+        if known < count {
+            self.objects.resize(count, None);
+        }
+        for i in 0..self.objects.len() {
+            let wanted = (i < count)
+                .then(|| p.tracks[i].object)
+                .flatten();
+            if self.objects[i] == wanted {
+                continue;
+            }
+            if !self.send(Command::SetStripObject {
+                track: i as u16,
+                place: wanted,
+            }) {
+                return;
+            }
+            self.objects[i] = wanted;
+        }
+    }
+
+    /// The loudest of each spatial channel since this was last asked.
+    pub fn take_spatial_peaks(&self) -> [f32; ovrtone_engine::SPATIAL_CHANNELS] {
+        self.engine.take_spatial_peaks()
+    }
+
+    /// How many channels the output device has.
+    pub fn output_channels(&self) -> u32 {
+        self.engine.output_channels()
     }
 
     /// Effects, sends and automation. Each is sent only when it differs from what the engine
@@ -918,7 +1125,10 @@ impl EngineSync {
                 .filter(|t| i < MAX_TRACKS && t.frozen.is_none())
                 .map_or(&[], |t| &t.inserts);
             let same_kinds = self.fx[i].len() == want.len()
-                && self.fx[i].iter().zip(want).all(|(a, b)| a.kind == b.kind);
+                && self.fx[i]
+                    .iter()
+                    .zip(want)
+                    .all(|(a, b)| a.kind == b.kind && a.sidechain == b.sidechain);
             if !same_kinds {
                 let chain = chain_of(want, sr);
                 if !self.send(Command::SetInserts {
@@ -955,6 +1165,39 @@ impl EngineSync {
                     return;
                 }
                 self.routes[i] = route;
+            }
+        }
+        // Stereo Out's own effects, as a track's are sent.
+        {
+            let master = ovrtone_engine::MASTER_STRIP;
+            let want = &p.master_strip.inserts;
+            let same_kinds = self.master_fx.len() == want.len()
+                && self.master_fx.iter().zip(want).all(|(a, b)| a.kind == b.kind);
+            if !same_kinds {
+                if !self.send(Command::SetInserts {
+                    track: master,
+                    chain: chain_of(want, sr),
+                }) {
+                    return;
+                }
+                self.master_fx = want.clone();
+            } else {
+                for (slot, (have, w)) in self.master_fx.iter_mut().zip(want).enumerate() {
+                    if have == w {
+                        continue;
+                    }
+                    let cmd = Command::SetFx {
+                        track: master,
+                        slot: slot as u8,
+                        params: w.params,
+                        bypass: w.bypass,
+                    };
+                    if !self.engine.send(cmd) {
+                        self.retry = true;
+                        return;
+                    }
+                    *have = *w;
+                }
             }
         }
         // Delay compensation follows the effects (a limiter looks ahead).
@@ -994,6 +1237,11 @@ impl EngineSync {
     }
 
     /// Collects the plugins' current settings into the project, right before it is saved.
+    /// The notes the ARA plugin on track `t` found (see [`crate::plugin_rack::Rack::ara_notes`]).
+    pub fn ara_notes(&mut self, t: usize) -> Result<Vec<(f64, f64, f32, f32)>, String> {
+        self.rack.ara_notes(t)
+    }
+
     pub fn collect_plugin_states(&mut self, p: &mut Project) {
         self.rack.collect_states(p, &mut self.plugin_message);
     }
@@ -1117,6 +1365,12 @@ impl EngineSync {
     }
 
     /// Post-fader stereo peaks for the first `n` tracks (linear), for the mixer meters.
+    /// The RMS of the first `n` tracks, linear.
+    pub fn track_rms(&mut self, n: usize) -> Vec<f32> {
+        let state = self.engine.state();
+        (0..n).map(|i| state.track_rms(i)).collect()
+    }
+
     pub fn track_meters(&mut self, n: usize) -> Vec<(f32, f32)> {
         let state = self.engine.state();
         (0..n).map(|i| state.track_peaks(i)).collect()
@@ -1285,6 +1539,9 @@ mod tests {
             monitor: false,
             hardware_out: 0,
             aux_bus: 0,
+            object: None,
+            bed_pan: false,
+            trim_db: 0.0,
             slide_range: crate::model::DEFAULT_SLIDE_RANGE,
             input: ovrtone_engine::InputSource::Mono(0),
             output: 0,
@@ -1302,6 +1559,7 @@ mod tests {
                 folder: None,
                 auto: Vec::new(),
                 generated: None,
+                gain_line: Vec::new(),
                 audio: None,
                 params: RegionParams::default(),
             }],
@@ -1318,6 +1576,8 @@ mod tests {
             vca: None,
             on_timeline: false,
             off: false,
+            locked: false,
+        reference: false,
             midi_port: None,
             midi_channel: 1,
             midi_fx: Vec::new(),
@@ -1659,6 +1919,7 @@ mod tests {
                 params: RegionParams::default(),
                 auto: Vec::new(),
                 generated: None,
+                gain_line: Vec::new(),
             });
         }
         let c = song_controls(&p);

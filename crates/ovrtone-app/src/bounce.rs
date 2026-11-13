@@ -57,28 +57,67 @@ impl BitDepth {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FileFormat {
+    /// The spatial mix: 12 channels of 7.1.4 with its ADM metadata. Never in the bounce window's list.
+    Adm,
+    /// The same as a 7.1.4 bed, with every object as tracks of its own and its moves as metadata.
+    AdmObjects,
+    /// A 7.1.2 bed with the objects mixed in, and with each object as a mono track (the Atmos shape).
+    /// Never in the list.
+    Adm712,
+    AdmObjects712,
+    /// The bed as a multichannel WAV in its layout's order. Never in the bounce window's list.
+    SpatialLayout,
+    /// The spatial mix as first- or third-order Ambisonics (AmbiX). Never in the list.
+    Ambix1,
+    Ambix3,
+    /// The spatial mix for headphones: stereo through the modelled head. Never in the list.
+    Binaural,
     #[default]
     Wav,
     Flac,
     Mp3,
+    Aiff,
 }
 
 impl FileFormat {
-    pub const ALL: [FileFormat; 3] = [FileFormat::Wav, FileFormat::Flac, FileFormat::Mp3];
+    pub const ALL: [FileFormat; 4] = [
+        FileFormat::Wav,
+        FileFormat::Aiff,
+        FileFormat::Flac,
+        FileFormat::Mp3,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             FileFormat::Wav => "WAV",
+            FileFormat::Adm => "ADM BW64",
+            FileFormat::AdmObjects => "ADM BW64 with objects",
+            FileFormat::Adm712 => "ADM BW64, 7.1.2 bed",
+            FileFormat::AdmObjects712 => "ADM BW64, 7.1.2 bed with mono objects",
+            FileFormat::SpatialLayout => "Multichannel WAV",
+            FileFormat::Ambix1 => "AmbiX first order",
+            FileFormat::Ambix3 => "AmbiX third order",
+            FileFormat::Binaural => "Binaural WAV",
             FileFormat::Flac => "FLAC",
             FileFormat::Mp3 => "MP3",
+            FileFormat::Aiff => "AIFF",
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
             FileFormat::Wav => "wav",
+            FileFormat::Adm
+            | FileFormat::AdmObjects
+            | FileFormat::Adm712
+            | FileFormat::AdmObjects712
+            | FileFormat::SpatialLayout
+            | FileFormat::Ambix1
+            | FileFormat::Ambix3
+            | FileFormat::Binaural => "wav",
             FileFormat::Flac => "flac",
             FileFormat::Mp3 => "mp3",
+            FileFormat::Aiff => "aiff",
         }
     }
 
@@ -86,7 +125,7 @@ impl FileFormat {
     /// and MP3 takes float in and has no depth of its own.
     fn depth(self, asked: BitDepth) -> BitDepth {
         match (self, asked) {
-            (FileFormat::Flac, BitDepth::Float32) => BitDepth::Int24,
+            (FileFormat::Flac | FileFormat::Aiff, BitDepth::Float32) => BitDepth::Int24,
             (FileFormat::Mp3, _) => BitDepth::Float32,
             _ => asked,
         }
@@ -230,6 +269,10 @@ pub struct Render {
     /// Only this track is heard.
     pub solo: Option<usize>,
     pub after: After,
+    /// Both sides summed to the middle.
+    pub mono: bool,
+    /// The loudest point raised or lowered to this many dB.
+    pub normalize: Option<f32>,
 }
 
 /// The last beat anything plays on.
@@ -258,6 +301,11 @@ fn render_project(p: &Project, render: &Render) -> Project {
     for (i, t) in copy.tracks.iter_mut().enumerate() {
         t.rec = false;
         t.monitor = false;
+        // A reference song is for listening only; it is never in what is bounced.
+        if t.reference && render.solo != Some(i) {
+            t.mute = true;
+            t.solo = false;
+        }
         if let Some(only) = render.solo {
             t.solo = i == only;
             if i == only {
@@ -361,6 +409,7 @@ fn run_render(
     rate: u32,
     progress: &AtomicU32,
     cancel: &AtomicBool,
+    mut adm: Option<&mut crate::spatial_export::Sink>,
 ) -> Result<(), String> {
     let mut buf = vec![0.0f32; RENDER_BLOCK * 2];
     let mut done = 0u64;
@@ -400,8 +449,15 @@ fn run_render(
         }
         // What the delay compensation put in front stays out of the file.
         let from = skip.saturating_sub(done).min(n) as usize;
+        let channels = core.take_spatial_capture();
+        let objects = core.take_object_capture();
+        if let Some(adm) = adm.as_deref_mut() {
+            adm.write(&channels, &objects, from).map_err(|e| e.to_string())?;
+        }
         if done >= total {
-            if out.iter().all(|s| s.abs() < TAIL_SILENCE) {
+            // A tail may go on in channels the stereo file does not have.
+            let silent = |x: &[f32]| x.iter().all(|s| s.abs() < TAIL_SILENCE);
+            if silent(out) && silent(&channels) && objects.iter().all(|o| silent(o)) {
                 quiet += n;
                 if quiet >= quiet_enough {
                     break;
@@ -431,10 +487,40 @@ fn encode(
     depth: BitDepth,
     rate: u32,
     out_rate: u32,
+    shape: Shape,
 ) -> Result<PathBuf, String> {
-    let made = convert(wav, target, format, depth, rate, out_rate);
+    let made = convert(wav, target, format, depth, rate, out_rate, shape);
     let _ = std::fs::remove_file(wav);
     made.map(|()| target.to_path_buf())
+}
+
+/// What the final file gets on the way out: summed to mono, and a gain (normalising).
+#[derive(Clone, Copy, Debug, Default)]
+struct Shape {
+    mono: bool,
+    normalize: Option<f32>,
+}
+
+/// The loudest sample of the float render `wav`, read through once.
+fn peak_of(wav: &Path) -> Result<f32, String> {
+    let fail = |e: std::io::Error| e.to_string();
+    let mut input = std::io::BufReader::new(std::fs::File::open(wav).map_err(fail)?);
+    input.seek(SeekFrom::Start(44)).map_err(fail)?;
+    let mut raw = vec![0u8; CONVERT_FRAMES * 8];
+    let mut peak = 0f32;
+    loop {
+        let got = crate::audio_encode::read_all(&mut input, &mut raw).map_err(fail)?;
+        if got == 0 {
+            break;
+        }
+        for b in raw[..got].as_chunks::<4>().0 {
+            let v = f32::from_le_bytes(*b);
+            if v.is_finite() {
+                peak = peak.max(v.abs());
+            }
+        }
+    }
+    Ok(peak)
 }
 
 /// Frames read at a time from the render.
@@ -448,9 +534,33 @@ fn write_converted(
     depth: BitDepth,
     rate: u32,
     out_rate: u32,
+    shape: Shape,
 ) -> Result<(), String> {
     use std::io::Read;
     let fail = |e: std::io::Error| e.to_string();
+    // Normalising: the gain that takes the loudest point (after the sum to mono) to the target.
+    let gain = match shape.normalize {
+        Some(db) => {
+            let peak = peak_of(wav)?;
+            if peak > 1e-6 {
+                10f32.powf(db / 20.0) / peak
+            } else {
+                1.0
+            }
+        }
+        None => 1.0,
+    };
+    let reshape = |chunk: &mut [f32]| {
+        for frame in chunk.chunks_exact_mut(2) {
+            if shape.mono {
+                let m = (frame[0] + frame[1]) * 0.5;
+                frame[0] = m;
+                frame[1] = m;
+            }
+            frame[0] *= gain;
+            frame[1] *= gain;
+        }
+    };
     let mut writer = WavWriter::create(out, depth, out_rate).map_err(fail)?;
     let mut input = std::io::BufReader::new(std::fs::File::open(wav).map_err(fail)?);
     input.seek(SeekFrom::Start(44)).map_err(fail)?;
@@ -469,7 +579,8 @@ fn write_converted(
             if got == 0 {
                 break Ok(());
             }
-            let chunk = floats(&raw[..got]);
+            let mut chunk = floats(&raw[..got]);
+            reshape(&mut chunk);
             if let Err(e) = writer.write(&chunk) {
                 break Err(e.to_string());
             }
@@ -479,7 +590,8 @@ fn write_converted(
         input.read_to_end(&mut raw).map_err(fail)?;
         let all = floats(&raw);
         drop(raw);
-        let converted = crate::audio_encode::resample(&all, rate, out_rate);
+        let mut converted = crate::audio_encode::resample(&all, rate, out_rate);
+        reshape(&mut converted);
         writer.write(&converted).map_err(fail)
     };
     match written {
@@ -498,20 +610,25 @@ fn convert(
     depth: BitDepth,
     rate: u32,
     out_rate: u32,
+    shape: Shape,
 ) -> Result<(), String> {
     if format == FileFormat::Wav {
-        return write_converted(wav, target, depth, rate, out_rate);
+        return write_converted(wav, target, depth, rate, out_rate, shape);
     }
     let stage = target.with_extension("stage.wav");
-    write_converted(wav, &stage, depth, rate, out_rate)?;
+    write_converted(wav, &stage, depth, rate, out_rate, shape)?;
     let bits = usize::from(depth.bytes()) * 8;
     let made = match format {
         FileFormat::Flac => crate::audio_encode::flac(&stage, target, bits, out_rate),
+        FileFormat::Aiff => crate::audio_encode::aiff(&stage, target, bits, out_rate),
         _ => crate::audio_encode::mp3(&stage, target, out_rate),
     };
     let _ = std::fs::remove_file(&stage);
     made
 }
+
+/// The rate of a spatial file.
+const ADM_RATE: u32 = 48_000;
 
 /// A render under way.
 pub struct Job {
@@ -529,7 +646,46 @@ impl Job {
     /// Sets up a second engine for the render, on this thread, and starts it on its own.
     pub fn start(p: &Project, render: Render, rate: u32) -> Result<Self, String> {
         let mut copy = render_project(p, &render);
-        let rate = if rate == 0 { DEFAULT_RATE } else { rate };
+        let spatial_file = matches!(
+            render.format,
+            FileFormat::Adm
+                | FileFormat::AdmObjects
+                | FileFormat::Adm712
+                | FileFormat::AdmObjects712
+                | FileFormat::SpatialLayout
+                | FileFormat::Ambix1
+                | FileFormat::Ambix3
+        );
+        let adm_shape = if matches!(render.format, FileFormat::Adm712 | FileFormat::AdmObjects712) {
+            crate::adm::Shape::SEVEN_ONE_TWO
+        } else {
+            crate::adm::Shape::SEVEN_ONE_FOUR
+        };
+        let bed = p.spatial_mode.layout().unwrap_or(p.spatial_bed);
+        {
+            use ovrtone_engine::{SpatialMode, SpeakerLayout};
+            match render.format {
+                FileFormat::Adm | FileFormat::AdmObjects => {
+                    copy.spatial_mode = SpatialMode::Speakers(SpeakerLayout::Surround714);
+                }
+                FileFormat::Adm712 | FileFormat::AdmObjects712 => {
+                    copy.spatial_mode = SpatialMode::Speakers(SpeakerLayout::Surround712);
+                }
+                FileFormat::SpatialLayout | FileFormat::Ambix1 | FileFormat::Ambix3 => {
+                    copy.spatial_mode = SpatialMode::Speakers(bed);
+                }
+                FileFormat::Binaural => copy.spatial_mode = SpatialMode::Binaural(bed),
+                _ => {}
+            }
+        }
+        // What spatial tools expect, whatever the sound card runs at.
+        let rate = if spatial_file {
+            ADM_RATE
+        } else if rate == 0 {
+            DEFAULT_RATE
+        } else {
+            rate
+        };
         let (engine, mut core) = Engine::offline(rate);
         let mut sync = EngineSync::new(engine, &copy);
         // The plugins load one a call, and each call's commands need the core to take them.
@@ -545,7 +701,16 @@ impl Job {
         let warning = sync.take_plugin_message();
         let skip = sync.total_latency(&copy) as u64;
         let frames = frames_between(&copy, render.from_beat, render.to_beat, rate);
-        let format = render.format;
+        let shape = Shape {
+            mono: render.mono,
+            normalize: render.normalize,
+        };
+        // A binaural file is a stereo WAV like any other once rendered.
+        let format = if render.format == FileFormat::Binaural {
+            FileFormat::Wav
+        } else {
+            render.format
+        };
         let depth = format.depth(render.depth);
         let out_rate = if render.out_rate == 0 {
             rate
@@ -559,6 +724,36 @@ impl Job {
         let mut writer = WavWriter::create(&wav, BitDepth::Float32, rate)
             .map_err(|e| format!("cannot write {}: {e}", render.path.display()))?;
         core.keep_headroom();
+        let objects = if matches!(render.format, FileFormat::AdmObjects | FileFormat::AdmObjects712) {
+            crate::adm::object_tracks(&copy, render.from_beat, render.to_beat, adm_shape)?
+        } else {
+            Vec::new()
+        };
+        let mut adm = if spatial_file {
+            core.capture_spatial();
+            let strips: Vec<u16> = objects.iter().map(|o| o.track).collect();
+            if !strips.is_empty() {
+                core.capture_objects(&strips);
+            }
+            use crate::spatial_export::{Kind, MultiWav, Sink};
+            let kind = match render.format {
+                FileFormat::SpatialLayout => Some(Kind::Layout(bed)),
+                FileFormat::Ambix1 => Some(Kind::Ambix(1)),
+                FileFormat::Ambix3 => Some(Kind::Ambix(3)),
+                _ => None,
+            };
+            let made = match kind {
+                Some(kind) => MultiWav::create(&target, rate, kind, bed).map(Sink::Multi),
+                None => crate::adm::AdmWriter::create(&target, rate, strips.len(), adm_shape).map(Sink::Adm),
+            }
+            .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+            Some(made)
+        } else {
+            None
+        };
+        let title = target
+            .file_stem()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         // Chained plugins need rounds, for the delay to be what the compensation expects.
         if ovrtone_engine::plugins_chained() {
             let capacity = (ovrtone_engine::MAX_INSERTS + 1) * ovrtone_engine::MAX_TRACKS
@@ -596,12 +791,20 @@ impl Job {
                     rate,
                     &for_thread,
                     &stop,
+                    adm.as_mut(),
                 );
                 let result = match ran {
-                    Ok(()) => writer
-                        .finish()
-                        .map_err(|e| e.to_string())
-                        .and_then(|wav| encode(&wav, &target, format, depth, rate, out_rate)),
+                    Ok(()) => match adm {
+                        Some(file) => {
+                            // Only the spatial file was wanted: the stereo render goes.
+                            writer.abandon();
+                            file.finish(&title, &objects).map_err(|e| e.to_string())
+                        }
+                        None => writer
+                            .finish()
+                            .map_err(|e| e.to_string())
+                            .and_then(|wav| encode(&wav, &target, format, depth, rate, out_rate, shape)),
+                    },
                     Err(e) => {
                         writer.abandon();
                         Err(e)
@@ -837,6 +1040,8 @@ pub fn commit_track(p: &mut Project, s: &mut crate::UiState, t: usize) {
         return;
     }
     s.bounce.enqueue(vec![Render {
+                mono: false,
+                normalize: None,
         path: dir.join(format!("{} commit {stamp}.wav", file_safe(&name))),
         format: FileFormat::Wav,
         out_rate: 0,
@@ -872,6 +1077,8 @@ pub fn toggle_freeze(p: &mut Project, s: &mut crate::UiState, t: usize) {
         return;
     }
     s.bounce.enqueue(vec![Render {
+                mono: false,
+                normalize: None,
         path: dir.join(format!("{} freeze {stamp}.wav", file_safe(&name))),
         format: FileFormat::Wav,
         out_rate: 0,
@@ -903,6 +1110,8 @@ pub fn stems(
         .enumerate()
         .filter(|(i, t)| plays(t.kind) && !p.is_muted(*i) && !t.regions.is_empty())
         .map(|(i, t)| Render {
+                mono: false,
+                normalize: None,
             out_rate: 0,
             path: folder.join(format!(
                 "{} {:02} {}.{}",
@@ -1065,6 +1274,8 @@ fn process_render(p: &Project, d: &ProcessDialog, path: PathBuf) -> Option<Rende
         p.bar_to_beats(d.to_bar - 1.0),
     );
     (to_beat > from_beat + crate::region_edit::EDGE_BEATS).then(|| Render {
+                mono: false,
+                normalize: None,
         path,
         format: FileFormat::Wav,
         out_rate: 0,
@@ -1180,6 +1391,17 @@ pub struct BounceState {
     /// How many of a batch have been made.
     pub done: usize,
     pub total: usize,
+    /// The same export again in these formats too, one after another.
+    pub also: Vec<FileFormat>,
+    /// Title, artist, album and comment written into exported files.
+    pub tags: crate::audio_tags::Tags,
+    /// Exports summed to mono.
+    pub mono: bool,
+    /// Exports normalised, the loudest point at `normalize_db`.
+    pub normalize: bool,
+    pub normalize_db: f32,
+    /// The files of this batch that get the tags.
+    tag_paths: Vec<PathBuf>,
 }
 
 impl BounceState {
@@ -1207,6 +1429,11 @@ impl BounceState {
                 self.done += 1;
                 match result {
                     Ok(file) => {
+                        if self.tag_paths.contains(&render.path) {
+                            if let Err(e) = crate::audio_tags::write(&file, &self.tags) {
+                                tracing::warn!("could not tag {}: {e}", file.display());
+                            }
+                        }
                         message = Some(match place(p, &render, &file, ctx) {
                             Ok(()) => match warning {
                                 Some(w) => format!("Bounced {}, but: {w}", file.display()),
@@ -1287,6 +1514,8 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
                 .save_file();
             let Some(path) = picked else { return };
             vec![Render {
+                mono: false,
+                normalize: None,
                 path: with_extension_kept(path, b.format.extension()),
                 format: b.format,
                 out_rate: b.out_rate,
@@ -1308,7 +1537,29 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
             all
         }
     };
-    b.enqueue(renders);
+    // Mono and normalising, as the window has them.
+    let mut renders = renders;
+    for r in renders.iter_mut() {
+        r.mono = b.mono;
+        r.normalize = b.normalize.then_some(b.normalize_db.clamp(-24.0, 0.0));
+    }
+    // The same files again in each extra format, after the first.
+    let mut all = renders.clone();
+    for format in b.also.clone() {
+        if format == b.format {
+            continue;
+        }
+        for r in &renders {
+            all.push(Render {
+                path: r.path.with_extension(format.extension()),
+                format,
+                depth: format.depth(r.depth),
+                ..r.clone()
+            });
+        }
+    }
+    b.tag_paths = all.iter().map(|r| r.path.clone()).collect();
+    b.enqueue(all);
     b.dialog = None;
 }
 
@@ -1352,6 +1603,8 @@ pub fn bounce_selection(p: &Project, s: &mut crate::UiState, replace: bool) {
         }
     };
     s.bounce.enqueue(vec![Render {
+                mono: false,
+                normalize: None,
         path,
         format: FileFormat::Wav,
         out_rate: 0,
@@ -1451,6 +1704,51 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
             for (rate, name) in OUT_RATES {
                 ui.selectable_value(&mut s.bounce.out_rate, rate, name);
             }
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.bounce.mono, "Mono")
+                .on_hover_text("Both sides summed to the middle");
+            ui.checkbox(&mut s.bounce.normalize, "Normalize to")
+                .on_hover_text("The loudest point raised or lowered to this level");
+            ui.add_enabled(
+                s.bounce.normalize,
+                egui::DragValue::new(&mut s.bounce.normalize_db)
+                    .speed(0.1)
+                    .range(-24.0..=0.0)
+                    .suffix(" dB"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Also as")
+                .on_hover_text("The same export in more formats, made one after another");
+            for format in FileFormat::ALL {
+                if format == s.bounce.format {
+                    continue;
+                }
+                let mut on = s.bounce.also.contains(&format);
+                if ui.checkbox(&mut on, format.name()).changed() {
+                    if on {
+                        s.bounce.also.push(format);
+                    } else {
+                        s.bounce.also.retain(|f| *f != format);
+                    }
+                }
+            }
+        });
+        ui.collapsing("File details (title, artist…)", |ui| {
+            egui::Grid::new(egui::Id::unique("bounce_tags")).num_columns(2).show(ui, |ui| {
+                let t = &mut s.bounce.tags;
+                for (label, field) in [
+                    ("Title", &mut t.title),
+                    ("Artist", &mut t.artist),
+                    ("Album", &mut t.album),
+                    ("Comment", &mut t.comment),
+                ] {
+                    ui.label(label);
+                    ui.add(egui::TextEdit::singleline(field).desired_width(220.0));
+                    ui.end_row();
+                }
+            });
         });
         if s.bounce.depth == BitDepth::Int16 && s.bounce.format != FileFormat::Mp3 {
             ui.label(egui::RichText::new("16-bit files get triangular dither.").small());
@@ -1942,6 +2240,113 @@ mod tests {
         assert_eq!(FileFormat::Flac.depth(BitDepth::Int16), BitDepth::Int16);
         assert_eq!(FileFormat::Mp3.depth(BitDepth::Int16), BitDepth::Float32);
         assert_eq!(FileFormat::Wav.depth(BitDepth::Float32), BitDepth::Float32);
+    }
+
+    /// The whole way: a project with an object on the right, through the render, read back from the file.
+    #[test]
+    fn a_spatial_file_has_each_object_on_its_speaker_and_the_bed_on_left_and_right() {
+        let (mut p, dir) = audio_project(1.0, 1.0);
+        p.tracks[0].object = Some(ovrtone_engine::ObjectPlace {
+            azimuth: 90.0,
+            elevation: 0.0,
+            size: 0.0,
+            lfe: 0.0,
+            // Both sides on the one speaker.
+            spread: 0.0,
+            ..ovrtone_engine::ObjectPlace::default()
+        });
+        let path = dir.path().join("spatial.wav");
+        let mut render = mix_to(path.clone(), 2.0);
+        render.format = FileFormat::Adm;
+        let mut job = Job::start(&p, render, RATE).unwrap();
+        let waited = Instant::now();
+        loop {
+            if let Some((_, result)) = job.poll() {
+                result.unwrap();
+                break;
+            }
+            assert!(waited.elapsed() < Duration::from_secs(60), "it finishes");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let file = std::fs::read(&path).unwrap();
+        let at = file.windows(4).position(|w| w == b"data").unwrap();
+        let size = u32::from_le_bytes(file[at + 4..at + 8].try_into().unwrap()) as usize;
+        let data = &file[at + 8..at + 8 + size];
+        assert!(size >= 36 * 40_000, "about a second of it: {size}");
+        let loudest = |channel: usize| {
+            data.chunks_exact(36)
+                .map(|f| {
+                    let b = &f[channel * 3..channel * 3 + 3];
+                    let v = i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8;
+                    (f64::from(v) / 8_388_607.0).abs()
+                })
+                .fold(0.0, f64::max)
+        };
+        // Both channels of the clip, at half level, in constant power on the right side speaker.
+        assert!(loudest(7) > 0.5, "{}", loudest(7));
+        assert!(loudest(6) < 0.01, "{}", loudest(6));
+        assert!(loudest(0) < 0.01, "none in the bed: {}", loudest(0));
+        assert!(file.windows(4).any(|w| w == b"chna"));
+        assert!(file.windows(4).any(|w| w == b"axml"));
+    }
+
+    /// An object keeps to its own tracks, out of the bed, with its moves written down.
+    #[test]
+    fn a_file_with_objects_has_the_object_on_its_own_tracks_with_its_moves() {
+        let (mut p, dir) = audio_project(1.0, 1.0);
+        p.tracks[0].object = Some(ovrtone_engine::ObjectPlace {
+            azimuth: 0.0,
+            elevation: 0.0,
+            size: 0.0,
+            lfe: 0.0,
+            ..ovrtone_engine::ObjectPlace::default()
+        });
+        use crate::model::AutoTarget;
+        use ovrtone_engine::ObjectAxis;
+        let around = AutoTarget::Object(ObjectAxis::Around);
+        p.tracks[0].auto.set_point(around, 0.0, -90.0);
+        p.tracks[0].auto.set_point(around, 2.0, 90.0);
+        let path = dir.path().join("objects.wav");
+        let mut render = mix_to(path.clone(), 2.0);
+        render.format = FileFormat::AdmObjects;
+        let mut job = Job::start(&p, render, RATE).unwrap();
+        let waited = Instant::now();
+        loop {
+            if let Some((_, result)) = job.poll() {
+                result.unwrap();
+                break;
+            }
+            assert!(waited.elapsed() < Duration::from_secs(60), "it finishes");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let file = std::fs::read(&path).unwrap();
+        let at = file.windows(4).position(|w| w == b"data").unwrap();
+        let size = u32::from_le_bytes(file[at + 4..at + 8].try_into().unwrap()) as usize;
+        let data = &file[at + 8..at + 8 + size];
+        // Twelve of the bed and two of the object.
+        let frame = 14 * 3;
+        assert!(size >= frame * 40_000, "{size}");
+        let loudest = |channel: usize| {
+            data.chunks_exact(frame)
+                .map(|f| {
+                    let b = &f[channel * 3..channel * 3 + 3];
+                    let v = i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8;
+                    (f64::from(v) / 8_388_607.0).abs()
+                })
+                .fold(0.0, f64::max)
+        };
+        assert!(loudest(12) > 0.4, "{}", loudest(12));
+        assert!(loudest(13) > 0.4, "{}", loudest(13));
+        for bed in 0..12 {
+            assert!(loudest(bed) < 0.001, "{bed}: {}", loudest(bed));
+        }
+        let text = String::from_utf8_lossy(&file);
+        assert!(text.contains("typeDefinition=\"Objects\""));
+        assert!(text.contains("AP_00010017"));
+        assert!(
+            text.matches("<audioBlockFormat ").count() > 4,
+            "the object moves, so it has many blocks"
+        );
     }
 
     #[test]

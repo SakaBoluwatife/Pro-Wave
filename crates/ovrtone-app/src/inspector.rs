@@ -12,15 +12,19 @@ use crate::mixer::{
 };
 use crate::model::{Project, TrackKind, MAX_REGION_GAIN, MIN_REGION_GAIN};
 use crate::track_icons::{draw_icon, track_icon};
-use crate::widgets::{stroke, BTN_BG, TEXT, TEXT_DIM};
+use crate::widgets::{stroke, btn_bg_col, text_col, text_dim_col};
 use crate::UiState;
 use egui::{
     pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
 };
 use ovrtone_engine::FadeCurve;
 
-const PANEL_BG: Color32 = crate::theme::PANEL_BG;
-const HEADER_BG: Color32 = crate::theme::HEADER;
+fn panel_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
+fn header_bg_col() -> Color32 {
+    crate::theme::header()
+}
 const ROW_H: f32 = 20.0;
 const HEADER_H: f32 = 24.0;
 const LABEL_RIGHT: f32 = 104.0;
@@ -107,10 +111,10 @@ fn section_header(
     name: &str,
 ) -> bool {
     let resp = ui.interact(r, id(("section", key)), Sense::click());
-    g.rect_filled(r, 0.0, HEADER_BG);
+    g.rect_filled(r, 0.0, header_bg_col());
     g.line_segment(
         [r.left_bottom(), r.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x17)),
+        Stroke::new(1.0, crate::theme::gray(0x17)),
     );
     let c = pos2(r.left() + 12.0, r.center().y);
     let tri = if open {
@@ -126,13 +130,13 @@ fn section_header(
             c + vec2(-2.0, 4.0),
         ]
     };
-    g.add(Shape::convex_polygon(tri, TEXT, Stroke::NONE));
+    g.add(Shape::convex_polygon(tri, text_col(), Stroke::NONE));
     let t = g.text(
         pos2(r.left() + 24.0, r.center().y),
         Align2::LEFT_CENTER,
         title,
         FontId::proportional(12.5),
-        TEXT_DIM,
+        text_dim_col(),
     );
     let name_left = t.right() + 5.0;
     let font = FontId::proportional(12.5);
@@ -142,16 +146,16 @@ fn section_header(
         Align2::LEFT_CENTER,
         shown,
         font,
-        TEXT,
+        text_col(),
     );
     resp.clicked()
 }
 
 fn label(g: &Painter, panel_left: f32, y: f32, text: &str, enabled: bool) {
     let col = if enabled {
-        crate::theme::TEXT
+        crate::theme::text()
     } else {
-        crate::theme::TEXT_DIM.gamma_multiply(0.55)
+        crate::theme::text_dim().gamma_multiply(0.55)
     };
     g.text(
         pos2(panel_left + LABEL_RIGHT, y + ROW_H / 2.0),
@@ -170,9 +174,9 @@ fn checkbox(ui: &Ui, g: &Painter, at: Pos2, key: &str, value: bool, enabled: boo
             .interact(r.expand(3.0), id(("check", key)), Sense::click())
             .clicked();
     let border = if enabled {
-        Color32::from_gray(0x64)
+        crate::theme::gray(0x64)
     } else {
-        Color32::from_gray(0x2e)
+        crate::theme::gray(0x2e)
     };
     g.rect_filled(
         r,
@@ -180,7 +184,7 @@ fn checkbox(ui: &Ui, g: &Painter, at: Pos2, key: &str, value: bool, enabled: boo
         if value {
             crate::widgets::blue()
         } else {
-            Color32::from_gray(0x18)
+            crate::theme::gray(0x18)
         },
     );
     g.rect_stroke(r, 2.5, Stroke::new(1.0, border), StrokeKind::Inside);
@@ -207,9 +211,9 @@ fn popup(
     enabled: bool,
 ) -> Option<egui::Response> {
     let col = if enabled {
-        TEXT
+        text_col()
     } else {
-        Color32::from_gray(0x3c)
+        crate::theme::gray(0x3c)
     };
     let resp = enabled.then(|| ui.interact(r, id(("popup", key)), Sense::click()));
     let hovered = resp.as_ref().is_some_and(|r| r.hovered());
@@ -217,11 +221,11 @@ fn popup(
         r,
         3.0,
         if hovered {
-            Color32::from_gray(0x31)
+            crate::theme::gray(0x31)
         } else if enabled {
-            BTN_BG
+            btn_bg_col()
         } else {
-            Color32::from_gray(0x25)
+            crate::theme::gray(0x25)
         },
     );
     g.text(
@@ -261,11 +265,11 @@ fn drag_value(
     enabled: bool,
 ) -> Option<i32> {
     let col = if enabled {
-        TEXT
+        text_col()
     } else {
-        Color32::from_gray(0x3c)
+        crate::theme::gray(0x3c)
     };
-    g.rect_filled(r, 3.0, Color32::from_gray(0x1a));
+    g.rect_filled(r, 3.0, crate::theme::gray(0x1a));
     g.text(
         pos2(r.left() + 6.0, r.center().y),
         Align2::LEFT_CENTER,
@@ -396,14 +400,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
     let panel = ui.available_rect_before_wrap();
     ui.allocate_rect(panel, Sense::hover());
     let g = ui.painter_at(panel);
-    g.rect_filled(panel, 0.0, PANEL_BG);
+    g.rect_filled(panel, 0.0, panel_bg_col());
     let left = panel.left();
     let w = panel.width();
 
-    if ui
-        .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pt| panel.contains(pt))
-    {
+    if crate::widgets::wheel_pointer(ui).is_some_and(|pt| panel.contains(pt)) {
         s.inspector.scroll_y -= ui.input(|i| i.smooth_scroll_delta.y);
     }
     let mut y = panel.top() - s.inspector.scroll_y;
@@ -633,13 +634,13 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
                 c + vec2(-2.0, 3.5),
             ]
         };
-        g.add(Shape::convex_polygon(tri, TEXT_DIM, Stroke::NONE));
+        g.add(Shape::convex_polygon(tri, text_dim_col(), Stroke::NONE));
         g.text(
             pos2(left + 22.0, more.center().y),
             Align2::LEFT_CENTER,
             tr("More"),
             FontId::proportional(11.5),
-            TEXT_DIM,
+            text_dim_col(),
         );
         y += ROW_H;
         if s.inspector.more_open {
@@ -762,7 +763,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             Align2::LEFT_CENTER,
             &channel,
             FontId::proportional(11.5),
-            TEXT,
+            text_col(),
         );
         y += ROW_H;
         if audio {
@@ -1047,6 +1048,18 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             send_rows_for(p, &keys),
             s.mixer.fx_scroll,
         );
+        // The wheel over the insert slots goes through them when some are out of sight.
+        if r.fx_total > r.fx_rows {
+            let slots = Rect::from_min_max(
+                pos2(left, r.fx),
+                pos2(left + w, r.fx + r.fx_rows as f32 * 17.0),
+            );
+            if crate::widgets::wheel_pointer(ui).is_some_and(|pt| slots.contains(pt)) {
+                let d = ui.input(|i| i.smooth_scroll_delta.y);
+                let last = (r.fx_total - r.fx_rows) as f32;
+                s.mixer.fx_scroll = (s.mixer.fx_scroll + d / 17.0).clamp(0.0, last);
+            }
+        }
         let sw = (w - 12.0) / 2.0;
         for (n, key) in keys.iter().enumerate() {
             let strip = Rect::from_min_size(

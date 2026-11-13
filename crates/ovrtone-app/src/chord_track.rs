@@ -72,20 +72,20 @@ pub fn show(
     let rename_id = egui::Id::unique("chord_track_rename");
     let grab_id = egui::Id::unique("chord_track_grab");
     let gh = ui.painter_at(header);
-    gh.rect_filled(header, 0.0, crate::theme::PANEL_BG);
+    gh.rect_filled(header, 0.0, crate::theme::panel_bg());
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),
         Align2::LEFT_CENTER,
         "Chords",
         FontId::proportional(13.0),
-        Color32::from_gray(0xdc),
+        crate::theme::gray(0xdc),
     );
     let g = ui.painter_at(lane);
-    g.rect_filled(lane, 0.0, crate::theme::LANE);
+    g.rect_filled(lane, 0.0, crate::theme::lane());
     let lane_resp = ui.interact(lane, egui::Id::unique("chord_track_lane"), Sense::click());
     if lane_resp.double_clicked() {
         if let Some(pt) = lane_resp.interact_pointer_pos() {
@@ -151,7 +151,7 @@ pub fn show(
         g.rect_filled(block, 3.0, fill);
         g.line_segment(
             [pos2(x0, lane.top()), pos2(x0, lane.bottom())],
-            Stroke::new(1.5, Color32::from_gray(0xc8)),
+            Stroke::new(1.5, crate::theme::gray(0xc8)),
         );
         let text = g.layout_no_wrap(
             p.chords[i].name.clone(),
@@ -226,7 +226,7 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x0e)),
+        Stroke::new(1.0, crate::theme::gray(0x0e)),
     );
 }
 

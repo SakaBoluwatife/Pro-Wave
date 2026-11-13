@@ -18,15 +18,19 @@ use crate::pattern::{
     DEFAULT_VELOCITY, MAX_ROWS,
 };
 use crate::piano_roll::{velocity_color, Audition};
-use crate::widgets::{blue, context_menu, TEXT, TEXT_DIM};
+use crate::widgets::{blue, context_menu, text_col, text_dim_col};
 use crate::UiState;
 use egui::{
     pos2, vec2, Align, Align2, Color32, FontId, Layout, Rect, Sense, Stroke, StrokeKind, Ui,
     UiBuilder,
 };
 
-const BG: Color32 = crate::theme::GRID_BG;
-const STRIP_BG: Color32 = crate::theme::TOOLBAR;
+fn bg_col() -> Color32 {
+    crate::theme::grid_bg()
+}
+fn strip_bg_col() -> Color32 {
+    crate::theme::toolbar()
+}
 const STRIP_H: f32 = 32.0;
 const ROW_H: f32 = 24.0;
 const LABEL_W: f32 = 124.0;
@@ -109,7 +113,7 @@ pub fn is_drum_track(t: &Track) -> bool {
 /// Draws the editor for the Pattern or Drummer region `ri` of track `ti` in `body`.
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize, body: Rect) {
     let g = ui.painter_at(body);
-    g.rect_filled(body, 0.0, BG);
+    g.rect_filled(body, 0.0, bg_col());
     let drummer = matches!(
         p.tracks[ti].regions[ri]
             .generated
@@ -127,10 +131,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: usize,
 fn strip(ui: &Ui, body: Rect) -> Rect {
     let strip = Rect::from_min_size(body.min, vec2(body.width(), STRIP_H));
     let g = ui.painter_at(strip);
-    g.rect_filled(strip, 0.0, STRIP_BG);
+    g.rect_filled(strip, 0.0, strip_bg_col());
     g.line_segment(
         [strip.left_bottom(), strip.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     strip
 }
@@ -375,10 +379,7 @@ fn show_pattern(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
     let cw = ((grid.width() - 12.0) / steps as f32).clamp(10.0, 64.0);
     let v = &mut s.steps;
     let overflow = (pat.rows.len() as f32 * ROW_H - area.height() + 8.0).max(0.0);
-    if ui
-        .input(|i| i.pointer.hover_pos())
-        .is_some_and(|pt| area.contains(pt))
-    {
+    if crate::widgets::wheel_pointer(ui).is_some_and(|pt| area.contains(pt)) {
         v.scroll_y -= ui.input(|i| i.smooth_scroll_delta.y);
     }
     v.scroll_y = v.scroll_y.clamp(0.0, overflow);
@@ -400,18 +401,18 @@ fn show_pattern(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
             continue;
         }
         let label = Rect::from_min_size(pos2(area.left(), y), vec2(LABEL_W - 4.0, ROW_H - 1.0));
-        g.rect_filled(label, 3.0, Color32::from_gray(0x25));
+        g.rect_filled(label, 3.0, crate::theme::gray(0x25));
         g.text(
             label.left_center() + vec2(8.0, 0.0),
             Align2::LEFT_CENTER,
             row_name(row.pitch, drums),
             FontId::proportional(12.0),
-            TEXT,
+            text_col(),
         );
         for k in 0..steps {
             let c = cell(r, k).shrink(1.0);
             let shade = if (k / per_beat) % 2 == 0 { 0x38 } else { 0x30 };
-            g.rect_filled(c, 2.0, Color32::from_gray(shade));
+            g.rect_filled(c, 2.0, crate::theme::gray(shade));
             let vel = row.steps[k];
             if vel > 0 {
                 let (level, color) = match mode {
@@ -462,7 +463,7 @@ fn show_pattern(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
             let (a, b) = if bar_line { (0xa0, 1.5) } else { (0x58, 1.0) };
             g.line_segment(
                 [pos2(x, area.top()), pos2(x, area.bottom())],
-                Stroke::new(b, Color32::from_gray(a)),
+                Stroke::new(b, crate::theme::gray(a)),
             );
         }
     }
@@ -706,10 +707,10 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
 
     // ---- the controls on the left
     let panel = Rect::from_min_size(body.min, vec2(PANEL_W, body.height()));
-    g.rect_filled(panel, 0.0, STRIP_BG);
+    g.rect_filled(panel, 0.0, strip_bg_col());
     g.line_segment(
         [panel.right_top(), panel.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     let pad = Rect::from_min_size(
         pos2(panel.left() + 14.0, panel.top() + 12.0),
@@ -797,14 +798,14 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
             pos2(lanes.left(), lanes.top() + i as f32 * lane_h),
             vec2(lanes.width() - 8.0, lane_h - 2.0),
         );
-        lg.rect_filled(lane, 3.0, Color32::from_gray(0x1c));
+        lg.rect_filled(lane, 3.0, crate::theme::gray(0x1c));
         let on = d.parts & part != 0;
         lg.text(
             lane.left_center() + vec2(8.0, 0.0),
             Align2::LEFT_CENTER,
             part_name(part),
             FontId::proportional(12.0),
-            if on { TEXT } else { TEXT_DIM },
+            if on { text_col() } else { text_dim_col() },
         );
     }
     let lg = lg.with_clip_rect(grid.intersect(lanes));
@@ -812,7 +813,7 @@ fn show_drummer(ui: &mut Ui, p: &mut Project, s: &mut UiState, ti: usize, ri: us
         let x = grid.left() + ((bar.start - origin) as f32) * beat_px;
         lg.line_segment(
             [pos2(x, lanes.top()), pos2(x, lanes.top() + lane_h * 6.0)],
-            Stroke::new(1.0, Color32::from_gray(0x30)),
+            Stroke::new(1.0, crate::theme::gray(0x30)),
         );
     }
     for n in &p.tracks[ti].regions[ri].notes {
@@ -866,10 +867,10 @@ fn xy_pad(
     d: &mut DrummerParams,
     (ti, ri): (usize, usize),
 ) -> bool {
-    g.rect_filled(pad, 4.0, crate::theme::BORDER);
+    g.rect_filled(pad, 4.0, crate::theme::border());
     for k in 1..4 {
         let t = k as f32 / 4.0;
-        let line = Stroke::new(1.0, Color32::from_gray(0x1c));
+        let line = Stroke::new(1.0, crate::theme::gray(0x1c));
         g.line_segment(
             [
                 pos2(pad.left() + pad.width() * t, pad.top()),
@@ -888,7 +889,7 @@ fn xy_pad(
     g.rect_stroke(
         pad,
         4.0,
-        Stroke::new(1.0, Color32::from_gray(0x2b)),
+        Stroke::new(1.0, crate::theme::gray(0x2b)),
         StrokeKind::Inside,
     );
     let small = FontId::proportional(10.5);
@@ -897,28 +898,28 @@ fn xy_pad(
         Align2::LEFT_TOP,
         tr("Loud"),
         small.clone(),
-        TEXT_DIM,
+        text_dim_col(),
     );
     g.text(
         pad.left_bottom() + vec2(5.0, -3.0),
         Align2::LEFT_BOTTOM,
         tr("Soft"),
         small.clone(),
-        TEXT_DIM,
+        text_dim_col(),
     );
     g.text(
         pad.left_bottom() + vec2(0.0, 3.0),
         Align2::LEFT_TOP,
         tr("Simple"),
         small.clone(),
-        TEXT_DIM,
+        text_dim_col(),
     );
     g.text(
         pad.right_bottom() + vec2(0.0, 3.0),
         Align2::RIGHT_TOP,
         tr("Complex"),
         small,
-        TEXT_DIM,
+        text_dim_col(),
     );
     let resp = ui.interact(
         pad,

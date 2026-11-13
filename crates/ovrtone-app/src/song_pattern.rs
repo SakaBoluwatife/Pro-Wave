@@ -23,6 +23,9 @@ pub struct Lane {
     /// The pitch the step buttons play.
     pub step_pitch: u8,
     pub notes: Vec<Note>,
+    /// Each step's pan, -64 (left) to 63 (right), sent to the instrument as controller 10 at the
+    /// step. Empty, or shorter than the pattern, for centred steps.
+    pub pan: Vec<i8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +54,7 @@ impl SongPattern {
             channel,
             step_pitch: DEFAULT_STEP_PITCH,
             notes: Vec::new(),
+            pan: Vec::new(),
         });
         let last = self.lanes.len() - 1;
         &mut self.lanes[last]
@@ -58,6 +62,47 @@ impl SongPattern {
 }
 
 impl Lane {
+    /// Step `step`'s pan, -64..=63.
+    pub fn pan_of(&self, step: usize) -> i8 {
+        self.pan.get(step).copied().unwrap_or(0)
+    }
+
+    pub fn set_pan(&mut self, step: usize, pan: i8) {
+        if self.pan.len() <= step {
+            self.pan.resize(step + 1, 0);
+        }
+        self.pan[step] = pan.clamp(-64, 63);
+        while self.pan.last() == Some(&0) {
+            self.pan.pop();
+        }
+    }
+
+    /// The pan of every step that starts a note, as controller 10 just before the note, looped
+    /// over `region_len` beats. None when no step is panned.
+    fn pan_controls(&self, steps: usize, region_len: f32) -> Vec<crate::model::Control> {
+        if self.pan.iter().all(|v| *v == 0) {
+            return Vec::new();
+        }
+        let pattern_len = steps as f32 * STEP_BEATS;
+        let mut out = Vec::new();
+        let mut offset = 0.0;
+        while pattern_len > 0.0 && offset < region_len {
+            for step in 0..steps {
+                let at = step as f32 * STEP_BEATS;
+                let starts = self.notes.iter().any(|n| (n.start - at).abs() <= ON_STEP);
+                if starts && offset + at < region_len {
+                    out.push(crate::model::Control {
+                        start: offset + at,
+                        num: 10,
+                        val: (64 + i16::from(self.pan_of(step))).clamp(0, 127) as u8,
+                    });
+                }
+            }
+            offset += pattern_len;
+        }
+        out
+    }
+
     pub fn step_is_on(&self, step: usize) -> bool {
         let at = step as f32 * STEP_BEATS;
         self.notes
@@ -222,14 +267,29 @@ pub fn push(p: &mut Project, id: u64) {
             if p.tracks[t].regions[r].params.pattern != id {
                 continue;
             }
+            // Clips made before they were named after their track take its name.
+            if p.tracks[t].regions[r].name == pattern.name {
+                p.tracks[t].regions[r].name = p.tracks[t].name.clone();
+            }
             let len = p.region_len_beats(&p.tracks[t].regions[r]) as f32;
             let lane = pattern.lane(channel).map_or(&[][..], |l| &l.notes[..]);
             let expected = sorted(looped(lane, pattern.len_beats(), len));
+            let pans = pattern
+                .lane(channel)
+                .map_or_else(Vec::new, |l| l.pan_controls(pattern.steps, len));
             let region = &mut p.tracks[t].regions[r];
             region.params.pattern_len = len;
             region.params.pattern_color = Some(pattern.color);
             if sorted(region.notes.clone()) != expected {
                 region.notes = expected;
+                p.song_rev += 1;
+            }
+            // The steps' pans: the region's controller 10 is the pattern's.
+            let had: Vec<_> = region.controls.iter().filter(|c| c.num == 10).copied().collect();
+            if had != pans {
+                region.controls.retain(|c| c.num != 10);
+                region.controls.extend(pans);
+                region.controls.sort_by(|a, b| a.start.total_cmp(&b.start));
                 p.song_rev += 1;
             }
         }
@@ -317,7 +377,9 @@ fn has_links(t: &crate::model::Track) -> bool {
 /// Puts pattern `id` on track `t` at `bar` (counted from 1). Returns the region.
 pub fn place_on(p: &mut Project, id: u64, t: usize, bar: f32) -> Option<usize> {
     let pattern = p.patterns.iter().find(|x| x.id == id)?;
-    let (name, len_beats) = (pattern.name.clone(), f64::from(pattern.len_beats()));
+    // Named after its track, as a channel clip on the Playlist (the colour says the pattern).
+    let len_beats = f64::from(pattern.len_beats());
+    let name = p.tracks.get(t).map_or_else(String::new, |x| x.name.clone());
     let channel = channel_of(p, t);
     let bar_len = p.bar_len_at(p.bar_to_beats(f64::from(bar) - 1.0)).max(1e-3);
     let r = p.add_midi_region(t, bar)?;
@@ -330,6 +392,53 @@ pub fn place_on(p: &mut Project, id: u64, t: usize, bar: f32) -> Option<usize> {
     }
     push(p, id);
     Some(r)
+}
+
+/// Keeps the Playlist in step with the rack, as FL Studio's pattern clips do: every channel of
+/// pattern `id` that has notes (and `also`, a track to add even while it is empty) gets a region
+/// wherever the pattern is placed, at the same bar. A pattern placed nowhere yet is placed at
+/// `bar`. Returns how many regions were made.
+pub fn fill_placements(p: &mut Project, id: u64, bar: f32, also: Option<usize>) -> usize {
+    let Some(pattern) = p.patterns.iter().find(|x| x.id == id) else {
+        return 0;
+    };
+    let used: Vec<u64> = pattern
+        .lanes
+        .iter()
+        .filter(|l| !l.notes.is_empty())
+        .map(|l| l.channel)
+        .collect();
+    let mut starts: Vec<f32> = p
+        .tracks
+        .iter()
+        .flat_map(|t| &t.regions)
+        .filter(|r| r.params.pattern == id)
+        .map(|r| r.start_bar)
+        .collect();
+    starts.sort_by(f32::total_cmp);
+    starts.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+    if starts.is_empty() {
+        starts.push(bar);
+    }
+    let tracks: Vec<usize> = (0..p.tracks.len())
+        .filter(|&t| {
+            Some(t) == also
+                || (p.tracks[t].params.channel != 0 && used.contains(&p.tracks[t].params.channel))
+        })
+        .collect();
+    let mut made = 0;
+    for t in tracks {
+        for &start in &starts {
+            let there = p.tracks[t]
+                .regions
+                .iter()
+                .any(|r| r.params.pattern == id && (r.start_bar - start).abs() < 1e-3);
+            if !there && place_on(p, id, t, start).is_some() {
+                made += 1;
+            }
+        }
+    }
+    made
 }
 
 /// Places pattern `id` at `bar`: a region on every channel it has notes for. Returns how many.
@@ -383,6 +492,7 @@ mod tests {
         let mut lane = Lane {
             channel: 1,
             step_pitch: 60,
+            pan: Vec::new(),
             notes: vec![Note {
                 start: 0.1,
                 len: 0.5,

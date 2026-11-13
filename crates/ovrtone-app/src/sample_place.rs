@@ -25,7 +25,11 @@ pub struct SampleDrop {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
+    /// A one-shot: a new channel with a hit at the bar it was let go on.
+    OneShot,
     AudioClip,
+    /// A new channel in the Channel Rack that plays it, with nothing placed yet.
+    ChannelRack,
     PlayInPianoRoll,
     StepPattern,
     /// As the instrument of the track it was dropped on.
@@ -133,6 +137,18 @@ pub fn place(
 ) -> Result<Option<(usize, usize)>, String> {
     let bar = drop.bar as f32;
     match choice {
+        Placement::OneShot => place_one_shot(p, &drop.path, bar).map(Some),
+        Placement::ChannelRack => {
+            // A channel of the pattern on show, on the Playlist at once (where the pattern is
+            // already placed, or at the bar it was let go on), with the rack open on it.
+            let t = new_sampler_track(p, &drop.path)?;
+            crate::song_pattern::channel_of(p, t);
+            let id = s.rack.current_pattern(p);
+            crate::song_pattern::fill_placements(p, id, bar, Some(t));
+            p.selected_track = t;
+            s.rack.open = true;
+            Ok(None)
+        }
         Placement::AudioClip => {
             crate::import::import_audio_at(p, &drop.path, ctx, drop.bar, drop.track)
                 .map_err(|e| format!("cannot import {}: {e}", drop.path.display()))?;
@@ -183,6 +199,17 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
         .and_then(|t| p.tracks.get(t))
         .filter(|t| t.kind == TrackKind::Instrument)
         .map(|t| t.name.clone());
+    let replaces = drop.track.is_some_and(|t| holds_sample(p, t));
+    // Whether it is a hit, read once per sample (it opens the file).
+    let key = egui::Id::unique(("sample_place_one_shot", drop.path.clone()));
+    let one_shot = match ctx.data(|d| d.get_temp::<bool>(key)) {
+        Some(v) => v,
+        None => {
+            let v = is_one_shot(&drop.path);
+            ctx.data_mut(|d| d.insert_temp(key, v));
+            v
+        }
+    };
     let mut choice = None;
     let area = egui::Area::new(egui::Id::unique("sample_place_menu"))
         .order(egui::Order::Foreground)
@@ -197,15 +224,20 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
                         choice = Some(what);
                     }
                 };
+                if one_shot {
+                    item(ui, &format!("Hit at bar {:.0} (new channel)", drop.bar), Placement::OneShot);
+                }
                 item(ui, "Audio clip on the timeline", Placement::AudioClip);
-                item(
-                    ui,
-                    "New track: play it in the piano roll",
-                    Placement::PlayInPianoRoll,
-                );
-                item(ui, "New track: step pattern", Placement::StepPattern);
+                item(ui, "New channel in the Channel Rack", Placement::ChannelRack);
+                item(ui, "New channel with a step pattern", Placement::StepPattern);
+                item(ui, "New channel: play it in the Piano Roll", Placement::PlayInPianoRoll);
                 if let Some(track) = &on_instrument {
-                    item(ui, &format!("Play it on {track}"), Placement::OnThisTrack);
+                    let label = if replaces {
+                        format!("Replace the sound on {track}")
+                    } else {
+                        format!("Play it on {track}")
+                    };
+                    item(ui, &label, Placement::OnThisTrack);
                 }
             });
         });

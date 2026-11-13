@@ -10,9 +10,15 @@ use ovrtone_host::sampler_params as x;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe6);
-const DIM: Color32 = Color32::from_rgb(0x96, 0x96, 0x9a);
-const PANEL: Color32 = Color32::from_rgb(0x1f, 0x20, 0x23);
+fn text_col() -> Color32 {
+    crate::theme::grey_rgb(0xe6, 0xe6, 0xe6)
+}
+fn dim_col() -> Color32 {
+    crate::theme::grey_rgb(0x96, 0x96, 0x9a)
+}
+fn panel_col() -> Color32 {
+    crate::theme::grey_rgb(0x1f, 0x20, 0x23)
+}
 const WAVE: Color32 = Color32::from_rgb(0x5f, 0xd0, 0x80);
 const KNOB_W: f32 = 62.0;
 const WIDTH: f32 = 540.0;
@@ -93,14 +99,14 @@ fn knob(
         Align2::CENTER_CENTER,
         name,
         FontId::proportional(10.5),
-        DIM,
+        dim_col(),
     );
     g.text(
         pos2(r.center().x, r.top() + 59.0),
         Align2::CENTER_CENTER,
         shown,
         FontId::proportional(10.5),
-        TEXT,
+        text_col(),
     );
     if resp.double_clicked() {
         return Some(default);
@@ -133,7 +139,7 @@ fn wave_view(
 ) -> (Option<f32>, Option<f32>) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::hover());
     let g = ui.painter();
-    g.rect_filled(r, 4.0, Color32::from_rgb(0x14, 0x15, 0x17));
+    g.rect_filled(r, 4.0, crate::theme::grey_rgb(0x14, 0x15, 0x17));
     let mid = r.center().y;
     let top = levels.iter().fold(0.0f32, |m, v| m.max(*v)).max(1e-3);
     let count = levels.len().max(1) as f32;
@@ -188,7 +194,7 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
             if key == root {
                 crate::theme::accent()
             } else {
-                Color32::from_gray(0xd8)
+                crate::theme::gray(0xd8)
             },
         );
         spots.push((key, spot));
@@ -210,7 +216,7 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
             if key == root {
                 crate::theme::accent()
             } else {
-                Color32::from_gray(0x22)
+                crate::theme::gray(0x22)
             },
         );
         blacks.push((key, spot));
@@ -227,7 +233,7 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
 fn envelope_view(ui: &mut egui::Ui, attack: f32, decay: f32, sustain: f32, release: f32) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::hover());
     let g = ui.painter();
-    g.rect_filled(r, 4.0, Color32::from_rgb(0x14, 0x15, 0x17));
+    g.rect_filled(r, 4.0, crate::theme::grey_rgb(0x14, 0x15, 0x17));
     let (a, d, rel) = (x::seconds(attack), x::seconds(decay), x::seconds(release));
     let hold = 0.5f32;
     let total = (a + d + hold + rel).max(0.1);
@@ -279,7 +285,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
         .open(&mut open)
         .resizable(false)
         .default_width(WIDTH)
-        .frame(egui::Frame::window(&ctx.global_style()).fill(PANEL))
+        .frame(egui::Frame::window(&ctx.global_style()).fill(panel_col()))
         .show(ctx, |ui| {
             ui.style_mut().visuals = egui::Visuals::dark();
             ui.set_width(WIDTH);
@@ -372,7 +378,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
                     ui.add_space(6.0);
                     let root = x::root_key(at(&values, x::ROOT));
                     ui.colored_label(
-                        DIM,
+                        dim_col(),
                         format!(
                             "Root key: {}. Click a key: the sample plays as recorded on that note.",
                             key_name(root)
@@ -416,13 +422,13 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
                         }
                     });
                     ui.colored_label(
-                        DIM,
+                        dim_col(),
                         "With Play to end on, the sample plays through whatever the note's length.",
                     );
                 }
             }
             ui.add_space(4.0);
-            ui.colored_label(DIM, path.display().to_string());
+            ui.colored_label(dim_col(), path.display().to_string());
         });
     // A sound let go on the window takes the place of this one.
     if let (Some(window), Some(drag)) = (

@@ -16,8 +16,12 @@ use egui::{pos2, Align2, Color32, FontId, Rect, Sense, Stroke, Ui};
 /// Height of the Signature track, in points.
 pub const HEIGHT: f32 = 24.0;
 
-const BG: Color32 = crate::theme::LANE;
-const HEADER_BG: Color32 = crate::theme::PANEL_BG;
+fn bg_col() -> Color32 {
+    crate::theme::lane()
+}
+fn header_bg_col() -> Color32 {
+    crate::theme::panel_bg()
+}
 const BLOCK: Color32 = Color32::from_rgb(0x5a, 0x6a, 0x8c);
 const BLOCK_EDGE: Color32 = Color32::from_rgb(0x9a, 0xaa, 0xcc);
 
@@ -64,17 +68,17 @@ pub fn show(
 
     // ---- header
     let gh = ui.painter_at(header);
-    gh.rect_filled(header, 0.0, HEADER_BG);
+    gh.rect_filled(header, 0.0, header_bg_col());
     gh.line_segment(
         [header.left_bottom(), header.right_bottom()],
-        Stroke::new(1.0, crate::theme::BORDER),
+        Stroke::new(1.0, crate::theme::border()),
     );
     gh.text(
         pos2(header.left() + 12.0, header.center().y),
         Align2::LEFT_CENTER,
         tr("Signature"),
         FontId::proportional(13.0),
-        Color32::from_gray(0xdc),
+        crate::theme::gray(0xdc),
     );
     let (num, den) = p.signature_of_bar(p.beats_to_bar(p.position_beats) as u32);
     gh.text(
@@ -82,12 +86,12 @@ pub fn show(
         Align2::RIGHT_CENTER,
         format!("{num}/{den}"),
         FontId::proportional(11.0),
-        Color32::from_gray(0xa8),
+        crate::theme::gray(0xa8),
     );
 
     // ---- lane: double-click an empty spot to add a change
     let g = ui.painter_at(lane);
-    g.rect_filled(lane, 0.0, BG);
+    g.rect_filled(lane, 0.0, bg_col());
     let lane_resp = ui.interact(
         lane,
         egui::Id::unique("signature_track_lane"),
@@ -246,6 +250,6 @@ pub fn show(
     }
     g.line_segment(
         [lane.left_bottom(), lane.right_bottom()],
-        Stroke::new(1.0, Color32::from_gray(0x0e)),
+        Stroke::new(1.0, crate::theme::gray(0x0e)),
     );
 }

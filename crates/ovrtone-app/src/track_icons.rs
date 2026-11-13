@@ -269,16 +269,40 @@ fn rot(pts: &[(f32, f32)], pivot: (f32, f32), deg: f32, k: f32) -> Vec<(f32, f32
 /// The icon on a track: the two plain ones, the note and the waveform, take the track's colour.
 /// The illustrated ones keep their own, as they would look wrong in another.
 pub fn draw_tinted(g: &Painter, r: Rect, kind: IconKind, color: Color32) {
+    // A rounded square tile, as Logic has: in the theme's colours with a touch of the track's, a
+    // fine edge and a lighter top half, the picture inside it.
+    let side = r.width().min(r.height());
+    let tile = Rect::from_center_size(r.center(), vec2(side, side));
+    let round = side * 0.24;
+    let base = crate::theme::gray(0x2c);
+    g.rect_filled(tile, round, mix(base, color, 0.16));
+    let top = Rect::from_min_max(tile.min, egui::pos2(tile.right(), tile.center().y));
+    g.rect_filled(
+        top,
+        egui::CornerRadius {
+            nw: round as u8,
+            ne: round as u8,
+            sw: 0,
+            se: 0,
+        },
+        Color32::from_white_alpha(10),
+    );
+    g.rect_stroke(
+        tile,
+        round,
+        Stroke::new(1.0, mix(base, color, 0.45)),
+        egui::StrokeKind::Inside,
+    );
+    let inner = tile.shrink(side * 0.15);
     let pen = Pen {
         g,
-        c: r.center(),
-        s: (r.width().min(r.height()) / 36.0).max(0.2),
+        c: inner.center(),
+        s: (inner.width().min(inner.height()) / 36.0).max(0.2),
     };
-    let dark = rgb(color.r() / 4, color.g() / 4, color.b() / 4);
     match kind {
-        IconKind::Note => note_tile(&pen, color, dark),
+        IconKind::Note => note_tile(&pen, color, Color32::TRANSPARENT),
         IconKind::Waveform => waveform(&pen, color),
-        _ => draw_icon(g, r, kind),
+        _ => draw_icon(g, inner, kind),
     }
 }
 

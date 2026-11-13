@@ -528,6 +528,7 @@ pub fn import(p: &mut Project, file: &MidiFile) -> usize {
             params: RegionParams::default(),
             auto: Vec::new(),
             generated: None,
+            gain_line: Vec::new(),
         });
         made += 1;
     }

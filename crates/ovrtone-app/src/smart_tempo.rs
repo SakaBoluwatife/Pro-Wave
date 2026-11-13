@@ -529,7 +529,7 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
             let g = ui.painter_at(rect);
-            g.rect_filled(rect, 4.0, Color32::from_rgb(0x13, 0x13, 0x15));
+            g.rect_filled(rect, 4.0, crate::theme::grey_rgb(0x13, 0x13, 0x15));
             if let Some(peaks) = &peaks {
                 let mid = rect.center().y;
                 let h = rect.height() * 0.45;

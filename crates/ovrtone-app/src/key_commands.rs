@@ -492,6 +492,27 @@ pub fn shortcut_of(label: &str) -> Option<egui::KeyboardShortcut> {
     Some(egui::KeyboardShortcut::new(m, key))
 }
 
+/// Whether the Piano Roll uses `key` with `mods` itself (its tools, note edits and moves), so a
+/// key command with them waits while the pointer is over it. Every other key command works there.
+fn piano_roll_claims(key: Key, mods: Modifiers) -> bool {
+    let (ctrl, alt, shift) = (mods.command || mods.ctrl, mods.alt, mods.shift);
+    let plain = !ctrl && !alt;
+    match key {
+        Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight | Key::Delete
+        | Key::Backspace | Key::Escape | Key::PageUp | Key::PageDown | Key::Insert => true,
+        // Its tools, as in FL Studio.
+        Key::P | Key::B | Key::D | Key::T | Key::C | Key::E | Key::Z | Key::Y | Key::S => {
+            plain || (ctrl && !alt && matches!(key, Key::D | Key::B | Key::C))
+        }
+        Key::R | Key::M | Key::Q | Key::I => {
+            (plain && shift) || (ctrl && matches!(key, Key::Q)) || (alt && key == Key::M)
+        }
+        Key::A | Key::L | Key::U | Key::G | Key::X => ctrl && !alt,
+        Key::V => ctrl || alt,
+        _ => false,
+    }
+}
+
 /// Runs what this frame's keys ask for.
 pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     if ctx.egui_wants_keyboard_input() || s.bounce.busy() {
@@ -512,16 +533,17 @@ pub fn run(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             command.action,
             Action::Menu("Record" | "Capture Recording" | "Discard Recording")
         );
-        if s.piano_focus && !screenset && !recording {
+        let Some((key, mods)) = s.keys.key_of(index) else {
+            continue;
+        };
+        // Over the Piano Roll, only the keys it uses itself are left to it.
+        if s.piano_focus && !screenset && !recording && piano_roll_claims(key, mods) {
             continue;
         }
         // While the computer keyboard plays notes, plain numbers are its own.
         if s.typing.on && matches!(command.action, Action::RecallScreenset(_)) {
             continue;
         }
-        let Some((key, mods)) = s.keys.key_of(index) else {
-            continue;
-        };
         let pressed =
             ctx.input_mut(|i| i.modifiers.matches_exact(mods) && i.consume_key(mods, key));
         if pressed {

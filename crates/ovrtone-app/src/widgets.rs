@@ -5,9 +5,23 @@ use egui::{
     Ui,
 };
 
-pub const TEXT: Color32 = crate::theme::TEXT;
-pub const TEXT_DIM: Color32 = crate::theme::TEXT_DIM;
-pub const BTN_BG: Color32 = crate::theme::BUTTON;
+/// Where the pointer is, if it is on this panel for the mouse wheel: over a part of it that shows, and
+/// with no window or menu on top. A panel going by the rectangle alone would scroll behind a window.
+pub fn wheel_pointer(ui: &Ui) -> Option<Pos2> {
+    let at = ui.input(|i| i.pointer.hover_pos())?;
+    let on_top = ui.ctx().layer_id_at(at);
+    (ui.clip_rect().contains(at) && on_top.is_none_or(|layer| layer == ui.layer_id())).then_some(at)
+}
+
+pub fn text_col() -> Color32 {
+    crate::theme::text()
+}
+pub fn text_dim_col() -> Color32 {
+    crate::theme::text_dim()
+}
+pub fn btn_bg_col() -> Color32 {
+    crate::theme::button()
+}
 /// The accent colour.
 pub fn blue() -> Color32 {
     crate::theme::accent()
@@ -64,13 +78,13 @@ pub fn menu_title(
 ) -> (Response, f32) {
     let label = tr(label);
     let font = FontId::proportional(13.0);
-    let w = g.layout_no_wrap(label.into(), font.clone(), TEXT).size().x + 22.0;
+    let w = g.layout_no_wrap(label.into(), font.clone(), text_col()).size().x + 22.0;
     let r = Rect::from_min_size(pos2(left, cy - 10.0), vec2(w, 20.0));
     let resp = ui.interact(r, id, Sense::click());
     let fill = if resp.hovered() {
-        crate::theme::BUTTON_HOVERED
+        crate::theme::button_hovered()
     } else {
-        crate::theme::BUTTON
+        crate::theme::button()
     };
     g.rect_filled(r, 4.0, fill);
     g.text(
@@ -78,7 +92,7 @@ pub fn menu_title(
         Align2::LEFT_CENTER,
         label,
         font,
-        TEXT,
+        text_col(),
     );
     let c = pos2(r.right() - 8.0, cy + 1.0);
     g.add(Shape::line(
@@ -87,7 +101,7 @@ pub fn menu_title(
             c + vec2(0.0, 1.5),
             c + vec2(3.0, -1.5),
         ],
-        stroke(TEXT_DIM),
+        stroke(text_dim_col()),
     ));
     (resp, w)
 }
@@ -99,9 +113,9 @@ pub fn popup_button(ui: &Ui, g: &Painter, rect: Rect, id: Id, text: &str) -> Res
         rect,
         4.0,
         if resp.hovered() {
-            Color32::from_gray(0x33)
+            crate::theme::gray(0x33)
         } else {
-            BTN_BG
+            btn_bg_col()
         },
     );
     // Long values (some languages) end in "…" instead of running under the arrows.
@@ -112,7 +126,7 @@ pub fn popup_button(ui: &Ui, g: &Painter, rect: Rect, id: Id, text: &str) -> Res
         Align2::LEFT_CENTER,
         shown,
         font,
-        TEXT,
+        text_col(),
     );
     let c = pos2(rect.right() - 9.0, rect.center().y);
     g.add(Shape::line(
@@ -121,11 +135,11 @@ pub fn popup_button(ui: &Ui, g: &Painter, rect: Rect, id: Id, text: &str) -> Res
             c + vec2(0.0, -4.0),
             c + vec2(2.5, -1.5),
         ],
-        stroke(TEXT),
+        stroke(text_col()),
     ));
     g.add(Shape::line(
         vec![c + vec2(-2.5, 1.5), c + vec2(0.0, 4.0), c + vec2(2.5, 1.5)],
-        stroke(TEXT),
+        stroke(text_col()),
     ));
     resp
 }
@@ -138,7 +152,7 @@ pub fn back_chevron(g: &Painter, at: egui::Pos2) {
             at + vec2(-2.0, 0.0),
             at + vec2(3.0, 5.0),
         ],
-        stroke(TEXT_DIM),
+        stroke(text_dim_col()),
     ));
 }
 
@@ -195,12 +209,12 @@ pub fn slider_h(
     let cy = rect.center().y;
     let v = value.clamp(0.0, 1.0);
     let groove = Rect::from_min_max(pos2(rect.left(), cy - 2.0), pos2(rect.right(), cy + 2.0));
-    g.rect_filled(groove, 2.0, crate::theme::BORDER);
+    g.rect_filled(groove, 2.0, crate::theme::border());
     let knob = pos2(rect.left() + 6.0 + (rect.width() - 12.0) * v, cy);
     let (fill, edge) = if enabled {
-        (Color32::from_gray(0xc4), Color32::from_gray(0x3c))
+        (crate::theme::gray(0xc4), crate::theme::gray(0x3c))
     } else {
-        (Color32::from_gray(0x39), Color32::from_gray(0x2b))
+        (crate::theme::gray(0x39), crate::theme::gray(0x2b))
     };
     g.circle_filled(knob, 6.0, fill);
     g.circle_stroke(knob, 6.0, Stroke::new(1.0, edge));
@@ -212,13 +226,16 @@ pub fn slider_h(
         .map(|p| ((p.x - rect.left() - 6.0) / (rect.width() - 12.0)).clamp(0.0, 1.0))
 }
 
-/// Logic's rotary knob: dark bezel, light grey domed body, a white pointer, and two small tick
-/// marks flanking the bottom. `value` runs from -1 (full left) to 1 (full right), 0 = up.
 /// The colour of a knob's arc.
-const KNOB_GLOW: Color32 = crate::theme::GOOD;
+fn knob_arc_col() -> Color32 {
+    if crate::theme::arc_accent() {
+        crate::theme::accent()
+    } else {
+        crate::theme::GOOD
+    }
+}
 
-/// The lit arc around a knob, from `from` to `to` (each -1..=1 of its sweep), with a soft glow, on
-/// a dim ring showing the whole sweep. It tells at a glance how far a knob is turned, and which way.
+/// The lit arc around a knob, from `from` to `to` (each -1..=1 of its sweep), on a dim ring showing the whole sweep. It tells at a glance how far a knob is turned, and which way.
 pub fn value_arc(g: &Painter, c: Pos2, r: f32, from: f32, to: f32) {
     const SWEEP: f32 = 135.0;
     let arc = |a: f32, b: f32| -> Vec<Pos2> {
@@ -233,47 +250,39 @@ pub fn value_arc(g: &Painter, c: Pos2, r: f32, from: f32, to: f32) {
     };
     g.add(egui::Shape::line(
         arc(-1.0, 1.0),
-        Stroke::new(1.6, crate::theme::BORDER),
+        Stroke::new(1.6, crate::theme::border()),
     ));
     if (to - from).abs() < 0.01 {
         // Centred: a small lit point says so.
         let angle = (-90.0 + to.clamp(-1.0, 1.0) * SWEEP).to_radians();
         let at = c + vec2(angle.cos(), angle.sin()) * r;
-        g.circle_filled(at, 2.6, KNOB_GLOW.gamma_multiply(0.35));
-        g.circle_filled(at, 1.2, KNOB_GLOW);
+        g.circle_filled(at, 1.4, knob_arc_col());
         return;
     }
-    let lit = arc(from, to);
-    g.add(egui::Shape::line(
-        lit.clone(),
-        Stroke::new(4.0, KNOB_GLOW.gamma_multiply(0.3)),
-    ));
-    g.add(egui::Shape::line(lit, Stroke::new(1.6, KNOB_GLOW)));
+    g.add(egui::Shape::line(arc(from, to), Stroke::new(1.6, knob_arc_col())));
 }
 
+/// A rotary knob, flat on the panel: a plain disc with a thin edge, and a line for the pointer. No
+/// bezel, shadow or highlight. `value` runs from -1 (full left) to 1 (full right), 0 = up.
 pub fn draw_knob(g: &Painter, c: Pos2, r: f32, value: f32) {
-    value_arc(g, c, r + 3.6, 0.0, value);
-    // Soft shadow and dark bezel.
-    g.circle_filled(c + vec2(0.0, 1.0), r + 2.2, Color32::from_black_alpha(80));
-    g.circle_filled(c, r + 1.6, Color32::from_gray(0x17));
-    // Domed body: darker edge, lighter centre and a highlight up and to the left.
-    g.circle_filled(c, r, Color32::from_gray(0x48));
-    g.circle_filled(
-        c + vec2(-r * 0.12, -r * 0.18),
-        r * 0.8,
-        Color32::from_gray(0x74),
-    );
-    g.circle_filled(
-        c + vec2(-r * 0.2, -r * 0.3),
-        r * 0.45,
-        Color32::from_gray(0xa2),
-    );
-    g.circle_stroke(c, r, Stroke::new(1.0, Color32::from_gray(0x2e)));
-    // Pointer.
+    value_arc(g, c, r + 3.2, 0.0, value);
+    g.circle_filled(c, r, crate::theme::gray(0x2a));
+    g.circle_stroke(c, r, Stroke::new(1.0, crate::theme::gray(0x4c)));
     let a = (-90.0 + value.clamp(-1.0, 1.0) * 135.0).to_radians();
     let d = vec2(a.cos(), a.sin());
     g.line_segment(
-        [c + d * (r * 0.18), c + d * (r * 0.9)],
-        Stroke::new(1.8, Color32::from_gray(0xf6)),
+        [c + d * (r * 0.3), c + d * r],
+        Stroke::new(1.6, crate::theme::gray(0xe6)),
     );
+}
+
+/// How much Ctrl and the mouse wheel zoom by this frame (None: not zooming). The wheel down zooms
+/// in and up zooms out. With Ctrl held egui may report the wheel as a zoom (`pinch`, above 1 for
+/// the wheel up) rather than as scrolling, so both are read.
+pub fn ctrl_wheel_zoom(ctrl: bool, wheel_y: f32, pinch: f32) -> Option<f32> {
+    if (pinch - 1.0).abs() > 1e-4 {
+        // Ctrl and the wheel come as a zoom: turned round. A touchpad pinch keeps its way.
+        return Some(if ctrl { 1.0 / pinch } else { pinch });
+    }
+    (ctrl && wheel_y != 0.0).then(|| 1.0 / (1.0 + wheel_y * 0.003).max(0.1))
 }
