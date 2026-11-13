@@ -13,7 +13,9 @@
 ; which parts to install, where, the file types Ovrtone opens, and a plugin folder of their own.
 
 #define AppName "Ovrtone"
-#define AppVersion "0.4.0"
+#define AppVersion "1.0 Beta 1"
+; Windows' file version: Beta 1 is 0.9.1, Beta 2 0.9.2, the release 1.0.0.
+#define FileVersion "0.9.1.0"
 #define AppExe "ovrtone.exe"
 #ifndef ExeDir
   #define ExeDir "..\..\target\release"
@@ -23,7 +25,9 @@
 AppId={{6F1E2B4C-8A3D-4E57-9C21-7D0B5A6E4F10}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion} (beta)
+AppVerName={#AppName} {#AppVersion}
+VersionInfoVersion={#FileVersion}
+VersionInfoProductVersion={#FileVersion}
 AppPublisher=Bankz Sound Lab
 AppPublisherURL=https://github.com/SakaBoluwatife/Pro-Wave
 AppSupportURL=https://github.com/SakaBoluwatife/Pro-Wave/issues
@@ -33,7 +37,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
 ; Replaces an installed Pro Wave: the AppId above is the same on purpose.
 OutputDir=output
-OutputBaseFilename=Ovrtone-{#AppVersion}-beta-setup
+OutputBaseFilename=Ovrtone-1.0-Beta-1-setup
 SetupIconFile=..\..\crates\ovrtone-app\assets\ovrtone.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -48,6 +52,8 @@ UsePreviousTasks=yes
 CloseApplications=yes
 RestartApplications=no
 InfoBeforeFile=RELEASE-NOTES.txt
+; Asks the person's name: Ovrtone shows it in Settings and About ("Licensed to ..."). A label only.
+UserInfoPage=yes
 LicenseFile=..\..\LICENSE
 ; The look: Ovrtone's dark, its symbol in the corner, and the pages a choice at a time.
 WizardStyle=modern dark windows11 hidebevels
@@ -91,6 +97,8 @@ Source: "{#ExeDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion; Component
 Source: "README.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme; Components: docs
 Source: "RELEASE-NOTES.txt"; DestDir: "{app}"; Flags: ignoreversion; Components: docs
 Source: "Ovrtone-Manual.html"; DestDir: "{app}"; Flags: ignoreversion; Components: docs
+Source: "Ovrtone-Key-Commands.html"; DestDir: "{app}"; Flags: ignoreversion; Components: docs
+Source: "Ovrtone-Key-Commands.pdf"; DestDir: "{app}"; Flags: ignoreversion; Components: docs
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion; Components: program
 Source: "..\..\crates\ovrtone-app\assets\fonts\*-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion; Components: program
 Source: "..\..\crates\ovrtone-app\assets\icons\TABLER-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion; Components: program
@@ -109,7 +117,14 @@ Type: files; Name: "{app}\prowave.exe"
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: startmenu
 Name: "{autoprograms}\{#AppName} Manual"; Filename: "{app}\Ovrtone-Manual.html"; Tasks: startmenu; Components: docs
+Name: "{autoprograms}\{#AppName} Key Commands"; Filename: "{app}\Ovrtone-Key-Commands.html"; Tasks: startmenu; Components: docs
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+
+[INI]
+; Who this copy is licensed to, for Settings and About. Kept on uninstall, as the other settings are.
+Filename: "{userappdata}\ovrtone\license.ini"; Section: "License"; Key: "Name"; String: "{userinfoname}"
+; A licence ID of its own, made once: a reinstall keeps it.
+Filename: "{userappdata}\ovrtone\license.ini"; Section: "License"; Key: "Id"; String: "{code:LicenseId}"; Flags: createkeyifdoesntexist
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.ovrtone"; ValueType: string; ValueName: ""; ValueData: "Ovrtone.Project"; Flags: uninsdeletevalue; Tasks: assoc
@@ -136,6 +151,29 @@ Filename: "{app}\{#AppExe}"; Description: "Start {#AppName} now"; Flags: nowait 
 // Ovrtone to look in, besides the usual VST3 and CLAP folders it always scans.
 var
   PluginPage: TInputDirWizardPage;
+
+// A licence ID such as OVR-7K2M-QX9D-4HTB, from letters and digits that cannot be misread.
+var
+  LicId: String;
+
+function LicenseId(Param: String): String;
+var
+  I: Integer;
+  Chars: String;
+begin
+  if LicId = '' then
+  begin
+    Chars := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    LicId := 'OVR';
+    for I := 1 to 12 do
+    begin
+      if (I - 1) mod 4 = 0 then
+        LicId := LicId + '-';
+      LicId := LicId + Chars[Random(Length(Chars)) + 1];
+    end;
+  end;
+  Result := LicId;
+end;
 
 procedure InitializeWizard;
 begin

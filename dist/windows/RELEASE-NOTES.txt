@@ -1,15 +1,36 @@
-Ovrtone 0.4.0 (beta)
-====================
+Ovrtone 1.0 Beta 1
+==================
 
 Installing over an earlier Ovrtone keeps your settings, themes, presets, templates, plugin scan,
 favourites and tags: they live in %APPDATA%\ovrtone, which the installer and uninstaller leave
 alone. Close Ovrtone before installing; the installer offers to close it for you.
 
-This is a beta: save often, and send what you find.
+This is the first stable beta. Save often, and send what you find: it goes into Beta 2.
+
+New in 1.0 Beta 1
+-----------------
+
+- File > Export > For Beat Store: an untagged WAV, an MP3 and a ZIP of the stems, named with the
+  beat's tempo and key, in Music\Ovrtone Beat Store. The folder and your store's site open when
+  they are made, to drag them in.
+- The project's key: click the key under the time signature on the control bar to set it.
+- The HD meter on the control bar shows how busy the drive is; click it for the Performance window.
+- Track header meters are LED segments with a peak that holds a moment.
+- Transpose in the region inspector works on audio regions too.
+- Mode buttons on the control bar turn on and off with a click; right-click to choose them.
+- Panner: the view from above follows the elevation, and values show in whole degrees.
+- Long track and sample names are shortened to fit; Sends on Faders no longer overlaps.
+- Settings and About show who this copy is licensed to and its licence ID.
 
 New in 0.4.0
 ------------
 
+- Spatial buses take effects and plugins. A VST3 plugin that supports the bus's layout gets every
+  channel; any other runs as linked stereo copies, one per pair, all following its window.
+- Flex Pitch: drag notes one by one; right-click a note for its formant and vibrato.
+- Per-note slides for VST3 instruments that take note expressions, and for the sampler.
+- Piano Roll: + Lane stacks more controller lanes. Audio editor: Whole File, Split, Normalize.
+- Channel Rack: Auto Place, Dump to Playlist, and samples dropped in the rack show on the Playlist.
 - Fit to Tempo follows every tempo change, also inside a region: each beat of the audio stays on
   a beat of the song through tempo changes and ramps.
 - Cycle (the loop region) has its own strip at the top of the ruler and its own header row; it
