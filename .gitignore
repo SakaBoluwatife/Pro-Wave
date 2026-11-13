@@ -32,3 +32,6 @@ dist/windows/output/
 
 # Visual Studio cache
 .vs/
+
+# A separate repository (icon set) kept locally
+assets/icons/local/
