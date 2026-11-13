@@ -747,6 +747,11 @@ impl Engine {
     /// Queue a command (Logic: transport or project edit). Returns `false` if command or
     /// state-reclamation capacity is exhausted. The rejected command is freed here on the
     /// UI thread; callers must retry their desired change before marking it synchronized.
+    /// How busy streaming audio from disk is, 0..=1 (the HD meter).
+    pub fn disk_load(&self) -> f32 {
+        self.disk.load()
+    }
+
     pub fn send(&mut self, cmd: Command) -> bool {
         // Clips that follow the tempo read the map on the disk thread: it has it first.
         if let Command::SetTempoMap(map) = &cmd {

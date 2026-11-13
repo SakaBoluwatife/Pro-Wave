@@ -186,6 +186,13 @@ pub fn scan_clap_file(path: &Path) -> Result<Vec<PluginInfo>, Error> {
         .collect())
 }
 
+/// A control held in a plugin's window: told by the plugin's gesture events, read for Touch.
+#[derive(Default)]
+struct Gesture {
+    held: std::sync::atomic::AtomicU32,
+    ended: AtomicBool,
+}
+
 /// The UI-thread half of a loaded plugin. It must outlive the processor [`load_clap`] returned
 /// and stay on the UI thread, where CLAP wants it. Call [`LoadedClap::tick`] once a frame.
 pub struct LoadedClap {
@@ -193,6 +200,9 @@ pub struct LoadedClap {
     ranges: Vec<(u32, f64, f64)>,
     /// What the plugin's window moved.
     moved: rtrb::Consumer<(u32, f64)>,
+    /// Controls held in the plugin's window (gesture begun, not ended), and whether one was let
+    /// go: for Touch automation.
+    gesture: Arc<Gesture>,
     params: Vec<crate::PluginParam>,
     instance: PluginInstance<Handlers>,
     callback: Arc<AtomicBool>,
@@ -463,6 +473,14 @@ impl crate::LoadedPlugin for LoadedClap {
         out
     }
 
+    fn editing(&self) -> bool {
+        self.gesture.held.load(Ordering::Acquire) > 0
+    }
+
+    fn take_edit_ended(&mut self) -> bool {
+        self.gesture.ended.swap(false, Ordering::AcqRel)
+    }
+
     fn latency_samples(&self) -> usize {
         LoadedClap::latency_samples(self)
     }
@@ -632,10 +650,12 @@ pub fn load_clap(
     processor.note_tuning = note_tuning;
     let (moved_in, moved) = rtrb::RingBuffer::new(PENDING_PARAMS);
     processor.moved = Some(moved_in);
+    let gesture = processor.gesture.clone();
     Ok((
         LoadedClap {
             ranges,
             moved,
+            gesture,
             params,
             instance,
             callback,
@@ -857,6 +877,7 @@ struct ClapProcessor {
     pending: Vec<(u32, f64)>,
     /// What the plugin's window moved, as positions 0..=1, for automation. Lost if nobody reads.
     moved: Option<rtrb::Producer<(u32, f64)>>,
+    gesture: Arc<Gesture>,
     /// The input port a side chain goes in.
     side_port: Option<usize>,
     /// It takes the tuning of single notes.
@@ -881,6 +902,7 @@ impl ClapProcessor {
             ranges: Vec::new(),
             pending: Vec::with_capacity(PENDING_PARAMS),
             moved: None,
+            gesture: Arc::default(),
             side_port: None,
             note_tuning: false,
             processor,
@@ -979,8 +1001,18 @@ impl PluginProcessor for ClapProcessor {
         };
         if let Some(moved) = self.moved.as_mut() {
             for event in self.events_out.iter() {
-                let Some(CoreEventSpace::ParamValue(param)) = event.as_core_event() else {
-                    continue;
+                let param = match event.as_core_event() {
+                    Some(CoreEventSpace::ParamValue(param)) => param,
+                    Some(CoreEventSpace::ParamGestureBegin(_)) => {
+                        self.gesture.held.fetch_add(1, Ordering::AcqRel);
+                        continue;
+                    }
+                    Some(CoreEventSpace::ParamGestureEnd(_)) => {
+                        let _ = self.gesture.held.try_update(Ordering::AcqRel, Ordering::Acquire, |h| h.checked_sub(1));
+                        self.gesture.ended.store(true, Ordering::Release);
+                        continue;
+                    }
+                    _ => continue,
                 };
                 let Some(id) = param.param_id() else {
                     continue;

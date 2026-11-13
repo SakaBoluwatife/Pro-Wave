@@ -373,12 +373,16 @@ fn wsola(
     out
 }
 
-/// A stretch of the recording (seconds) moved by some semitones.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A stretch of the recording (seconds) moved by some semitones (Flex Pitch).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct PitchShift {
     pub start: f64,
     pub end: f64,
     pub semitones: f32,
+    /// The formants moved too, in semitones: 0 keeps the voice's character where it was.
+    pub formant: f32,
+    /// The note's vibrato: 0 as sung, -1 none (flat), 1 twice as wide.
+    pub vibrato: f32,
 }
 
 /// The recording with each stretch in `shifts` moved in pitch, the same length as before. The
@@ -394,7 +398,8 @@ pub fn shift_pitch(
     let mut out = input.to_vec();
     let fade = (0.005 * sr) as usize;
     for s in shifts.iter().take(MAX_POINTS) {
-        if !(s.semitones.is_finite() && s.semitones.abs() > 0.001 && s.end > s.start) {
+        let shaped = s.formant.abs() > 0.001 || s.vibrato.abs() > 0.001;
+        if !(s.semitones.is_finite() && (s.semitones.abs() > 0.001 || shaped) && s.end > s.start) {
             continue;
         }
         let semis = s.semitones.clamp(-24.0, 24.0);
@@ -410,10 +415,21 @@ pub fn shift_pitch(
         // Stretch by the factor keeping the pitch, then play it back by the factor faster:
         // the original length at the new pitch.
         let n = pb - pa;
-        let stretched_frames = (n as f64 * factor).round() as usize;
-        let stretched = wsola(piece, sr, stretched_frames, mode, |t| t / factor);
+        // Formants or vibrato: Signalsmith Stretch, which keeps the formants where they are while
+        // the pitch moves, and follows the note's own pitch curve to widen or narrow its vibrato.
+        #[cfg(not(target_arch = "wasm32"))]
+        let retuned = shaped.then(|| retune(piece, sample_rate, semis, s.formant, s.vibrato));
+        #[cfg(target_arch = "wasm32")]
+        let retuned: Option<Vec<f32>> = None;
+        let stretched = match &retuned {
+            Some(_) => Vec::new(),
+            None => wsola(piece, sr, (n as f64 * factor).round() as usize, mode, |t| t / factor),
+        };
         for j in 0..n {
-            let (l, r) = frame_lerp(&stretched, j as f64 * factor);
+            let (l, r) = match &retuned {
+                Some(x) => (x.get(2 * j).copied().unwrap_or(0.0), x.get(2 * j + 1).copied().unwrap_or(0.0)),
+                None => frame_lerp(&stretched, j as f64 * factor),
+            };
             let at = pa + j;
             // 0 outside the stretch, 1 inside, fading over `fade` at each end.
             let g = if at < a {
@@ -429,6 +445,29 @@ pub fn shift_pitch(
         }
     }
     out
+}
+
+/// A piece of stereo (interleaved) moved `semitones` in pitch, the same length, its formants kept
+/// and then moved `formant` semitones, and its vibrato scaled by `1 + vibrato` around the note's
+/// middle pitch.
+#[cfg(not(target_arch = "wasm32"))]
+fn retune(piece: &[f32], sample_rate: u32, semitones: f32, formant: f32, vibrato: f32) -> Vec<f32> {
+    let frames = piece.len() / 2;
+    let mono: Vec<f32> = piece.chunks_exact(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+    let track = pitch_track(&mono, sample_rate);
+    let mut voiced: Vec<f32> = track.iter().flatten().map(|hz| hz_to_midi(*hz)).collect();
+    voiced.sort_by(f32::total_cmp);
+    let middle = voiced.get(voiced.len() / 2).copied();
+    let per_frame = f64::from(sample_rate.max(1)) / PITCH_RATE;
+    let transpose_at = |j: usize| -> f32 {
+        let k = (j as f64 / per_frame) as usize;
+        let dev = match (track.get(k).copied().flatten(), middle) {
+            (Some(hz), Some(m)) => hz_to_midi(hz) - m,
+            _ => 0.0,
+        };
+        semitones + dev.clamp(-3.0, 3.0) * vibrato.clamp(-1.0, 2.0)
+    };
+    crate::hq_stretch::retune(piece, frames, sample_rate, formant.clamp(-24.0, 24.0), transpose_at)
 }
 
 // ------------------------------------------------------------------ pitch detection
@@ -798,6 +837,7 @@ mod tests {
                     start: 0.0,
                     end: 1.0,
                     semitones: semis,
+                    ..Default::default()
                 }],
                 FlexMode::Monophonic,
             );
@@ -814,6 +854,7 @@ mod tests {
                 start: 1.0,
                 end: 2.0,
                 semitones: 12.0,
+                ..Default::default()
             }],
             FlexMode::Monophonic,
         );
@@ -871,6 +912,7 @@ mod tests {
                     start: -1.0,
                     end: 9.0,
                     semitones: 99.0,
+                    ..Default::default()
                 }],
                 mode,
             );
@@ -910,6 +952,7 @@ mod tests {
                 start: k as f64 * 1.0e-5,
                 end: k as f64 * 1.0e-5 + 0.05,
                 semitones: 1.0,
+                ..Default::default()
             })
             .collect();
         let _ = shift_pitch(&input, SR, &shifts, FlexMode::Monophonic);

@@ -233,6 +233,15 @@ pub struct FlexPitchDoc {
     pub start: f64,
     pub end: f64,
     pub semitones: f32,
+    /// Formant move in semitones, and vibrato change (-1 none, 0 as sung, 1 twice as wide).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub formant: f32,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub vibrato: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// The steps of a Pattern region.
@@ -1410,6 +1419,12 @@ mod tests {
 pub struct SpatialBusDoc {
     pub name: String,
     pub layout: String,
+    /// Its effects, in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<InsertDoc>,
+    /// Its plugins, with their settings.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<PluginDoc>,
     pub direction: f32,
     pub elevation: f32,
     pub spread: f32,
@@ -1425,6 +1440,8 @@ impl Default for SpatialBusDoc {
         Self {
             name: String::new(),
             layout: "7.1.2".into(),
+            fx: Vec::new(),
+            plugins: Vec::new(),
             direction: 0.0,
             elevation: 0.0,
             spread: 1.0,

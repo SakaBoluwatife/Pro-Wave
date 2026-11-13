@@ -154,6 +154,11 @@ struct Voice {
     envelope: f32,
     /// Counts up, so the oldest voice can be told.
     age: u64,
+    /// A slide of this note alone (per-note tuning), in semitones: where it is and where it is
+    /// going, and the speed it makes.
+    tune_now: f32,
+    tune_wanted: f32,
+    tune_speed: f64,
 }
 
 /// How far the sampler bends at the top of the range, either way: as far as a slide could want.
@@ -212,6 +217,9 @@ impl SamplerProcessor {
             gain: velocity.clamp(0.0, 1.0),
             envelope: if rising { 0.0 } else { 1.0 },
             age: self.started,
+            tune_now: 0.0,
+            tune_wanted: 0.0,
+            tune_speed: 1.0,
         };
     }
 
@@ -290,7 +298,16 @@ impl SamplerProcessor {
             let gain = v.gain * v.envelope;
             l += (s[at * 2] + (s[at * 2 + 2] - s[at * 2]) * t) * gain * live.left;
             r += (s[at * 2 + 1] + (s[at * 2 + 3] - s[at * 2 + 1]) * t) * gain * live.right;
-            v.position += v.step * self.bend_speed;
+            if v.tune_now != v.tune_wanted {
+                let gap = v.tune_wanted - v.tune_now;
+                v.tune_now = if gap.abs() < 0.001 {
+                    v.tune_wanted
+                } else {
+                    v.tune_now + gap * BEND_GLIDE_PER_FRAME
+                };
+                v.tune_speed = f64::from(v.tune_now / 12.0).exp2();
+            }
+            v.position += v.step * self.bend_speed * v.tune_speed;
             if v.releasing {
                 v.envelope -= live.release;
                 if v.envelope <= 0.0 {
@@ -311,6 +328,10 @@ impl SamplerProcessor {
 }
 
 impl PluginProcessor for SamplerProcessor {
+    fn note_tuning(&self) -> bool {
+        true
+    }
+
     fn process(
         &mut self,
         input: [&[f32]; 2],
@@ -329,9 +350,13 @@ impl PluginProcessor for SamplerProcessor {
                     PluginEventKind::PitchBend { value } => {
                         self.bend_wanted = value * SAMPLER_BEND_SEMITONES;
                     }
-                    PluginEventKind::Control { .. }
-                    | PluginEventKind::NoteTune { .. }
-                    | PluginEventKind::ChannelPressure { .. } => {}
+                    // A slide that bends only its own note (an 808 sliding under the others).
+                    PluginEventKind::NoteTune { key, semitones } => {
+                        for v in self.voices.iter_mut().filter(|v| v.active && !v.releasing && v.key == key) {
+                            v.tune_wanted = semitones;
+                        }
+                    }
+                    PluginEventKind::Control { .. } | PluginEventKind::ChannelPressure { .. } => {}
                 }
                 next += 1;
             }

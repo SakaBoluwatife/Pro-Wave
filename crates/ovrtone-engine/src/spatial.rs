@@ -446,6 +446,152 @@ struct SpatialBus {
     buf: Box<[[f64; BUS_FRAMES]; SPATIAL_CHANNELS]>,
     matrix: [[f32; SPATIAL_CHANNELS]; SPATIAL_CHANNELS],
     used: bool,
+    /// Its effects, in order: each runs once per pair of its channels (front left and right,
+    /// centre and LFE, the surrounds, the heights...), so the layout keeps its places.
+    fx: Vec<Vec<crate::fx::Fx>>,
+    /// Its channels in pairs, as its layout orders them; an odd one out goes alone.
+    pairs: Vec<(usize, Option<usize>)>,
+    /// Its plugins, after its effects: each one surround plugin in its layout, or linked stereo
+    /// copies (one per pair) for a plugin that is stereo only.
+    plugins: Box<Vec<BusPlugin>>,
+    /// Lines it up with the slowest bus.
+    delay: Box<DelayRing>,
+}
+
+/// The longest a spatial bus's plugins may delay it and still be lined up with the rest, in frames.
+const BUS_DELAY_MAX: usize = 8192;
+
+/// A delay for every channel of a bus, so the buses whose plugins are slower and the rest of the
+/// mix stay in time (delay compensation). Made off the audio thread.
+struct DelayRing {
+    data: Vec<Vec<f32>>,
+    pos: usize,
+}
+
+impl DelayRing {
+    fn new() -> Self {
+        Self {
+            data: (0..SPATIAL_CHANNELS).map(|_| vec![0.0; BUS_DELAY_MAX]).collect(),
+            pos: 0,
+        }
+    }
+
+    /// Delays the first `n` frames of every channel of `buf` by `delay` frames.
+    fn run(&mut self, buf: &mut [[f64; BUS_FRAMES]; SPATIAL_CHANNELS], n: usize, delay: usize) {
+        let delay = delay.min(BUS_DELAY_MAX - 1);
+        for j in 0..n {
+            let at = (self.pos + j) % BUS_DELAY_MAX;
+            let from = (at + BUS_DELAY_MAX - delay) % BUS_DELAY_MAX;
+            for (c, ring) in self.data.iter_mut().enumerate() {
+                ring[at] = buf[c][j] as f32;
+                buf[c][j] = f64::from(ring[from]);
+            }
+        }
+        self.pos = (self.pos + n) % BUS_DELAY_MAX;
+    }
+}
+
+/// A plugin on a spatial bus. Made off the audio thread with its buffers, so it never allocates.
+pub struct BusPlugin {
+    /// One instance in the bus's layout (`native`), or one per pair of its channels.
+    units: Vec<Box<dyn crate::plugin::PluginProcessor>>,
+    native: bool,
+    /// The bus channel of each of the native instance's channels, as it names its speakers.
+    map: Option<Vec<usize>>,
+    bypass: bool,
+    /// Buffers for a block of every channel, in and out.
+    inb: Vec<Vec<f32>>,
+    outb: Vec<Vec<f32>>,
+}
+
+impl BusPlugin {
+    /// `units`: one instance set up in the bus's layout (`native`), or one stereo copy per pair.
+    pub fn new(units: Vec<Box<dyn crate::plugin::PluginProcessor>>, native: bool, bypass: bool) -> Self {
+        let buffers = || (0..SPATIAL_CHANNELS).map(|_| vec![0.0f32; BUS_FRAMES]).collect::<Vec<_>>();
+        let map = if native { units.first().and_then(|u| u.channel_map()) } else { None };
+        Self {
+            units,
+            native,
+            map,
+            bypass,
+            inb: buffers(),
+            outb: buffers(),
+        }
+    }
+
+    /// The delay it puts on the bus, in samples.
+    pub fn latency_samples(&self) -> usize {
+        self.units.iter().map(|u| u.latency_samples()).max().unwrap_or(0)
+    }
+
+    /// Runs the bus's channels (`order`, in its layout) through it, `n` frames.
+    fn run(
+        &mut self,
+        buf: &mut [[f64; BUS_FRAMES]; SPATIAL_CHANNELS],
+        order: &[usize],
+        pairs: &[(usize, Option<usize>)],
+        n: usize,
+        transport: &crate::plugin::PluginTransport,
+    ) {
+        if self.bypass || self.units.is_empty() {
+            return;
+        }
+        let block = crate::plugin::plugin_block().clamp(1, BUS_FRAMES);
+        let mut start = 0;
+        while start < n {
+            let m = block.min(n - start);
+            if self.native {
+                // In the order the plugin names its speakers, where it says.
+                let order: &[usize] = self.map.as_deref().unwrap_or(order);
+                let ch = order.len().min(SPATIAL_CHANNELS);
+                for (k, &c) in order.iter().take(ch).enumerate() {
+                    for j in 0..m {
+                        self.inb[k][j] = buf[c][start + j] as f32;
+                    }
+                }
+                let inb = &self.inb;
+                let ins: [&[f32]; SPATIAL_CHANNELS] = std::array::from_fn(|k| &inb[k][..m]);
+                let mut it = self.outb.iter_mut();
+                let mut outs: [&mut [f32]; SPATIAL_CHANNELS] = std::array::from_fn(|_| match it.next() {
+                    Some(v) => &mut v[..m],
+                    None => &mut [],
+                });
+                if let Some(unit) = self.units.first_mut() {
+                    unit.process_multi(&ins[..ch], &mut outs[..ch], transport);
+                }
+                for (k, &c) in order.iter().take(ch).enumerate() {
+                    for j in 0..m {
+                        buf[c][start + j] = f64::from(self.outb[k][j]);
+                    }
+                }
+            } else {
+                for (unit, &(lc, rc)) in self.units.iter_mut().zip(pairs) {
+                    let rc_or = rc.unwrap_or(lc);
+                    for j in 0..m {
+                        self.inb[0][j] = buf[lc][start + j] as f32;
+                        self.inb[1][j] = buf[rc_or][start + j] as f32;
+                    }
+                    let (o0, rest) = self.outb.split_at_mut(1);
+                    let (Some(o0), Some(o1)) = (o0.first_mut(), rest.first_mut()) else {
+                        return;
+                    };
+                    unit.process(
+                        [&self.inb[0][..m], &self.inb[1][..m]],
+                        [&mut o0[..m], &mut o1[..m]],
+                        &[],
+                        transport,
+                    );
+                    for j in 0..m {
+                        buf[lc][start + j] = f64::from(o0[j]);
+                        if let Some(c) = rc {
+                            buf[c][start + j] = f64::from(o1[j]);
+                        }
+                    }
+                }
+            }
+            start += m;
+        }
+    }
 }
 
 /// The most a speaker can be delayed, in milliseconds.
@@ -523,7 +669,7 @@ pub struct ObjectPlace {
     pub size: f32,
     /// How much of it goes to the LFE as well, 0..=1.
     pub lfe: f32,
-    /// How far apart its left and right are, 0 together, 1 a quarter of the way round each way.
+    /// How far apart its left and right are, 0 together, 1 turned 45 degrees each way.
     pub spread: f32,
     /// How much of it the centre speaker plays, 0..=1: 0 leaves the centre out.
     pub center: f32,
@@ -1034,6 +1180,9 @@ pub struct SpatialRender {
     noise: (u32, [f64; 3]),
     /// The spatial buses, in order (an object's `bus` 1 is the first).
     buses: Vec<SpatialBus>,
+    /// Delay compensation of the rest of the mix against the slowest bus (made with the buses).
+    main_delay: Option<Box<DelayRing>>,
+    main_delay_was: usize,
     /// The headphone render through a measured head, when one is loaded (else the modelled head).
     hrtf: Option<HrtfRender>,
     /// In the headphone render, the bed stays plain stereo and only the objects go through the
@@ -1116,6 +1265,8 @@ impl SpatialRender {
             test: None,
             noise: (0x1234_5678, [0.0; 3]),
             buses: Vec::new(),
+            main_delay: None,
+            main_delay_was: 0,
             hrtf: None,
             bed_dry: false,
             bus: Box::new([[0.0; BUS_FRAMES]; SPATIAL_CHANNELS]),
@@ -1210,12 +1361,95 @@ impl SpatialRender {
                 buf: Box::new([[0.0; BUS_FRAMES]; SPATIAL_CHANNELS]),
                 matrix: [[0.0; SPATIAL_CHANNELS]; SPATIAL_CHANNELS],
                 used: false,
+                fx: Vec::new(),
+                plugins: Box::default(),
+                delay: Box::new(DelayRing::new()),
+                pairs: layout
+                    .device_order()
+                    .chunks(2)
+                    .map(|c| (c[0], c.get(1).copied()))
+                    .collect(),
             })
             .collect();
         for (k, (_, place)) in buses.iter().enumerate().take(MAX_SPATIAL_BUSES) {
             self.set_bus_place(k, *place);
         }
+        if !self.buses.is_empty() {
+            self.main_delay = Some(Box::new(DelayRing::new()));
+        }
         self
+    }
+
+    /// With effects on its spatial buses: for each bus, its effects in order (kind, settings,
+    /// bypassed). Allocates: call it off the audio thread, after [`Self::with_buses`].
+    pub fn with_bus_effects(
+        mut self: Box<Self>,
+        effects: &[Vec<(crate::fx::FxKind, [f32; crate::fx::MAX_FX_PARAMS], bool)>],
+        sample_rate: f32,
+    ) -> Box<Self> {
+        for (b, list) in self.buses.iter_mut().zip(effects) {
+            b.fx = list
+                .iter()
+                .map(|&(kind, params, bypass)| {
+                    b.pairs
+                        .iter()
+                        .map(|_| crate::fx::Fx::new(kind, params, bypass, sample_rate))
+                        .collect()
+                })
+                .collect();
+        }
+        self
+    }
+
+    /// Puts `plugins` on bus `bus` in place of the ones it had, which come back to be dropped off
+    /// the audio thread. `None` if there is no such bus (the new ones come back then).
+    pub(crate) fn swap_bus_plugins(&mut self, bus: usize, mut plugins: Box<Vec<BusPlugin>>) -> Box<Vec<BusPlugin>> {
+        if let Some(b) = self.buses.get_mut(bus) {
+            std::mem::swap(&mut b.plugins, &mut plugins);
+        }
+        plugins
+    }
+
+    /// A parameter of plugin `slot` on bus `bus`, for every copy but the first (whose window moved
+    /// it): linked stereo copies move together. On the audio thread.
+    pub(crate) fn set_bus_plugin_param(&mut self, bus: usize, slot: usize, id: u32, value: f64) {
+        if let Some(p) = self.buses.get_mut(bus).and_then(|b| b.plugins.get_mut(slot)) {
+            for unit in p.units.iter_mut().skip(1) {
+                unit.set_param(id, value);
+            }
+        }
+    }
+
+    /// Bypasses plugin `slot` on bus `bus`, or brings it back.
+    pub(crate) fn set_bus_plugin_bypass(&mut self, bus: usize, slot: usize, bypass: bool) {
+        if let Some(p) = self.buses.get_mut(bus).and_then(|b| b.plugins.get_mut(slot)) {
+            p.bypass = bypass;
+        }
+    }
+
+    /// Takes the plugins of `old`'s buses that have the same layout here: a new renderer keeps
+    /// them running. On the audio thread: only boxes move.
+    pub(crate) fn keep_plugins_of(&mut self, old: &mut SpatialRender) {
+        for (new, was) in self.buses.iter_mut().zip(old.buses.iter_mut()) {
+            if new.layout == was.layout {
+                std::mem::swap(&mut new.plugins, &mut was.plugins);
+            }
+        }
+    }
+
+    /// New settings for effect `slot` of bus `bus`, on every pair it runs on. On the audio thread.
+    pub(crate) fn set_bus_fx(
+        &mut self,
+        bus: usize,
+        slot: usize,
+        params: [f32; crate::fx::MAX_FX_PARAMS],
+        bypass: bool,
+    ) {
+        if let Some(stage) = self.buses.get_mut(bus).and_then(|b| b.fx.get_mut(slot)) {
+            for unit in stage.iter_mut() {
+                unit.set(params, bypass);
+            }
+        }
     }
 
     /// With a measured head for the headphone render (the modelled head stays for the room).
@@ -1273,8 +1507,51 @@ impl SpatialRender {
     }
 
     /// Sums the spatial buses into the main bus, each as it is placed, and empties them.
-    pub(crate) fn mix_buses(&mut self, n: usize) {
+    pub(crate) fn mix_buses(&mut self, n: usize, transport: &crate::plugin::PluginTransport) {
+        // Delay compensation: the rest of the mix waits for the slowest bus, and each bus for the
+        // difference between it and that one.
+        let lat = |b: &SpatialBus| b.plugins.iter().map(BusPlugin::latency_samples).sum::<usize>().min(BUS_DELAY_MAX - 1);
+        let slowest = self.buses.iter().map(lat).max().unwrap_or(0);
+        if slowest > 0 || self.main_delay_was > 0 {
+            if let Some(ring) = self.main_delay.as_mut() {
+                ring.run(&mut self.bus, n, slowest);
+            }
+        }
+        self.main_delay_was = slowest;
+        for b in self.buses.iter_mut() {
+            let wait = slowest - lat(b);
+            if wait > 0 && !b.used {
+                // Its delay line still runs, empty, so nothing old comes out later.
+                for channel in b.buf.iter_mut() {
+                    channel[..n].fill(0.0);
+                }
+                b.used = true;
+            }
+        }
         for b in self.buses.iter_mut().filter(|b| b.used) {
+            let wait = slowest - lat(b);
+            // Its effects first, pair by pair, then its plugins.
+            let order = b.layout.device_order();
+            let SpatialBus { fx, pairs, buf, plugins, delay, .. } = b;
+            for plug in plugins.iter_mut() {
+                plug.run(buf, order, pairs, n, transport);
+            }
+            if wait > 0 {
+                delay.run(buf, n, wait);
+            }
+            for stage in fx.iter_mut() {
+                for (unit, &(lc, rc)) in stage.iter_mut().zip(pairs.iter()) {
+                    for j in 0..n {
+                        let l = buf[lc][j] as f32;
+                        let r = rc.map_or(l, |c| buf[c][j] as f32);
+                        let (yl, yr) = unit.process(l, r);
+                        buf[lc][j] = f64::from(yl);
+                        if let Some(c) = rc {
+                            buf[c][j] = f64::from(yr);
+                        }
+                    }
+                }
+            }
             for (c, row) in b.matrix.iter().enumerate() {
                 for (t, g) in row.iter().enumerate() {
                     if *g == 0.0 {

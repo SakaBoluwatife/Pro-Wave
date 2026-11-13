@@ -47,6 +47,7 @@ pub use crate::capture::{
     MAX_INPUT_CHANNELS,
 };
 pub use crate::spatial::{
+    BusPlugin,
     downmix_matrix, object_gains, point_gains, point_gains_with, ChannelSetup, SpeakerSetup,
     MAX_SPEAKER_DELAY_MS, BusPlace, MAX_SPATIAL_BUSES, HrtfSet, HrtfSpeaker, MAX_HRIR, Distance, ObjectAxis, ObjectGains,
     ObjectPlace, SpatialLaw, SpatialMode, SpatialRender, SpeakerLayout,

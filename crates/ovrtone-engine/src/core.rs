@@ -590,6 +590,30 @@ pub enum Command {
         bus: u8,
         place: crate::spatial::BusPlace,
     },
+    /// The plugins of spatial bus `bus`, in place of the ones it had (which come back as garbage).
+    SetBusPlugins {
+        bus: u8,
+        plugins: Box<Vec<crate::spatial::BusPlugin>>,
+    },
+    /// A parameter moved in the window of plugin `slot` on spatial bus `bus`, for its linked copies.
+    SetBusPluginParam {
+        bus: u8,
+        slot: u8,
+        id: u32,
+        value: f64,
+    },
+    SetBusPluginBypass {
+        bus: u8,
+        slot: u8,
+        bypass: bool,
+    },
+    /// New settings for effect `slot` of spatial bus `bus`, kept running (no tail is cut).
+    SetSpatialBusFx {
+        bus: u8,
+        slot: u8,
+        params: [f32; crate::fx::MAX_FX_PARAMS],
+        bypass: bool,
+    },
     /// Pink noise on one channel of the spatial bus, to find a speaker; none stops it.
     SetSpatialTest(Option<u8>),
     /// What the renderer does to each channel: muted, how far, and its volume.
@@ -739,6 +763,7 @@ impl Command {
                 | Self::SetInput(_)
                 | Self::SetPreview(_)
                 | Self::SetSpatial(_)
+                | Self::SetBusPlugins { .. }
                 | Self::SetMasterTap(_)
                 | Self::SetFxTap { .. }
                 | Self::SetPluginRound(_)
@@ -760,6 +785,7 @@ impl Command {
 
 pub enum Garbage {
     Spatial(Box<crate::spatial::SpatialRender>),
+    BusPlugins(Box<Vec<crate::spatial::BusPlugin>>),
     PluginRound(Box<crate::plugin::PluginRound>),
     MasterTap(Box<rtrb::Producer<f32>>),
     Song(Box<Song>),
@@ -1758,7 +1784,7 @@ impl EngineCore {
             let start = map.seconds_at(c.start_beat);
             // A clip that follows the tempo plays at the speed the tempo at its start asks for,
             // from now on: the disk thread reads the speed with the seek below.
-            if c.edit.follow_bpm > 0.0 && !c.edit.reverse {
+            if c.edit.follow_bpm > 0.0 {
                 let speed = (f64::from(map.tempo_at(c.start_beat)) / c.edit.follow_bpm).clamp(0.05, 20.0);
                 // Its length through every change of tempo under it, as the disk thread works it out.
                 c.len_frames = crate::disk::follow_len(map, c.start_beat, c.edit.follow_bpm, c.src_frames, sr);
@@ -2869,7 +2895,9 @@ impl EngineCore {
                     };
                 }
                 Command::SetSpatial(new) => {
-                    let old = std::mem::replace(&mut self.spatial, new);
+                    let mut old = std::mem::replace(&mut self.spatial, new);
+                    // The buses' plugins run on in the new renderer where the layout is the same.
+                    self.spatial.keep_plugins_of(&mut old);
                     self.object_any = self.spatial.is_on() && self.objects.iter().any(Option::is_some);
                     let (room, setup) = (old.room(), old.setup());
                     self.spatial.set_room(room);
@@ -2884,6 +2912,19 @@ impl EngineCore {
                 Command::SetSpatialTest(c) => self.spatial.set_test(c.map(usize::from)),
                 Command::SetSpatialBus { bus, place } => {
                     self.spatial.set_bus_place(usize::from(bus), place);
+                }
+                Command::SetBusPlugins { bus, plugins } => {
+                    let old = self.spatial.swap_bus_plugins(usize::from(bus), plugins);
+                    let _ = self.trash.push(Garbage::BusPlugins(old));
+                }
+                Command::SetBusPluginParam { bus, slot, id, value } => {
+                    self.spatial.set_bus_plugin_param(usize::from(bus), usize::from(slot), id, value);
+                }
+                Command::SetBusPluginBypass { bus, slot, bypass } => {
+                    self.spatial.set_bus_plugin_bypass(usize::from(bus), usize::from(slot), bypass);
+                }
+                Command::SetSpatialBusFx { bus, slot, params, bypass } => {
+                    self.spatial.set_bus_fx(usize::from(bus), usize::from(slot), params, bypass);
                 }
                 Command::SetSpatialChannels(setup) => self.spatial.set_setup(setup),
                 Command::SetStripObject { track, place } => {
@@ -3250,7 +3291,7 @@ impl EngineCore {
             }
         }
         self.mix_strips(n);
-        self.spatial.mix_buses(n);
+        self.spatial.mix_buses(n, &self.transport);
         // The channels past the first two go out on their own if the device has them. A file and
         // Varispeed have only two, unless every channel is being gathered for a file.
         let capturing = self.spatial_capture.is_some();

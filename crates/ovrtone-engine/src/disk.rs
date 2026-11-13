@@ -687,7 +687,7 @@ impl Stream {
 
     /// The tempo map a clip that follows the tempo plays by, with where it starts in seconds.
     fn follow_map(&self) -> Option<(&TempoMap, f64)> {
-        if !self.follows || self.reverse || self.follow_bpm <= 0.0 {
+        if !self.follows || self.follow_bpm <= 0.0 {
             return None;
         }
         let map = self.map.as_deref()?;
@@ -712,6 +712,8 @@ impl Stream {
         if at >= self.out_len {
             return (0.0, 0.0);
         }
+        // Reversed, the clip's first frame is the file's last.
+        let at = if self.reverse { self.out_len - 1 - at } else { at };
         let pos = (self.out_offset + at) as f64 * self.ratio;
         let i0 = pos.floor() as u64;
         let frac = (pos - i0 as f64) as f32;
@@ -723,6 +725,17 @@ impl Stream {
 
     /// `count` unstretched frames from `from` into the stretcher's input.
     fn read_input(&mut self, from: u64, count: usize) {
+        // Reversed, the stretch is fed backwards: the stretch of the file it needs is read first.
+        if self.reverse && count > 0 && from < self.out_len {
+            let end = self.out_offset + self.out_len - 1;
+            let first = end - from;
+            let last = end.saturating_sub(from + count as u64 - 1).max(self.out_offset);
+            let lo = (last as f64 * self.ratio).floor() as u64;
+            let hi = (first as f64 * self.ratio).floor() as u64 + 1;
+            if let Err(e) = self.ensure_reverse_window(lo, hi) {
+                tracing::error!("reverse disk seek failed: {e}");
+            }
+        }
         let Some(mut s) = self.stretch.take() else { return };
         s.input.clear();
         for i in 0..count as u64 {
@@ -735,7 +748,7 @@ impl Stream {
 
     /// Readies the stretcher to play from output frame `self.out_frame`.
     fn start_stretch(&mut self) {
-        if !(self.follows && self.keep_pitch && !self.reverse)
+        if !(self.follows && self.keep_pitch)
             || (self.map.is_none() && (self.speed - 1.0).abs() < 1e-6)
         {
             self.stretch = None;
@@ -864,17 +877,20 @@ impl Stream {
             frames: n as u32,
             data: [0.0; BLOCK_FRAMES * 2],
         };
-        if self.reverse && n > 0 {
-            let first = self.out_offset + self.out_len - self.out_frame - 1;
-            let last = self.out_offset + self.out_len - self.out_frame - n as u64;
+        if self.reverse && n > 0 && self.stretch.is_none() {
+            // Back from the end; following the tempo, at the speed it asks for (resampled).
+            let (a, b) = (self.src_at(self.out_frame), self.src_at(self.out_frame + n as u64));
+            let end = (self.out_offset + self.out_len) as f64 - 1.0;
+            let back = move |at: f64| end - at;
+            let first = back(a).max(0.0) as u64;
+            let last = back(b).max(0.0) as u64;
             let lo = (last as f64 * self.ratio).floor() as u64;
             let hi = (first as f64 * self.ratio).floor() as u64 + 1;
             match self.ensure_reverse_window(lo, hi) {
                 Ok(()) => {
                     for i in 0..n {
-                        let pos = (self.out_offset + self.out_len - (self.out_frame + i as u64) - 1)
-                            as f64
-                            * self.ratio;
+                        let at = a + (b - a) * i as f64 / n as f64;
+                        let pos = back(at).max(0.0) * self.ratio;
                         let i0 = pos.floor() as u64;
                         let frac = (pos - i0 as f64) as f32;
                         let (l0, r0) = self.frame(i0);
@@ -891,8 +907,11 @@ impl Stream {
         if self.stretch.is_some() {
             self.fill_stretched(&mut block, n);
             self.out_frame += n as u64;
-            let from = self.stretch.as_ref().map_or(0, |s| s.in_pos);
-            self.drop_before(((self.out_offset + from) as f64 * self.ratio).floor() as u64);
+            // Reversed, the read window looks after itself.
+            if !self.reverse {
+                let from = self.stretch.as_ref().map_or(0, |s| s.in_pos);
+                self.drop_before(((self.out_offset + from) as f64 * self.ratio).floor() as u64);
+            }
             return block;
         }
         // Where the block starts and ends in the file; in between, a straight line.
@@ -933,7 +952,7 @@ impl Stream {
         let (gen, frame) = self.shared.load();
         if self.gen != Some(gen) {
             self.gen = Some(gen);
-            if self.follows && !self.reverse {
+            if self.follows {
                 self.speed = self.shared.speed();
                 self.map = self.tempo.lock().ok().and_then(|m| m.clone());
             }
@@ -968,21 +987,32 @@ pub struct DiskThread {
     tx: mpsc::Sender<Msg>,
     handle: Option<JoinHandle<()>>,
     tempo: SharedTempo,
+    /// How busy reading the files keeps the disk thread, in thousandths of its time (Logic's
+    /// HD meter): near 1000 the drive cannot keep up.
+    load: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl DiskThread {
     pub fn spawn() -> Self {
         let (tx, rx) = mpsc::channel::<Msg>();
+        let load = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let load_out = load.clone();
         let handle = std::thread::Builder::new()
             .name("ovrtone-disk".into())
-            .spawn(move || run(rx))
+            .spawn(move || run(rx, &load_out))
             .map_err(|e| tracing::error!("cannot spawn disk thread: {e}"))
             .ok();
         Self {
             tx,
             handle,
             tempo: SharedTempo::default(),
+            load,
         }
+    }
+
+    /// How busy the disk thread is reading, 0..=1 (Logic's HD meter).
+    pub fn load(&self) -> f32 {
+        self.load.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
     /// The song's tempo map, for clips that follow the tempo. Set before the engine gets it.
@@ -1135,9 +1165,18 @@ fn service_messages(rx: &mpsc::Receiver<Msg>, streams: &mut Vec<Stream>) -> bool
     true
 }
 
-fn run(rx: mpsc::Receiver<Msg>) {
+fn run(rx: mpsc::Receiver<Msg>, load: &std::sync::atomic::AtomicU32) {
     let mut streams: Vec<Stream> = Vec::new();
+    // The share of time spent reading, over a quarter of a second.
+    let mut window = Instant::now();
+    let mut busy = Duration::ZERO;
     loop {
+        if window.elapsed() >= Duration::from_millis(250) {
+            let share = busy.as_secs_f64() / window.elapsed().as_secs_f64().max(1e-6);
+            load.store((share.clamp(0.0, 1.0) * 1000.0) as u32, Ordering::Relaxed);
+            window = Instant::now();
+            busy = Duration::ZERO;
+        }
         // Nothing to stream (no audio regions): block until a clip arrives instead of
         // waking up every 2 ms.
         if streams.is_empty() {
@@ -1150,6 +1189,7 @@ fn run(rx: mpsc::Receiver<Msg>) {
             return;
         }
         let mut any = false;
+        let started = Instant::now();
         streams.retain_mut(|s| match s.service() {
             Progress::Gone => false,
             Progress::Worked => {
@@ -1158,7 +1198,9 @@ fn run(rx: mpsc::Receiver<Msg>) {
             }
             Progress::Idle => true,
         });
-        if !any {
+        if any {
+            busy += started.elapsed();
+        } else {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -1232,6 +1274,8 @@ mod tests {
                 out_offset: 0,
                 out_len: file.frames,
                 edit: ClipEdit::default(),
+                start_beat: 0.0,
+                tempo: SharedTempo::default(),
             })
             .unwrap();
         }
@@ -1267,6 +1311,8 @@ mod tests {
                 shared: Arc::new(ClipShared::default()),
                 out_rate: SRC_RATE,
                 edit: ClipEdit::default(),
+                start_beat: 0.0,
+                tempo: SharedTempo::default(),
             },
             &mut streams,
         ));
@@ -1528,6 +1574,15 @@ mod tests {
                 buf_base: 0,
                 eof: false,
                 reverse: true,
+                out_rate: OUT_RATE,
+                speed: 1.0,
+                follows: false,
+                keep_pitch: true,
+                stretch: None,
+                start_beat: 0.0,
+                follow_bpm: 0.0,
+                tempo: SharedTempo::default(),
+                map: None,
             };
             // Full playback crosses several cache windows. Later seeks invalidate
             // those windows, including a seek back after reaching the file's start.
@@ -1612,6 +1667,7 @@ mod tests {
             mute: true,
             solo: false,
             pan: 0.0,
+            ..TrackMix::default()
         };
         assert!(r.tx.push(Command::SetTrackMix { track: 0, mix }).is_ok());
         prefetch(&mut r);
@@ -1946,6 +2002,15 @@ mod tests {
             buf_base: 0,
             eof: false,
             reverse: false,
+            out_rate: OUT_RATE,
+            speed: 1.0,
+            follows: false,
+            keep_pitch: true,
+            stretch: None,
+            start_beat: 0.0,
+            follow_bpm: 0.0,
+            tempo: SharedTempo::default(),
+            map: None,
         };
         // Fills its ring (8 blocks), then has nothing to do.
         assert!(matches!(stream.service(), Progress::Worked));

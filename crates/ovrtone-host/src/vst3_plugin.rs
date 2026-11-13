@@ -867,10 +867,11 @@ unsafe fn set_up_buses(
     component: &ComPtr<IComponent>,
     processor: &ComPtr<IAudioProcessor>,
     side: Option<usize>,
-) {
+    main: SpeakerArrangement,
+) -> bool {
     use BusDirections_::{kInput, kOutput};
     use MediaTypes_::{kAudio, kEvent};
-    let stereo = SpeakerArr::kStereo;
+    let stereo = main;
     let arrangement = |direction: i32| -> Vec<SpeakerArrangement> {
         let count = unsafe { component.getBusCount(kAudio as MediaType, direction) };
         (0..count.max(0))
@@ -885,13 +886,19 @@ unsafe fn set_up_buses(
     };
     let mut inputs = arrangement(kInput);
     let mut outputs = arrangement(kOutput);
+    let accepted;
     unsafe {
-        processor.setBusArrangements(
+        let set = processor.setBusArrangements(
             inputs.as_mut_ptr(),
             inputs.len() as int32,
             outputs.as_mut_ptr(),
             outputs.len() as int32,
         );
+        // The plugin may say yes and pick another layout: what it has now is what counts.
+        let mut now: SpeakerArrangement = 0;
+        let out_ok = outputs.is_empty()
+            || (processor.getBusArrangement(kOutput, 0, &mut now) == kResultOk && now == main);
+        accepted = set == kResultOk && out_ok;
         if !inputs.is_empty() {
             component.activateBus(kAudio as MediaType, kInput, 0, 1);
         }
@@ -905,6 +912,7 @@ unsafe fn set_up_buses(
             component.activateBus(kEvent as MediaType, kInput, 0, 1);
         }
     }
+    accepted
 }
 
 /// Loads plugin `id` of a `.vst3` and activates it for the engine's sample rate and block. `side`
@@ -921,6 +929,69 @@ pub fn load_vst3_with(
     sample_rate: u32,
     side: bool,
     ara: bool,
+) -> Result<Loaded, Error> {
+    load_vst3_inner(path, id, sample_rate, side, ara, SpeakerArr::kStereo)
+}
+
+/// The bus channel (`spatial::CHANNEL_NAMES`) of each speaker of a VST3 arrangement, in VST3's order:
+/// the speakers come in the order of their bits.
+fn channel_map_of(arrangement: SpeakerArrangement) -> Vec<usize> {
+    // (VST3 speaker bit, bus channel): L R C LFE, rear and side surrounds, top front, top rear,
+    // wides (or VST3's Lc/Rc where a layout uses those for them), top middle.
+    const TABLE: [(u64, usize); 18] = [
+        (1 << 0, 0),
+        (1 << 1, 1),
+        (1 << 2, 2),
+        (1 << 3, 3),
+        (1 << 4, 4),
+        (1 << 5, 5),
+        (1 << 6, 12),
+        (1 << 7, 13),
+        (1 << 9, 6),
+        (1 << 10, 7),
+        (1 << 12, 8),
+        (1 << 14, 9),
+        (1 << 15, 10),
+        (1 << 17, 11),
+        (1 << 24, 14),
+        (1 << 25, 15),
+        (1 << 59, 12),
+        (1 << 60, 13),
+    ];
+    let mut bits: Vec<(u64, usize)> = TABLE.iter().copied().filter(|(bit, _)| arrangement & bit != 0).collect();
+    bits.sort_by_key(|(bit, _)| *bit);
+    bits.into_iter().map(|(_, channel)| channel).collect()
+}
+
+/// The VST3 speaker arrangement of a spatial layout (by its name), if VST3 has one.
+pub fn arrangement_for(layout: &str) -> Option<SpeakerArrangement> {
+    Some(match layout {
+        "Stereo" => SpeakerArr::kStereo,
+        "5.1" => SpeakerArr::k51,
+        "5.1.2" => SpeakerArr::k51_2,
+        "5.1.4" => SpeakerArr::k51_4,
+        "7.1" => SpeakerArr::k71Music,
+        "7.1.2" => SpeakerArr::k71_2,
+        "7.1.4" => SpeakerArr::k71_4,
+        "9.1.6" => SpeakerArr::k91_6,
+        _ => return None,
+    })
+}
+
+/// A VST3 effect set up in a surround layout (a spatial bus): Err when it does not take it, and
+/// then it runs as linked stereo copies instead.
+pub fn load_vst3_layout(path: &Path, id: &str, sample_rate: u32, layout: &str) -> Result<Loaded, Error> {
+    let main = arrangement_for(layout).ok_or_else(|| err(path, "no VST3 layout for this bus"))?;
+    load_vst3_inner(path, id, sample_rate, false, false, main)
+}
+
+fn load_vst3_inner(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+    ara: bool,
+    main: SpeakerArrangement,
 ) -> Result<Loaded, Error> {
     let module = load_module(path)?;
     let cid = uid_from_text(id).ok_or_else(|| err(path, "the plugin's identifier is not valid"))?;
@@ -1005,7 +1076,11 @@ pub fn load_vst3_with(
             }
         }
         let side_bus = side_bus_of(&component);
-        set_up_buses(&component, &processor, side_bus.filter(|_| side));
+        let accepted = set_up_buses(&component, &processor, side_bus.filter(|_| side), main);
+        if main != SpeakerArr::kStereo && !accepted {
+            component.terminate();
+            return Err(err(path, "the plugin does not take this speaker layout"));
+        }
         let mut setup = ProcessSetup {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
@@ -1042,6 +1117,11 @@ pub fn load_vst3_with(
             released.clone(),
         );
         audio.side_bus = side_bus.filter(|_| side);
+        audio.tuning = controller.as_ref().is_some_and(|c| takes_tuning(c));
+        audio.channels = outputs.first().copied().unwrap_or(2);
+        if main != SpeakerArr::kStereo {
+            audio.arrangement = main;
+        }
         audio.keeps_running = document.is_some();
         let gate = audio.gate.clone();
         Ok((
@@ -1097,6 +1177,21 @@ unsafe fn vst3_params(controller: &ComPtr<IEditController>) -> Vec<crate::Plugin
 /// VST3 has no MIDI controllers: the plugin says which parameter each one moves.
 ///
 /// SAFETY: `mapping` must be valid.
+/// Whether the plugin offers the tuning note expression on its first event bus.
+///
+/// SAFETY: `controller` is the plugin's live edit controller, on the thread that made it.
+unsafe fn takes_tuning(controller: &ComPtr<IEditController>) -> bool {
+    let Some(expressions) = controller.cast::<INoteExpressionController>() else {
+        return false;
+    };
+    let count = expressions.getNoteExpressionCount(0, 0).clamp(0, 256);
+    (0..count).any(|i| {
+        let mut info: NoteExpressionTypeInfo = std::mem::zeroed();
+        expressions.getNoteExpressionInfo(0, 0, i, &mut info) == kResultOk
+            && info.typeId == NoteExpressionTypeIDs_::kTuningTypeID
+    })
+}
+
 unsafe fn midi_table(mapping: &ComPtr<IMidiMapping>) -> Box<[Option<ParamID>; MIDI_CONTROLLERS]> {
     let mut table = Box::new([None; MIDI_CONTROLLERS]);
     for (number, slot) in table.iter_mut().enumerate() {
@@ -1665,6 +1760,12 @@ struct Vst3Processor {
     released: Arc<AtomicBool>,
     /// The bus a side chain goes in, when it is on.
     side_bus: Option<usize>,
+    /// It takes the tuning note expression: a slide bends only its own note.
+    tuning: bool,
+    /// Channels of its main input and output: 2, or the bus's layout when set up in one.
+    channels: usize,
+    /// The speakers of its main output, as VST3 names them (0: not asked).
+    arrangement: SpeakerArrangement,
 }
 
 // SAFETY: this half is handed to the audio thread once and used only there until it comes back.
@@ -1672,6 +1773,73 @@ struct Vst3Processor {
 unsafe impl Send for Vst3Processor {}
 
 impl Vst3Processor {
+    /// Takes the audio gate for a block; false while the UI thread holds the plugin.
+    fn enter(&mut self) -> bool {
+        let entered =
+            self.gate
+                .compare_exchange(GATE_FREE, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire);
+        match entered {
+            Ok(_) => true,
+            Err(GATE_RESUMED) => {
+                // Only the audio thread leaves this state, unless the UI thread holds it again.
+                if self
+                    .gate
+                    .compare_exchange(GATE_RESUMED, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return false;
+                }
+                self.started = false;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// One block of `frames` with the inputs already filled. False if the plugin failed it.
+    fn run(&mut self, events: &[PluginEvent], transport: &PluginTransport, frames: usize) -> bool {
+        self.events.clear();
+        self.events_out.clear();
+        self.params.clear();
+        self.params_out.clear();
+        while let Ok((id, value)) = self.edits.pop() {
+            self.params.add(id, 0, value);
+        }
+        for (id, value) in self.pending.drain(..) {
+            self.params.add(id, 0, value);
+        }
+        self.take_events(events);
+        let mut context = process_context(transport, self.sample_rate, self.continuous);
+        self.continuous += frames as i64;
+        let params = self.params.as_com_ref::<IParameterChanges>();
+        let params_out = self.params_out.as_com_ref::<IParameterChanges>();
+        let events_in = self.events.as_com_ref::<IEventList>();
+        let events_out = self.events_out.as_com_ref::<IEventList>();
+        let mut data = ProcessData {
+            processMode: ProcessModes_::kRealtime as int32,
+            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+            numSamples: frames as int32,
+            numInputs: self.inputs.buses.len() as int32,
+            numOutputs: self.outputs.buses.len() as int32,
+            inputs: self.inputs.buses.as_mut_ptr(),
+            outputs: self.outputs.buses.as_mut_ptr(),
+            inputParameterChanges: params.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
+            outputParameterChanges: params_out.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
+            inputEvents: events_in.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
+            outputEvents: events_out.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
+            processContext: &mut context,
+        };
+        // SAFETY: every pointer in `data` points at something this struct owns, which stays put
+        // for the call, and the block is the size promised in `setupProcessing`.
+        unsafe {
+            if !self.started {
+                self.processor.setProcessing(1);
+                self.started = true;
+            }
+            self.processor.process(&mut data) == kResultOk
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         processor: ComPtr<IAudioProcessor>,
@@ -1697,6 +1865,9 @@ impl Vst3Processor {
             latency,
             sample_rate,
             continuous: 0,
+            tuning: false,
+            channels: 2,
+            arrangement: 0,
             started: false,
             gate: Arc::new(AtomicU8::new(GATE_FREE)),
             keeps_running: false,
@@ -1727,8 +1898,18 @@ impl Vst3Processor {
                         self.params.add(id, e.frame as i32, v);
                     }
                 }
-                // Not offered to VST3 plugins yet: they get the whole-instrument bend.
-                PluginEventKind::NoteTune { .. } => {}
+                // A slide of this note alone: the tuning note expression, 0.5 being its own pitch
+                // and the range 120 semitones each way.
+                PluginEventKind::NoteTune { key, semitones } => {
+                    let mut event =
+                        empty_event(e.frame, Event_::EventTypes_::kNoteExpressionValueEvent as u32);
+                    event.__field0.noteExpressionValue = NoteExpressionValueEvent {
+                        typeId: NoteExpressionTypeIDs_::kTuningTypeID,
+                        noteId: i32::from(key),
+                        value: (0.5 + f64::from(semitones) / 240.0).clamp(0.0, 1.0),
+                    };
+                    self.events.push(event);
+                }
                 PluginEventKind::ChannelPressure { value } => {
                     if let Some(id) = self.midi[ControllerNumbers_::kAfterTouch as usize] {
                         self.params.add(id, e.frame as i32, f64::from(value.clamp(0.0, 1.0)));
@@ -1756,7 +1937,8 @@ fn note_on(frame: u32, key: u8, velocity: f32) -> Event {
         tuning: 0.0,
         velocity: velocity.clamp(0.0, 1.0),
         length: 0,
-        noteId: -1,
+        // The key names the note, so a note expression can find it.
+        noteId: i32::from(key),
     };
     event
 }
@@ -1767,7 +1949,7 @@ fn note_off(frame: u32, key: u8) -> Event {
         channel: 0,
         pitch: i16::from(key),
         velocity: 0.0,
-        noteId: -1,
+        noteId: i32::from(key),
         tuning: 0.0,
     };
     event
@@ -1804,6 +1986,10 @@ fn process_context(now: &PluginTransport, sample_rate: f64, continuous: i64) -> 
 }
 
 impl PluginProcessor for Vst3Processor {
+    fn note_tuning(&self) -> bool {
+        self.tuning
+    }
+
     fn set_side_input(&mut self, side: [&[f32]; 2]) {
         if let Some(bus) = self.side_bus {
             fill_side_input(&mut self.inputs.channels, bus, side);
@@ -1827,82 +2013,59 @@ impl PluginProcessor for Vst3Processor {
         events: &[PluginEvent],
         transport: &PluginTransport,
     ) {
-        let entered =
-            self.gate
-                .compare_exchange(GATE_FREE, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire);
-        match entered {
-            Ok(_) => {}
-            Err(GATE_RESUMED) => {
-                // Only the audio thread leaves this state, unless the UI thread holds it again.
-                if self
-                    .gate
-                    .compare_exchange(GATE_RESUMED, GATE_BUSY, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    let [l, r] = output;
-                    l.fill(0.0);
-                    r.fill(0.0);
-                    return;
-                }
-                self.started = false;
-            }
-            Err(_) => {
-                let [l, r] = output;
-                l.fill(0.0);
-                r.fill(0.0);
-                return;
-            }
+        let [l, r] = output;
+        if !self.enter() {
+            l.fill(0.0);
+            r.fill(0.0);
+            return;
         }
-        self.events.clear();
-        self.events_out.clear();
-        self.params.clear();
-        self.params_out.clear();
-        while let Ok((id, value)) = self.edits.pop() {
-            self.params.add(id, 0, value);
-        }
-        for (id, value) in self.pending.drain(..) {
-            self.params.add(id, 0, value);
-        }
-        self.take_events(events);
         // A plugin whose only input is its side chain has no main one to fill.
         if self.side_bus != Some(0) {
             fill_main_input(&mut self.inputs.channels, input);
         }
-        let mut context = process_context(transport, self.sample_rate, self.continuous);
-        self.continuous += input[0].len() as i64;
-        let params = self.params.as_com_ref::<IParameterChanges>();
-        let params_out = self.params_out.as_com_ref::<IParameterChanges>();
-        let events_in = self.events.as_com_ref::<IEventList>();
-        let events_out = self.events_out.as_com_ref::<IEventList>();
-        let mut data = ProcessData {
-            processMode: ProcessModes_::kRealtime as int32,
-            symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-            numSamples: input[0].len() as int32,
-            numInputs: self.inputs.buses.len() as int32,
-            numOutputs: self.outputs.buses.len() as int32,
-            inputs: self.inputs.buses.as_mut_ptr(),
-            outputs: self.outputs.buses.as_mut_ptr(),
-            inputParameterChanges: params.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
-            outputParameterChanges: params_out.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
-            inputEvents: events_in.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
-            outputEvents: events_out.map_or(std::ptr::null_mut(), |r| r.as_ptr()),
-            processContext: &mut context,
-        };
-        // SAFETY: every pointer in `data` points at something this struct owns, which stays put
-        // for the call, and the block is the size promised in `setupProcessing`.
-        let ok = unsafe {
-            if !self.started {
-                self.processor.setProcessing(1);
-                self.started = true;
-            }
-            self.processor.process(&mut data) == kResultOk
-        };
-        if ok {
-            read_main_output(&self.outputs.channels, output);
+        if self.run(events, transport, input[0].len()) {
+            read_main_output(&self.outputs.channels, [l, r]);
         } else {
-            let [l, r] = output;
             l.fill(0.0);
             r.fill(0.0);
+        }
+        self.gate.store(GATE_FREE, Ordering::Release);
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
+    }
+
+    fn channel_map(&self) -> Option<Vec<usize>> {
+        (self.arrangement != 0).then(|| channel_map_of(self.arrangement))
+    }
+
+    fn process_multi(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], transport: &PluginTransport) {
+        if !self.enter() {
+            for o in output.iter_mut() {
+                o.fill(0.0);
+            }
+            return;
+        }
+        let frames = input.first().map_or(0, |x| x.len());
+        if let Some(bus) = self.inputs.channels.first_mut() {
+            for (c, ch) in bus.iter_mut().enumerate() {
+                match input.get(c) {
+                    Some(x) => ch[..x.len()].copy_from_slice(x),
+                    None => ch.fill(0.0),
+                }
+            }
+        }
+        let ok = self.run(&[], transport, frames);
+        let main = self.outputs.channels.first();
+        for (c, o) in output.iter_mut().enumerate() {
+            match (ok, main.and_then(|b| b.get(c))) {
+                (true, Some(src)) => {
+                    let n = o.len().min(src.len());
+                    o[..n].copy_from_slice(&src[..n]);
+                }
+                _ => o.fill(0.0),
+            }
         }
         self.gate.store(GATE_FREE, Ordering::Release);
     }
@@ -2120,7 +2283,7 @@ mod tests {
         unsafe {
             assert_eq!(list[0].__field0.noteOn.pitch, 60);
             assert_eq!(list[0].__field0.noteOn.velocity, 0.5);
-            assert_eq!(list[1].__field0.noteOff.noteId, -1);
+            assert_eq!(list[1].__field0.noteOff.noteId, 60, "the key names the note");
             assert_eq!(params.getParameterCount(), 2);
             let queue = params.queues[0].as_com_ref::<IParamValueQueue>().unwrap();
             assert_eq!(queue.getParameterId(), 7);

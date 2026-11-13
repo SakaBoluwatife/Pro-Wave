@@ -150,6 +150,27 @@ pub trait PluginProcessor: Send {
     fn note_tuning(&self) -> bool {
         false
     }
+
+    /// Which bus channel (see `spatial::CHANNEL_NAMES`) each of its channels is, in its own order,
+    /// for a plugin set up in a surround layout. `None`: the bus's order. Off the audio thread.
+    fn channel_map(&self) -> Option<Vec<usize>> {
+        None
+    }
+
+    /// How many channels its main input and output have: 2 for a stereo plugin, more for one
+    /// set up in a surround layout (a spatial bus).
+    fn channels(&self) -> usize {
+        2
+    }
+
+    /// Processes one block of every channel of its layout (see [`Self::channels`]): `input` and
+    /// `output` have that many slices, each at most `PLUGIN_BLOCK` frames. A stereo plugin runs its
+    /// first two. On the audio thread: it must not allocate.
+    fn process_multi(&mut self, input: &[&[f32]], output: &mut [&mut [f32]], transport: &PluginTransport) {
+        if let ([l, r, ..], [ol, or, ..]) = (input, output) {
+            self.process([l, r], [ol, or], &[], transport);
+        }
+    }
 }
 
 /// Running every hosted plugin's block at once, on several cores. A plugin's output reaches the mix

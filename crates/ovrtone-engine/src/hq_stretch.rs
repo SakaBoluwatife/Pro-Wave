@@ -41,6 +41,40 @@ pub fn whole(left: &[f32], right: &[f32], rate: u32, frames: usize) -> (Vec<f32>
     (l, r)
 }
 
+/// `frames` of stereo `piece` (interleaved) at the same length, moved in pitch by `transpose_at(frame)`
+/// semitones block by block (so it can follow a pitch curve), the formants kept and then moved
+/// `formant` semitones. The stretcher's latency is taken out.
+pub fn retune(
+    piece: &[f32],
+    frames: usize,
+    rate: u32,
+    formant: f32,
+    transpose_at: impl Fn(usize) -> f32,
+) -> Vec<f32> {
+    const BLOCK: usize = 256;
+    let mut st = Stretch::preset_default(2, rate.max(1));
+    st.set_formant_factor(2f32.powf(formant / 12.0), true);
+    let latency = st.input_latency() + st.output_latency();
+    let total = frames + latency;
+    let mut out = vec![0.0f32; total * 2];
+    let mut input = vec![0.0f32; BLOCK * 2];
+    let mut at = 0;
+    while at < total {
+        let n = BLOCK.min(total - at);
+        for i in 0..n {
+            let k = at + i;
+            input[2 * i] = piece.get(2 * k).copied().unwrap_or(0.0);
+            input[2 * i + 1] = piece.get(2 * k + 1).copied().unwrap_or(0.0);
+        }
+        st.set_transpose_factor(2f32.powf(transpose_at(at) / 12.0), None);
+        st.process(&input[..n * 2], &mut out[at * 2..(at + n) * 2]);
+        at += n;
+    }
+    out.drain(..latency * 2);
+    out.truncate(frames * 2);
+    out
+}
+
 /// The whole of `input` into the whole of `out` (interleaved stereo, `out` at least twice the output
 /// latency), the latency taken out. The first input latency's worth it seeks on is zero-padded, so a
 /// sample shorter than that is never read past its end.

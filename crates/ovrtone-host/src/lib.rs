@@ -300,6 +300,28 @@ pub fn scan_plugin_file(path: &Path) -> Result<Vec<PluginInfo>, HostError> {
 
 /// [`load_plugin_safely`] for a plugin on an audio track: one that offers ARA is then bound to the
 /// track's audio. Not for plugins in a process of their own, which run as any other.
+/// A plugin for a spatial bus of `layout` (its name) with `pairs` pairs of channels: a VST3 effect
+/// that takes the layout in one instance (`true`), any other as one stereo copy per pair (`false`).
+pub fn load_for_bus(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    layout: &str,
+    pairs: usize,
+) -> Result<(Vec<Loaded>, bool), HostError> {
+    #[cfg(windows)]
+    if PluginFormat::of(path) == PluginFormat::Vst3 && layout != "Stereo" {
+        if let Ok(loaded) = crate::vst3_plugin::load_vst3_layout(path, id, sample_rate, layout) {
+            return Ok((vec![loaded], true));
+        }
+    }
+    let mut copies = Vec::with_capacity(pairs.max(1));
+    for _ in 0..pairs.max(1) {
+        copies.push(load_plugin_safely(path, id, sample_rate, false)?);
+    }
+    Ok((copies, false))
+}
+
 pub fn load_plugin_for_audio(
     path: &Path,
     id: &str,
