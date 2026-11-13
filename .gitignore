@@ -29,3 +29,6 @@ Thumbs.db
 dist/windows/stems/
 dist/windows/runtime/
 dist/windows/output/
+
+# Visual Studio cache
+.vs/

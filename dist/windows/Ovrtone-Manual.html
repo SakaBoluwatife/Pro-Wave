@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ovrtone Manual</title>
+<style>
+:root { --bg:#f6f5f2; --panel:#fff; --fg:#1f2227; --dim:#5d636e; --line:#dddad3; --accent:#c9851a; --ok:#2f7d57; --part:#a86a00; --no:#a33a3a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#16181c; --panel:#1e2126; --fg:#e4e6ea; --dim:#9aa0aa; --line:#30343b; --accent:#f2b13c; --ok:#5fc391; --part:#e2a64a; --no:#e07a7a; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 "Segoe UI", system-ui, sans-serif; }
+.wrap { display:grid; grid-template-columns: 240px minmax(0, 1fr); max-width:1180px; margin:0 auto; }
+nav { position:sticky; top:0; align-self:start; max-height:100vh; overflow:auto; padding:28px 16px; font-size:14px; }
+nav a { display:block; color:var(--dim); text-decoration:none; padding:3px 0; }
+nav a:hover { color:var(--accent); }
+nav b { display:block; margin:0 0 10px; color:var(--fg); }
+main { padding:28px 24px 80px; min-width:0; }
+h1 { font-size:34px; margin:0 0 6px; }
+h2 { font-size:22px; margin:44px 0 10px; padding-top:10px; border-top:1px solid var(--line); }
+h3 { font-size:16px; margin:22px 0 6px; }
+p, li { max-width:76ch; }
+.lede { color:var(--dim); font-size:16px; }
+.note { background:var(--panel); border-left:3px solid var(--accent); padding:10px 14px; margin:14px 0; border-radius:4px; }
+kbd { font:12px/1 Consolas, monospace; background:var(--panel); border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:2px 6px; }
+.tw { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; margin:10px 0; background:var(--panel); font-size:14px; }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+.ok { color:var(--ok); font-weight:600; } .part { color:var(--part); font-weight:600; } .no { color:var(--no); font-weight:600; }
+@media (max-width: 760px) { .wrap { grid-template-columns:1fr; } nav { position:static; max-height:none; padding:16px; border-bottom:1px solid var(--line); } main { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <b>Ovrtone Manual</b>
+  <a href="#start">1. Getting started</a>
+  <a href="#window">2. The main window</a>
+  <a href="#tracks">3. Tracks</a>
+  <a href="#record">4. Recording and takes</a>
+  <a href="#audio">5. Editing audio</a>
+  <a href="#tempo">6. Tempo and Fit to Tempo</a>
+  <a href="#midi">7. MIDI and the Piano Roll</a>
+  <a href="#rack">8. Channel Rack and patterns</a>
+  <a href="#mix">9. Mixing and automation</a>
+  <a href="#spatial">10. Spatial audio</a>
+  <a href="#export">11. Bouncing and exporting</a>
+  <a href="#other">12. Opening other DAWs' sessions</a>
+  <a href="#safe">13. Keeping your work safe</a>
+  <a href="#settings">14. Settings and performance</a>
+  <a href="#keys">15. Key commands</a>
+  <a href="#limits">16. What does not work yet</a>
+</nav>
+<main>
+<h1>Ovrtone Manual</h1>
+<p class="lede">Version 0.4.0, beta. Ovrtone is a DAW for Windows: a Logic-style arrangement, mixer and editors, with FL Studio's Piano Roll and Channel Rack. It ships with no sound library: you bring your own VST3 and CLAP plugins and your own samples.</p>
+<div class="note">This is a beta. Save often, and keep the automatic backups on (they are on by default). Section 16 lists what is missing or only partly done, so you know what not to rely on yet.</div>
+
+<h2 id="start">1. Getting started</h2>
+<h3>Sound</h3>
+<p>Open <b>Settings</b> (<kbd>Ctrl</kbd>+<kbd>,</kbd>) and pick <b>Audio</b>. Choose the driver (WASAPI works with every sound card; ASIO is listed when your interface has an ASIO driver), the output device and the buffer size. On first run Ovrtone suggests a buffer size from your computer's speed. Smaller buffers mean less delay when you play live and more work for the computer.</p>
+<h3>Plugins</h3>
+<p>Ovrtone scans the standard VST3 and CLAP folders when it starts, and any folders you add in <b>Settings &gt; Plugins</b> (or chose in the installer). Each plugin is scanned on its own, so one that crashes during the scan is set aside and does not stop Ovrtone; it stays blocked until you Rescan. The <b>Plugins</b> tab of the left panel lists what was found: double-click a plugin or drag it onto a track or mixer slot.</p>
+<h3>A first project</h3>
+<p>The start screen offers an empty project, your recent projects and templates. <b>File &gt; Save as Template…</b> adds the current project to your templates. <b>File &gt; New Surround Project</b> starts a spatial project (section 10).</p>
+
+<h2 id="window">2. The main window</h2>
+<div class="tw"><table>
+<tr><th>Area</th><th>What it does</th></tr>
+<tr><td>Control bar</td><td>Transport (play, stop, record, cycle), the display (bar, beat, tempo, signature, key), metronome and count-in. Click the tempo to type a new one or drag it. After the display is the <b>Typing Keyboard</b> button (<kbd>Ctrl</kbd>+<kbd>K</kbd>): play notes on the computer keyboard. Right-click it to choose which mode buttons show there, such as Low Latency Mode.</td></tr>
+<tr><td>Ruler</td><td>The top strip is the <b>Cycle</b> strip (the loop region), with its own header on the left: click the header or press <kbd>C</kbd> to turn Cycle on or off, drag in the strip to set it. The loop region stays outlined while Cycle is off. Below the strip are the bar numbers: click or drag there to move the playhead.</td></tr>
+<tr><td>Left panel</td><td><b>Browser</b>: your sample folders, with search, favourites, tags and preview; the waveform panel at the bottom shows sample rate, BPM and length. <b>Inspector</b>: the selected region's and track's settings. <b>Plugins</b>: every plugin found.</td></tr>
+<tr><td>Tracks area</td><td>The arrangement. Regions are moved, trimmed, split and faded here. The tools are in its toolbar; the Snap and Drag menus set how edits land.</td></tr>
+<tr><td>Bottom pane</td><td>Shows the Mixer, or the editor for the selected track: the Piano Roll for instrument tracks, the <b>Audio Track Editor</b> for audio tracks (section 5).</td></tr>
+<tr><td>Channel Rack</td><td>FL Studio-style patterns, opened from <b>View &gt; Show Channel Rack</b> (section 8).</td></tr>
+</table></div>
+<p>The message line beside the menus shows warnings and results. A message clears after a few seconds; click it to dismiss it at once.</p>
+
+<h2 id="tracks">3. Tracks</h2>
+<p>Track kinds: <b>Audio</b>, <b>Software Instrument</b> (hosts an instrument plugin), <b>Aux</b> and buses, <b>VCA</b>, <b>External MIDI</b> (drives hardware) and <b>Track Stacks</b> (folder and summing stacks). New tracks come from <b>Track &gt; New Tracks…</b> or the key commands in section 15.</p>
+<ul>
+<li>Rename, colour and icons: Track menu. Icons are hidden unless you turn them on in <b>Settings &gt; Display</b>.</li>
+<li>Freeze a heavy track from its right-click menu; Commit Track turns it into audio.</li>
+<li>Track alternatives keep other versions of a track's regions, one playing at a time.</li>
+</ul>
+
+<h2 id="record">4. Recording and takes</h2>
+<ul>
+<li>Arm a track (R on its header) and press <kbd>R</kbd> or the record button. Count-in and metronome are on the control bar.</li>
+<li><b>Pre-roll and post-roll</b>: right-click the count-in button.</li>
+<li><b>Capture Recording</b> (<kbd>Shift</kbd>+<kbd>R</kbd>) keeps what you just played on an instrument track even if you were not recording.</li>
+<li><b>Autopunch</b> records only between the locators.</li>
+<li>Recording over a cycle makes a <b>take folder</b>. Open it and swipe across takes to build a comp; right-click a take to hear it alone, keep comps by name, or copy a take to a new track.</li>
+<li>MIDI can come from a keyboard, any MIDI port, or the computer keyboard (musical typing).</li>
+</ul>
+
+<h2 id="audio">5. Editing audio</h2>
+<h3>Dropping samples</h3>
+<p>Drop a sample on the Tracks area (from the Browser, or one file from File Explorer) and Ovrtone asks what it becomes: a hit at that bar (for short samples), an audio clip on the timeline, a new Channel Rack channel, a channel with a step pattern, a channel to play from the Piano Roll, or the sound of the track you dropped it on.</p>
+<h3>In the Tracks area</h3>
+<ul>
+<li><b>Trim</b>: drag either edge of a region. The audio stays where it is in the song; only what plays changes.</li>
+<li><b>Fades</b>: with the Smart Tool, drag the top corners; or use the Fade tool; or the Inspector's Fade In and Fade Out.</li>
+<li><b>Smart Tool</b> (Snap menu): the top half of a region selects, the bottom half moves, the edges trim, the top corners fade.</li>
+<li><b>Split</b> <kbd>Ctrl</kbd>+<kbd>T</kbd>, <b>Join</b> <kbd>Ctrl</kbd>+<kbd>J</kbd>, <b>Repeat</b> <kbd>Ctrl</kbd>+<kbd>R</kbd>, <b>Mute</b> <kbd>Ctrl</kbd>+<kbd>M</kbd>.</li>
+<li><b>Clip gain lines</b> (Snap menu): draw gain changes inside a region.</li>
+<li><b>Spot</b> (right-click a region): type exactly where it starts.</li>
+<li><b>Alt-drag a region's end</b> to time-stretch it to a new length.</li>
+<li>Right-click a region for Normalize Region Gain, Strip Silence, Split Stems (the Stem Splitter), Flex and Smart Tempo.</li>
+</ul>
+<h3>Audio Track Editor</h3>
+<p>Select an audio track, or click the <b>Audio Editor</b> tab in the bottom pane, and it shows the region over the whole file, with the part that plays lit. Click the <b>Piano Roll</b> tab to go back to an instrument track. Key commands work over it as they do in the Tracks area.</p>
+<ul>
+<li>The lower handles at each end trim the region's start and end; the upper handles set the fades.</li>
+<li>Click inside the lit part to move the playhead there.</li>
+<li>The bar above holds the region's Gain, Reverse, Fit to Tempo (with Stretch or Resample) and the Audio File Editor.</li>
+</ul>
+<h3>Audio File Editor</h3>
+<p>Opened from the Audio Track Editor. Its edits change the sound of the file itself, for every region that plays it: normalize, gain, fade in and out, silence, reverse and trim, over a selection or the whole file. Your original file is never touched: Ovrtone works on a copy and points the regions at it, so Undo simply points them back.</p>
+<h3>Flex</h3>
+<p>Flex moves audio in time without changing pitch. Right-click a region &gt; Flex Time to pick a mode, quantize it to the grid, or correct its pitch to the project's key. <b>Show Flex Editor</b> (<kbd>Ctrl</kbd>+<kbd>F</kbd>) shows markers you can drag.</p>
+
+<h2 id="tempo">6. Tempo and Fit to Tempo</h2>
+<h3>Fit to Tempo (samples follow the project)</h3>
+<p>Right-click an audio region and choose <b>Fit to Tempo</b>. Ovrtone takes the sample's tempo from its name (for example "Guitar_F_90" is 90 BPM) or listens for it. From then on the region keeps its length in bars: change the project tempo and it speeds up or slows down with it. The region's name bar shows its tempo and how it follows.</p>
+<ul>
+<li><b>Follow Tempo By &gt; Stretch</b>: the pitch stays the same at any tempo.</li>
+<li><b>Follow Tempo By &gt; Resample</b>: faster is higher and slower is lower, like a turntable (FL Studio's Resample).</li>
+<li><b>Stop Following Tempo</b> returns the region to its recording.</li>
+<li>If the tempo cannot be found, type it in the Inspector's <b>Sample BPM</b> field.</li>
+</ul>
+<div class="note">The engine stretches fitted audio as it plays, so a tempo change is heard at once, including tempo changes and ramps in the middle of a region.</div>
+<h3>Smart Tempo (the project follows a recording)</h3>
+<p>Right-click a region &gt; Smart Tempo &gt; <b>Adapt Project Tempo to Region</b> sets the project's tempo map from a recording played without a click. The Smart Tempo Editor lets you fix half-time or double-time results and the downbeat first.</p>
+<h3>Tempo map</h3>
+<p>The Tempo track (Track &gt; Show Tempo Track) holds tempo changes; the Signature track holds time signature changes. <b>Map Beat to Playhead</b> moves a beat to where the playhead is.</p>
+
+<h3>Melodyne and other ARA plugins</h3>
+<p>Put an ARA plugin such as Melodyne on an audio track's first insert and it reads that track's regions itself. Ovrtone gives it the song's tempo map and time signatures, so its notes, and the MIDI you drag out of it, line up with the bars.</p>
+
+<h2 id="midi">7. MIDI and the Piano Roll</h2>
+<p>The Piano Roll works like FL Studio's: draw, paint, delete, mute, slice and select tools; ghost notes from other tracks; time selection; slides; note colours.</p>
+<ul>
+<li>Note tools: arpeggiate, strum, flam, note repeat, claw, limit, levels, velocity LFO, randomize, chord stamp, flip.</li>
+<li>Quantize, swing, scale quantize and scale highlight, humanize.</li>
+<li>Lanes below the notes for velocity, controllers, aftertouch and pitch bend.</li>
+<li>Click or drag the Piano Roll's ruler to move the playhead; right-drag it for a time selection. Ghost notes (<kbd>Alt</kbd>+<kbd>V</kbd>) show the notes of the other regions.</li>
+<li>Also: the <b>Score</b> view, the <b>Step Sequencer</b> (pattern regions), the <b>Event List</b> (<kbd>D</kbd>), <b>MIDI Transform</b> and <b>MIDI FX</b> (arpeggiator, chord trigger, randomizer, Scripter).</li>
+</ul>
+
+<h2 id="rack">8. Channel Rack and patterns</h2>
+<p>Each row of the Channel Rack is an instrument track (a channel). A pattern holds steps or notes for any of them. This is the FL Studio way of making drums and loops.</p>
+<ul>
+<li>Click steps to turn them on, or press one and drag along the row to paint several; right-click drag erases. Open a channel's small piano roll for real notes. Drag a step up or down in the pan view to pan it.</li>
+<li>Drop a sample on a row to load it there, or on <b>Add Channel</b> to make a new channel that plays it.</li>
+<li><b>Place a pattern</b>: drag it onto the Tracks area, or press <b>Place at Playhead</b>. It makes a region on every channel's track that has notes, so each drum lands on its own track (FL Studio's split by channel). Every placed copy follows the pattern; an edit in the Piano Roll goes back into the pattern.</li>
+<li>While a placed pattern plays, the step under the playhead lights up.</li>
+<li>Make Unique and Clone Pattern are in a placed region's menu.</li>
+</ul>
+
+<h2 id="mix">9. Mixing and automation</h2>
+<ul>
+<li>The Mixer (<kbd>X</kbd>): faders, pan, mute, solo, sends, buses, inserts (up to 32) with delay compensation, groups and VCAs.</li>
+<li><b>Stereo Out</b> is at the right edge of the mixer (left if you prefer: Settings &gt; Display). It takes Ovrtone's own effects before its plugins.</li>
+<li>Channel strip settings save and load from each strip's Setting menu.</li>
+<li><b>Automation</b>: press <kbd>A</kbd> to show a track's lanes. Read, Touch, Latch and Write modes; fader, pan, effect and plugin parameters.</li>
+<li><b>Organize Mix Session</b> (Mix menu): recognises each track by its name (Kick, 808, Lead Vox, BGV…), colours it by group, sorts the tracks and gives each group a bus. Check the groups, change any, then Organize.</li>
+<li><b>Auto Gain Staging</b> sets each track's level to a sensible start.</li>
+<li><b>Create Mastering Track</b> and the Mastering menu for the final stage; reference tracks are kept out of exports.</li>
+<li>Mono Sum Output and Dim Output are for checking only; bounces are not affected.</li>
+</ul>
+
+<h2 id="spatial">10. Spatial audio</h2>
+<ul>
+<li>Speaker layouts from stereo to 9.1.6; place each track in 3D with the panner (direction, elevation, size, spread; more under "More").</li>
+<li>The renderer is on Stereo Out's strip: output to speakers, binaural for headphones, folded, or downmixed to a smaller layout.</li>
+<li>Any track can be placed in 3D in a stereo project too; you hear it on headphones.</li>
+<li>Speaker setup with test noise, LFE filter, spatial buses, and measured heads (SOFA files) for headphones.</li>
+<li>Exports: ADM BW64 (7.1.4, or a 7.1.2 bed with up to 118 objects), multichannel WAV, binaural and Ambisonics.</li>
+</ul>
+
+<h2 id="export">11. Bouncing and exporting</h2>
+<ul>
+<li><b>File &gt; Bounce &gt; Project or Section…</b> (<kbd>Ctrl</kbd>+<kbd>B</kbd>): WAV, FLAC or MP3, mono or stereo, normalised if you like. It renders faster than real time with plugins, automation and tails.</li>
+<li><b>Export &gt; All Tracks as Audio Files</b> for stems; <b>Track as Audio File</b> for one.</li>
+<li><b>Bounce Regions in Place</b> and <b>Bounce and Join</b> turn regions into audio on the track.</li>
+<li><b>Export &gt; Selection as MIDI File</b>; MIDI files import with <b>File &gt; Import</b>.</li>
+</ul>
+
+<h2 id="other">12. Opening other DAWs' sessions</h2>
+<p><b>File &gt; Open</b> reads DAWproject files (Bitwig, Studio One, Cubase), REAPER, Ableton Live and Ardour projects with their tracks, clips, tempo and markers. Pro Tools sessions open through Pro Tools' "Session Info as Text" export. Logic projects open in part: the audio files, each on its own track from the start. After opening, a log lists what could not be carried over.</p>
+
+<h2 id="safe">13. Keeping your work safe</h2>
+<ul>
+<li>Every save keeps a backup beside the project; <b>Settings &gt; General</b> sets how many.</li>
+<li><b>File &gt; Revert to &gt; Project History</b> opens any backup.</li>
+<li>A project that will not open offers its newest backup.</li>
+<li>A crash-recovery copy is written every few minutes (interval in Settings &gt; General).</li>
+<li>Plugins that crash during the scan are blocked. A plugin that crashes while playing can still close Ovrtone (see section 16).</li>
+</ul>
+
+<h2 id="settings">14. Settings and performance</h2>
+<ul>
+<li><b>Settings</b>: Audio, Keyboard (remap every key command), Plugins, General, Display (high contrast, keyboard focus ring, track icons, Stereo Out side, interface size).</li>
+<li><b>Render ahead during playback</b> (Settings) gives heavy sessions more time while nothing is played live; Play and Stop then answer about 50 ms later.</li>
+<li><b>Window &gt; Performance</b> shows the load, the slowest audio callbacks, dropouts and the costliest tracks.</li>
+<li><b>Screensets</b>: <kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd> saves a window layout, <kbd>1</kbd>…<kbd>9</kbd> recalls it.</li>
+<li>Seventeen interface languages: Help &gt; Language.</li>
+</ul>
+
+<h2 id="keys">15. Key commands</h2>
+<p>All of these can be changed in Settings &gt; Keyboard. <b>Help &gt; Logic-style Key Commands…</b> (<kbd>Alt</kbd>+<kbd>K</kbd>) lists them all.</p>
+<div class="tw"><table>
+<tr><th>Keys</th><th>Does</th><th>Keys</th><th>Does</th></tr>
+<tr><td><kbd>R</kbd></td><td>Record</td><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Capture Recording</td></tr>
+<tr><td><kbd>C</kbd></td><td>Cycle on or off</td><td><kbd>K</kbd></td><td>Metronome</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Go to beginning</td><td><kbd>,</kbd> / <kbd>.</kbd></td><td>Back or forward a bar</td></tr>
+<tr><td><kbd>M</kbd> / <kbd>S</kbd></td><td>Mute or solo the track</td><td><kbd>A</kbd></td><td>Show track automation</td></tr>
+<tr><td><kbd>X</kbd></td><td>Mixer</td><td><kbd>P</kbd> or <kbd>E</kbd></td><td>Piano Roll</td></tr>
+<tr><td><kbd>I</kbd></td><td>Inspector</td><td><kbd>Y</kbd></td><td>Browser</td></tr>
+<tr><td><kbd>D</kbd></td><td>List editors</td><td><kbd>Z</kbd></td><td>Zoom to fit</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd></td><td>New audio track</td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd></td><td>New instrument track</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New tracks…</td><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>New track with same settings</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>T</kbd></td><td>Split at playhead</td><td><kbd>Ctrl</kbd>+<kbd>J</kbd></td><td>Join</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Repeat</td><td><kbd>Ctrl</kbd>+<kbd>M</kbd></td><td>Mute regions</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Nudge</td><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Flex Editor</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Bounce</td><td><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Settings</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>.</kbd></td><td>Discard recording</td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd></td><td>Undo history</td></tr>
+</table></div>
+
+<h2 id="limits">16. What does not work yet</h2>
+<div class="tw"><table>
+<tr><th>Area</th><th>Status</th><th>Details</th></tr>
+<tr><td>Plugin crash protection while playing</td><td class="no">Not yet</td><td>A plugin that crashes during playback or in its window can close Ovrtone. Save often.</td></tr>
+<tr><td>Stock instruments and effects</td><td class="no">Not included</td><td>Bring your own plugins. Ovrtone's own built-in effects are basic; Bankz Sound Lab plugins are being made.</td></tr>
+<tr><td>Fit to Tempo, reversed</td><td class="part">Partly</td><td>A fitted region set to Reverse plays at its own speed.</td></tr>
+<tr><td>Outputs</td><td class="no">Not yet</td><td>The mix goes to one stereo output (or the spatial layout); no second output channel strip.</td></tr>
+<tr><td>Plugin parameter automation</td><td class="part">Partly</td><td>Drawn lanes play and bounce. Writing automation by moving a plugin's own knobs is not done.</td></tr>
+<tr><td>Score</td><td class="part">Partly</td><td>No printing or MusicXML export.</td></tr>
+<tr><td>Logic and Pro Tools sessions</td><td class="part">Partly</td><td>Logic: audio files only. Pro Tools: through its text export, no tempo. AAF not read.</td></tr>
+<tr><td>Project Alternatives, Project Audio browser</td><td class="no">Not yet</td><td>Track alternatives do work.</td></tr>
+<tr><td>Movie / video, Live Loops, Session Players</td><td class="no">Not yet</td><td>Greyed in the menus.</td></tr>
+<tr><td>Printing, Page Setup, Tuning files</td><td class="no">Not yet</td><td>Greyed in the menus.</td></tr>
+<tr><td>Control surfaces (Mackie, HUI)</td><td class="no">Not yet</td><td></td></tr>
+<tr><td>Spatial buses</td><td class="part">Partly</td><td>They take no effects yet; tracks are stereo (no multichannel audio files).</td></tr>
+<tr><td>Mac and Linux</td><td class="no">Not yet</td><td>Windows only for now.</td></tr>
+</table></div>
+<p>Greyed menu entries are features that are planned but not working. Send what you find to the person who gave you this installer.</p>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,105 @@
+Ovrtone 0.4.0 (beta)
+====================
+
+Installing over an earlier Ovrtone keeps your settings, themes, presets, templates, plugin scan,
+favourites and tags: they live in %APPDATA%\ovrtone, which the installer and uninstaller leave
+alone. Close Ovrtone before installing; the installer offers to close it for you.
+
+This is a beta: save often, and send what you find.
+
+New in 0.4.0
+------------
+
+- Fit to Tempo follows every tempo change, also inside a region: each beat of the audio stays on
+  a beat of the song through tempo changes and ramps.
+- Cycle (the loop region) has its own strip at the top of the ruler and its own header row; it
+  stays outlined when off.
+- Typing Keyboard (Ctrl+K) is on the control bar; right-click there to choose the mode buttons.
+- Audio Editor tab beside the Piano Roll; the Piano Roll ruler moves the playhead.
+- Melodyne and other ARA plugins get the song's tempo map and time signatures.
+- Key commands work while the pointer is over the editors, except the keys the Piano Roll uses.
+- Ghost notes, grid lines and control bar icons show in every theme. Pattern clips are named
+  after their track.
+
+Not yet: effects on spatial buses, outputs beyond the main stereo pair, Project Alternatives
+and the Project Audio browser.
+
+New in 0.3.1
+------------
+
+- Fit to Tempo: right-click an audio region. It takes the BPM from the file name or listens for
+  it, then stays locked to its bars through every tempo change. Follow Tempo By picks Stretch
+  (pitch kept) or Resample (speed and pitch change together). The region shows its BPM and mode.
+- Live tempo following: audio fitted to the tempo is now stretched by the engine as it plays,
+  so a tempo change is heard straight away, with no stretched copy to wait for. Stretch keeps
+  the pitch; Resample changes speed and pitch together. Before, a loop at a steady tempo could
+  keep its own speed, or be stretched twice. A region already affected needs Fit to Tempo again
+  (or dragging in again). A tempo change inside a fitted region uses the tempo at its start.
+- Audio Track Editor: select an audio track and the bottom pane shows its region, the whole
+  file with the played part lit. Drag the lower handles to trim the start or end, the upper ones
+  for fades, click to move the playhead. Gain, Reverse and Fit to Tempo are in its bar.
+- Audio File Editor (from the Audio Track Editor): normalize, gain, fades, silence, reverse and
+  trim the file itself, on a copy; your original file is never changed.
+- Channel Rack: the step under the playhead lights up while a placed pattern plays. Press a step
+  and drag along the row to paint steps (FL style); right-click drag erases. A channel given
+  steps shows up on the Playlist by itself, wherever the pattern is placed (or at the playhead).
+  Selecting a pattern clip on the Playlist opens its pattern in the rack.
+- Dropping a sample always asks what it becomes: a hit at that bar (short samples), an audio
+  clip, a Channel Rack channel, a step pattern, a Piano Roll channel, or the sound of the track
+  under it. This includes a single file dragged in from File Explorer.
+- Messages at the top of the window clear after a few seconds; click one to dismiss it.
+
+New since 0.2.3
+---------------
+
+Workflow
+- Organize Mix Session (Mix menu): recognises each track by its name (Kick, 808, Lead Vox, BGV...),
+  colours it by group, sorts the tracks and gives each group a bus. Check the groups, change any,
+  then Organize. The naming rules can be edited.
+- Open sessions from other DAWs (File > Open): DAWproject (Bitwig, Studio One, Cubase), REAPER,
+  Ableton Live and Ardour, with tracks, clips, tempo and markers. Pro Tools through its Session Info
+  as Text, and Logic in part. A log lists what could not be carried over.
+- Smart Tool (Snap menu): the top half of a region selects, the bottom half moves, the edges trim,
+  the top corners fade.
+- Spot (right-click a region), pre-roll and post-roll (right-click the count-in button), and clip
+  gain lines on audio regions (Snap menu > Clip Gain Lines).
+- Alt-drag a region's end to time-stretch it; loops that follow the tempo stay locked to their bars
+  through tempo changes, and a new high-quality stretch mode (Complex).
+
+Spatial audio
+- Speaker layouts from stereo up to 9.1.6, VBAP panning, distance, X/Y/Z, snap, divergence, LFE
+  filter, downmix to smaller layouts, speaker setup with test noise, and spatial buses.
+- The panner and the renderer have a new look; the renderer is on Stereo Out's strip.
+- Any track can be placed in 3D in a stereo project too (heard on headphones).
+- Exports: ADM BW64 (7.1.4, or a 7.1.2 bed with up to 118 objects), multichannel WAV, binaural
+  and Ambisonics. Measured heads (SOFA files) for headphones.
+
+Mixing
+- Ovrtone's own effects on Stereo Out, before its plugins.
+- Stereo Out stays at the mixer's right edge (or left: Settings > Display).
+- A Frequency Shifter effect; copy, paste and duplicate effects between strips.
+- Reference tracks, kept out of exports.
+
+Engine
+- Plays more ahead of the sound card while nothing is live, so heavy sessions have more time
+  (Settings: Render ahead during playback).
+- Effects run in blocks; the mix uses the processor's vector units.
+- Window > Performance shows the load, the slowest callbacks, dropouts and the costliest tracks.
+
+Your work
+- Each save keeps a backup beside the project (Settings > General sets how many); File > Revert to >
+  Project History opens any of them. A project that will not open offers its newest backup.
+- The crash-recovery copy's interval is set in Settings > General.
+- Aftertouch and pitch-bend lanes in the Piano Roll; mono and normalised exports; MIDI clock out.
+
+Display
+- High contrast and a keyboard focus ring (Settings > Display). Track icons are off unless turned
+  on there.
+
+Known limits
+- Logic projects open in part only (the audio files, each on its own track from the start); Pro
+  Tools' text export has no tempo and does not say where a trimmed clip starts. AAF is not read yet.
+- Spatial buses take no effects yet, and tracks are stereo (no multichannel audio files).
+- Render ahead delays Play and Stop by about 50 ms while it is on.
+
+Send what you find to the person who gave you this installer.
