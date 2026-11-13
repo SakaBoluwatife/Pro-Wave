@@ -785,6 +785,7 @@ fn about_window(ctx: &egui::Context, s: &mut UiState) {
                 }
             }
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.label(crate::license::line());
             ui.label("Publisher: Bankz Sound Lab");
             ui.hyperlink("https://github.com/SakaBoluwatife/Pro-Wave");
             ui.add_space(6.0);

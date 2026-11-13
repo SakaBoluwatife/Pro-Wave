@@ -136,7 +136,11 @@ fn wave_view(
     levels: &[f32],
     start: f32,
     end: f32,
+    reverse: bool,
 ) -> (Option<f32>, Option<f32>) {
+    // Reversed, the sample is drawn back to front, as it plays; start and end stay where they
+    // are in the file, so their handles are mirrored too.
+    let shown = |v: f32| if reverse { 1.0 - v } else { v };
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::hover());
     let g = ui.painter();
     g.rect_filled(r, 4.0, crate::theme::grey_rgb(0x14, 0x15, 0x17));
@@ -145,7 +149,7 @@ fn wave_view(
     let count = levels.len().max(1) as f32;
     for (k, level) in levels.iter().enumerate() {
         let part = k as f32 / count;
-        let x = r.left() + part * r.width();
+        let x = r.left() + shown(part) * r.width();
         let h = (level / top) * (r.height() / 2.0 - 3.0);
         let color = if part >= start && part <= end {
             WAVE
@@ -158,7 +162,7 @@ fn wave_view(
         );
     }
     let handle = |value: f32, key: &str| -> Option<f32> {
-        let x = r.left() + value * r.width();
+        let x = r.left() + shown(value) * r.width();
         let spot = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
         let resp = ui.interact(spot, egui::Id::unique(("sampler_end", key)), Sense::drag());
         let g = ui.painter();
@@ -172,7 +176,7 @@ fn wave_view(
         (resp.dragged())
             .then(|| resp.interact_pointer_pos())
             .flatten()
-            .map(|pt| ((pt.x - r.left()) / r.width()).clamp(0.0, 1.0))
+            .map(|pt| shown(((pt.x - r.left()) / r.width()).clamp(0.0, 1.0)))
     };
     (handle(start, "start"), handle(end, "end"))
 }
@@ -322,7 +326,8 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
                         .map(|w| w.clone())
                         .unwrap_or_default();
                     let (start, end) = (at(&values, x::START), at(&values, x::END));
-                    let (new_start, new_end) = wave_view(ui, &levels, start, end);
+                    let reverse = at(&values, x::REVERSE) >= 0.5;
+                    let (new_start, new_end) = wave_view(ui, &levels, start, end, reverse);
                     if let Some(v) = new_start {
                         moved.push((x::START, v.min(end)));
                     }

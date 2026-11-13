@@ -4,8 +4,9 @@
 //! of a following track near a sixteenth is moved by that much instead of its own distance.
 //!
 //! A MIDI groove track gives its notes' starts; an audio one the hits found in its recordings,
-//! read in the background whenever its regions or the tempo change. Following tracks are MIDI
-//! (audio would need Flex Time quantize to the groove, which is not done yet).
+//! read in the background whenever its regions or the tempo change. A following MIDI track plays
+//! its notes on the groove; a following audio track has its hits moved there with Flex markers
+//! when it is set to follow (see `flex_edit::Command::QuantizeGroove`).
 use crate::model::{Project, TrackKind};
 use crate::UiState;
 use ovrtone_engine::NoteEvent;

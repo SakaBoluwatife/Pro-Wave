@@ -11,6 +11,8 @@ mod audio_encode;
 mod audio_rec;
 mod automation;
 mod audio_file_editor;
+mod beat_store;
+mod bus_plugins;
 mod audio_track_editor;
 mod autosave;
 mod bench;
@@ -33,6 +35,7 @@ mod import;
 mod inspector;
 mod key_commands;
 mod left_panel;
+mod license;
 mod marker_track;
 mod mastering;
 mod menus;
@@ -155,6 +158,10 @@ pub struct UiState {
     pub header_modes: Vec<transport::HeaderMode>,
     /// A track whose ARA plugin (Melodyne) is to be asked for its notes, to make a MIDI track.
     pub ara_midi: Option<usize>,
+    /// A spatial bus plugin whose window is to open.
+    pub bus_plugin_editor: Option<(u64, String)>,
+    /// An export for the beat store under way (File > Export > For Beat Store).
+    pub beat_store: Option<beat_store::Pending>,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -254,6 +261,8 @@ pub struct UiState {
     pub recent: recent_files::Recent,
     /// DSP load shown by the LCD's CPU meter (1.0 = full budget); peak-held, falls slowly.
     pub cpu_load: f32,
+    /// How busy reading audio files from disk is, 0..=1, for the HD meter.
+    pub disk_load: f32,
     /// When a note was last played in from a MIDI or computer keyboard: render-ahead waits for
     /// a quiet spell after it.
     pub live_note_at: Option<std::time::Instant>,
@@ -313,6 +322,8 @@ impl UiState {
             toolbar: side_panes::load_toolbar(),
             header_modes: vec![transport::HeaderMode::Typing, transport::HeaderMode::LowLatency],
             ara_midi: None,
+            bus_plugin_editor: None,
+            beat_store: None,
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
@@ -377,6 +388,7 @@ impl UiState {
             recent_pick: None,
             recent: recent_files::Recent::default(),
             cpu_load: 0.0,
+            disk_load: 0.0,
             live_note_at: None,
             import_log: None,
             autosave_minutes: settings::autosave_minutes(),
@@ -1107,6 +1119,7 @@ impl eframe::App for App {
         groove::poll(&ctx, &mut self.project, &mut self.ui);
         groove_template::poll(&ctx, &mut self.project, &mut self.ui);
         menus::expire_status(&ctx, &mut self.ui);
+        beat_store::poll(&mut self.ui);
         // MIDI from Melodyne: the plugin is asked for the notes it found.
         if let Some(t) = self.ui.ara_midi.take() {
             let result = match self.sync.as_mut() {
@@ -1250,6 +1263,9 @@ impl eframe::App for App {
                     self.ui.mixer.clip_resets.push(reset);
                 }
             }
+            if let Some((uid, name)) = self.ui.bus_plugin_editor.take() {
+                sync.open_bus_plugin_editor(uid, &name, main_window_handle(frame));
+            }
             if let Some((uid, name)) = self.ui.mixer.open_plugin.take() {
                 // A sample is shown by a window of the program's own.
                 let sample = self.project.all_hosted_mut().any(|i| {
@@ -1301,6 +1317,7 @@ impl eframe::App for App {
             };
             sync.engine.set_render_ahead(ahead);
             self.ui.cpu_load = load.max(self.ui.cpu_load - dt as f32 * 0.8);
+            self.ui.disk_load = sync.engine.disk_load().max(self.ui.disk_load - dt as f32 * 0.8);
             // Only when it happens, not on every frame from then on.
             let underruns = sync.underruns();
             if underruns > self.ui.underruns_told {

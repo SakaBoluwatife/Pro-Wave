@@ -82,7 +82,7 @@ fn stage_of(line: &str) -> Option<&'static str> {
     if line.starts_with("Reading") {
         Some("Reading the file")
     } else if line.starts_with("Loading") {
-        Some("Loading the model")
+        Some("Getting ready")
     } else if line.starts_with("Separating") {
         Some("Separating the stems")
     } else if line.starts_with("Wrote") {
@@ -665,11 +665,10 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     let minutes = left.as_secs().div_ceil(60);
                     format!(", about {minutes} min left")
                 });
-                ui.label(format!(
-                    "{shown}: {}:{:02}{left}",
-                    elapsed / 60,
-                    elapsed % 60
-                ));
+                // What it is doing in plain words, and how long is left: the stages and the timer are
+                // for the curious only (on hover).
+                ui.label(format!("Splitting...{left}"))
+                    .on_hover_text(format!("{shown}: {}:{:02}", elapsed / 60, elapsed % 60));
                 ui.label("Playback is paused until the split is done.");
             }
             ui.add_space(2.0);

@@ -315,6 +315,10 @@ pub struct SpatialBusDef {
     pub name: String,
     pub layout: ovrtone_engine::SpeakerLayout,
     pub place: ovrtone_engine::BusPlace,
+    /// Its effects, in order: each runs on every pair of the bus's channels.
+    pub fx: Vec<Insert>,
+    /// Its plugins, after the effects (see `bus_plugins.rs`).
+    pub plugins: Vec<PluginInsert>,
 }
 
 /// One send slot of a channel strip (Logic: "Bus 1" with a level knob). The engine copies the

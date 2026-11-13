@@ -2,8 +2,10 @@
 //! (drum kit, Drummer tile, electric guitar and bass, synth on an X stand, wooden vintage keys,
 //! black piano, condenser microphone, audio waveform, violin, default note tile).
 //!
-//! Original vector drawings (no Apple artwork): every icon is designed on a 36Ã—36 box and
-//! scaled to the target rect; gradients come from per-vertex mesh colours.
+//! Original vector drawings (no Apple artwork). They are drawn in Ovrtone's icon style (see
+//! `icons.rs`): each instrument light on a rounded tile of its own colour, with a soft sheen. The
+//! earlier illustrations below are kept for reference and are no longer drawn.
+#![allow(dead_code)]
 use crate::model::{Track, TrackKind};
 use egui::{epaint::Mesh, vec2, Color32, Painter, Pos2, Rect, Shape, Stroke};
 
@@ -28,6 +30,8 @@ pub enum IconKind {
     Vca,
     /// External MIDI: a five-pin MIDI socket on an orange tile.
     ExternalMidi,
+    /// Spatial audio: a sphere with its orbits.
+    Spatial,
 }
 
 /// The icons that can be chosen for a track, with the names they are saved under.
@@ -307,6 +311,38 @@ pub fn draw_tinted(g: &Painter, r: Rect, kind: IconKind, color: Color32) {
 }
 
 pub fn draw_icon(g: &Painter, r: Rect, kind: IconKind) {
+    use crate::icons::Icon;
+    let (glyph, tile) = match kind {
+        IconKind::Note => (Icon::Note, rgb(0x3f, 0xa8, 0x5a)),
+        IconKind::Waveform => (Icon::Waveform, rgb(0x3a, 0x7c, 0xe8)),
+        IconKind::DrumKit => (Icon::DrumKit, rgb(0xd9, 0x8a, 0x26)),
+        IconKind::DrummerTile => (Icon::Drum, rgb(0xc7, 0x6f, 0x1f)),
+        IconKind::Piano => (Icon::Piano, rgb(0x4b, 0x52, 0x60)),
+        IconKind::WoodKeys => (Icon::Keys, rgb(0xa8, 0x66, 0x36)),
+        IconKind::Synth => (Icon::Synth, rgb(0x22, 0xa3, 0x98)),
+        IconKind::Bass => (Icon::Bass, rgb(0x84, 0x55, 0xdb)),
+        IconKind::Guitar => (Icon::Guitar, rgb(0xd8, 0x4c, 0x42)),
+        IconKind::Mic => (Icon::Mic, rgb(0xe5, 0x76, 0x2c)),
+        IconKind::Strings => (Icon::Violin, rgb(0x9a, 0x55, 0x30)),
+        IconKind::Aux => (Icon::Aux, rgb(0x34, 0x9b, 0xcc)),
+        IconKind::Folder => (Icon::Folder, rgb(0x5e, 0x66, 0x74)),
+        IconKind::Vca => (Icon::Vca, rgb(0x7f, 0x55, 0xcc)),
+        IconKind::ExternalMidi => (Icon::Midi, rgb(0xe2, 0x80, 0x26)),
+        IconKind::Spatial => (Icon::Spatial, rgb(0x3d, 0x5a, 0xd6)),
+    };
+    let side = r.width().min(r.height());
+    let tile_r = Rect::from_center_size(r.center(), vec2(side, side) * 0.94);
+    let round = side * 0.24;
+    g.rect_filled(tile_r, round, tile);
+    // A soft sheen on the upper half, and a fine edge: the tile reads as a lit object.
+    let top = Rect::from_min_max(tile_r.min, egui::pos2(tile_r.max.x, tile_r.center().y));
+    g.rect_filled(top, egui::CornerRadius { nw: round as u8, ne: round as u8, sw: 0, se: 0 }, Color32::from_white_alpha(22));
+    g.rect_stroke(tile_r, round, Stroke::new(1.0, Color32::from_black_alpha(70)), egui::StrokeKind::Inside);
+    crate::icons::paint(g, tile_r.center(), side * 0.64, glyph, Color32::from_white_alpha(240));
+}
+
+/// The earlier illustrations, by kind (kept for reference).
+fn draw_illustration(g: &Painter, r: Rect, kind: IconKind) {
     let pen = Pen {
         g,
         c: r.center(),
@@ -328,6 +364,7 @@ pub fn draw_icon(g: &Painter, r: Rect, kind: IconKind) {
         IconKind::Folder => folder(&pen),
         IconKind::Vca => vca(&pen),
         IconKind::ExternalMidi => external_midi(&pen),
+        IconKind::Spatial => aux(&pen),
     }
 }
 

@@ -329,7 +329,8 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
             s.mixer.open_plugin = open;
         }
         let track = &mut p.tracks[t];
-        ui.add(
+        ui.add_sized(
+            [62.0, 18.0],
             egui::DragValue::new(&mut track.volume_db)
                 .range(-60.0..=6.0)
                 .speed(0.2)
@@ -337,7 +338,8 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
                 .suffix(" dB"),
         )
         .on_hover_text("Volume");
-        ui.add(
+        ui.add_sized(
+            [42.0, 18.0],
             egui::DragValue::new(&mut track.pan)
                 .range(-1.0..=1.0)
                 .speed(0.01)
@@ -360,7 +362,8 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
         }
         if let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) {
             let lane = pattern.lane_mut(channel);
-            ui.add(
+            ui.add_sized(
+                [40.0, 18.0],
                 egui::DragValue::new(&mut lane.step_pitch)
                     .range(0..=127)
                     .custom_formatter(|v, _| crate::step_editor::note_name(v as u8)),
@@ -557,21 +560,29 @@ fn body(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         if channels == 0 {
             ui.label(egui::RichText::new("No instrument tracks yet.").small());
         }
-        // A sample let go on the button makes a channel for it.
-        if let Some(drag) =
-            egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx())
-        {
-            let over = ui
-                .input(|i| i.pointer.hover_pos())
-                .is_some_and(|at| add.rect.contains(at));
-            if over && ui.input(|i| i.pointer.any_released()) {
-                egui::DragAndDrop::clear_payload(ui.ctx());
-                if let Err(e) = crate::sample_place::new_sampler_track(p, &drag.0) {
-                    s.status = Some(e);
+        let _ = add;
+    });
+    // A sample let go anywhere in the rack but on a channel's row (which loads it there) makes a
+    // channel for it, on the Playlist at once: where the pattern on show is placed, or at the
+    // playhead.
+    if let Some(drag) = egui::DragAndDrop::payload::<crate::sample_browser::SampleDrag>(ui.ctx()) {
+        let over = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|at| ui.min_rect().contains(at));
+        if over && ui.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            match crate::sample_place::new_sampler_track(p, &drag.0) {
+                Ok(t) => {
+                    sp::channel_of(p, t);
+                    let id = s.rack.current_pattern(p);
+                    let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
+                    sp::fill_placements(p, id, bar, Some(t));
+                    p.selected_track = t;
                 }
+                Err(e) => s.status = Some(e),
             }
         }
-    });
+    }
     ui.label(
         egui::RichText::new("Orange marks are notes the step buttons cannot show.")
             .font(FontId::proportional(10.5)),

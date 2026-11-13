@@ -37,6 +37,58 @@ pub(crate) fn file_speed(p: &Project, region: &Region) -> f32 {
         })
 }
 
+/// Below this the start of a region counts as silence, in dBFS.
+const SILENCE_DB: f32 = -48.0;
+/// Kept before the first sound, so its attack is not cut, in seconds.
+const KEEP_BEFORE: f64 = 0.004;
+
+/// Cuts the silence off the start of audio region `r` of track `t`: it then starts with its first
+/// sound, on the bar or beat it starts on, its end staying where it was. Returns the seconds cut.
+pub fn trim_leading_silence(p: &mut Project, t: usize, r: usize) -> Result<f64, String> {
+    let region = region_at(p, t, r)?;
+    let audio = region.audio.as_ref().ok_or("Only audio regions")?;
+    let file = audio.file.clone();
+    let rate = f64::from(file.sample_rate.max(1));
+    let from = (f64::from(region.params.source_start) * rate) as u64;
+    let played = f64::from(played_seconds(region));
+    let floor = 10f32.powf(SILENCE_DB / 20.0);
+    // Read a second at a time, at most a minute in, for the first sample above the floor.
+    let step = rate as usize;
+    let mut found = None;
+    let mut at = from;
+    while found.is_none() && (at - from) as f64 / rate < played.min(60.0) {
+        let chunk = file.read_stereo_at(at, step).map_err(|e| e.to_string())?;
+        if chunk.is_empty() {
+            break;
+        }
+        if let Some(i) = chunk.chunks_exact(2).position(|f| f[0].abs().max(f[1].abs()) > floor) {
+            found = Some(at + i as u64);
+        }
+        at += (chunk.len() / 2) as u64;
+    }
+    let first = found.ok_or("No sound found at the start of this region")?;
+    let cut = ((first - from) as f64 / rate - KEEP_BEFORE).max(0.0);
+    if cut < 0.001 {
+        return Ok(0.0);
+    }
+    let speed = f64::from(file_speed(p, region));
+    let start = p.region_start_beats(region);
+    let end = p.region_end_beats(region);
+    // The audio moves earlier by what was cut; the region keeps its start and its end.
+    let map = p.tempo_map();
+    let song_cut = cut / speed;
+    let new_end = map.beat_at(map.seconds_at(end) - song_cut).max(start + EDGE_BEATS * 4.0);
+    let end_bar = p.beats_to_bar(new_end) as f32;
+    let region = &mut p.tracks[t].regions[r];
+    region.params.source_start += cut as f32;
+    if region.params.source_len > 0.0 {
+        region.params.source_len = (region.params.source_len - cut as f32).max(0.001);
+    }
+    region.len_bars = (end_bar - (region.start_bar - 1.0)).max(1.0 / 64.0);
+    p.song_rev += 1;
+    Ok(cut)
+}
+
 /// How much of its file an audio region plays, from its `source_start`, in seconds.
 pub(crate) fn played_seconds(region: &Region) -> f32 {
     let Some(a) = region.audio.as_ref() else {

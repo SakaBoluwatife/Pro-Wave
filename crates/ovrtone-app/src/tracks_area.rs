@@ -427,6 +427,11 @@ pub struct TracksView {
     zoom_note: Option<(String, std::time::Instant)>,
     /// A Flex marker being dragged: track, region, marker, where it would land in seconds.
     flex_drag: Option<(usize, usize, usize, f64)>,
+    /// A Flex Pitch note being dragged: track, region, note, and how far (points, down positive).
+    pitch_drag: Option<(usize, usize, usize, f32)>,
+    /// A slip under way (Ctrl+Alt drag of an audio region): where the region started in its
+    /// file, and the beat the drag began on.
+    slip: Option<(f32, f64)>,
     /// What to hear of the Scrub tool: track and beat. `App` plays it.
     pub scrub: Option<(usize, f64)>,
     scrub_at: Option<(f32, std::time::Instant)>,
@@ -564,6 +569,8 @@ impl Default for TracksView {
             zoom_seen: None,
             zoom_note: None,
             flex_drag: None,
+            pitch_drag: None,
+            slip: None,
             scrub: None,
             scrub_at: None,
             header_opts: HeaderOpts::default(),
@@ -856,72 +863,23 @@ fn header_button(
 // ------------------------------------------------------------------ toolbar icons
 
 fn draw_grid_icon(g: &Painter, r: Rect, c: Color32) {
-    for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
-        g.rect_filled(
-            Rect::from_center_size(r.center() + vec2(dx, dy), vec2(5.0, 5.0)),
-            1.0,
-            c,
-        );
-    }
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::Grid, c);
 }
 
 fn draw_list_icon(g: &Painter, r: Rect, c: Color32) {
-    for i in -1..=1 {
-        let y = r.center().y + i as f32 * 4.0;
-        g.rect_filled(
-            Rect::from_center_size(pos2(r.center().x, y), vec2(13.0, 2.4)),
-            1.0,
-            c,
-        );
-    }
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::List, c);
 }
 
 fn draw_curve_icon(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    let pts: Vec<Pos2> = (0..=12)
-        .map(|i| {
-            let t = i as f32 / 12.0;
-            p + vec2(-7.0 + 14.0 * t, 5.0 - 10.0 * (t * t * (3.0 - 2.0 * t)))
-        })
-        .collect();
-    g.add(Shape::line(pts, stroke(c)));
-    g.circle_filled(p + vec2(-7.0, 5.0), 1.8, c);
-    g.circle_filled(p + vec2(7.0, -5.0), 1.8, c);
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::Curve, c);
 }
 
 fn draw_flex_icon(g: &Painter, r: Rect, c: Color32) {
-    // Hourglass on its side (Flex).
-    let p = r.center();
-    g.add(Shape::line(
-        vec![
-            p + vec2(-7.0, -5.0),
-            p + vec2(7.0, 5.0),
-            p + vec2(7.0, -5.0),
-            p + vec2(-7.0, 5.0),
-            p + vec2(-7.0, -5.0),
-        ],
-        stroke(c),
-    ));
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::Flex, c);
 }
 
 fn draw_catch_icon(g: &Painter, r: Rect, c: Color32) {
-    // Playhead with a follow arrow.
-    let p = r.center();
-    g.line_segment([p + vec2(-4.0, -7.0), p + vec2(-4.0, 7.0)], stroke(c));
-    g.add(Shape::convex_polygon(
-        vec![
-            p + vec2(-8.0, -7.0),
-            p + vec2(0.0, -7.0),
-            p + vec2(-4.0, -3.0),
-        ],
-        c,
-        Stroke::NONE,
-    ));
-    g.line_segment([p + vec2(-1.0, 2.0), p + vec2(6.0, 2.0)], stroke(c));
-    g.add(Shape::line(
-        vec![p + vec2(3.5, -0.5), p + vec2(6.5, 2.0), p + vec2(3.5, 4.5)],
-        stroke(c),
-    ));
+    crate::icons::paint(g, r.center(), 16.0, crate::icons::Icon::Catch, c);
 }
 
 /// The Fade tool's icon: a ramp down to a baseline.
@@ -1502,6 +1460,8 @@ enum CtxAction {
     FitToTempo(usize, usize),
     /// A MIDI track from the notes the track's ARA plugin (Melodyne) found.
     AraMidi(usize),
+    /// The silence at the start of an audio region cut off, so its first sound is on its start.
+    TrimSilence(usize, usize),
     StripSilence(usize, usize),
     RepeatRegion,
     LocatorsByRegion,
@@ -1596,6 +1556,7 @@ fn region_items(
         } else {
             pick(ui, "Fit to Tempo", "", CtxAction::FitToTempo(ti, ri), picked);
         }
+        pick(ui, "Trim Silence at Start", "", CtxAction::TrimSilence(ti, ri), picked);
         pick(ui, "MIDI from Melodyne (ARA)", "", CtxAction::AraMidi(ti), picked);
         ui.separator();
     }
@@ -1757,6 +1718,13 @@ fn region_items(
                 tr("Create MIDI Track from Flex Pitch"),
                 "",
                 CtxAction::Flex(ti, ri, crate::flex_edit::Command::MidiFromPitch),
+                picked,
+            );
+            pick(
+                ui,
+                "Show Pitch Notes (edit one by one)",
+                "",
+                CtxAction::Flex(ti, ri, crate::flex_edit::Command::ShowPitchNotes),
                 picked,
             );
         });
@@ -2230,6 +2198,21 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
                 t.params.follow_groove = !t.params.follow_groove;
                 p.song_rev += 1;
             }
+            // An audio track takes the groove through Flex: its hits move to the groove's feel.
+            let audio = p.tracks.get(i).filter(|t| t.kind == TrackKind::Audio && t.params.follow_groove);
+            if let Some(track) = audio {
+                let regions: Vec<usize> = (0..track.regions.len())
+                    .filter(|r| track.regions[*r].audio.is_some())
+                    .collect();
+                match crate::groove::template(p) {
+                    Some(groove) => {
+                        for r in regions {
+                            crate::flex_edit::start(p, s, i, r, crate::flex_edit::Command::QuantizeGroove { groove });
+                        }
+                    }
+                    None => s.status = Some("The Groove Track has no hits to follow yet".to_string()),
+                }
+            }
         }
         CtxAction::SmartTempoEditor(t, r) => crate::smart_tempo::open_editor(p, s, t, r),
         CtxAction::FlexMode(t, r, mode) => {
@@ -2240,6 +2223,13 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
         CtxAction::FlexRemove(t, r) => s.flex.remove_later(t, r),
         CtxAction::FitToTempo(t, r) => s.flex.fit_later(t, r),
         CtxAction::AraMidi(t) => s.ara_midi = Some(t),
+        CtxAction::TrimSilence(t, r) => {
+            s.status = Some(match crate::region_edit::trim_leading_silence(p, t, r) {
+                Ok(cut) if cut > 0.0 => format!("Cut {:.0} ms of silence: the audio starts on the region's start", cut * 1000.0),
+                Ok(_) => "This region starts with sound already".to_string(),
+                Err(e) => e,
+            });
+        }
         CtxAction::StripSilence(t, r) => crate::strip_silence::open(p, s, t, r),
         CtxAction::RepeatRegion => repeat_selected(p, v),
         CtxAction::LocatorsByRegion => set_locators_by_region(p, v),
@@ -2327,7 +2317,7 @@ fn apply_ctx(action: CtxAction, p: &mut Project, s: &mut UiState, lanes_w: f32) 
 
 /// Logic's Normalize Region Gain: finds the region's loudest sample on a background thread,
 /// then [`poll_normalize`] sets the gain that brings it to 0 dBFS. The file is not changed.
-fn start_normalize(p: &Project, s: &mut UiState, track: usize, region: usize) {
+pub(crate) fn start_normalize(p: &Project, s: &mut UiState, track: usize, region: usize) {
     let Some(audio) = p
         .tracks
         .get(track)
@@ -3334,6 +3324,103 @@ fn flex_markers(
             changed = true;
         }
     }
+    // Flex Pitch: each note found, a blob at its pitch; drag it up or down by semitones.
+    if !flex.notes.is_empty() {
+        let shift_of = |pitch: &[ovrtone_engine::PitchShift], n: &ovrtone_engine::DetectedNote| {
+            pitch
+                .iter()
+                .find(|s| (s.start - n.start).abs() < 1e-3 && (s.end - n.end).abs() < 1e-3)
+                .map_or(0.0, |s| s.semitones)
+        };
+        let lo = flex.notes.iter().map(|n| n.pitch).fold(f32::INFINITY, f32::min).floor() - 3.0;
+        let hi = flex.notes.iter().map(|n| n.pitch).fold(f32::NEG_INFINITY, f32::max).ceil() + 3.0;
+        let area = Rect::from_min_max(pos2(rr.left(), rr.top() + 14.0), rr.max);
+        let row_h = (area.height() / (hi - lo).max(1.0)).max(1.5);
+        let y_of = |pitch: f32| area.bottom() - (pitch - lo + 0.5) * row_h;
+        let mut new_shift = None;
+        // A note's formant and vibrato, set from its menu.
+        let mut shape: Option<(usize, f32, f32)> = None;
+        for k in 0..flex.notes.len() {
+            let n = flex.notes[k];
+            let shift = shift_of(&flex.pitch, &n);
+            let drag = v.pitch_drag.filter(|d| (d.0, d.1, d.2) == (ti, ri, k)).map_or(0.0, |d| d.3);
+            let moved = (-drag / row_h).round();
+            let y = y_of(n.pitch + shift + moved);
+            let blob = Rect::from_min_max(
+                pos2(x_of(n.start), y - (row_h * 0.45).max(2.5)),
+                pos2(x_of(n.end).max(x_of(n.start) + 3.0), y + (row_h * 0.45).max(2.5)),
+            );
+            if blob.right() < rr.left() || blob.left() > rr.right() {
+                continue;
+            }
+            let resp = ui
+                .interact(blob, id(("flex_pitch_note", ti, ri, k)), Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            let lit = shift.abs() > 0.01 || moved != 0.0;
+            let fill = if lit { crate::theme::accent() } else { Color32::from_white_alpha(170) };
+            g.rect_filled(blob, 3.0, fill);
+            g.rect_stroke(blob, 3.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Inside);
+            if resp.dragged() {
+                let dy = drag + resp.drag_delta().y;
+                v.pitch_drag = Some((ti, ri, k, dy));
+            }
+            if resp.drag_stopped() {
+                v.pitch_drag = None;
+                if moved != 0.0 {
+                    new_shift = Some((k, shift + moved));
+                }
+            }
+            if resp.double_clicked() {
+                new_shift = Some((k, 0.0));
+                shape = Some((k, 0.0, 0.0));
+            }
+            // Right-click: the note's formants and vibrato, as Flex Pitch has them.
+            let old = flex
+                .pitch
+                .iter()
+                .find(|s| (s.start - n.start).abs() < 1e-3 && (s.end - n.end).abs() < 1e-3)
+                .map_or((0.0, 0.0), |s| (s.formant, s.vibrato));
+            resp.context_menu(|ui| {
+                let (mut formant, mut vibrato) = (old.0, old.1 * 100.0);
+                ui.label(egui::RichText::new("This note").strong());
+                let f = ui.add(egui::Slider::new(&mut formant, -12.0..=12.0).step_by(0.5).text("Formant").suffix(" st"));
+                let w = ui.add(egui::Slider::new(&mut vibrato, -100.0..=200.0).step_by(5.0).text("Vibrato").suffix(" %"))
+                    .on_hover_text("-100: none (flat). 0: as sung. 100: twice as wide");
+                if f.drag_stopped() || w.drag_stopped() || ((f.changed() || w.changed()) && !f.dragged() && !w.dragged()) {
+                    shape = Some((k, formant, vibrato / 100.0));
+                }
+                if ui.button("Reset this note").clicked() {
+                    new_shift = Some((k, 0.0));
+                    shape = Some((k, 0.0, 0.0));
+                    ui.close();
+                }
+            });
+        }
+        // The note's edit: pitch from a drag, formant and vibrato from its menu; each keeps the others.
+        let k_edit = new_shift.map(|e| e.0).or(shape.map(|e| e.0));
+        if let Some(k) = k_edit {
+            let n = flex.notes[k];
+            let same = |s: &ovrtone_engine::PitchShift| (s.start - n.start).abs() < 1e-3 && (s.end - n.end).abs() < 1e-3;
+            let mut edit = flex.pitch.iter().find(|s| same(s)).copied().unwrap_or(ovrtone_engine::PitchShift {
+                start: n.start,
+                end: n.end,
+                ..Default::default()
+            });
+            if let Some((_, semitones)) = new_shift {
+                edit.semitones = semitones;
+            }
+            if let Some((_, formant, vibrato)) = shape {
+                edit.formant = formant;
+                edit.vibrato = vibrato;
+            }
+            flex.pitch.retain(|s| !same(s));
+            if edit.semitones.abs() > 0.01 || edit.formant.abs() > 0.01 || edit.vibrato.abs() > 0.01 {
+                flex.pitch.push(edit);
+                flex.pitch.sort_by(|a, b| a.start.total_cmp(&b.start));
+            }
+            changed = true;
+        }
+    }
     if changed {
         p.song_rev += 1;
     }
@@ -3630,6 +3717,9 @@ fn header(
     let lane_controls = p.tracks[i].show_auto && !folder && !compact && opts.buttons;
     let name_right = if lane_controls {
         LANE_POPUPS_W
+    } else if compact && opts.level && h >= 20.0 {
+        // On one row the volume slider and pan knob sit to the right: the name stops short of them.
+        124.0
     } else if opts.level {
         8.0
     } else {
@@ -3641,9 +3731,12 @@ fn header(
     } else {
         p.tracks[i].name.clone()
     };
+    let name_font = FontId::proportional((h - 2.0).clamp(9.0, 13.0));
+    // A long name ends in an ellipsis where its room ends, rather than being cut off mid-letter.
+    let shown_name = crate::mixer::elide(g, &shown_name, &name_font, name_w.max(20.0));
     let name_galley = g.layout_no_wrap(
         shown_name,
-        FontId::proportional((h - 2.0).clamp(9.0, 13.0)),
+        name_font,
         text_col(),
     );
     let clip = g.with_clip_rect(
@@ -3870,30 +3963,42 @@ fn header(
         t.volume_db = 0.0;
     }
     g.rect_filled(sl, SLIDER_H / 2.0, crate::theme::grey_rgb(0x1e, 0x1d, 0x1d));
-    // Level meter inside the pill, as in Logic: two thin bars (L over R) that follow the
-    // slider's own scale, green, yellow from -6 dB and red above 0 dB.
+    // Level meter inside the pill: L over R on the slider's own scale, as LED segments that run
+    // from green through amber (from -6 dB) to red (above 0 dB), each in a faint groove, with a
+    // peak mark that holds a moment and falls back.
     let silent = t.mute || silenced;
+    let now = ui.input(|inp| inp.time);
     for (k, peak) in [peaks.0, peaks.1].into_iter().enumerate() {
         let db = crate::mixer::lin_to_db(peak);
-        if db <= -60.0 {
-            continue;
-        }
         let y = sl.center().y - 3.0 + k as f32 * 3.5;
         let x0 = sl.left() + 3.0;
-        let x_at = |db: f32| x0 + (sl.right() - 3.0 - x0) * db_to_slider(db);
-        let mut from = -60.0f32;
-        for edge in [-6.0f32, 0.0, 6.0] {
-            let to = db.min(edge);
-            if to > from {
-                let r = Rect::from_min_max(pos2(x_at(from), y), pos2(x_at(to), y + 2.5));
-                let color = if silent {
-                    crate::theme::gray(0x3c)
-                } else {
-                    crate::mixer::meter_colour(to - 0.01)
-                };
-                g.rect_filled(r, 1.0, color);
+        let x1 = sl.right() - 3.0;
+        let x_at = |db: f32| x0 + (x1 - x0) * db_to_slider(db);
+        g.rect_filled(
+            Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.5)),
+            1.0,
+            Color32::from_white_alpha(10),
+        );
+        if db > -60.0 {
+            let end = x_at(db.min(6.0));
+            let mut x = x0;
+            while x < end {
+                let seg_end = (x + 2.0).min(end);
+                let at_db = slider_to_db(((x - x0) / (x1 - x0)).clamp(0.0, 1.0));
+                let color = if silent { crate::theme::gray(0x3c) } else { crate::mixer::meter_colour(at_db) };
+                g.rect_filled(Rect::from_min_max(pos2(x, y), pos2(seg_end, y + 2.5)), 0.5, color);
+                x += 3.0;
             }
-            from = edge;
+        }
+        // The peak: holds 1.2 s, then falls 20 dB a second.
+        let key = egui::Id::unique(("header_peak", i, k));
+        let (held, since) = ui.ctx().data(|d| d.get_temp::<(f32, f64)>(key)).unwrap_or((-60.0, now));
+        let falling = if now - since > 1.2 { held - ((now - since - 1.2) as f32) * 20.0 } else { held };
+        let shown = if db >= falling { ui.ctx().data_mut(|d| d.insert_temp(key, (db, now))); db } else { falling };
+        if shown > -59.0 {
+            let px = x_at(shown.min(6.0));
+            let color = if silent { crate::theme::gray(0x50) } else { crate::mixer::meter_colour(shown) };
+            g.rect_filled(Rect::from_min_max(pos2(px - 1.0, y), pos2(px + 0.5, y + 2.5)), 0.0, color);
         }
     }
     let knob = pos2(
@@ -4516,6 +4621,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             v.group_drag.clear();
                             v.marquee = Some((beat_of(pt.x), pt.y - lanes.top() + scroll_y));
                         }
+                        // Ctrl+Alt: slip the audio inside the region, which stays where it is.
+                        let slip_keys = ui.input(|i| i.modifiers.command && i.modifiers.alt);
+                        v.slip = (slip_keys && p.tracks[ti].regions[ri].audio.is_some())
+                            .then(|| (p.tracks[ti].regions[ri].params.source_start, beat_of(pt.x)));
                         v.trim = if !trimmable || smart_box {
                             None
                         } else if full.right() - pt.x < TRIM_EDGE {
@@ -4533,7 +4642,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     }
                 }
                 if resp.dragged() {
-                    if let Some(pt) = resp.interact_pointer_pos() {
+                    if let (Some((orig, from)), Some(pt)) = (v.slip, resp.interact_pointer_pos()) {
+                        let map = p.tempo_map();
+                        let speed = crate::region_edit::file_speed(p, &p.tracks[ti].regions[ri]);
+                        let secs = (map.seconds_at(beat_of(pt.x)) - map.seconds_at(from)) as f32 * speed;
+                        p.tracks[ti].regions[ri].params.source_start = (orig - secs).max(0.0);
+                    } else if let Some(pt) = resp.interact_pointer_pos() {
                         let mut at = snap_pos(beat_of(pt.x).max(0.0));
                         if v.snap_hits && v.trim.is_some() {
                             let within = beat_of(pt.x + 12.0) - beat_of(pt.x);
@@ -4587,7 +4701,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         }
                     }
                 }
-                if resp.drag_stopped() && std::mem::take(&mut v.smart_drag) {
+                if resp.drag_stopped() && v.slip.take().is_some() {
+                    moved = true;
+                } else if resp.drag_stopped() && std::mem::take(&mut v.smart_drag) {
                     v.marquee = None;
                     v.group_drag.clear();
                 } else if resp.drag_stopped() {

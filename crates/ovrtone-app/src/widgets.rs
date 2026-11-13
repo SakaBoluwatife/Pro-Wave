@@ -193,6 +193,7 @@ pub fn undo_items(
     }
 }
 
+#[allow(dead_code)]
 pub fn todo_item(ui: &mut Ui, label: &str) {
     ui.add_enabled(false, egui::Button::new(tr(label)));
 }

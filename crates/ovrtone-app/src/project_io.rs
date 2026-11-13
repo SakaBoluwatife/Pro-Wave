@@ -98,6 +98,8 @@ fn flex_from_doc(d: &ovrtone_project::FlexDoc, original: AudioFile) -> crate::fl
             start: p.start,
             end: p.end,
             semitones: p.semitones.clamp(-24.0, 24.0),
+            formant: if p.formant.is_finite() { p.formant.clamp(-24.0, 24.0) } else { 0.0 },
+            vibrato: if p.vibrato.is_finite() { p.vibrato.clamp(-1.0, 2.0) } else { 0.0 },
         })
         .collect();
     crate::flex_edit::FlexEdit {
@@ -173,7 +175,12 @@ fn inserts_from_doc(t: &ovrtone_project::TrackDoc) -> Vec<crate::model::Insert> 
         let names: Vec<&str> = t.inserts.iter().map(String::as_str).collect();
         return crate::model::inserts_from_names(&names);
     }
-    t.fx.iter()
+    inserts_from_docs(&t.fx)
+}
+
+/// Effects from the file, each with its settings kept in range.
+fn inserts_from_docs(fx: &[ovrtone_project::InsertDoc]) -> Vec<crate::model::Insert> {
+    fx.iter()
         .filter_map(|d| {
             let kind = ovrtone_engine::FxKind::from_name(&d.kind)?;
             let mut params = [0.0; ovrtone_engine::MAX_FX_PARAMS];
@@ -630,6 +637,8 @@ fn region_to_doc(
                         start: p.start,
                         end: p.end,
                         semitones: p.semitones,
+                        formant: p.formant,
+                        vibrato: p.vibrato,
                     })
                     .collect(),
             }),
@@ -912,6 +921,17 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             .map(|b| ovrtone_project::SpatialBusDoc {
                 name: b.name.clone(),
                 layout: b.layout.name().to_string(),
+                plugins: b.plugins.iter().map(plugin_to_doc).collect(),
+                fx: b
+                    .fx
+                    .iter()
+                    .map(|s| ovrtone_project::InsertDoc {
+                        kind: s.name().into(),
+                        bypass: s.bypass,
+                        params: s.params[..s.kind.params().len()].to_vec(),
+                        sidechain: None,
+                    })
+                    .collect(),
                 direction: b.place.direction,
                 elevation: b.place.elevation,
                 spread: b.place.spread,
@@ -1540,6 +1560,8 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .map(|b| {
             let f = |v: f32, lo: f32, hi: f32, or: f32| if v.is_finite() { v.clamp(lo, hi) } else { or };
             crate::model::SpatialBusDef {
+                fx: inserts_from_docs(&b.fx),
+                plugins: b.plugins.iter().map(plugin_from_doc).collect(),
                 name: b.name.clone(),
                 layout: ovrtone_engine::SpeakerLayout::ALL
                     .into_iter()
@@ -2686,6 +2708,7 @@ pub(crate) mod tests {
                 start: 0.0,
                 end: 0.2,
                 semitones: -1.5,
+                ..Default::default()
             }];
             // The region plays a made file that is not the recording.
             f.rendered = 7;
@@ -2905,11 +2928,13 @@ pub(crate) mod tests {
                     start: 0.0,
                     end: 1.0,
                     semitones: 500.0,
+                    ..Default::default()
                 },
                 ovrtone_project::FlexPitchDoc {
                     start: 2.0,
                     end: 1.0,
                     semitones: 1.0,
+                    ..Default::default()
                 },
             ],
         };

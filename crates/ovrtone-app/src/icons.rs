@@ -1,13 +1,18 @@
-//! The toolbar icons, from Tabler Icons (MIT, see `assets/icons/TABLER-LICENSE.txt`). Each SVG is read
-//! into lines once and drawn with the painter, so an icon is sharp at any size and display scale and
-//! takes any colour, as text does.
+//! Ovrtone's icons: one set in one style (see `assets/icons/make-icons.pl`), read from SVG once and
+//! drawn with the painter, so they are sharp at any size and scale and take any colour, as text does.
+//! Lines are 1.75 wide with round ends; closed shapes marked `data-tone="soft"` are filled at a third
+//! of the colour behind them, and `data-tone="solid"` ones fully.
+//!
+//! A file `<name>.svg` in the `icons` folder of the settings folder (`%APPDATA%\ovrtone\icons`)
+//! takes the place of the icon of that name, with no change to the program: a designer's set
+//! drops in there.
 use egui::{pos2, vec2, Color32, Painter, Pos2, Response, Sense, Shape, Stroke, Ui};
 use std::sync::OnceLock;
 
 /// The grid the icons are drawn on.
 const GRID: f32 = 24.0;
 /// The width of their lines on that grid.
-const LINE: f32 = 2.0;
+const LINE: f32 = 1.75;
 
 macro_rules! icons {
     ($($name:ident => $file:literal,)+) => {
@@ -17,8 +22,11 @@ macro_rules! icons {
         }
 
         const SVGS: &[&str] = &[
-            $(include_str!(concat!("../assets/icons/", $file, ".svg")),)+
+            $(include_str!(concat!("../assets/icons/ovrtone/", $file, ".svg")),)+
         ];
+
+        /// Each icon's file name, for a replacement in the settings folder.
+        const NAMES: &[&str] = &[$($file,)+];
     };
 }
 
@@ -59,17 +67,67 @@ icons! {
     Wave => "wave-sine",
     Other => "wave-saw-tool",
     Stack => "stack-2",
+    // Transport and toolbars.
+    Rewind => "rewind",
+    Forward => "forward",
+    ToStart => "to-start",
+    Cycle => "cycle",
+    Metronome => "metronome",
+    Bolt => "bolt",
+    Library => "library",
+    Inspector => "inspector",
+    Help => "help",
+    Toolbar => "toolbar",
+    SmartControls => "smart-controls",
+    Editors => "editors",
+    ListEditors => "list-editors",
+    NotePad => "note-pad",
+    Loops => "loops",
+    Browsers => "browsers",
+    Grid => "grid",
+    List => "list",
+    Curve => "curve",
+    Catch => "catch",
+    // Instruments, for the track icons.
+    Note => "note",
+    Waveform => "waveform",
+    DrumKit => "drum-kit",
+    Guitar => "guitar",
+    Bass => "bass",
+    Synth => "synth",
+    Keys => "keys",
+    Violin => "violin",
+    Aux => "aux-send",
+    Vca => "vca",
+    Midi => "midi",
+    Spatial => "spatial",
 }
 
 /// One stroke of an icon, on its grid.
 struct Line {
     points: Vec<Pos2>,
     closed: bool,
+    /// 0 a line, 1 a soft fill (a third of the colour), 2 a solid fill.
+    tone: u8,
 }
 
 fn parsed() -> &'static [Vec<Line>] {
     static PARSED: OnceLock<Vec<Vec<Line>>> = OnceLock::new();
-    PARSED.get_or_init(|| SVGS.iter().map(|svg| read_svg(svg)).collect())
+    PARSED.get_or_init(|| {
+        let mine = crate::recent_files::config_dir().map(|d| d.join("icons"));
+        SVGS.iter()
+            .zip(NAMES)
+            .map(|(svg, name)| {
+                // A replacement in the settings folder, when there is one that reads.
+                let replaced = mine
+                    .as_ref()
+                    .and_then(|d| std::fs::read_to_string(d.join(format!("{name}.svg"))).ok())
+                    .map(|text| read_svg(&text))
+                    .filter(|lines| !lines.is_empty());
+                replaced.unwrap_or_else(|| read_svg(svg))
+            })
+            .collect()
+    })
 }
 
 /// Draws `icon` centred on `at`, `size` points high and wide.
@@ -80,7 +138,13 @@ pub fn paint(g: &Painter, at: Pos2, size: f32, icon: Icon, color: Color32) {
     let scale = size / GRID;
     let width = (LINE * scale).max(1.1);
     let place = |p: &Pos2| at + vec2((p.x - GRID / 2.0) * scale, (p.y - GRID / 2.0) * scale);
-    for line in lines {
+    // The fills first, behind the lines.
+    for line in lines.iter().filter(|l| l.tone > 0 && l.points.len() >= 3) {
+        let points: Vec<Pos2> = line.points.iter().map(place).collect();
+        let fill = if line.tone == 1 { color.gamma_multiply(0.32) } else { color };
+        g.add(Shape::convex_polygon(points, fill, Stroke::NONE));
+    }
+    for line in lines.iter().filter(|l| l.tone == 0) {
         let points: Vec<Pos2> = line.points.iter().map(place).collect();
         let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
             continue;
@@ -130,13 +194,25 @@ fn read_svg(svg: &str) -> Vec<Line> {
     let mut lines = Vec::new();
     for part in svg.split("<path").skip(1) {
         let tag = part.split('>').next().unwrap_or_default();
-        if tag.contains("stroke=\"none\"") {
+        let tone = if tag.contains("data-tone=\"soft\"") {
+            1
+        } else if tag.contains("data-tone=\"solid\"") {
+            2
+        } else {
+            0
+        };
+        // An unmarked path with no line is a guide box (as in Tabler icons): not drawn.
+        if tone == 0 && tag.contains("stroke=\"none\"") {
             continue;
         }
+        let before = lines.len();
         let Some((_, rest)) = tag.split_once(" d=\"") else {
             continue;
         };
         read_path(rest.split('"').next().unwrap_or_default(), &mut lines);
+        for line in &mut lines[before..] {
+            line.tone = tone;
+        }
     }
     lines
 }
@@ -310,6 +386,7 @@ fn finish(lines: &mut Vec<Line>, points: &mut Vec<Pos2>, closed: bool) {
         lines.push(Line {
             points: std::mem::take(points),
             closed,
+            tone: 0,
         });
     } else {
         points.clear();

@@ -990,6 +990,8 @@ fn set_autosave_minutes(m: u32) {
 }
 
 fn general_tab(ui: &mut Ui, s: &mut UiState) {
+    ui.label(egui::RichText::new(crate::license::line()).strong());
+    ui.add_space(6.0);
     let mut every = s.autosave_minutes;
     ui.horizontal(|ui| {
         ui.label("Crash-recovery copy");

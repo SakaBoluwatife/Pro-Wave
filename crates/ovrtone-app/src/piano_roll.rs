@@ -35,6 +35,9 @@ const RULER_H: f32 = 22.0;
 const REGION_H: f32 = 18.0;
 const SB_H: f32 = 12.0;
 const VEL_H: f32 = 72.0;
+/// A stacked controller lane, and the most of them.
+const EXTRA_H: f32 = 44.0;
+const MAX_EXTRA_LANES: usize = 4;
 
 fn panel_bg_col() -> Color32 {
     crate::theme::panel_bg()
@@ -344,6 +347,10 @@ pub struct PianoView {
     /// What the lane under the notes shows.
     lane: Lane,
     lane_drag: Option<LaneDrag>,
+    /// More controller lanes, stacked above the main one (Logic's Step Editor): their numbers.
+    extra_lanes: Vec<u8>,
+    /// A draw or erase in one of them: which, and how far it has got.
+    extra_drag: Option<(usize, LaneDrag)>,
     /// The time selection, in beats from the region's start: made by dragging the ruler with the
     /// right button, as in FL Studio.
     time_sel: Option<(f32, f32)>,
@@ -399,6 +406,8 @@ impl Default for PianoView {
             note_colors: NoteColors::default(),
             lane: Lane::Velocity,
             lane_drag: None,
+            extra_lanes: Vec::new(),
+            extra_drag: None,
             step_input: false,
             step_at: 0.0,
             step_chord: None,
@@ -1097,7 +1106,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     // Layout.
     let insp = Rect::from_min_size(body.min, vec2(INSPECTOR_W, body.height()));
     let editor = Rect::from_min_max(pos2(insp.right(), body.top()), body.max);
-    let lower = editor.bottom() - SB_H - VEL_H - 4.0;
+    let extra_h = s.piano.extra_lanes.len() as f32 * (EXTRA_H + 3.0);
+    let lower = editor.bottom() - SB_H - VEL_H - 4.0 - extra_h;
     let keys = Rect::from_min_max(
         pos2(editor.left(), editor.top() + RULER_H + REGION_H),
         pos2(editor.left() + KEYS_W, lower),
@@ -1115,7 +1125,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         pos2(editor.right(), grid.bottom()),
     );
     let vel_rect = Rect::from_min_max(
-        pos2(grid.left(), hbar.bottom() + 4.0),
+        pos2(grid.left(), hbar.bottom() + 4.0 + extra_h),
         pos2(grid.right(), editor.bottom()),
     );
     let vel_label = Rect::from_min_max(
@@ -2484,6 +2494,84 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         }
     }
 
+    // The stacked controller lanes: each one draws with the left button, rubs out with the right.
+    let mut remove_lane = None;
+    for (k, num) in v.extra_lanes.clone().into_iter().enumerate() {
+        let rect = Rect::from_min_size(
+            pos2(grid.left(), hbar.bottom() + 4.0 + k as f32 * (EXTRA_H + 3.0)),
+            vec2(grid.width(), EXTRA_H),
+        );
+        let label = Rect::from_min_max(pos2(keys.left(), rect.top()), pos2(keys.right(), rect.bottom()));
+        let gl = ui.painter_at(Rect::from_min_max(label.min, rect.max));
+        gl.rect_filled(rect, 0.0, row_white_col());
+        gl.rect_filled(label, 0.0, crate::theme::gray(0x18));
+        gl.text(
+            label.left_center() + vec2(5.0, 0.0),
+            Align2::LEFT_CENTER,
+            Lane::Control(num).short(),
+            FontId::proportional(10.0),
+            text_dim_col(),
+        );
+        let close = Rect::from_center_size(pos2(label.right() - 8.0, label.top() + 8.0), vec2(14.0, 14.0));
+        let closed = ui
+            .interact(close, id(("extra_lane_close", k)), Sense::click())
+            .on_hover_text("Remove this lane (its values stay)");
+        gl.text(close.center(), Align2::CENTER_CENTER, "\u{00d7}", FontId::proportional(12.0), text_col());
+        if closed.clicked() {
+            remove_lane = Some(k);
+        }
+        for &(rel, _) in &bars {
+            let bx = x_of(rel as f32);
+            gl.line_segment([pos2(bx, rect.top()), pos2(bx, rect.bottom())], Stroke::new(1.0, grid_ink(0.18)));
+        }
+        let y_of_val = |val: u8| rect.bottom() - f32::from(val.min(127)) / 127.0 * (rect.height() - 2.0);
+        let mut points: Vec<(f32, u8)> = p.tracks[ti].regions[ri]
+            .controls
+            .iter()
+            .filter(|c| c.num == num)
+            .map(|c| (c.start, c.val))
+            .collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (i, &(at, val)) in points.iter().enumerate() {
+            let next = points.get(i + 1).map_or(len_beats, |n| n.0);
+            let (x0, x1, y) = (x_of(at), x_of(next), y_of_val(val));
+            gl.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1.max(x0 + 1.0), rect.bottom())), 0.0, blue().gamma_multiply(0.25));
+            gl.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(1.5, blue()));
+        }
+        let resp = ui.interact(rect, id(("extra_lane", k)), Sense::click_and_drag());
+        let beat_of = |x: f32| beat_at(x).clamp(0.0, len_beats);
+        let value_of = |y: f32| (((rect.bottom() - y) / rect.height()) * 127.0).round().clamp(0.0, 127.0) as u8;
+        if let Some(pt) = hover.filter(|pt| rect.contains(*pt) && resp.hovered()) {
+            if primary_press {
+                v.extra_drag = Some((k, LaneDrag::Draw { beat: beat_of(pt.x), value: value_of(pt.y) }));
+            } else if secondary_press {
+                v.extra_drag = Some((k, LaneDrag::Erase { beat: beat_of(pt.x) }));
+            }
+        }
+        let every = snap.clamp(1.0 / 64.0, 0.125);
+        let controls = &mut p.tracks[ti].regions[ri].controls;
+        match (v.extra_drag, hover) {
+            (Some((lane, LaneDrag::Draw { beat, value })), Some(pt)) if lane == k && down_now => {
+                let (now, level) = (beat_of(pt.x), value_of(pt.y));
+                note_edit::draw_controls(controls, num, (beat, value), (now, level), every);
+                v.extra_drag = Some((k, LaneDrag::Draw { beat: now, value: level }));
+                p.song_rev += 1;
+            }
+            (Some((lane, LaneDrag::Erase { beat })), Some(pt)) if lane == k && secondary_down => {
+                let now = beat_of(pt.x);
+                note_edit::erase_controls(controls, num, beat, now);
+                v.extra_drag = Some((k, LaneDrag::Erase { beat: now }));
+                p.song_rev += 1;
+            }
+            (Some((lane, _)), _) if lane == k && !down_now && !secondary_down => v.extra_drag = None,
+            _ => {}
+        }
+    }
+    if let Some(k) = remove_lane {
+        v.extra_lanes.remove(k);
+        v.extra_drag = None;
+    }
+
     // Velocity or controller lane. Its label picks which.
     let gv = ui.painter_at(Rect::from_min_max(vel_label.min, vel_rect.max));
     gv.rect_filled(vel_label, 0.0, crate::theme::gray(0x18));
@@ -2506,6 +2594,25 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     used.dedup();
     egui::Popup::menu(&pick).show(|ui| lane_menu(ui, &mut v.lane, &used));
     gv.rect_filled(vel_rect, 0.0, row_white_col());
+    // Another lane, stacked above: any controller, shown with the others at once.
+    let add = Rect::from_min_size(vel_label.left_bottom() - vec2(-4.0, 16.0), vec2(vel_label.width() - 8.0, 14.0));
+    if v.extra_lanes.len() < MAX_EXTRA_LANES {
+        let add_resp = ui
+            .interact(add, id("extra_lane_add"), Sense::click())
+            .on_hover_text("Show another controller lane above this one");
+        gv.text(add.center(), Align2::CENTER_CENTER, "+ Lane", FontId::proportional(9.5), text_dim_col());
+        egui::Popup::menu(&add_resp).show(|ui| {
+            for n in NAMED_CONTROLS.iter().map(|c| c.0).chain(used.iter().copied()) {
+                if v.extra_lanes.contains(&n) || v.lane == Lane::Control(n) {
+                    continue;
+                }
+                if ui.button(Lane::Control(n).name()).clicked() {
+                    v.extra_lanes.push(n);
+                    ui.close();
+                }
+            }
+        });
+    }
     for f in [0.25f32, 0.5, 0.75] {
         let y = vel_rect.bottom() - f * vel_rect.height();
         gv.line_segment(

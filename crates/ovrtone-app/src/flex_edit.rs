@@ -31,6 +31,9 @@ pub struct FlexEdit {
     pub original: AudioFile,
     /// The [`FlexEdit::fingerprint`] the region's `file` was made for (0: not made yet).
     pub rendered: u64,
+    /// Flex Pitch: the notes found in the recording (in the time of the result), shown over it
+    /// to be moved in pitch one by one. Found again on request; not saved.
+    pub notes: Vec<ovrtone_engine::DetectedNote>,
 }
 
 impl FlexEdit {
@@ -41,6 +44,7 @@ impl FlexEdit {
             pitch: Vec::new(),
             original,
             rendered: 0,
+            notes: Vec::new(),
         }
     }
 
@@ -72,6 +76,8 @@ impl FlexEdit {
             mix(p.start.to_bits());
             mix(p.end.to_bits());
             mix(u64::from(p.semitones.to_bits()));
+            mix(u64::from(p.formant.to_bits()));
+            mix(u64::from(p.vibrato.to_bits()));
         }
         h.max(1)
     }
@@ -104,6 +110,9 @@ impl FlexEdit {
 pub enum Command {
     /// Flex markers on the hits, moved to the nearest step of `grid` beats.
     Quantize { grid: f64 },
+    /// Flex markers on the hits, moved to the Groove Track's feel: each hit near a sixteenth goes
+    /// where the groove puts that sixteenth (an audio track that follows the Groove Track).
+    QuantizeGroove { groove: [f64; 4] },
     /// Flex markers on the beats, moved to the project's beats: the region follows the
     /// project's tempo once (the menus now use Fit to Tempo, which keeps following).
     #[allow(dead_code)]
@@ -112,6 +121,8 @@ pub enum Command {
     CorrectPitch,
     /// A new software instrument track with the notes Flex Pitch hears.
     MidiFromPitch,
+    /// Flex Pitch: the notes it hears, shown over the region to move one by one.
+    ShowPitchNotes,
     /// A new software instrument track with a note on each hit (drums: one pitch, the velocity
     /// from how hard the hit is).
     MidiFromHits,
@@ -586,6 +597,41 @@ pub fn mode_label(mode: FlexMode) -> &'static str {
     }
 }
 
+/// Transposes audio region `r` of track `t` by `semitones`, its length kept (the Region
+/// Inspector's Transpose for audio): a pitch move over the whole recording, beside any note moves.
+pub fn set_audio_transpose(p: &mut Project, t: usize, r: usize, semitones: i8) {
+    if audio_of(p, t, r).is_none() {
+        return;
+    }
+    if audio_of(p, t, r).is_some_and(|a| a.flex.is_none()) {
+        set_mode(p, t, r, FlexMode::Polyphonic);
+    }
+    let Some(f) = p
+        .tracks
+        .get_mut(t)
+        .and_then(|t| t.regions.get_mut(r))
+        .and_then(|r| r.audio.as_mut())
+        .and_then(|a| a.flex.as_mut())
+    else {
+        return;
+    };
+    let length = f.original.duration_secs();
+    let whole = |s: &PitchShift| s.start <= 1e-6 && s.end >= length - 1e-3;
+    f.pitch.retain(|s| !whole(s));
+    if semitones != 0 {
+        f.pitch.insert(
+            0,
+            PitchShift {
+                start: 0.0,
+                end: length,
+                semitones: f32::from(semitones),
+                ..Default::default()
+            },
+        );
+    }
+    p.song_rev += 1;
+}
+
 /// Sets the Flex mode of an audio region (turning Flex on for it).
 pub fn set_mode(p: &mut Project, t: usize, r: usize, mode: FlexMode) {
     let Some(a) = p
@@ -783,6 +829,28 @@ fn work(
     let found = file.analyze().map_err(|e| e.to_string())?;
     let place = |src: f64| edit.map_or(src, |e| e.place_of(src));
     match command {
+        Command::QuantizeGroove { groove } => {
+            let s0 = map.seconds_at(origin);
+            let markers = markers_from(found.onsets.iter().map(|t| {
+                let beat = map.beat_at(s0 + t);
+                let grid = (beat * 4.0).round() / 4.0;
+                let to = if (beat - grid).abs() <= 0.1 {
+                    let slot = ((grid * 4.0).round() as i64).rem_euclid(4) as usize;
+                    grid + groove[slot]
+                } else {
+                    beat
+                };
+                (*t, map.seconds_at(to.max(origin)) - s0)
+            }));
+            let length = match markers.last() {
+                Some(m) => m.dst + (file.duration_secs() - m.src).max(0.0),
+                None => file.duration_secs(),
+            };
+            if markers.is_empty() {
+                return Err("no hits found to put on the groove".into());
+            }
+            Ok(Outcome::Markers { markers, length })
+        }
         Command::Quantize { grid } => {
             let grid = if grid.is_finite() && grid > 0.0 {
                 grid
@@ -843,7 +911,7 @@ fn work(
                 .collect();
             Ok(Outcome::Notes(notes))
         }
-        Command::CorrectPitch | Command::MidiFromPitch => {
+        Command::CorrectPitch | Command::MidiFromPitch | Command::ShowPitchNotes => {
             let stereo = file.read_stereo().map_err(|e| e.to_string())?;
             let mono: Vec<f32> = stereo.chunks(2).map(|c| (c[0] + c[1]) * 0.5).collect();
             let notes = ovrtone_engine::detect_notes(&mono, file.sample_rate, &found.onsets);
@@ -859,7 +927,7 @@ fn work(
                     ..n
                 })
                 .collect();
-            if command == Command::MidiFromPitch {
+            if command == Command::MidiFromPitch || command == Command::ShowPitchNotes {
                 return Ok(Outcome::Notes(notes));
             }
             Ok(Outcome::Pitch(
@@ -871,6 +939,7 @@ fn work(
                             start: n.start,
                             end: n.end,
                             semitones,
+                            ..Default::default()
                         })
                     })
                     .collect(),
@@ -942,7 +1011,7 @@ fn poll_tasks(p: &mut Project, s: &mut UiState) {
             false
         }
     });
-    for (t, r, path, _command, result) in finished {
+    for (t, r, path, command, result) in finished {
         let same = audio_of(p, t, r).is_some_and(|a| recording_of(a).path == path);
         if !same {
             continue;
@@ -983,6 +1052,16 @@ fn poll_tasks(p: &mut Project, s: &mut UiState) {
                     f.pitch = shifts;
                 }
                 s.status = Some(trf("Flex Pitch: {} notes corrected", &[&n]));
+            }
+            Outcome::Notes(notes) if command == Command::ShowPitchNotes => {
+                let mode = flex_mode_of(p, t, r);
+                set_mode(p, t, r, mode);
+                let n = notes.len();
+                if let Some(f) = p.tracks[t].regions[r].audio.as_mut().and_then(|a| a.flex.as_mut()) {
+                    f.notes = notes;
+                }
+                s.tracks.flex_view = true;
+                s.status = Some(format!("Flex Pitch: {n} notes. Drag one up or down; double-click puts it back"));
             }
             Outcome::Notes(notes) => {
                 let made = midi_track_from(p, t, r, &notes);

@@ -166,6 +166,7 @@ impl RoomAngle {
 }
 
 /// A place from a point on the top view, relative to its middle: the edge is the height of the ears.
+#[allow(dead_code)]
 fn place_at(offset: Vec2, radius: f32) -> (f32, f32) {
     let reach = (offset.length() / radius).clamp(0.0, 1.0);
     (offset.x.atan2(-offset.y).to_degrees(), 90.0 * (1.0 - reach))
@@ -554,7 +555,10 @@ fn renderer(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
             });
             egui::CollapsingHeader::new(format!("Spatial Buses ({})", p.spatial_buses.len()))
                 .id_salt(egui::Id::unique("spatial_buses"))
-                .show(ui, |ui| buses_section(ui, p));
+                .show(ui, |ui| {
+                    let installed = s.mixer.installed.clone();
+                    buses_section(ui, p, &installed, &mut s.bus_plugin_editor);
+                });
             ui.separator();
             let objects = p.tracks.iter().filter(|t| t.object.is_some() && !t.bed_pan).count();
             let panned = p.tracks.iter().filter(|t| t.object.is_some() && t.bed_pan).count();
@@ -669,7 +673,12 @@ fn renderer(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
 
 /// The spatial buses: each a layout (a 7.1.2 bus, say) that tracks are placed in, and a surround
 /// panner that places the whole bus in the room.
-fn buses_section(ui: &mut egui::Ui, p: &mut Project) {
+fn buses_section(
+    ui: &mut egui::Ui,
+    p: &mut Project,
+    installed: &[ovrtone_host::PluginInfo],
+    open: &mut Option<(u64, String)>,
+) {
     ui.label(
         egui::RichText::new(
             "Route a track to a bus in its panner (Goes to). The track is placed among the bus's own \
@@ -700,11 +709,11 @@ fn buses_section(ui: &mut egui::Ui, p: &mut Project) {
                 egui::Grid::new(egui::Id::unique(("bus_grid", k))).num_columns(2).show(ui, |ui| {
                     let row = |ui: &mut egui::Ui, name: &str, v: &mut f32, lo: f32, hi: f32, suffix: &str| {
                         ui.label(name);
-                        ui.add(egui::Slider::new(v, lo..=hi).suffix(suffix));
+                        ui.add(egui::Slider::new(v, lo..=hi).suffix(suffix).fixed_decimals(if suffix == "°" { 0 } else { 2 }));
                         ui.end_row();
                     };
                     row(ui, "Direction", &mut b.place.direction, -180.0, 180.0, "°");
-                    row(ui, "Elevation", &mut b.place.elevation, -45.0, 90.0, "°");
+                    row(ui, "Elevation", &mut b.place.elevation, 0.0, 90.0, "°");
                     row(ui, "Spread", &mut b.place.spread, 0.0, 1.0, "");
                     row(ui, "Size", &mut b.place.size, 0.0, 1.0, "");
                     row(ui, "Centre level", &mut b.place.centre, 0.0, 1.0, "");
@@ -716,6 +725,8 @@ fn buses_section(ui: &mut egui::Ui, p: &mut Project) {
                     }
                     ui.end_row();
                 });
+                bus_effects(ui, &mut b.fx, k);
+                bus_plugins(ui, &mut b.plugins, k, installed, open);
             });
         });
     }
@@ -739,8 +750,102 @@ fn buses_section(ui: &mut egui::Ui, p: &mut Project) {
             name: format!("Bus {n}"),
             layout: SpeakerLayout::Surround712,
             place: ovrtone_engine::BusPlace::default(),
+            fx: Vec::new(),
+            plugins: Vec::new(),
         });
     }
+}
+
+/// A spatial bus's effects: each runs on every pair of its channels, so the layout keeps its places.
+fn bus_effects(ui: &mut egui::Ui, fx: &mut Vec<crate::model::Insert>, bus: usize) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Effects").strong());
+    let mut remove = None;
+    for (i, e) in fx.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut e.bypass, "Bypass");
+            egui::CollapsingHeader::new(e.kind.name())
+                .id_salt(("bus_fx", bus, i))
+                .show(ui, |ui| {
+                    for (k, info) in e.kind.params().iter().enumerate() {
+                        let mut slider = egui::Slider::new(&mut e.params[k], info.min..=info.max)
+                            .text(info.name)
+                            .suffix(info.unit);
+                        if info.log && info.min > 0.0 {
+                            slider = slider.logarithmic(true);
+                        }
+                        ui.add(slider);
+                    }
+                });
+            if ui.small_button("\u{00d7}").on_hover_text("Remove this effect").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        fx.remove(i);
+    }
+    if fx.len() < ovrtone_engine::MAX_INSERTS {
+        ui.menu_button("+ Effect", |ui| {
+            for kind in ovrtone_engine::FxKind::ALL {
+                if ui.button(kind.name()).clicked() {
+                    fx.push(crate::model::Insert::new(kind));
+                    ui.close();
+                }
+            }
+        });
+    }
+}
+
+/// A spatial bus's plugins: a VST3 effect that takes the bus's layout gets every channel; any other
+/// runs as linked stereo copies, one per pair, all moved by its window.
+fn bus_plugins(
+    ui: &mut egui::Ui,
+    plugins: &mut Vec<crate::model::PluginInsert>,
+    bus: usize,
+    installed: &[ovrtone_host::PluginInfo],
+    open: &mut Option<(u64, String)>,
+) {
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Plugins").strong())
+        .on_hover_text("A surround plugin gets every channel of the bus. A stereo one runs as linked copies, one per pair of channels, all following its window.");
+    let mut remove = None;
+    for (i, ins) in plugins.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut ins.bypass, "Bypass");
+            if ui.button(&ins.name).on_hover_text("Open its window").clicked() {
+                *open = Some((ins.uid, ins.name.clone()));
+            }
+            if let Some(why) = &ins.failed {
+                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x70, 0x60), "failed").on_hover_text(why);
+            }
+            if ui.small_button("\u{00d7}").on_hover_text("Remove this plugin").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        plugins.remove(i);
+    }
+    let effects: Vec<&ovrtone_host::PluginInfo> = installed.iter().filter(|i| !i.is_instrument).collect();
+    if effects.is_empty() {
+        return;
+    }
+    ui.menu_button("+ Plugin", |ui| {
+        let search_id = egui::Id::unique(("bus_plugin_search", bus));
+        let mut search = ui.data_mut(|d| d.get_temp::<String>(search_id)).unwrap_or_default();
+        ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search"));
+        ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+        let wanted = search.to_lowercase();
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for info in effects.iter().filter(|i| wanted.is_empty() || i.name.to_lowercase().contains(&wanted)) {
+                if ui.button(format!("{} ({})", info.name, info.vendor)).clicked() {
+                    plugins.push(crate::model::PluginInsert::new(info));
+                    ui.close();
+                }
+            }
+        });
+    });
 }
 
 /// A bus's channels from above, as its panner places them.
@@ -848,28 +953,34 @@ fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLay
         return;
     };
     let color = if t.bed_pan { SURROUND } else { OBJECT };
-    let middle = c + point_of(o.azimuth, o.elevation, TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12));
+    // The top view is the room seen from above: direction around the listener and distance out.
+    // The higher it is, the nearer the middle: straight up is over the head, where direction and
+    // spread no longer move it, as the engine renders it.
+    let reach = TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12) * o.elevation.to_radians().cos().max(0.0);
+    let middle = c + point_of(o.azimuth, 0.0, reach);
     if o.size > 0.01 {
         g.circle_filled(middle, 8.0 + o.size * 40.0, color.gamma_multiply(0.12));
     }
     g.line_segment([c, middle], Stroke::new(1.2, color.gamma_multiply(0.7)));
     // Its two sides, apart by the spread.
     for (word, side) in [("L", -1.0f32), ("R", 1.0f32)] {
-        let reach = TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12);
-        let at = c + point_of(o.azimuth + side * o.spread * 45.0, o.elevation, reach);
+        let at = c + point_of(o.azimuth + side * o.spread * 45.0, 0.0, reach);
         g.circle_filled(at, 9.5, color.gamma_multiply(0.3));
         g.circle_stroke(at, 9.5, Stroke::new(1.5, color));
         g.text(at, Align2::CENTER_CENTER, word, FontId::proportional(9.5), Color32::WHITE);
     }
     if resp.dragged() {
         if let Some(at) = resp.interact_pointer_pos() {
-            let (az, el) = place_at(at - c, TOP_RADIUS);
+            // Direction from the angle, distance from how far out; the height stays as it is.
+            let off = at - c;
+            let az = off.x.atan2(-off.y).to_degrees();
+            let distance = (off.length() / TOP_RADIUS).clamp(0.0, 1.0);
             move_axis(p, track, ObjectAxis::Around, az);
-            move_axis(p, track, ObjectAxis::Height, el);
+            move_axis(p, track, ObjectAxis::Distance, distance);
         }
     }
     if resp.drag_stopped() {
-        release_axes(p, track, &[ObjectAxis::Around, ObjectAxis::Height]);
+        release_axes(p, track, &[ObjectAxis::Around, ObjectAxis::Distance]);
     }
 }
 
@@ -1065,7 +1176,12 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                     ui.label(label);
                     let (lo, hi) = axis.range();
                     let mut value = o.get(axis);
-                    let resp = ui.add(egui::Slider::new(&mut value, lo..=hi));
+                    // Degrees whole with a degree sign; the rest to two places.
+                    let degrees = matches!(axis, ObjectAxis::Around | ObjectAxis::Height);
+                    let slider = egui::Slider::new(&mut value, lo..=hi)
+                        .fixed_decimals(if degrees { 0 } else { 2 })
+                        .suffix(if degrees { "°" } else { "" });
+                    let resp = ui.add(slider);
                     if resp.changed() {
                         move_axis(p, track, axis, value);
                     }
@@ -1076,9 +1192,12 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 }
                 let mut spread = o.spread;
                 ui.label("Spread");
+                // Straight up, left and right meet over the head: spread has nothing to move.
+                let overhead = o.elevation > 85.0;
                 if ui
-                    .add(egui::Slider::new(&mut spread, 0.0..=1.0))
+                    .add_enabled(!overhead, egui::Slider::new(&mut spread, 0.0..=1.0).fixed_decimals(2))
                     .on_hover_text("How far apart its left and right are")
+                    .on_disabled_hover_text("Straight overhead, left and right meet: lower the elevation to spread them")
                     .changed()
                 {
                     if let Some(object) = p.tracks[track].object.as_mut() {
@@ -1125,7 +1244,7 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                         ui.label(label);
                         let (lo, hi) = axis.range();
                         let mut value = o.get(axis);
-                        let resp = ui.add(egui::Slider::new(&mut value, lo..=hi));
+                        let resp = ui.add(egui::Slider::new(&mut value, lo..=hi).fixed_decimals(2));
                         if resp.changed() {
                             move_axis(p, track, axis, value);
                         }

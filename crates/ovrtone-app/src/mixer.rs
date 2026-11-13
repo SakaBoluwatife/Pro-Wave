@@ -13,7 +13,7 @@
 use crate::i18n::{tr, trf};
 use crate::model::{AutoMode, AutoTarget, Insert, Project, SendSlot, TrackKind, MAX_SENDS};
 use crate::widgets::{
-    back_chevron, blue, menu_title, popup_button, stroke, todo_item, text_col, text_dim_col,
+    back_chevron, blue, menu_title, popup_button, stroke, text_col, text_dim_col,
 };
 use crate::UiState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Painter, Rect, Sense, Stroke, StrokeKind, Ui};
@@ -3642,7 +3642,8 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
         }
         let pairs = p.hardware_pairs();
         if pairs == 0 {
-            todo_item(ui, tr("Create New Output Channel Strip"));
+            ui.add_enabled(false, egui::Button::new(tr("Create New Output Channel Strip")))
+                .on_disabled_hover_text("Your audio device has two outputs. Pick one with more (Settings > Audio) for Output 3-4 and up.");
         } else {
             ui.menu_button(tr("Create New Output Channel Strip"), |ui| {
                 for pair in 1..=pairs {
@@ -3804,7 +3805,7 @@ fn toolbar(ui: &Ui, p: &mut Project, s: &mut UiState, bar: Rect) {
 /// Width of the Single | Tracks | All switch, of the "Sends on Faders" group and of the
 /// "Show" menu that replaces the filter buttons when they do not fit.
 const MODE_W: f32 = 174.0;
-const SENDS_W: f32 = 236.0;
+const SENDS_W: f32 = 256.0;
 const FILTER_MENU_W: f32 = 70.0;
 const TOOLBAR_GAP: f32 = 10.0;
 
@@ -3850,14 +3851,11 @@ fn draw_sends_on_faders(
 ) {
     const NS: &str = "mixer_toolbar";
     // Sends on Faders: the faders set the sends to a bus.
-    g.text(
-        pos2(x, cy),
-        Align2::LEFT_CENTER,
-        tr("Sends on Faders:"),
-        FontId::proportional(12.5),
-        text_dim_col(),
-    );
-    let pw = pos2(x + 112.0, cy + 1.0);
+    // Placed by the width of the words, so the power symbol never sits on them in any language.
+    let words = g.layout_no_wrap(tr("Sends on Faders:").to_string(), FontId::proportional(12.5), text_dim_col());
+    let words_w = words.size().x;
+    g.galley(pos2(x, cy - words.size().y / 2.0), words, text_dim_col());
+    let pw = pos2(x + words_w + 12.0, cy + 1.0);
     g.circle_stroke(pw, 5.5, stroke(text_dim_col()));
     g.line_segment(
         [pw + vec2(0.0, -7.5), pw + vec2(0.0, -1.5)],
@@ -3867,7 +3865,7 @@ fn draw_sends_on_faders(
         [pw + vec2(0.0, -7.0), pw + vec2(0.0, -2.0)],
         stroke(text_dim_col()),
     );
-    let sof = Rect::from_min_size(pos2(x + 126.0, cy - 10.0), vec2(110.0, 20.0));
+    let sof = Rect::from_min_size(pos2(pw.x + 14.0, cy - 10.0), vec2(110.0, 20.0));
     let label = match bus {
         Some(b) => trf("Bus {}", &[b]),
         None => tr("Off").to_string(),

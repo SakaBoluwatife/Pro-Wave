@@ -114,6 +114,29 @@ fn toolbar(ui: &mut Ui, p: &mut Project, s: &mut UiState, bar: Rect, ti: usize, 
     if ui.checkbox(&mut reverse, "Reverse").changed() {
         changed = true;
     }
+    // Audio edits of the region, where they are needed most.
+    let whole_key = egui::Id::unique("ate_whole");
+    let mut whole = ui.ctx().data(|d| d.get_temp::<bool>(whole_key)).unwrap_or(false);
+    if ui
+        .selectable_label(whole, "Whole File")
+        .on_hover_text("Show the whole file, or the region with room around it")
+        .clicked()
+    {
+        whole = !whole;
+        ui.ctx().data_mut(|d| d.insert_temp(whole_key, whole));
+    }
+    if ui.button("Split").on_hover_text("Split at the playhead (Ctrl+T)").clicked() {
+        if let Err(e) = crate::region_edit::split(p, ti, ri, p.position_beats) {
+            s.status = Some(e);
+        }
+        return;
+    }
+    if ui.button("Normalize").on_hover_text("Region gain that brings the loudest sample to 0 dB").clicked() {
+        crate::tracks_area::start_normalize(p, s, ti, ri);
+    }
+    if ui.button("Strip Silence…").clicked() {
+        crate::menus::apply("Strip Silence…", p, s);
+    }
     ui.add_space(10.0);
     match following {
         Some(bpm) => {
@@ -198,17 +221,27 @@ fn wave(ui: &mut Ui, p: &mut Project, s: &mut UiState, body: Rect, ti: usize, ri
     if lane.width() < 20.0 || lane.height() < 20.0 {
         return;
     }
-    let x_of = |sec: f32| lane.left() + sec / duration * lane.width();
-    let sec_of = |x: f32| ((x - lane.left()) / lane.width() * duration).clamp(0.0, duration);
+    // The view: the region with room around it (to trim it longer), or the whole file.
+    let whole = ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::unique("ate_whole"))).unwrap_or(false);
+    let (v0, v1) = if whole {
+        (0.0, duration)
+    } else {
+        let pad = (played * 0.15).max(0.25);
+        ((src - pad).max(0.0), (src_end + pad).min(duration))
+    };
+    let span = (v1 - v0).max(1e-3);
+    let x_of = |sec: f32| lane.left() + (sec - v0) / span * lane.width();
+    let sec_of = |x: f32| (v0 + (x - lane.left()) / lane.width() * span).clamp(0.0, duration);
+    let full_x = (x_of(0.0), x_of(duration) - x_of(0.0));
 
     // Ruler: seconds into the file.
     g.rect_filled(ruler, 0.0, crate::theme::toolbar());
     let step = [0.1f32, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0]
         .into_iter()
-        .find(|st| st / duration * lane.width() >= 60.0)
+        .find(|st| st / span * lane.width() >= 60.0)
         .unwrap_or(120.0);
-    let mut t = 0.0;
-    while t <= duration {
+    let mut t = (v0 / step).floor() * step;
+    while t <= v1 {
         let x = x_of(t);
         g.line_segment([pos2(x, ruler.bottom() - 5.0), pos2(x, ruler.bottom())], Stroke::new(1.0, text_dim_col()));
         let label = if step < 1.0 { format!("{t:.2}s") } else { format!("{}:{:02}", (t / 60.0) as u32, (t % 60.0) as u32) };
@@ -220,11 +253,11 @@ fn wave(ui: &mut Ui, p: &mut Project, s: &mut UiState, body: Rect, ti: usize, ri
     g.rect_filled(lane, 3.0, Color32::from_black_alpha(60));
     let lit = Rect::from_min_max(pos2(x_of(src), lane.top()), pos2(x_of(src_end), lane.bottom()));
     g.rect_filled(lit, 3.0, color.gamma_multiply(0.35));
-    if let Some(peaks) = audio.peaks_for(lane.width()) {
+    if let Some(peaks) = audio.peaks_for(full_x.1) {
         let fit = audio.waveform_fit();
-        crate::tracks_area::draw_peaks(&g, lane, (lane.left(), lane.width()), peaks, fit, false, color.gamma_multiply(0.45));
-        let lit_peaks = g.with_clip_rect(lit.intersect(body));
-        crate::tracks_area::draw_peaks(&lit_peaks, lane, (lane.left(), lane.width()), peaks, fit, false, Color32::from_gray(235));
+        crate::tracks_area::draw_peaks(&g, lane, full_x, peaks, fit, false, color.gamma_multiply(0.45));
+        let lit_peaks = g.with_clip_rect(lit.intersect(lane));
+        crate::tracks_area::draw_peaks(&lit_peaks, lane, full_x, peaks, fit, false, Color32::from_gray(235));
     }
     g.rect_stroke(lit, 3.0, Stroke::new(1.0, color), StrokeKind::Inside);
 

@@ -58,7 +58,7 @@ impl Template {
             Template::Songwriter => IconKind::Piano,
             Template::Electronic => IconKind::Synth,
             Template::Podcast => IconKind::Mic,
-            Template::Surround => IconKind::Aux,
+            Template::Surround => IconKind::Spatial,
         }
     }
 

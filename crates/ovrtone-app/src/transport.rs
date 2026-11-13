@@ -84,9 +84,6 @@ impl LcdColors {
 const REC_RED: Color32 = Color32::from_rgb(0xe6, 0x34, 0x2c);
 const PURPLE: Color32 = Color32::from_rgb(0x9b, 0x3f, 0xd6);
 
-fn stroke(c: Color32) -> Stroke {
-    Stroke::new(1.4, c)
-}
 
 /// What a button of the control bar is, for when the pointer is on it.
 fn button_name(key: &str) -> Option<&'static str> {
@@ -129,6 +126,21 @@ fn clicked(ui: &Ui, rect: Rect, key: &str) -> bool {
 
 type IconFn = fn(&Painter, Rect, Color32);
 
+/// The menu of the mode buttons: which are shown. The one ticked or unticked, if any.
+fn modes_menu(ui: &mut egui::Ui, modes_now: &[HeaderMode]) -> Option<(HeaderMode, bool)> {
+    let mut chosen = None;
+    for (mode, label) in [
+        (HeaderMode::Typing, "Typing Keyboard (Ctrl+K)"),
+        (HeaderMode::LowLatency, "Low Latency Mode"),
+    ] {
+        let mut shown = modes_now.contains(&mode);
+        if ui.checkbox(&mut shown, label).changed() {
+            chosen = Some((mode, shown));
+        }
+    }
+    chosen
+}
+
 /// How far apart the mode buttons after the display are.
 const MODE_STEP: f32 = 32.0;
 
@@ -145,285 +157,76 @@ fn icon_typing(g: &Painter, r: Rect, c: Color32) {
 }
 
 fn icon_library(g: &Painter, r: Rect, c: Color32) {
-    // Inbox tray.
-    let b = Rect::from_center_size(r.center(), vec2(14.0, 11.0));
-    g.rect_stroke(b, 2.0, stroke(c), StrokeKind::Middle);
-    let y = b.top() + 6.0;
-    g.add(Shape::line(
-        vec![
-            pos2(b.left(), y),
-            pos2(b.left() + 4.0, y),
-            pos2(b.left() + 5.0, y + 2.0),
-            pos2(b.right() - 5.0, y + 2.0),
-            pos2(b.right() - 4.0, y),
-            pos2(b.right(), y),
-        ],
-        stroke(c),
-    ));
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Library, c);
 }
 
 fn icon_inspector(g: &Painter, r: Rect, c: Color32) {
-    let ctr = r.center();
-    g.circle_stroke(ctr, 7.0, stroke(c));
-    g.circle_filled(ctr + vec2(0.0, -3.4), 1.1, c);
-    g.line_segment(
-        [ctr + vec2(0.0, -1.0), ctr + vec2(0.0, 4.0)],
-        Stroke::new(1.6, c),
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Inspector, c);
 }
 
 fn icon_help(g: &Painter, r: Rect, c: Color32) {
-    let ctr = r.center();
-    g.circle_stroke(ctr, 7.0, stroke(c));
-    g.text(
-        ctr + vec2(0.0, 0.5),
-        Align2::CENTER_CENTER,
-        "?",
-        FontId::proportional(10.5),
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Help, c);
 }
 
 fn icon_toolbar(g: &Painter, r: Rect, c: Color32) {
-    let b = Rect::from_center_size(r.center(), vec2(15.0, 11.0));
-    g.rect_stroke(b, 1.5, stroke(c), StrokeKind::Middle);
-    g.line_segment(
-        [
-            pos2(b.left(), b.top() + 3.5),
-            pos2(b.right(), b.top() + 3.5),
-        ],
-        stroke(c),
-    );
-    g.line_segment(
-        [
-            pos2(b.left() + 4.0, b.top() + 6.5),
-            pos2(b.right() - 4.0, b.top() + 6.5),
-        ],
-        Stroke::new(1.0, c),
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Toolbar, c);
 }
 
 fn icon_smart_controls(g: &Painter, r: Rect, c: Color32) {
-    let ctr = r.center();
-    g.circle_stroke(ctr, 3.6, stroke(c));
-    for i in 0..8 {
-        let a = i as f32 * std::f32::consts::FRAC_PI_4;
-        let d = vec2(a.cos(), a.sin());
-        g.line_segment([ctr + d * 5.6, ctr + d * 7.6], stroke(c));
-    }
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::SmartControls, c);
 }
 
 fn icon_mixer(g: &Painter, r: Rect, c: Color32) {
-    let ctr = r.center();
-    for (i, knob) in [2.5f32, -3.0, 1.0].iter().enumerate() {
-        let x = ctr.x + (i as f32 - 1.0) * 4.5;
-        g.line_segment(
-            [pos2(x, ctr.y - 7.0), pos2(x, ctr.y + 7.0)],
-            Stroke::new(1.2, c),
-        );
-        g.rect_filled(
-            Rect::from_center_size(pos2(x, ctr.y + knob), vec2(4.0, 2.4)),
-            0.5,
-            c,
-        );
-    }
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Mixer, c);
 }
 
 fn icon_editors(g: &Painter, r: Rect, c: Color32) {
-    // Scissors.
-    let ctr = r.center();
-    g.circle_stroke(ctr + vec2(-3.5, 4.5), 2.2, stroke(c));
-    g.circle_stroke(ctr + vec2(3.5, 4.5), 2.2, stroke(c));
-    g.line_segment([ctr + vec2(-2.4, 2.6), ctr + vec2(3.0, -7.0)], stroke(c));
-    g.line_segment([ctr + vec2(2.4, 2.6), ctr + vec2(-3.0, -7.0)], stroke(c));
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Editors, c);
 }
 
-fn tri(g: &Painter, pts: [Pos2; 3], c: Color32) {
-    g.add(Shape::convex_polygon(pts.to_vec(), c, Stroke::NONE));
-}
 
 fn icon_rewind(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    tri(
-        g,
-        [p + vec2(-8.0, 0.0), p + vec2(0.0, -6.0), p + vec2(0.0, 6.0)],
-        c,
-    );
-    tri(
-        g,
-        [p + vec2(0.0, 0.0), p + vec2(8.0, -6.0), p + vec2(8.0, 6.0)],
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Rewind, c);
 }
 
 fn icon_forward(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    tri(
-        g,
-        [
-            p + vec2(-8.0, -6.0),
-            p + vec2(0.0, 0.0),
-            p + vec2(-8.0, 6.0),
-        ],
-        c,
-    );
-    tri(
-        g,
-        [p + vec2(0.0, -6.0), p + vec2(8.0, 0.0), p + vec2(0.0, 6.0)],
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Forward, c);
 }
 
 fn icon_to_start(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    g.rect_filled(
-        Rect::from_center_size(p + vec2(-5.5, 0.0), vec2(2.4, 12.0)),
-        0.5,
-        c,
-    );
-    tri(
-        g,
-        [p + vec2(-4.0, 0.0), p + vec2(5.5, -6.0), p + vec2(5.5, 6.0)],
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::ToStart, c);
 }
 
 fn icon_play(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center() + vec2(1.0, 0.0);
-    tri(
-        g,
-        [
-            p + vec2(-5.0, -7.0),
-            p + vec2(7.0, 0.0),
-            p + vec2(-5.0, 7.0),
-        ],
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Play, c);
 }
 
 fn icon_cycle(g: &Painter, r: Rect, c: Color32) {
-    // Two half-loops with arrow heads (loop/cycle symbol).
-    let p = r.center();
-    let (rx, ry) = (7.5f32, 4.5f32);
-    let arc = |from: f32, to: f32| -> Vec<Pos2> {
-        (0..=12)
-            .map(|i| {
-                let a = from + (to - from) * i as f32 / 12.0;
-                p + vec2(a.cos() * rx, a.sin() * ry)
-            })
-            .collect()
-    };
-    use std::f32::consts::PI;
-    g.add(Shape::line(arc(PI * 1.05, PI * 1.95), Stroke::new(1.6, c)));
-    g.add(Shape::line(arc(PI * 0.05, PI * 0.95), Stroke::new(1.6, c)));
-    // heads: top-right pointing right, bottom-left pointing left
-    let tr = p + vec2(rx * 0.95, -ry * 0.3);
-    tri(
-        g,
-        [
-            tr + vec2(-3.5, -3.0),
-            tr + vec2(1.8, -0.2),
-            tr + vec2(-2.0, 2.5),
-        ],
-        c,
-    );
-    let bl = p + vec2(-rx * 0.95, ry * 0.3);
-    tri(
-        g,
-        [
-            bl + vec2(3.5, 3.0),
-            bl + vec2(-1.8, 0.2),
-            bl + vec2(2.0, -2.5),
-        ],
-        c,
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Cycle, c);
 }
 
 fn icon_low_latency(g: &Painter, r: Rect, c: Color32) {
-    // Shield with a check mark.
-    let p = r.center();
-    let pts = vec![
-        p + vec2(-6.0, -6.5),
-        p + vec2(6.0, -6.5),
-        p + vec2(6.0, 0.0),
-        p + vec2(0.0, 7.0),
-        p + vec2(-6.0, 0.0),
-        p + vec2(-6.0, -6.5),
-    ];
-    g.add(Shape::line(pts, stroke(c)));
-    g.add(Shape::line(
-        vec![
-            p + vec2(-3.0, -0.5),
-            p + vec2(-0.5, 2.0),
-            p + vec2(3.5, -3.0),
-        ],
-        stroke(c),
-    ));
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Bolt, c);
 }
 
 fn icon_metronome(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    let body = vec![
-        p + vec2(-6.0, 7.0),
-        p + vec2(-2.5, -7.0),
-        p + vec2(2.5, -7.0),
-        p + vec2(6.0, 7.0),
-        p + vec2(-6.0, 7.0),
-    ];
-    g.add(Shape::line(body, stroke(c)));
-    g.line_segment([p + vec2(-4.8, 3.0), p + vec2(4.8, 3.0)], stroke(c));
-    g.line_segment([p + vec2(0.0, 3.0), p + vec2(4.5, -6.0)], stroke(c));
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Metronome, c);
 }
 
 fn icon_list_editors(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    for i in -1..=1 {
-        let y = p.y + i as f32 * 4.5;
-        g.circle_filled(pos2(p.x - 6.0, y), 1.1, c);
-        g.line_segment([pos2(p.x - 3.0, y), pos2(p.x + 7.0, y)], stroke(c));
-    }
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::ListEditors, c);
 }
 
 fn icon_note_pad(g: &Painter, r: Rect, c: Color32) {
-    let b = Rect::from_center_size(r.center(), vec2(13.0, 13.0));
-    g.rect_stroke(b, 2.0, stroke(c), StrokeKind::Middle);
-    g.line_segment(
-        [
-            b.left_top() + vec2(0.0, 4.0),
-            b.right_top() + vec2(0.0, 4.0),
-        ],
-        stroke(c),
-    );
-    g.line_segment(
-        [
-            b.left_top() + vec2(3.0, 8.0),
-            b.right_top() + vec2(-3.0, 8.0),
-        ],
-        Stroke::new(1.0, c),
-    );
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::NotePad, c);
 }
 
 fn icon_loops(g: &Painter, r: Rect, c: Color32) {
-    // Speech-bubble-like loop (Apple Loops browser).
-    let p = r.center() + vec2(0.0, -1.0);
-    g.circle_stroke(p, 6.5, stroke(c));
-    g.add(Shape::line(
-        vec![
-            p + vec2(-4.0, 5.0),
-            p + vec2(-6.5, 8.5),
-            p + vec2(-1.0, 6.3),
-        ],
-        stroke(c),
-    ));
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Loops, c);
 }
 
 fn icon_browsers(g: &Painter, r: Rect, c: Color32) {
-    let p = r.center();
-    let back = Rect::from_center_size(p + vec2(2.5, -2.0), vec2(11.0, 9.0));
-    let front = Rect::from_center_size(p + vec2(-2.0, 2.5), vec2(11.0, 9.0));
-    g.rect_stroke(back, 1.5, stroke(c), StrokeKind::Middle);
-    g.rect_filled(front, 1.5, bar_bg_col());
-    g.rect_stroke(front, 1.5, stroke(c), StrokeKind::Middle);
+    crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Browsers, c);
 }
 
 // ---------------------------------------------------------------- widgets
@@ -732,6 +535,39 @@ fn lcd_compact(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect) {
         fitting_font(g, p.key, 12.0, 46.0),
         pal.text,
     );
+    // Click the key to set the project's key, so it is always to hand.
+    let key_r = Rect::from_center_size(pos2(sig_x, cy + 12.0), vec2(48.0, 18.0));
+    let key_resp = ui
+        .interact(key_r, egui::Id::unique(("control_bar", "key")), Sense::click())
+        .on_hover_text("The project's key: click to set it");
+    if key_resp.hovered() {
+        g.rect_stroke(key_r, 3.0, Stroke::new(1.0, pal.text.gamma_multiply(0.4)), egui::StrokeKind::Inside);
+    }
+    egui::Popup::menu(&key_resp).show(|ui| {
+        ui.set_min_width(180.0);
+        ui.label(egui::RichText::new("Project key").strong());
+        egui::Grid::new(egui::Id::unique("key_grid")).num_columns(2).show(ui, |ui| {
+            let majors: Vec<_> = crate::score::KEYS.iter().filter(|k| k.0.ends_with("maj")).collect();
+            let minors: Vec<_> = crate::score::KEYS.iter().filter(|k| k.0.ends_with("min")).collect();
+            for row in 0..majors.len().max(minors.len()) {
+                for list in [&majors, &minors] {
+                    match list.get(row) {
+                        Some(k) => {
+                            if ui.selectable_label(p.key == k.0, crate::score::key_label(k.0)).clicked() {
+                                p.key = k.0;
+                                p.song_rev += 1;
+                                ui.close();
+                            }
+                        }
+                        None => {
+                            ui.label("");
+                        }
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
 }
 
 /// Dragging the numerator or denominator of the signature, in `areas`, up or down.
@@ -869,7 +705,7 @@ fn save_lcd_default(mode: u8) {
     }
 }
 
-fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
+fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32, disk_load: f32) {
     let pal = LcdColors::new(p.recording);
     g.rect_filled(rect, 6.0, pal.bg);
     g.rect_stroke(
@@ -997,7 +833,7 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
         pal.text,
     );
 
-    // Column 6: CPU (audio-callback DSP load) / HD (disk; not measured yet) meters.
+    // Column 6: CPU (audio-callback DSP load) / HD (how busy reading audio files is) meters.
     for (i, label) in ["CPU", "HD"].iter().enumerate() {
         let y = rect.top() + 12.0 + i as f32 * 18.0;
         g.text(
@@ -1009,6 +845,24 @@ fn lcd(ui: &mut Ui, g: &Painter, p: &mut Project, rect: Rect, cpu_load: f32) {
         );
         let m = Rect::from_min_size(pos2(x0 + 490.0, y - 2.0), vec2(40.0, 4.0));
         g.rect_filled(m, 1.0, crate::theme::gray(0x18));
+        if i == 1 {
+            // HD, as in Logic: how much of its time the disk thread spends reading. Red when the drive
+            // cannot keep up (a slow or external drive, many tracks at once).
+            let load = disk_load.clamp(0.0, 1.0);
+            let fill = Rect::from_min_size(m.min, vec2(m.width() * load, m.height()));
+            let color = if disk_load >= 0.8 { Color32::from_rgb(0xe0, 0x40, 0x30) } else { pal.text };
+            g.rect_filled(fill, 1.0, color);
+            let hover = m.expand2(vec2(14.0, 4.0)).with_min_x(x0 + 470.0);
+            let resp = ui
+                .interact(hover, egui::Id::unique(("lcd", "hd_meter")), egui::Sense::click())
+                .on_hover_text(format!(
+                    "Disk (HD) load: {:.0}%. Reading audio files for playback. High or red: the drive is too slow for this many tracks; copy the samples to an internal drive, or bounce tracks. Click for the Performance window.",
+                    disk_load * 100.0
+                ));
+            if resp.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("open_performance"), true));
+            }
+        }
         if i == 0 {
             let load = cpu_load.clamp(0.0, 1.0);
             let fill = Rect::from_min_size(m.min, vec2(m.width() * load, m.height()));
@@ -1200,7 +1054,10 @@ pub fn control_bar(
     let lcd_w = if s.lcd_full { 555.0 } else { 226.0 };
     let lcd_rect = Rect::from_center_size(pos2(bar.center().x, cy), vec2(lcd_w, 44.0));
     if s.lcd_full {
-        lcd(ui, &g, p, lcd_rect, s.cpu_load);
+        lcd(ui, &g, p, lcd_rect, s.cpu_load, s.disk_load);
+        if ui.ctx().data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("open_performance"))).unwrap_or(false) {
+            s.performance.open = true;
+        }
     } else {
         match s.lcd_mode {
             0 => lcd_compact(ui, &g, p, lcd_rect),
@@ -1339,50 +1196,62 @@ pub fn control_bar(
     let rx0 = |dx: f32| pos2(lcd_rect.right() + dx, cy);
     // Mode buttons after the display: Typing Keyboard by default; right-click to choose.
     let modes = s.header_modes.clone();
-    let mut menu_rect = Rect::from_center_size(rx0(24.0), vec2(30.0, 26.0));
+    // Each button turns its mode on and off; a right-click on any of them chooses which show.
+    let mut chosen: Option<(HeaderMode, bool)> = None;
     for (k, mode) in modes.iter().enumerate() {
         let c = rx0(24.0 + k as f32 * MODE_STEP);
-        menu_rect = menu_rect.union(Rect::from_center_size(c, vec2(30.0, 26.0)));
         let on = match mode {
             HeaderMode::Typing => s.typing.on,
             HeaderMode::LowLatency => p.low_latency,
         };
-        let bg = on.then_some(crate::theme::accent());
-        let icon = if on { Color32::WHITE } else { icon_col() };
         let (key, draw): (&str, IconFn) = match mode {
             HeaderMode::Typing => ("typing", icon_typing),
             HeaderMode::LowLatency => ("lowlat", icon_low_latency),
         };
-        if tbutton(ui, &g, c, key, draw, bg, icon) {
+        let r = Rect::from_center_size(c, vec2(30.0, 26.0));
+        let mut resp = ui.interact(r, egui::Id::unique(("control_bar", key)), Sense::click());
+        if let Some(name) = button_name(key) {
+            resp = resp.on_hover_text(format!("{name}\nRight-click to choose the mode buttons shown here"));
+        }
+        if on {
+            g.rect_filled(r, 6.0, crate::theme::accent());
+        } else if resp.hovered() {
+            g.rect_filled(r, 6.0, Color32::from_white_alpha(14));
+        }
+        draw(&g, r, if on { Color32::WHITE } else { icon_col() });
+        if resp.clicked() {
             match mode {
                 HeaderMode::Typing => s.typing.on = !s.typing.on,
                 HeaderMode::LowLatency => p.low_latency = !p.low_latency,
             }
         }
+        resp.context_menu(|ui| {
+            if let Some(c) = modes_menu(ui, &modes) {
+                chosen = Some(c);
+            }
+        });
     }
     if modes.is_empty() {
-        g.text(menu_rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional(14.0), icon_col());
-    }
-    let menu = ui
-        .interact(menu_rect, egui::Id::unique(("control_bar", "modes_menu")), Sense::click())
-        .on_hover_text("Right-click to choose the mode buttons shown here");
-    menu.context_menu(|ui| {
-        for (mode, label) in [
-            (HeaderMode::Typing, "Typing Keyboard (Ctrl+K)"),
-            (HeaderMode::LowLatency, "Low Latency Mode"),
-        ] {
-            let mut shown = s.header_modes.contains(&mode);
-            if ui.checkbox(&mut shown, label).changed() {
-                if shown {
-                    s.header_modes.push(mode);
-                } else {
-                    s.header_modes.retain(|m| *m != mode);
-                }
-            }
+        let r = Rect::from_center_size(rx0(24.0), vec2(30.0, 26.0));
+        g.text(r.center(), Align2::CENTER_CENTER, "+", FontId::proportional(14.0), icon_col());
+        let resp = ui
+            .interact(r, egui::Id::unique(("control_bar", "modes_menu")), Sense::click())
+            .on_hover_text("Click to show the Typing Keyboard button; right-click to choose");
+        if resp.clicked() {
+            chosen = Some((HeaderMode::Typing, true));
         }
-    });
-    if modes.is_empty() && menu.clicked() {
-        s.header_modes.push(HeaderMode::Typing);
+        resp.context_menu(|ui| {
+            if let Some(c) = modes_menu(ui, &modes) {
+                chosen = Some(c);
+            }
+        });
+    }
+    if let Some((mode, shown)) = chosen {
+        if shown {
+            s.header_modes.push(mode);
+        } else {
+            s.header_modes.retain(|m| *m != mode);
+        }
     }
     // What follows moves along by the extra mode buttons.
     let shift = modes.len().saturating_sub(1) as f32 * MODE_STEP;
@@ -1505,7 +1374,7 @@ mod tests {
         let mut h = crate::ui_test::Harness::new(700.0, 200.0);
         let draw = |ui: &mut Ui, p: &mut Project| {
             let g = ui.painter().clone();
-            lcd(ui, &g, p, rect, 0.0);
+            lcd(ui, &g, p, rect, 0.0, 0.0);
         };
         h.settle(|ui| draw(ui, &mut p));
         h.click(at, |ui| draw(ui, &mut p));

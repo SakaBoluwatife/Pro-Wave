@@ -79,6 +79,7 @@ const SUBMENUS: &[(&str, &[&str])] = &[
         "Export",
         &[
             "Selection as MIDI File…",
+    "For Beat Store…",
             "Track as Audio File…",
             "All Tracks as Audio Files…",
             "Score as MusicXML…",
@@ -644,7 +645,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Delete Automation" => has_automation(p),
         "Edit Groups…" => !p.groups.is_empty(),
         "Audio File…" | "Show in File Manager" | "Rename Project…" => true,
-        "Song to File…" => crate::bounce::project_end(p) > 0.0,
+        "Song to File…" | "For Beat Store…" => crate::bounce::project_end(p) > 0.0,
         "Tracks in Place…" => p
             .tracks
             .get(p.selected_track)
@@ -1247,6 +1248,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.bounce.dialog = Some(crate::bounce::Purpose::Track)
         }
         "All Tracks as Audio Files…" => s.bounce.dialog = Some(crate::bounce::Purpose::Stems),
+        "For Beat Store…" => crate::beat_store::start(p, s),
         "Regions in Place…" | "Bounce In Place" => crate::bounce::bounce_selection(p, s, false),
         "Bounce and Join" => crate::bounce::bounce_selection(p, s, true),
         "Process Selection…" => crate::bounce::open_process(p, s),

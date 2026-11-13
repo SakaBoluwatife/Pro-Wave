@@ -476,7 +476,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         y += ROW_H;
         label(&g, left, y, tr("Q-Swing:"), false);
         y += ROW_H;
-        label(&g, left, y, tr("Transpose:"), midi);
+        // MIDI regions play their notes higher or lower; audio regions are pitch-shifted (Flex).
+        label(&g, left, y, tr("Transpose:"), has);
         let r = Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0));
         if let Some(v) = drag_value(
             ui,
@@ -487,9 +488,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             (-96, 96),
             0,
             signed(params.transpose as i32),
-            midi,
+            has,
         ) {
-            params.transpose = v as i8;
+            params.transpose = v.clamp(-24, 24) as i8;
+            if let (true, Some((t, r))) = (is_audio, sel) {
+                crate::flex_edit::set_audio_transpose(p, t, r, params.transpose);
+            }
         }
         y += ROW_H;
         label(&g, left, y, tr("Velocity:"), midi);

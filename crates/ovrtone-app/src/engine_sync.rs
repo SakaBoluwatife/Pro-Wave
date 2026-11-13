@@ -43,6 +43,8 @@ pub struct EngineSync {
     spatial_test: Option<usize>,
     /// The spatial buses' layouts the renderer was made with, and their places as last sent.
     spatial_bus_layouts: Vec<ovrtone_engine::SpeakerLayout>,
+    /// The spatial buses' effects as last sent.
+    spatial_bus_fx: Vec<Vec<crate::model::Insert>>,
     /// The HRTF choice's change count when the renderer was made.
     spatial_hrtf: u64,
     /// Why the chosen HRTF file could not be used, for the renderer to say.
@@ -68,6 +70,8 @@ pub struct EngineSync {
     /// The plugins running in the engine. Stays below `engine`, which is dropped first, so
     /// instances outlast what the audio thread holds of them.
     rack: Rack,
+    /// Plugins on the spatial buses.
+    bus_plugins: crate::bus_plugins::BusPlugins,
     plugin_message: Option<String>,
     /// The Varispeed percent, as last told to the engine.
     varispeed: f32,
@@ -771,6 +775,7 @@ impl EngineSync {
             spatial_speakers: 0,
             spatial_test: None,
             spatial_bus_layouts: Vec::new(),
+            spatial_bus_fx: Vec::new(),
             spatial_hrtf: 0,
             hrtf_error: None,
             spatial_bus_places: Vec::new(),
@@ -785,6 +790,7 @@ impl EngineSync {
             fx: Vec::new(),
             routes: Vec::new(),
             pdc: Vec::new(),
+            bus_plugins: Default::default(),
             rack: Rack::default(),
             plugin_message: None,
             monitor_out: (false, false),
@@ -950,6 +956,7 @@ impl EngineSync {
         }
         self.sync_strips(p);
         self.sync_spatial(p);
+        self.bus_plugins.sync(p, &mut self.engine, &mut self.plugin_message);
         // Mixer moves. Until a song is accepted, its `SetSong` carries the mix instead.
         if self.layout.is_some() {
             for i in 0..p.tracks.len().min(MAX_TRACKS) {
@@ -996,6 +1003,11 @@ impl EngineSync {
             || p.spatial_law != self.spatial_law
             || generation != self.spatial_speakers
             || layouts != self.spatial_bus_layouts
+            // A new renderer only when effects come or go; new settings go to the running ones.
+            || p.spatial_buses
+                .iter()
+                .map(|b| b.fx.iter().map(|s| s.kind).collect::<Vec<_>>())
+                .ne(self.spatial_bus_fx.iter().map(|f| f.iter().map(|s| s.kind).collect::<Vec<_>>()))
             || hrtf_generation != self.spatial_hrtf
         {
             let buses: Vec<_> = p.spatial_buses.iter().map(|b| (b.layout, b.place)).collect();
@@ -1005,7 +1017,14 @@ impl EngineSync {
                 p.spatial_law,
                 speakers,
             )
-            .with_buses(&buses);
+            .with_buses(&buses)
+            .with_bus_effects(
+                &p.spatial_buses
+                    .iter()
+                    .map(|b| b.fx.iter().map(|s| (s.kind, s.params, s.bypass)).collect())
+                    .collect::<Vec<_>>(),
+                self.engine.sample_rate() as f32,
+            );
             // A measured head for headphones, when one is chosen; the modelled one otherwise.
             let render = if light { render.with_dry_bed() } else { render };
             let render = match (mode, crate::hrtf::current().0.is_some()) {
@@ -1031,12 +1050,30 @@ impl EngineSync {
             self.spatial_law = p.spatial_law;
             self.spatial_speakers = generation;
             self.spatial_bus_layouts = layouts;
+            self.spatial_bus_fx = p.spatial_buses.iter().map(|b| b.fx.clone()).collect();
             self.spatial_hrtf = hrtf_generation;
             self.spatial_bus_places = p.spatial_buses.iter().map(|b| b.place).collect();
             // A new renderer has no test signal on.
             self.spatial_test = None;
         }
         for (k, b) in p.spatial_buses.iter().enumerate() {
+            for (slot, e) in b.fx.iter().enumerate() {
+                let sent = self.spatial_bus_fx.get(k).and_then(|f| f.get(slot));
+                if sent == Some(e) {
+                    continue;
+                }
+                if !self.send(Command::SetSpatialBusFx {
+                    bus: k as u8,
+                    slot: slot as u8,
+                    params: e.params,
+                    bypass: e.bypass,
+                }) {
+                    return;
+                }
+                if let Some(s) = self.spatial_bus_fx.get_mut(k).and_then(|f| f.get_mut(slot)) {
+                    *s = *e;
+                }
+            }
             if self.spatial_bus_places.get(k) == Some(&b.place) {
                 continue;
             }
@@ -1244,6 +1281,14 @@ impl EngineSync {
 
     pub fn collect_plugin_states(&mut self, p: &mut Project) {
         self.rack.collect_states(p, &mut self.plugin_message);
+        self.bus_plugins.collect_states(p);
+    }
+
+    /// Opens the window of a spatial bus's plugin.
+    pub fn open_bus_plugin_editor(&mut self, uid: u64, title: &str, owner: Option<isize>) {
+        if let Err(e) = self.bus_plugins.open_editor(uid, title, owner) {
+            self.plugin_message = Some(e);
+        }
     }
 
     /// Whether plugins may hold changes the last save does not have.
