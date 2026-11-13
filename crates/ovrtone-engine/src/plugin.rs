@@ -68,6 +68,16 @@ pub enum PluginEventKind {
     PitchBend {
         value: f32,
     },
+    /// The pitch of the one sounding note `key`, in semitones from its own: a slide that bends only
+    /// that note (CLAP's tuning note expression), for plugins that say they take it.
+    NoteTune {
+        key: u8,
+        semitones: f32,
+    },
+    /// Channel pressure (aftertouch), 0..=1.
+    ChannelPressure {
+        value: f32,
+    },
 }
 
 /// Where the song is, for plugins that follow it (a synced delay, an arpeggiator).
@@ -132,6 +142,12 @@ pub trait PluginProcessor: Send {
 
     /// Whether the plugin makes sound of its own with silence going in, so it must never rest.
     fn keeps_running(&self) -> bool {
+        false
+    }
+
+    /// Whether it can bend one note while others hold ([`PluginEventKind::NoteTune`]). If not, a
+    /// slide bends the whole instrument.
+    fn note_tuning(&self) -> bool {
         false
     }
 }
@@ -374,6 +390,11 @@ impl PluginSlot {
 
     pub fn uid(&self) -> u64 {
         self.uid
+    }
+
+    /// Whether its plugin bends single notes.
+    pub fn note_tuning(&self) -> bool {
+        self.plugin.note_tuning()
     }
 
     /// Moves a parameter, unless it is there already.

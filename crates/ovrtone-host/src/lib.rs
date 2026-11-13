@@ -217,10 +217,28 @@ pub trait LoadedPlugin {
         Ok(true)
     }
 
+    /// Tells a plugin that [`Self::is_ara`] the song's tempo map and bar signatures, so it
+    /// places what it finds on the song's grid.
+    fn ara_timeline(&mut self, _timeline: &AraTimeline) {}
+
+    /// The notes an ARA plugin (Melodyne) found in its track's audio: (start, length) in song
+    /// seconds, MIDI pitch, level 0 to 1. `None` if it has none to give (yet).
+    fn ara_notes(&mut self) -> Option<Vec<(f64, f64, f32, f32)>> {
+        None
+    }
+
     /// The process it runs in, if that is not this one.
     fn process_id(&self) -> Option<u32> {
         None
     }
+}
+
+/// The song's timing as ARA gives it to a plugin: tempo entries (seconds, quarter notes) and bar
+/// signatures (numerator, denominator, quarter note where they start).
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct AraTimeline {
+    pub tempo: Vec<(f64, f64)>,
+    pub bars: Vec<(i32, i32, f64)>,
 }
 
 /// An audio region on the track of a plugin that plays the track's audio itself (ARA). All times

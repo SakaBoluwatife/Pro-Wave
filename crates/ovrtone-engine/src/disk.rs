@@ -6,6 +6,7 @@
 //! `(generation, frame)` word; blocks carry the generation they were produced for so stale
 //! data is discarded without any locking.
 use crate::core::{AudioClip, ClipEdit};
+use crate::tempo_map::TempoMap;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -77,9 +78,44 @@ pub struct Block {
 #[derive(Default)]
 pub struct ClipShared {
     request: AtomicU64,
+    /// Source seconds played per second, as f64 bits (0: 1.0), for a clip that follows the
+    /// tempo. Set before the seek request that makes the disk thread read it.
+    speed: AtomicU64,
+}
+
+/// The song's tempo map, shared with the disk thread for the clips that follow the tempo.
+pub type SharedTempo = Arc<std::sync::Mutex<Option<Arc<TempoMap>>>>;
+
+/// How long a clip of `src_frames` frames (at `rate`), made at `bpm` and starting at `start_beat`,
+/// lasts when it follows the tempo map: the engine and the disk thread work it out alike.
+pub fn follow_len(map: &TempoMap, start_beat: f64, bpm: f64, src_frames: u64, rate: f64) -> u64 {
+    let beats = src_frames as f64 / rate * bpm / 60.0;
+    ((map.seconds_at(start_beat + beats) - map.seconds_at(start_beat)) * rate)
+        .max(0.0)
+        .floor() as u64
+}
+
+/// How long a clip of `src_frames` frames lasts played at `speed`.
+pub fn stretched_len(src_frames: u64, speed: f64) -> u64 {
+    if speed > 0.0 && speed.is_finite() {
+        (src_frames as f64 / speed).floor() as u64
+    } else {
+        src_frames
+    }
 }
 
 impl ClipShared {
+    pub(crate) fn set_speed(&self, speed: f64) {
+        self.speed.store(speed.to_bits(), Ordering::Relaxed);
+    }
+    fn speed(&self) -> f64 {
+        let s = f64::from_bits(self.speed.load(Ordering::Relaxed));
+        if s > 0.0 && s.is_finite() {
+            s
+        } else {
+            1.0
+        }
+    }
     pub fn request(&self, gen: u16, frame: u64) {
         self.request.store(
             ((gen as u64) << 48) | (frame & 0x0000_FFFF_FFFF_FFFF),
@@ -583,6 +619,8 @@ enum Msg {
         out_offset: u64,
         out_len: u64,
         edit: ClipEdit,
+        start_beat: f64,
+        tempo: SharedTempo,
     },
     Quit,
 }
@@ -611,21 +649,173 @@ struct Stream {
     buf_base: u64,
     eof: bool,
     reverse: bool,
+    out_rate: u32,
+    /// Following the tempo: source frames (at the output rate) per output frame. 1 otherwise.
+    speed: f64,
+    follows: bool,
+    keep_pitch: bool,
+    /// The live time stretch of a clip that follows the tempo and keeps its pitch.
+    stretch: Option<Stretcher>,
+    /// Where the clip starts in the song, and the tempo its audio was made at (following).
+    start_beat: f64,
+    follow_bpm: f64,
+    /// The song's tempo map as the engine has it, and the copy this clip plays by since its
+    /// last seek.
+    tempo: SharedTempo,
+    map: Option<Arc<TempoMap>>,
+}
+
+/// Signalsmith Stretch fed from the file as the clip plays.
+struct Stretcher {
+    st: signalsmith_stretch::Stretch,
+    /// The next input frame, counted at the output rate from the clip's start, unstretched.
+    in_pos: u64,
+    /// Input frames owed and not yet whole.
+    due: f64,
+    input: Vec<f32>,
+    output: Vec<f32>,
 }
 
 impl Stream {
+    /// The clip's length at the speed it plays at.
+    fn play_len(&self) -> u64 {
+        match self.follow_map() {
+            Some((map, _)) => follow_len(map, self.start_beat, self.follow_bpm, self.out_len, f64::from(self.out_rate)),
+            None => stretched_len(self.out_len, self.speed),
+        }
+    }
+
+    /// The tempo map a clip that follows the tempo plays by, with where it starts in seconds.
+    fn follow_map(&self) -> Option<(&TempoMap, f64)> {
+        if !self.follows || self.reverse || self.follow_bpm <= 0.0 {
+            return None;
+        }
+        let map = self.map.as_deref()?;
+        Some((map, map.seconds_at(self.start_beat)))
+    }
+
+    /// The unstretched frame (output rate, from the clip's start) heard at output frame `out`:
+    /// every beat of the audio on a beat of the song, through any change of tempo.
+    fn src_at(&self, out: u64) -> f64 {
+        match self.follow_map() {
+            Some((map, s0)) => {
+                let rate = f64::from(self.out_rate.max(1));
+                let beats = map.beat_at(s0 + out as f64 / rate) - self.start_beat;
+                (beats * 60.0 / self.follow_bpm * rate).max(0.0)
+            }
+            None => out as f64 * self.speed,
+        }
+    }
+
+    /// The unstretched frame `at` of the clip (output rate, from its start), from the file.
+    fn unstretched(&mut self, at: u64) -> (f32, f32) {
+        if at >= self.out_len {
+            return (0.0, 0.0);
+        }
+        let pos = (self.out_offset + at) as f64 * self.ratio;
+        let i0 = pos.floor() as u64;
+        let frac = (pos - i0 as f64) as f32;
+        self.ensure(i0 + 1);
+        let (l0, r0) = self.frame(i0);
+        let (l1, r1) = self.frame(i0 + 1);
+        (l0 + (l1 - l0) * frac, r0 + (r1 - r0) * frac)
+    }
+
+    /// `count` unstretched frames from `from` into the stretcher's input.
+    fn read_input(&mut self, from: u64, count: usize) {
+        let Some(mut s) = self.stretch.take() else { return };
+        s.input.clear();
+        for i in 0..count as u64 {
+            let (l, r) = self.unstretched(from + i);
+            s.input.push(l);
+            s.input.push(r);
+        }
+        self.stretch = Some(s);
+    }
+
+    /// Readies the stretcher to play from output frame `self.out_frame`.
+    fn start_stretch(&mut self) {
+        if !(self.follows && self.keep_pitch && !self.reverse)
+            || (self.map.is_none() && (self.speed - 1.0).abs() < 1e-6)
+        {
+            self.stretch = None;
+            return;
+        }
+        let mut s = match self.stretch.take() {
+            Some(mut s) => {
+                s.st.reset();
+                s
+            }
+            None => Stretcher {
+                st: signalsmith_stretch::Stretch::preset_default(2, self.out_rate.max(1)),
+                in_pos: 0,
+                due: 0.0,
+                input: Vec::new(),
+                output: Vec::new(),
+            },
+        };
+        let (lat_in, lat_out) = (s.st.input_latency(), s.st.output_latency());
+        let start = self.src_at(self.out_frame).round() as u64;
+        s.in_pos = start;
+        s.due = 0.0;
+        self.stretch = Some(s);
+        // The speed here, for the pre-roll.
+        let ahead = BLOCK_FRAMES as u64;
+        let speed = ((self.src_at(self.out_frame + ahead) - self.src_at(self.out_frame)) / ahead as f64)
+            .clamp(0.05, 20.0);
+        // Pre-roll: the input around the start, then the output latency run through and dropped.
+        self.read_input(start, lat_in);
+        if let Some(s) = self.stretch.as_mut() {
+            s.st.seek(&s.input, speed);
+            s.in_pos += lat_in as u64;
+        }
+        let skip_in = (lat_out as f64 * speed).round() as usize;
+        let from = self.stretch.as_ref().map_or(0, |s| s.in_pos);
+        self.read_input(from, skip_in);
+        if let Some(s) = self.stretch.as_mut() {
+            s.output.clear();
+            s.output.resize(lat_out * 2, 0.0);
+            s.st.process(&s.input, &mut s.output);
+            s.in_pos += skip_in as u64;
+            // How far the input runs ahead of what is heard.
+            s.due = (s.in_pos - start) as f64;
+        }
+    }
+
+    /// `n` stretched frames into `block`.
+    fn fill_stretched(&mut self, block: &mut Block, n: usize) {
+        let (from, count) = match self.stretch.as_mut() {
+            Some(s) => (s.in_pos, s.due),
+            None => return,
+        };
+        let (from, count) = {
+            let (in_pos, lead) = (from, count);
+            let target = self.src_at(self.out_frame + n as u64) + lead;
+            (in_pos, (target.round() as i64 - in_pos as i64).max(0) as usize)
+        };
+        self.read_input(from, count);
+        if let Some(s) = self.stretch.as_mut() {
+            s.output.clear();
+            s.output.resize(n * 2, 0.0);
+            s.st.process(&s.input, &mut s.output);
+            s.in_pos += count as u64;
+            block.data[..n * 2].copy_from_slice(&s.output);
+        }
+    }
+
     fn seek_out(&mut self, frame: u64) {
-        self.out_frame = frame.min(self.out_len);
-        let s = ((self.out_frame + self.out_offset) as f64 * self.ratio) as u64;
+        self.out_frame = frame.min(self.play_len());
+        let s = ((self.out_offset as f64 + self.src_at(self.out_frame)) * self.ratio) as u64;
         self.buf.clear();
         self.eof = false;
         match self.src.seek(s) {
             Ok(actual) => self.buf_base = actual,
             Err(e) => {
                 tracing::error!("disk seek failed: {e}");
-                self.out_frame = self.out_len; // stop producing
+                self.out_frame = self.play_len(); // stop producing
             }
         }
+        self.start_stretch();
     }
 
     fn ensure(&mut self, upto: u64) {
@@ -667,7 +857,7 @@ impl Stream {
     }
 
     fn fill_block(&mut self, gen: u16) -> Block {
-        let n = (BLOCK_FRAMES as u64).min(self.out_len - self.out_frame) as usize;
+        let n = (BLOCK_FRAMES as u64).min(self.play_len().saturating_sub(self.out_frame)) as usize;
         let mut block = Block {
             gen,
             start: self.out_frame,
@@ -698,8 +888,18 @@ impl Stream {
             self.out_frame += n as u64;
             return block;
         }
+        if self.stretch.is_some() {
+            self.fill_stretched(&mut block, n);
+            self.out_frame += n as u64;
+            let from = self.stretch.as_ref().map_or(0, |s| s.in_pos);
+            self.drop_before(((self.out_offset + from) as f64 * self.ratio).floor() as u64);
+            return block;
+        }
+        // Where the block starts and ends in the file; in between, a straight line.
+        let (a, b) = (self.src_at(self.out_frame), self.src_at(self.out_frame + n as u64));
         for i in 0..n {
-            let pos = (self.out_offset + self.out_frame + i as u64) as f64 * self.ratio;
+            let at = a + (b - a) * i as f64 / n.max(1) as f64;
+            let pos = (self.out_offset as f64 + at) * self.ratio;
             let i0 = pos.floor() as u64;
             let frac = (pos - i0 as f64) as f32;
             self.ensure(i0 + 1);
@@ -710,14 +910,19 @@ impl Stream {
         }
         self.out_frame += n as u64;
         // Drop source frames we will never read again.
-        let keep_from = (((self.out_offset + self.out_frame) as f64 * self.ratio).floor() as u64)
-            .saturating_sub(1);
+        let keep_from = ((self.out_offset as f64 + self.src_at(self.out_frame)) * self.ratio).floor() as u64;
+        self.drop_before(keep_from);
+        block
+    }
+
+    /// Drops source frames before `frame` (less one, for interpolation): never read again.
+    fn drop_before(&mut self, frame: u64) {
+        let keep_from = frame.saturating_sub(1);
         if keep_from > self.buf_base {
             let drop_frames = ((keep_from - self.buf_base) as usize).min(self.buf.len() / 2);
             self.buf.drain(..drop_frames * 2);
             self.buf_base += drop_frames as u64;
         }
-        block
     }
 
     fn service(&mut self) -> Progress {
@@ -728,11 +933,15 @@ impl Stream {
         let (gen, frame) = self.shared.load();
         if self.gen != Some(gen) {
             self.gen = Some(gen);
+            if self.follows && !self.reverse {
+                self.speed = self.shared.speed();
+                self.map = self.tempo.lock().ok().and_then(|m| m.clone());
+            }
             self.seek_out(frame);
         }
         let mut worked = false;
         for _ in 0..BLOCKS_PER_SERVICE {
-            if self.producer.slots() == 0 || self.out_frame >= self.out_len {
+            if self.producer.slots() == 0 || self.out_frame >= self.play_len() {
                 break;
             }
             let block = self.fill_block(gen);
@@ -758,6 +967,7 @@ impl Stream {
 pub struct DiskThread {
     tx: mpsc::Sender<Msg>,
     handle: Option<JoinHandle<()>>,
+    tempo: SharedTempo,
 }
 
 impl DiskThread {
@@ -768,7 +978,18 @@ impl DiskThread {
             .spawn(move || run(rx))
             .map_err(|e| tracing::error!("cannot spawn disk thread: {e}"))
             .ok();
-        Self { tx, handle }
+        Self {
+            tx,
+            handle,
+            tempo: SharedTempo::default(),
+        }
+    }
+
+    /// The song's tempo map, for clips that follow the tempo. Set before the engine gets it.
+    pub fn set_tempo_map(&self, map: &TempoMap) {
+        if let Ok(mut m) = self.tempo.lock() {
+            *m = Some(Arc::new(map.clone()));
+        }
     }
 
     /// Creates a streamed clip placed at `start_beat` on `track`. The file is opened on the
@@ -829,6 +1050,8 @@ impl DiskThread {
             out_offset,
             out_len,
             edit,
+            start_beat,
+            tempo: self.tempo.clone(),
         };
         if self.tx.send(msg).is_err() {
             tracing::error!("disk thread is not running");
@@ -857,6 +1080,8 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
             out_offset,
             out_len,
             edit,
+            start_beat,
+            tempo,
         } => {
             if producer.is_abandoned() {
                 return true;
@@ -876,6 +1101,15 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
                     buf_base: 0,
                     eof: false,
                     reverse: edit.reverse,
+                    out_rate,
+                    speed: 1.0,
+                    follows: edit.follow_bpm > 0.0,
+                    keep_pitch: edit.keep_pitch,
+                    stretch: None,
+                    start_beat,
+                    follow_bpm: edit.follow_bpm,
+                    tempo,
+                    map: None,
                 }),
                 Err(e) => tracing::error!("cannot open {}: {e}", file.path.display()),
             }

@@ -19,6 +19,7 @@
 mod bindings;
 
 use crate::AraRegion;
+use crate::AraTimeline as Timeline;
 use bindings::*;
 use ovrtone_engine::AudioFile;
 use std::collections::HashMap;
@@ -89,6 +90,9 @@ static mut ASSERT_FUNCTION: ARAAssertFunction = None;
 /// What the plugin tells the host about, reached from any of the callbacks that need it.
 struct Notes {
     dirty: Arc<AtomicBool>,
+    /// The project's tempo map and bar signatures, for the plugin to read (Melodyne places
+    /// notes and makes MIDI on this grid).
+    timeline: Mutex<Timeline>,
 }
 
 /// An audio file in the document.
@@ -293,10 +297,16 @@ static ARCHIVING: ARAArchivingControllerInterface = ARAArchivingControllerInterf
 // The project's tempo and the like are not offered to the plugin yet, which the interface allows.
 unsafe extern "C" fn context_available(
     _: ARAContentAccessControllerHostRef,
-    _: ARAMusicalContextHostRef,
-    _: ARAContentType,
+    context: ARAMusicalContextHostRef,
+    kind: ARAContentType,
 ) -> ARABool {
-    0
+    let notes = &*context.cast::<Notes>();
+    let timeline = notes.timeline.lock().map(|t| t.clone()).unwrap_or_default();
+    ARABool::from(match kind {
+        k if k == kARAContentTypeTempoEntries as ARAContentType => timeline.tempo.len() >= 2,
+        k if k == kARAContentTypeBarSignatures as ARAContentType => !timeline.bars.is_empty(),
+        _ => false,
+    })
 }
 
 unsafe extern "C" fn context_grade(
@@ -304,16 +314,51 @@ unsafe extern "C" fn context_grade(
     _: ARAMusicalContextHostRef,
     _: ARAContentType,
 ) -> ARAContentGrade {
-    kARAContentGradeInitial as ARAContentGrade
+    // The project's tempo and signatures are what the user set: approved.
+    kARAContentGradeApproved as ARAContentGrade
+}
+
+/// What a content reader hands out: the tempo map or the bar signatures, as the plugin asked.
+enum Content {
+    Tempo(Vec<ARAContentTempoEntry>),
+    Bars(Vec<ARAContentBarSignature>),
 }
 
 unsafe extern "C" fn context_reader(
     _: ARAContentAccessControllerHostRef,
-    _: ARAMusicalContextHostRef,
-    _: ARAContentType,
+    context: ARAMusicalContextHostRef,
+    kind: ARAContentType,
     _: *const ARAContentTimeRange,
 ) -> ARAContentReaderHostRef {
-    std::ptr::null_mut()
+    let notes = &*context.cast::<Notes>();
+    let timeline = notes.timeline.lock().map(|t| t.clone()).unwrap_or_default();
+    let content = if kind == kARAContentTypeTempoEntries as ARAContentType {
+        Content::Tempo(
+            timeline
+                .tempo
+                .iter()
+                .map(|&(time, quarter)| ARAContentTempoEntry {
+                    timePosition: time,
+                    quarterPosition: quarter,
+                })
+                .collect(),
+        )
+    } else if kind == kARAContentTypeBarSignatures as ARAContentType {
+        Content::Bars(
+            timeline
+                .bars
+                .iter()
+                .map(|&(numerator, denominator, position)| ARAContentBarSignature {
+                    numerator,
+                    denominator,
+                    position,
+                })
+                .collect(),
+        )
+    } else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(content)).cast()
 }
 
 unsafe extern "C" fn source_available(
@@ -343,23 +388,39 @@ unsafe extern "C" fn source_reader(
 
 unsafe extern "C" fn reader_count(
     _: ARAContentAccessControllerHostRef,
-    _: ARAContentReaderHostRef,
+    reader: ARAContentReaderHostRef,
 ) -> ARAInt32 {
-    0
+    if reader.is_null() {
+        return 0;
+    }
+    match &*reader.cast::<Content>() {
+        Content::Tempo(v) => v.len() as ARAInt32,
+        Content::Bars(v) => v.len() as ARAInt32,
+    }
 }
 
 unsafe extern "C" fn reader_event(
     _: ARAContentAccessControllerHostRef,
-    _: ARAContentReaderHostRef,
-    _: ARAInt32,
+    reader: ARAContentReaderHostRef,
+    index: ARAInt32,
 ) -> *const c_void {
-    std::ptr::null()
+    if reader.is_null() || index < 0 {
+        return std::ptr::null();
+    }
+    let i = index as usize;
+    match &*reader.cast::<Content>() {
+        Content::Tempo(v) => v.get(i).map_or(std::ptr::null(), |e| (e as *const ARAContentTempoEntry).cast()),
+        Content::Bars(v) => v.get(i).map_or(std::ptr::null(), |e| (e as *const ARAContentBarSignature).cast()),
+    }
 }
 
 unsafe extern "C" fn reader_destroy(
     _: ARAContentAccessControllerHostRef,
-    _: ARAContentReaderHostRef,
+    reader: ARAContentReaderHostRef,
 ) {
+    if !reader.is_null() {
+        drop(Box::from_raw(reader.cast::<Content>()));
+    }
 }
 
 static CONTENT_ACCESS: ARAContentAccessControllerInterface = ARAContentAccessControllerInterface {
@@ -551,7 +612,10 @@ impl AraDocument {
                 started.push(factory as usize);
             }
         }
-        let mut notes = Box::new(Notes { dirty });
+        let mut notes = Box::new(Notes {
+            dirty,
+            timeline: Mutex::new(Timeline::default()),
+        });
         let notes_ref: *mut Notes = &mut *notes;
         let mut host = Box::new(ARADocumentControllerHostInstance {
             structSize: std::mem::size_of::<ARADocumentControllerHostInstance>(),
@@ -626,6 +690,89 @@ impl AraDocument {
             return None;
         }
         Some(document)
+    }
+
+    /// Tells the plugin the song's tempo map and bar signatures, when they changed.
+    ///
+    /// SAFETY: from the thread the document is used on, outside an editing cycle.
+    pub unsafe fn set_timeline(&mut self, timeline: &Timeline) {
+        let same = self._notes.timeline.lock().map_or(true, |t| *t == *timeline);
+        if same {
+            return;
+        }
+        if let Ok(mut t) = self._notes.timeline.lock() {
+            *t = timeline.clone();
+        }
+        if self.context.is_null() {
+            return;
+        }
+        let context = self.context;
+        controller!(self, beginEditing);
+        controller!(
+            self,
+            updateMusicalContextContent,
+            context,
+            std::ptr::null(),
+            kARAContentUpdateEverythingChanged as _
+        );
+        controller!(self, endEditing);
+        controller!(self, notifyModelUpdates);
+    }
+
+    /// The notes the plugin found in the track's audio (ARA 2 content reading, as Melodyne offers
+    /// it), placed where the regions play them: (start, length) in song seconds, MIDI pitch, level.
+    /// `None` while the plugin has not finished analysing, or if it offers no notes.
+    ///
+    /// SAFETY: from the thread the document is used on, outside an editing cycle.
+    pub unsafe fn detected_notes(&self) -> Option<Vec<(f64, f64, f32, f32)>> {
+        let instance = &*self.instance;
+        let controller = &*instance.documentControllerInterface;
+        let reference = instance.documentControllerRef;
+        let kind = kARAContentTypeNotes as ARAContentType;
+        let mut out = Vec::new();
+        let mut any = false;
+        for (key, placed) in &self.regions {
+            let Some(source) = self.sources.get(&key.0) else { continue };
+            let available = controller
+                .isAudioSourceContentAvailable
+                .is_some_and(|f| f(reference, source.reference, kind) != 0);
+            if !available {
+                continue;
+            }
+            let (Some(create), Some(count), Some(event), Some(destroy)) = (
+                controller.createAudioSourceContentReader,
+                controller.getContentReaderEventCount,
+                controller.getContentReaderDataForEvent,
+                controller.destroyContentReader,
+            ) else {
+                continue;
+            };
+            let reader = create(reference, source.reference, kind, std::ptr::null());
+            if reader.is_null() {
+                continue;
+            }
+            any = true;
+            let (start, offset, duration) = placed.times;
+            for i in 0..count(reference, reader).max(0) {
+                let data = event(reference, reader, i);
+                if data.is_null() {
+                    continue;
+                }
+                let note = std::ptr::read_unaligned(data.cast::<ARAContentNote>());
+                let (at, len, pitch) = (note.startPosition, note.noteDuration, note.pitchNumber);
+                // Only what this region plays of its file, moved to where it plays it.
+                if pitch < 0 || at + len <= offset || at >= offset + duration {
+                    continue;
+                }
+                let from = at.max(offset);
+                let to = (at + len).min(offset + duration);
+                let level = if note.volume.is_finite() { note.volume.clamp(0.0, 1.0) } else { 0.7 };
+                out.push((start + from - offset, to - from, pitch as f32, level));
+            }
+            destroy(reference, reader);
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        any.then_some(out)
     }
 
     /// Whether going to `wanted` adds or takes away regions, which the plugin only allows while it

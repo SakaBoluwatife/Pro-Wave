@@ -150,7 +150,7 @@ pub struct Engine {
 /// Renders the engine into a device buffer of any sample format and channel count. Lives on
 /// the audio thread; never allocates after it is made.
 /// A worker's priority: the same as the audio thread's.
-fn worker_setup() {
+pub(crate) fn worker_setup() {
     crate::plugin::flush_denormals();
     #[cfg(windows)]
     // SAFETY: registers the calling thread with the multimedia scheduler, for as long as it lives.
@@ -163,12 +163,55 @@ fn worker_setup() {
     }
 }
 
+/// What an output device can do, as its driver reports it ([`Engine::device_caps`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceCaps {
+    pub name: String,
+    pub is_default: bool,
+    pub channels: u16,
+    /// The common sample rates it takes.
+    pub rates: Vec<u32>,
+    pub default_rate: Option<u32>,
+    /// The smallest and largest buffer, in frames, when the driver says.
+    pub buffer: Option<(u32, u32)>,
+}
+
 pub(crate) struct Renderer {
-    core: EngineCore,
+    /// The core, which the render-ahead thread borrows a chunk at a time (`ahead.rs`).
+    slot: Arc<crate::ahead::CoreSlot>,
+    ring: rtrb::Consumer<f32>,
+    control: Arc<crate::ahead::AheadControl>,
+    ahead: Option<(std::thread::Thread, std::thread::JoinHandle<()>)>,
     shared: Arc<Shared>,
     scratch: Vec<f32>,
     channels: usize,
     sample_rate: u32,
+}
+
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.control.stop.store(true, Ordering::Relaxed);
+        if let Some((thread, handle)) = self.ahead.take() {
+            thread.unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Moves whole frames (pairs) from the ring into `out`; how many samples.
+fn pop_frames(ring: &mut rtrb::Consumer<f32>, out: &mut [f32]) -> usize {
+    let n = ring.slots().min(out.len()) & !1;
+    if n == 0 {
+        return 0;
+    }
+    let Ok(chunk) = ring.read_chunk(n) else {
+        return 0;
+    };
+    let (a, b) = chunk.as_slices();
+    out[..a.len()].copy_from_slice(a);
+    out[a.len()..a.len() + b.len()].copy_from_slice(b);
+    chunk.commit_all();
+    n
 }
 
 impl Renderer {
@@ -177,8 +220,31 @@ impl Renderer {
         shared
             .output_channels
             .store(channels as u32, std::sync::atomic::Ordering::Relaxed);
+        let slot = Arc::new(crate::ahead::CoreSlot::new(Box::new(core)));
+        let (tx, ring) = RingBuffer::<f32>::new(crate::ahead::MAX_AHEAD_FRAMES * 2);
+        let control = Arc::new(crate::ahead::AheadControl {
+            stop: std::sync::atomic::AtomicBool::new(false),
+            device_frames: std::sync::atomic::AtomicU32::new(0),
+            device_latency_us: std::sync::atomic::AtomicU32::new(0),
+        });
+        // Rendering ahead only for stereo devices: the outputs past two come from the block the
+        // callback renders itself.
+        let ahead = (channels <= 2)
+            .then(|| {
+                crate::ahead::spawn(
+                    slot.clone(),
+                    shared.clone(),
+                    control.clone(),
+                    tx,
+                    sample_rate,
+                )
+            })
+            .flatten();
         Self {
-            core,
+            slot,
+            ring,
+            control,
+            ahead,
             shared,
             // Pre-allocated once, before the stream starts; the callback never allocates.
             scratch: vec![0f32; MAX_BLOCK_FRAMES * 2],
@@ -197,26 +263,67 @@ impl Renderer {
         // `Instant::now` reads the OS monotonic clock (no lock, no allocation).
         let started = Instant::now();
         let channels = self.channels;
-        self.core
-            .set_device_info((data.len() / channels) as u32, output_latency_us);
+        let device_frames = (data.len() / channels) as u32;
+        self.control
+            .device_frames
+            .store(device_frames, Ordering::Relaxed);
+        self.control
+            .device_latency_us
+            .store(output_latency_us, Ordering::Relaxed);
+        let mut late = false;
         for chunk in data.chunks_mut(MAX_BLOCK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             let buf = &mut self.scratch[..frames * 2];
-            let core = &mut self.core;
-            assert_no_alloc::assert_no_alloc(|| core.process(buf));
+            // What was rendered ahead first; then the core renders the rest, right after it.
+            let mut got = pop_frames(&mut self.ring, buf);
+            let mut held = None;
+            if got < buf.len() || channels > 2 {
+                // The ahead thread holds the core for one chunk at most: wait a little for it.
+                let patience = std::time::Duration::from_secs_f64(
+                    frames as f64 / f64::from(self.sample_rate.max(1)) / 4.0,
+                );
+                match self.slot.take_within(patience) {
+                    Some(mut core) => {
+                        got += pop_frames(&mut self.ring, &mut buf[got..]);
+                        if got < buf.len() {
+                            core.set_device_info(device_frames, output_latency_us);
+                            let rest = &mut buf[got..];
+                            let c = &mut core;
+                            assert_no_alloc::assert_no_alloc(|| c.process(rest));
+                        }
+                        held = Some(core);
+                    }
+                    None => {
+                        buf[got..].fill(0.0);
+                        late = true;
+                    }
+                }
+            }
             for (i, frame) in chunk.chunks_exact_mut(channels).enumerate() {
                 let (l, r) = (buf[i * 2], buf[i * 2 + 1]);
                 for (c, s) in frame.iter_mut().enumerate() {
                     *s = T::from_sample(match c {
                         0 => l,
                         1 => r,
-                        _ => core.hardware_sample(c, i),
+                        _ => held.as_ref().map_or(0.0, |core| core.hardware_sample(c, i)),
                     });
                 }
             }
+            if let Some(core) = held {
+                self.slot.put(core);
+            }
         }
-        let load = dsp_load(started.elapsed(), data.len() / channels, self.sample_rate);
+        if let Some((thread, _)) = &self.ahead {
+            thread.unpark();
+        }
+        if late {
+            self.shared.deadline_misses.fetch_add(1, Ordering::Relaxed);
+        }
+        let busy = started.elapsed();
+        let load = dsp_load(busy, data.len() / channels, self.sample_rate);
         self.shared.record_dsp_load(load);
+        self.shared
+            .record_callback(busy, data.len() / channels, self.sample_rate);
     }
 }
 
@@ -359,6 +466,64 @@ impl Engine {
             return Vec::new();
         };
         devices.map(|d| Self::device_label(&d)).collect()
+    }
+
+    /// Renders playback up to `frames` ahead of the device while nothing is live (0: off). The
+    /// UI turns it off when a track records or monitors its input, or notes are played in.
+    pub fn set_render_ahead(&self, frames: u32) {
+        self.shared.set_render_ahead(frames);
+    }
+
+    /// What each output device of `system` can do: its sample rates and buffer sizes, as the driver
+    /// reports them. Not for ASIO (asking would load each driver in turn, and only one can be
+    /// loaded at a time). Slow with some drivers: call it off the UI thread.
+    pub fn device_caps(system: &str) -> Vec<DeviceCaps> {
+        if system.eq_ignore_ascii_case("asio") {
+            return Vec::new();
+        }
+        let host = if system.is_empty() {
+            Some(cpal::default_host())
+        } else {
+            Self::host_named(system)
+        };
+        let Some(host) = host else {
+            return Vec::new();
+        };
+        let default = host.default_output_device().map(|d| Self::device_label(&d));
+        let Ok(devices) = host.output_devices() else {
+            return Vec::new();
+        };
+        devices
+            .map(|d| {
+                let name = Self::device_label(&d);
+                let mut caps = DeviceCaps {
+                    is_default: default.as_deref() == Some(name.as_str()),
+                    name,
+                    ..DeviceCaps::default()
+                };
+                if let Ok(configs) = d.supported_output_configs() {
+                    for c in configs {
+                        caps.channels = caps.channels.max(c.channels());
+                        for rate in [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000] {
+                            if (c.min_sample_rate()..=c.max_sample_rate()).contains(&rate)
+                                && !caps.rates.contains(&rate)
+                            {
+                                caps.rates.push(rate);
+                            }
+                        }
+                        if let SupportedBufferSize::Range { min, max } = c.buffer_size() {
+                            let (lo, hi) = caps.buffer.unwrap_or((u32::MAX, 0));
+                            caps.buffer = Some((lo.min(*min), hi.max(*max)));
+                        }
+                    }
+                }
+                caps.rates.sort_unstable();
+                if let Ok(c) = d.default_output_config() {
+                    caps.default_rate = Some(c.sample_rate());
+                }
+                caps
+            })
+            .collect()
     }
 
     /// The ASIO drivers installed, from where they register. Asking cpal would load each in turn,
@@ -583,6 +748,10 @@ impl Engine {
     /// state-reclamation capacity is exhausted. The rejected command is freed here on the
     /// UI thread; callers must retry their desired change before marking it synchronized.
     pub fn send(&mut self, cmd: Command) -> bool {
+        // Clips that follow the tempo read the map on the disk thread: it has it first.
+        if let Command::SetTempoMap(map) = &cmd {
+            self.disk.set_tempo_map(map);
+        }
         let ok = self.commands.send(cmd);
         if !ok {
             tracing::error!("engine command or reclamation queue full; command dropped");
@@ -609,6 +778,13 @@ impl Engine {
     pub fn state(&mut self) -> &EngineState {
         self.state.read()
     }
+    /// The loudest of each spatial channel since this was last asked.
+    pub fn take_spatial_peaks(&self) -> [f32; crate::spatial::SPATIAL_CHANNELS] {
+        self.shared.spatial_peaks.each_ref().map(|slot| {
+            f32::from_bits(slot.swap(0, std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
     /// How many channels the output device has.
     pub fn output_channels(&self) -> u32 {
         self.shared

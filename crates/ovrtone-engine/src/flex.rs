@@ -26,16 +26,19 @@ pub enum FlexMode {
     Polyphonic,
     Speed,
     Tempophone,
+    /// Signalsmith Stretch: the cleanest for full mixes, loops and anything polyphonic.
+    Complex,
 }
 
 impl FlexMode {
-    pub const ALL: [FlexMode; 6] = [
+    pub const ALL: [FlexMode; 7] = [
         FlexMode::Slicing,
         FlexMode::Rhythmic,
         FlexMode::Monophonic,
         FlexMode::Polyphonic,
         FlexMode::Speed,
         FlexMode::Tempophone,
+        FlexMode::Complex,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +49,7 @@ impl FlexMode {
             FlexMode::Polyphonic => "Polyphonic",
             FlexMode::Speed => "Speed",
             FlexMode::Tempophone => "Tempophone",
+            FlexMode::Complex => "Complex",
         }
     }
 
@@ -59,7 +63,7 @@ impl FlexMode {
         match self {
             FlexMode::Monophonic => (0.030, 0.25),
             FlexMode::Rhythmic => (0.040, 0.25),
-            FlexMode::Polyphonic => (0.080, 0.25),
+            FlexMode::Polyphonic | FlexMode::Complex => (0.080, 0.25),
             FlexMode::Tempophone => (0.120, 0.0),
             FlexMode::Slicing | FlexMode::Speed => (0.040, 0.25),
         }
@@ -87,7 +91,11 @@ fn clean_points(points: &[WarpPoint], src_len: f64) -> Vec<WarpPoint> {
         .iter()
         .copied()
         .take(MAX_POINTS * 4)
-        .filter(|p| p.src.is_finite() && p.dst.is_finite() && p.src > 0.0 && p.src < src_len)
+        // A point at the very end of the recording counts: it is how a loop fitted to the tempo
+        // says how long the whole recording becomes (left out, the loop kept its own speed).
+        .filter(|p| {
+            p.src.is_finite() && p.dst.is_finite() && p.src > 0.0 && p.src <= src_len + 1e-6
+        })
         .map(|p| WarpPoint {
             src: p.src,
             dst: p.dst.clamp(0.0, MAX_SECONDS),
@@ -142,8 +150,48 @@ pub fn warp(input: &[f32], sample_rate: u32, points: &[WarpPoint], mode: FlexMod
     match mode {
         FlexMode::Slicing => slices(input, sr, &map, out_frames),
         FlexMode::Speed => varispeed(input, sr, &map, out_frames),
+        FlexMode::Complex => complex(input, sample_rate, sr, &map, out_frames),
         _ => stretch_pieces(input, sr, &map, out_frames, mode),
     }
+}
+
+/// The Complex mode: Signalsmith Stretch between the points (see `hq_stretch.rs`). Where it cannot
+/// (a piece stretched past 16 times, or a build without it), the Polyphonic method instead.
+fn complex(input: &[f32], rate: u32, sr: f64, map: &[WarpPoint], out_frames: usize) -> Vec<f32> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let frames = input.len() / 2;
+        let left: Vec<f32> = input.iter().step_by(2).copied().collect();
+        let right: Vec<f32> = input.iter().skip(1).step_by(2).copied().collect();
+        let to = |s: f64| ((s * sr).round().max(0.0) as usize).min(frames);
+        let mut anchors: Vec<(usize, usize)> = vec![(to(backward(map, 0.0)), 0)];
+        for p in map {
+            let a = (to(p.src), ((p.dst * sr).round().max(0.0) as usize).min(out_frames));
+            if let Some(&(s, d)) = anchors.last() {
+                if a.0 > s && a.1 > d {
+                    anchors.push(a);
+                }
+            }
+        }
+        let end = (to(backward(map, out_frames as f64 / sr)), out_frames);
+        if let Some(&(s, d)) = anchors.last() {
+            if d < out_frames && end.0 > s {
+                anchors.push(end);
+            } else if d < out_frames {
+                // The last piece cannot reach the end: the rest is silent.
+            }
+        }
+        if let Ok((l, r)) = crate::hq_stretch::warp(&left, &right, rate, &anchors) {
+            let mut out = vec![0f32; out_frames * 2];
+            for (i, (a, b)) in l.iter().zip(&r).enumerate().take(out_frames) {
+                out[2 * i] = *a;
+                out[2 * i + 1] = *b;
+            }
+            return out;
+        }
+    }
+    let _ = rate;
+    stretch_pieces(input, sr, map, out_frames, FlexMode::Polyphonic)
 }
 
 fn frame_at(input: &[f32], i: usize) -> (f32, f32) {

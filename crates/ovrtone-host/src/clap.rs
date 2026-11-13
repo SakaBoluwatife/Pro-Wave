@@ -7,7 +7,9 @@ use clack_extensions::gui::{
 use clack_extensions::latency::PluginLatency;
 use clack_extensions::params::{ParamInfoBuffer, ParamInfoFlags, PluginParams};
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
+use clack_extensions::note_ports::{NoteDialects, NotePortInfoBuffer, PluginNotePorts};
 use clack_host::events::event_types::{MidiEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent};
+use clack_host::events::event_types::{NoteExpressionEvent, NoteExpressionType};
 use clack_host::events::event_types::{TransportEvent, TransportFlags};
 use clack_host::events::spaces::CoreEventSpace;
 use clack_host::events::{EventFlags, Match};
@@ -538,6 +540,25 @@ fn port_layout(
     Ok(layout)
 }
 
+/// Whether the plugin's first note input speaks CLAP's own note dialect, which carries note
+/// expressions such as the tuning of one note.
+fn takes_note_expressions(instance: &mut PluginInstance<Handlers>) -> bool {
+    let Some(ports) = instance
+        .plugin_shared_handle()
+        .get_extension::<PluginNotePorts>()
+    else {
+        return false;
+    };
+    let plugin = instance.plugin_handle();
+    if ports.count(&plugin, true) == 0 {
+        return false;
+    }
+    let mut buffer = NotePortInfoBuffer::new();
+    ports
+        .get(&plugin, 0, true, &mut buffer)
+        .is_some_and(|info| info.supported_dialects.contains(NoteDialects::CLAP))
+}
+
 /// The input port for a side chain: the first with channels that is not the main one.
 fn side_port(instance: &mut PluginInstance<Handlers>) -> Option<usize> {
     let ports = instance
@@ -584,6 +605,7 @@ pub fn load_clap(
     let inputs = port_layout(&mut instance, true)?;
     let outputs = port_layout(&mut instance, false)?;
     let side = side_port(&mut instance);
+    let note_tuning = takes_note_expressions(&mut instance);
     let config = PluginAudioConfiguration {
         sample_rate: f64::from(sample_rate),
         min_frames_count: ovrtone_engine::plugin_block() as u32,
@@ -607,6 +629,7 @@ pub fn load_clap(
         ClapProcessor::new(stopped.into(), &inputs, &outputs, latency, released.clone());
     processor.ranges = ranges.clone();
     processor.side_port = side;
+    processor.note_tuning = note_tuning;
     let (moved_in, moved) = rtrb::RingBuffer::new(PENDING_PARAMS);
     processor.moved = Some(moved_in);
     Ok((
@@ -736,6 +759,18 @@ fn push_event(buffer: &mut EventBuffer, event: &PluginEvent) {
                 [0xE0, (bend & 0x7f) as u8, (bend >> 7) as u8],
             ));
         }
+        PluginEventKind::ChannelPressure { value } => {
+            let v = (value.clamp(0.0, 1.0) * 127.0).round() as u8;
+            buffer.push(&MidiEvent::new(time, 0, [0xD0, v & 0x7f, 0]));
+        }
+        PluginEventKind::NoteTune { key, semitones } => {
+            buffer.push(&NoteExpressionEvent::new(
+                time,
+                on_key(key),
+                NoteExpressionType::Tuning,
+                f64::from(semitones.clamp(-120.0, 120.0)),
+            ));
+        }
     }
 }
 
@@ -824,6 +859,8 @@ struct ClapProcessor {
     moved: Option<rtrb::Producer<(u32, f64)>>,
     /// The input port a side chain goes in.
     side_port: Option<usize>,
+    /// It takes the tuning of single notes.
+    note_tuning: bool,
 }
 
 impl Drop for ClapProcessor {
@@ -845,6 +882,7 @@ impl ClapProcessor {
             pending: Vec::with_capacity(PENDING_PARAMS),
             moved: None,
             side_port: None,
+            note_tuning: false,
             processor,
             input: PortBuffers::new(inputs),
             output: PortBuffers::new(outputs),
@@ -857,6 +895,10 @@ impl ClapProcessor {
 }
 
 impl PluginProcessor for ClapProcessor {
+    fn note_tuning(&self) -> bool {
+        self.note_tuning
+    }
+
     fn set_side_input(&mut self, side: [&[f32]; 2]) {
         if let Some(port) = self.side_port {
             fill_side_input(&mut self.input.ports, port, side);

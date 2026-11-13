@@ -38,14 +38,15 @@ mod window {
     const WIDTH: f32 = 560.0;
     const HEIGHT: f32 = 340.0;
     const LOGO_WIDTH: f32 = 340.0;
-    /// The colours of the brand, as Windows spells them (blue, green, red).
-    const CHARCOAL: COLORREF = COLORREF(0x001D_1917);
-    const WHITE: COLORREF = COLORREF(0x00F5_F7F7);
-    const DIM: COLORREF = COLORREF(0x0090_8A86);
-    const BLUE: COLORREF = COLORREF(0x00FF_7716);
-    const TRACK: COLORREF = COLORREF(0x0036_302C);
+    use super::SplashColors;
+
+    /// A colour as Windows spells it.
+    fn colorref([r, g, b]: [u8; 3]) -> COLORREF {
+        COLORREF(u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16))
+    }
 
     struct State {
+        colors: SplashColors,
         /// The logo on the background colour, 4 bytes a pixel, blue first.
         logo: Vec<u8>,
         logo_size: (i32, i32),
@@ -59,8 +60,9 @@ mod window {
 
     static STATE: Mutex<Option<State>> = Mutex::new(None);
 
-    /// `logo` is red, green, blue and alpha, `size` wide and high.
-    pub fn show(logo: &[u8], size: (u32, u32), footer: String) {
+    /// `logo` is a dark mark on nothing, red, green, blue and alpha, `size` wide and high. It is drawn
+    /// in the text colour, on the background, of `colors`.
+    pub fn show(logo: &[u8], size: (u32, u32), footer: String, colors: SplashColors) {
         let Ok(mut state) = STATE.lock() else {
             return;
         };
@@ -69,17 +71,17 @@ mod window {
         }
         let mut on_background = Vec::with_capacity(logo.len());
         for pixel in logo.as_chunks::<4>().0 {
-            let alpha = u32::from(pixel[3]);
-            let over =
-                |on: u8, under: u32| ((u32::from(on) * alpha + under * (255 - alpha)) / 255) as u8;
-            on_background.extend_from_slice(&[
-                over(pixel[2], 0x1D),
-                over(pixel[1], 0x19),
-                over(pixel[0], 0x17),
-                255,
-            ]);
+            // How much of the pixel is the mark: dark and solid.
+            let dark = 1.0 - (f32::from(pixel[0]) + f32::from(pixel[1]) + f32::from(pixel[2])) / 765.0;
+            let cover = f32::from(pixel[3]) / 255.0 * dark;
+            let mix = |k: usize| {
+                let (under, on) = (f32::from(colors.background[k]), f32::from(colors.text[k]));
+                (under + (on - under) * cover).round() as u8
+            };
+            on_background.extend_from_slice(&[mix(2), mix(1), mix(0), 255]);
         }
         *state = Some(State {
+            colors,
             logo: on_background,
             logo_size: (size.0 as i32, size.1 as i32),
             footer,
@@ -247,7 +249,8 @@ mod window {
             FillRect(memory, &rect, brush);
             let _ = DeleteObject(brush.into());
         };
-        fill(client, CHARCOAL);
+        let colors = state.colors;
+        fill(client, colorref(colors.background));
         // The logo.
         let (lw, lh) = state.logo_size;
         let shown_w = px(LOGO_WIDTH);
@@ -277,6 +280,37 @@ mod window {
             lh,
             Some(state.logo.as_ptr().cast()),
             &info,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        // The mark, its arcs going out like sound while the work goes on.
+        let mark = px(78.0).max(8);
+        let seconds = state.began.elapsed().as_secs_f32();
+        let mark_pixels = super::mark_frame(mark as usize, seconds, &colors);
+        let mark_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: mark,
+                biHeight: -mark,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..BITMAPINFOHEADER::default()
+            },
+            ..BITMAPINFO::default()
+        };
+        StretchDIBits(
+            memory,
+            (w - mark) / 2,
+            px(162.0),
+            mark,
+            mark,
+            0,
+            0,
+            mark,
+            mark,
+            Some(mark_pixels.as_ptr().cast()),
+            &mark_info,
             DIB_RGB_COLORS,
             SRCCOPY,
         );
@@ -317,8 +351,8 @@ mod window {
                 side | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
             );
         };
-        text(&state.step, 262.0, WHITE, false);
-        text(&state.footer, 306.0, DIM, false);
+        text(&state.step, 262.0, colorref(colors.text), false);
+        text(&state.footer, 306.0, colorref(colors.dim), false);
         // How far along.
         let (bar_top, bar_bottom) = (px(288.0), px(291.0));
         let bar_w = w - margin * 2;
@@ -329,7 +363,7 @@ mod window {
                 right: margin + bar_w,
                 bottom: bar_bottom,
             },
-            TRACK,
+            colorref(super::mix(colors.background, colors.text, 0.15)),
         );
         fill(
             RECT {
@@ -338,8 +372,23 @@ mod window {
                 right: margin + (bar_w as f32 * state.shown.clamp(0.0, 1.0)) as i32,
                 bottom: bar_bottom,
             },
-            BLUE,
+            colorref(super::mix(colors.background, colors.text, 0.75)),
         );
+        let lit_w = (bar_w as f32 * state.shown.clamp(0.0, 1.0)) as i32;
+        if lit_w > px(20.0) {
+            let glint = px(36.0);
+            let travel = lit_w + glint;
+            let at = margin - glint + ((seconds * 0.6).fract() * travel as f32) as i32;
+            fill(
+                RECT {
+                    left: at.max(margin),
+                    top: bar_top,
+                    right: (at + glint).min(margin + lit_w),
+                    bottom: bar_bottom,
+                },
+                colorref(colors.text),
+            );
+        }
         let _ = BitBlt(hdc, 0, 0, w, h, Some(memory), 0, 0, SRCCOPY);
         SelectObject(memory, old_font);
         let _ = DeleteObject(font.into());
@@ -349,12 +398,94 @@ mod window {
     }
 }
 
+/// The colours of the launch screen, red, green and blue: they come from the theme in use, so that the
+/// screen looks like the program it opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplashColors {
+    pub background: [u8; 3],
+    pub text: [u8; 3],
+    pub dim: [u8; 3],
+}
+
+impl Default for SplashColors {
+    fn default() -> Self {
+        Self {
+            background: [0x17, 0x19, 0x1d],
+            text: [0xe6, 0xe7, 0xea],
+            dim: [0x8f, 0x92, 0x99],
+        }
+    }
+}
+
+/// `t` of the way from `a` to `b`.
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [0, 1, 2].map(|k| (f32::from(a[k]) + (f32::from(b[k]) - f32::from(a[k])) * t).round() as u8)
+}
+
+/// One frame of the mark, `size` pixels square, blue, green, red and a spare byte to a pixel: a ring,
+/// and two arcs to its right that light in turn, going out like sound. Drawn here, edges smoothed, as
+/// Windows' own drawing has rough ones.
+fn mark_frame(size: usize, seconds: f32, colors: &SplashColors) -> Vec<u8> {
+    // Blue, green, red, as the picture's pixels have them.
+    let bgr = |c: [u8; 3]| [f32::from(c[2]), f32::from(c[1]), f32::from(c[0])];
+    let background = bgr(colors.background);
+    let ring = bgr(colors.text);
+    let arc_bright = bgr(colors.text);
+    let arc_dim = bgr(mix(colors.background, colors.text, 0.25));
+    // The mark's geometry, on its own 512 grid: a ring and two arcs about the same centre.
+    const CENTRE: (f32, f32) = (189.0, 256.0);
+    let parts: [(f32, f32, f32); 3] = [(110.0, 44.0, 180.0), (188.0, 44.0, 56.0), (251.0, 30.0, 38.0)];
+    let scale = size as f32 / 512.0;
+    // A wave going out: each arc at its brightest a little after the one inside it.
+    let glow = |k: usize| {
+        let phase = (seconds * 1.4 - k as f32 * 0.35).rem_euclid(1.0);
+        (1.0 - (phase * 2.0 - 1.0).abs()).powf(1.5)
+    };
+    let mut out = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let (gx, gy) = (
+                (x as f32 + 0.5) / scale - CENTRE.0,
+                (y as f32 + 0.5) / scale - CENTRE.1,
+            );
+            let distance = (gx * gx + gy * gy).sqrt();
+            let angle = gy.atan2(gx).to_degrees().abs();
+            let mut color = background;
+            for (k, (radius, width, half_angle)) in parts.iter().enumerate() {
+                // How much of this pixel the part covers, in pixels from its edges.
+                let across = (width / 2.0 - (distance - radius).abs()) * scale + 0.5;
+                let along = if k == 0 {
+                    1.0
+                } else {
+                    ((half_angle - angle) * distance.to_radians() * scale + 0.5).clamp(0.0, 1.0)
+                };
+                let cover = across.clamp(0.0, 1.0) * along;
+                if cover <= 0.0 {
+                    continue;
+                }
+                let ink = if k == 0 {
+                    ring
+                } else {
+                    let g = glow(k - 1);
+                    [0, 1, 2].map(|c| arc_dim[c] + (arc_bright[c] - arc_dim[c]) * g)
+                };
+                color = [0, 1, 2].map(|c| color[c] + (ink[c] - color[c]) * cover);
+            }
+            let at = (y * size + x) * 4;
+            out[at] = color[0] as u8;
+            out[at + 1] = color[1] as u8;
+            out[at + 2] = color[2] as u8;
+        }
+    }
+    out
+}
+
 /// Puts the screen up. `logo` is red, green, blue and alpha, `size` wide and high.
-pub fn show(logo: &[u8], size: (u32, u32), footer: String) {
+pub fn show(logo: &[u8], size: (u32, u32), footer: String, colors: SplashColors) {
     #[cfg(windows)]
-    window::show(logo, size, footer);
+    window::show(logo, size, footer, colors);
     #[cfg(not(windows))]
-    let _ = (logo, size, footer);
+    let _ = (logo, size, footer, colors);
 }
 
 /// Says what is being done now, and how far along that is, 0..=1.
@@ -371,6 +502,24 @@ pub fn close() {
     window::close();
 }
 
+#[cfg(test)]
+mod mark_tests {
+    /// The mark's arcs change as it plays, and its ring is there all the time.
+    #[test]
+    fn the_mark_moves_and_keeps_its_ring() {
+        let size = 96;
+        let colors = super::SplashColors::default();
+        let (a, b) = (super::mark_frame(size, 0.0, &colors), super::mark_frame(size, 0.37, &colors));
+        assert_eq!(a.len(), size * size * 4);
+        assert_ne!(a, b, "it moves");
+        // A point on the ring: left of the centre by its radius.
+        let scale = size as f32 / 512.0;
+        let (x, y) = (((189.0 - 110.0) * scale) as usize, (256.0 * scale) as usize);
+        let at = (y * size + x) * 4;
+        assert!(a[at] > 150 && a[at] == b[at], "the ring is lit and still");
+    }
+}
+
 #[cfg(all(test, windows))]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -382,7 +531,7 @@ mod tests {
     fn the_screen_comes_up_and_goes() {
         let found = || unsafe { FindWindowW(w!("OvrtoneSplash"), None) }.is_ok();
         assert!(!found());
-        super::show(&[255; 16], (2, 2), "Test".to_string());
+        super::show(&[255; 16], (2, 2), "Test".to_string(), super::SplashColors::default());
         std::thread::sleep(std::time::Duration::from_millis(700));
         assert!(found(), "it should be up");
         super::step("A step", 0.5);

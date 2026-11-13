@@ -76,6 +76,17 @@ pub struct ControlEvent {
 pub const PITCH_BEND_CONTROL: u8 = 128;
 /// The low 7 bits of the bend, in the event just before its [`PITCH_BEND_CONTROL`].
 pub const PITCH_BEND_FINE_CONTROL: u8 = 129;
+/// In a [`ControlEvent`]: a slide that bends only one note, for an instrument that can. Three in a
+/// row: the note's pitch, then the low and the high 7 bits of a 14-bit value, 8192 for none and 128
+/// to a semitone.
+pub const NOTE_TUNE_KEY_CONTROL: u8 = 130;
+pub const NOTE_TUNE_FINE_CONTROL: u8 = 131;
+pub const NOTE_TUNE_CONTROL: u8 = 132;
+/// In a [`ControlEvent`]: channel pressure (aftertouch), from the Piano Roll's lane.
+pub const PRESSURE_CONTROL: u8 = 133;
+/// In a [`ControlEvent`]: the pitch bend the user drew in a lane, 7 bits with 64 for none. Played
+/// as a bend whatever the instrument does with slides.
+pub const BEND_LANE_CONTROL: u8 = 134;
 
 /// A 14-bit bend as a part of the instrument's bend range, -1..=1.
 fn bend_of(high: u8, low: u8) -> f32 {
@@ -95,6 +106,17 @@ pub fn set_built_in_voices(on: bool) {
 
 fn built_in_voices() -> bool {
     BUILT_IN_VOICES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How a strip goes on feeding the spatial bus: its gains now, gliding to those it was told, so that a
+/// moving object does not click.
+#[derive(Clone, Copy)]
+struct ObjectFeed {
+    /// Where the project puts it, where it is with its lanes, and how that feeds the bus.
+    own: crate::spatial::ObjectPlace,
+    place: crate::spatial::ObjectPlace,
+    now: crate::spatial::ObjectGains,
+    target: crate::spatial::ObjectGains,
 }
 
 /// A note sent to an external instrument that has not been released yet.
@@ -117,6 +139,8 @@ pub struct TrackMix {
     pub solo: bool,
     /// -1.0 (left) .. 1.0 (right), equal-power, unity at centre.
     pub pan: f32,
+    /// Input trim in dB: the level going into the strip's effects. The fader comes after.
+    pub trim_db: f32,
 }
 
 impl Default for TrackMix {
@@ -126,6 +150,7 @@ impl Default for TrackMix {
             mute: false,
             solo: false,
             pan: 0.0,
+            trim_db: 0.0,
         }
     }
 }
@@ -140,6 +165,11 @@ impl TrackMix {
             },
             pan: if self.pan.is_finite() {
                 self.pan.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            },
+            trim_db: if self.trim_db.is_finite() {
+                self.trim_db.clamp(-36.0, 36.0)
             } else {
                 0.0
             },
@@ -194,8 +224,13 @@ pub struct AudioClip {
     end_beat: f64,
     /// Length in device-rate frames.
     pub len_frames: u64,
+    /// Its length at its own speed: a clip that follows the tempo is `len_frames` long only at
+    /// the tempo it was made at.
+    src_frames: u64,
     edit: ClipEdit,
     gain_linear: f32,
+    /// Clip gain as a line (Pro Tools' clip gain): (song beat, dB), in order. Empty: none.
+    gain_line: Vec<(f64, f32)>,
     rx: Consumer<Block>,
     shared: Arc<ClipShared>,
     gen: u16,
@@ -221,6 +256,11 @@ pub struct ClipEdit {
     pub source_start_secs: f64,
     /// How much of the file it plays, in seconds; 0 is on to the end of the file.
     pub length_secs: f64,
+    /// The tempo the audio was made at, when it follows the project tempo (Fit to Tempo): it is
+    /// then played faster or slower, live, as the tempo at its start changes. 0: it does not.
+    pub follow_bpm: f64,
+    /// Following the tempo, keep the pitch (time stretch) rather than resample.
+    pub keep_pitch: bool,
 }
 
 impl Default for ClipEdit {
@@ -233,6 +273,8 @@ impl Default for ClipEdit {
             reverse: false,
             source_start_secs: 0.0,
             length_secs: 0.0,
+            follow_bpm: 0.0,
+            keep_pitch: true,
         }
     }
 }
@@ -273,6 +315,11 @@ impl ClipEdit {
             } else {
                 0.0
             },
+            follow_bpm: if self.follow_bpm.is_finite() && self.follow_bpm > 0.0 {
+                self.follow_bpm.clamp(5.0, 2000.0)
+            } else {
+                0.0
+            },
             ..self
         }
     }
@@ -294,8 +341,10 @@ impl AudioClip {
             start_beat,
             end_beat: start_beat,
             len_frames,
+            src_frames: len_frames,
             edit,
             gain_linear,
+            gain_line: Vec::new(),
             rx,
             shared,
             gen: 0,
@@ -384,6 +433,34 @@ impl AudioClip {
         }
     }
 
+    /// With a clip gain line: (song beat, dB) points, in order. Made off the audio thread.
+    pub fn with_gain_line(mut self, mut line: Vec<(f64, f32)>) -> Self {
+        line.retain(|(b, db)| b.is_finite() && db.is_finite());
+        line.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.gain_line = line;
+        self
+    }
+
+    /// Whether anything shapes this clip's level over time (fades or a gain line).
+    pub(crate) fn shaped(&self) -> bool {
+        self.edit.fade_in_beats > 0.0 || self.edit.fade_out_beats > 0.0 || !self.gain_line.is_empty()
+    }
+
+    /// The gain line's level at `beat`, as a gain.
+    fn line_gain(&self, beat: f64) -> f32 {
+        let line = &self.gain_line;
+        let db = match line.iter().position(|(b, _)| *b > beat) {
+            None => line.last().map_or(0.0, |p| p.1),
+            Some(0) => line[0].1,
+            Some(k) => {
+                let ((b0, d0), (b1, d1)) = (line[k - 1], line[k]);
+                let f = ((beat - b0) / (b1 - b0).max(1e-9)) as f32;
+                d0 + (d1 - d0) * f
+            }
+        };
+        10f32.powf(db.clamp(-96.0, 24.0) / 20.0)
+    }
+
     fn envelope(&self, beat: f64, end_beat: f64) -> f32 {
         let curve = |x: f64| -> f32 {
             let x = x.clamp(0.0, 1.0);
@@ -403,6 +480,9 @@ impl AudioClip {
         }
         if self.edit.fade_out_beats > 0.0 {
             gain *= curve((end_beat - beat) / self.edit.fade_out_beats);
+        }
+        if !self.gain_line.is_empty() {
+            gain *= self.line_gain(beat);
         }
         gain
     }
@@ -457,6 +537,12 @@ pub enum Command {
     /// Gives the Mastering window a copy of the output, or stops. The old queue comes back as
     /// garbage.
     SetMasterTap(Option<Box<rtrb::Producer<f32>>>),
+    /// Listens to one effect of a strip's chain for its window (`None`: stops). The old tap comes
+    /// back through the garbage queue. A chain put in later keeps the tap.
+    SetFxTap {
+        track: u16,
+        tap: Option<crate::fx::FxTap>,
+    },
     SetMasterGain {
         linear: f32,
     },
@@ -489,6 +575,25 @@ pub enum Command {
     },
     /// Plays a Browser preview from its start, replacing the one playing; `None` stops it.
     SetPreview(Option<Box<Preview>>),
+    /// What the spatial bus goes to, and all that renders it. The old one comes back as garbage.
+    SetSpatial(Box<crate::spatial::SpatialRender>),
+    /// Makes a strip an object of the spatial bus, at this place, or back into a plain strip of the
+    /// bed. A lane playing moves it from there.
+    SetStripObject {
+        track: u16,
+        place: Option<crate::spatial::ObjectPlace>,
+    },
+    /// How much room the headphone render has, 0..=1.
+    SetSpatialRoom(f32),
+    /// Places spatial bus `bus` (from 0) in the room.
+    SetSpatialBus {
+        bus: u8,
+        place: crate::spatial::BusPlace,
+    },
+    /// Pink noise on one channel of the spatial bus, to find a speaker; none stops it.
+    SetSpatialTest(Option<u8>),
+    /// What the renderer does to each channel: muted, how far, and its volume.
+    SetSpatialChannels(crate::spatial::ChannelSetup),
     /// A live controller (a sustain pedal) for the instrument of `track`.
     LiveControl {
         track: u16,
@@ -633,7 +738,9 @@ impl Command {
                 | Self::SetAutomation(_)
                 | Self::SetInput(_)
                 | Self::SetPreview(_)
+                | Self::SetSpatial(_)
                 | Self::SetMasterTap(_)
+                | Self::SetFxTap { .. }
                 | Self::SetPluginRound(_)
         )
     }
@@ -652,6 +759,7 @@ impl Command {
 }
 
 pub enum Garbage {
+    Spatial(Box<crate::spatial::SpatialRender>),
     PluginRound(Box<crate::plugin::PluginRound>),
     MasterTap(Box<rtrb::Producer<f32>>),
     Song(Box<Song>),
@@ -676,6 +784,8 @@ pub struct EngineState {
     pub peaks: (f32, f32),
     /// Post-fader stereo peak per track, linear, for the mixer meters.
     pub track_peaks: [(f32, f32); MAX_TRACKS],
+    /// Post-fader RMS per track (both sides together), linear, averaged over about 300 ms.
+    pub track_rms: [f32; MAX_TRACKS],
     /// The strip's meter went over full scale since this was last reset. It stays on, as short
     /// overs fall between what the UI reads.
     pub track_clips: [bool; MAX_TRACKS],
@@ -697,6 +807,7 @@ impl Default for EngineState {
             playing: false,
             peaks: (0.0, 0.0),
             track_peaks: [(0.0, 0.0); MAX_TRACKS],
+            track_rms: [0.0; MAX_TRACKS],
             track_clips: [false; MAX_TRACKS],
             master_clip: false,
             gain_reduction: [0.0; MAX_TRACKS],
@@ -715,6 +826,11 @@ impl EngineState {
     /// Post-fader (left, right) peak of `track`, linear; silence for a track out of range.
     pub fn track_clip(&self, track: usize) -> bool {
         self.track_clips.get(track).copied().unwrap_or(false)
+    }
+
+    /// Post-fader RMS of `track`, linear.
+    pub fn track_rms(&self, track: usize) -> f32 {
+        self.track_rms.get(track).copied().unwrap_or(0.0)
     }
 
     pub fn track_peaks(&self, track: usize) -> (f32, f32) {
@@ -741,8 +857,22 @@ pub struct Shared {
     pub underruns: AtomicU32,
     /// Channels the output device has.
     pub output_channels: AtomicU32,
+    /// The loudest of each spatial channel since it was last read, as the bits of a float.
+    pub spatial_peaks: [AtomicU32; crate::spatial::SPATIAL_CHANNELS],
     /// Highest DSP load (f32 bits, 1.0 = the whole callback budget) since the UI last read it.
     dsp_load_max: AtomicU32,
+    /// The longest device callback, in nanoseconds, since the UI last read it.
+    callback_max_ns: std::sync::atomic::AtomicU64,
+    /// Device callbacks so far, and those that took longer than the sound they made (a deadline
+    /// missed: the device may have played a gap).
+    pub callbacks: std::sync::atomic::AtomicU64,
+    pub deadline_misses: AtomicU32,
+    /// Whether each strip's time is being measured (the Performance window is open), and the time
+    /// per strip, in nanoseconds, since the UI last read it.
+    measure_strips: std::sync::atomic::AtomicBool,
+    strip_ns: Vec<std::sync::atomic::AtomicU64>,
+    /// Frames to render ahead of the device while nothing is live (0: off). See `ahead.rs`.
+    ahead_frames: AtomicU32,
 }
 
 impl Shared {
@@ -751,8 +881,68 @@ impl Shared {
             xruns: AtomicU32::new(0),
             underruns: AtomicU32::new(0),
             output_channels: AtomicU32::new(2),
+            spatial_peaks: [const { AtomicU32::new(0) }; crate::spatial::SPATIAL_CHANNELS],
             dsp_load_max: AtomicU32::new(0),
+            callback_max_ns: std::sync::atomic::AtomicU64::new(0),
+            callbacks: std::sync::atomic::AtomicU64::new(0),
+            deadline_misses: AtomicU32::new(0),
+            measure_strips: std::sync::atomic::AtomicBool::new(false),
+            ahead_frames: AtomicU32::new(0),
+            strip_ns: (0..MAX_TRACKS)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
         }
+    }
+
+    /// Audio thread: one device callback took `busy` to make `frames` frames. Lock- and alloc-free.
+    pub fn record_callback(&self, busy: std::time::Duration, frames: usize, sample_rate: u32) {
+        let ns = busy.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.callback_max_ns.fetch_max(ns, Ordering::Relaxed);
+        self.callbacks.fetch_add(1, Ordering::Relaxed);
+        if sample_rate > 0 {
+            let budget = frames as u128 * 1_000_000_000 / u128::from(sample_rate);
+            if u128::from(ns) > budget {
+                self.deadline_misses.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// UI thread: the longest callback since the previous call, then reset.
+    pub fn take_callback_max(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.callback_max_ns.swap(0, Ordering::Relaxed))
+    }
+
+    /// UI thread: how far ahead of the device to render, in frames (0: not at all). Only while
+    /// nothing is live: the UI turns it off when a track records or monitors, or notes are played.
+    pub fn set_render_ahead(&self, frames: u32) {
+        let frames = frames.min(crate::ahead::MAX_AHEAD_FRAMES as u32);
+        self.ahead_frames.store(frames, Ordering::Relaxed);
+    }
+
+    pub fn render_ahead(&self) -> u32 {
+        self.ahead_frames.load(Ordering::Relaxed)
+    }
+
+    /// UI thread: turns measuring each strip's time on or off (it costs a clock read per strip).
+    pub fn measure_strips(&self, on: bool) {
+        self.measure_strips.store(on, Ordering::Relaxed);
+    }
+
+    pub(crate) fn measuring_strips(&self) -> bool {
+        self.measure_strips.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn add_strip_time(&self, track: usize, ns: u64) {
+        if let Some(slot) = self.strip_ns.get(track) {
+            slot.fetch_add(ns, Ordering::Relaxed);
+        }
+    }
+
+    /// UI thread: the time strip `track` (its instrument, plugins and effects) took since the
+    /// previous call, then reset.
+    pub fn take_strip_time(&self, track: usize) -> std::time::Duration {
+        let ns = self.strip_ns.get(track).map_or(0, |s| s.swap(0, Ordering::Relaxed));
+        std::time::Duration::from_nanos(ns)
     }
 
     /// Audio thread: report one callback's DSP load (see [`dsp_load`]). Lock- and alloc-free.
@@ -869,6 +1059,8 @@ pub struct EngineCore {
     input: Option<Box<InputFeed>>,
     monitors: [MonitorTrack; MAX_MONITORS],
     monitor_count: usize,
+    /// Each strip's input trim, as a gain.
+    track_trim: Vec<f32>,
     track_gain_l: Vec<f32>,
     track_gain_r: Vec<f32>,
     track_ramp_l: Vec<GainRamp>,
@@ -876,6 +1068,9 @@ pub struct EngineCore {
     mix_ramp_remaining: u32,
     pre_fader_meter: bool,
     track_pk_l: Vec<f32>,
+    /// Sum of squares of each strip's metered sound this span, and how many frames.
+    track_ms: Vec<f64>,
+    track_ms_n: Vec<u32>,
     track_pk_r: Vec<f32>,
     track_audible: Vec<bool>,
     track_patch: Vec<SynthPatch>,
@@ -890,6 +1085,8 @@ pub struct EngineCore {
     instruments: Vec<Option<Box<PluginSlot>>>,
     /// The plugins on the output, after everything is mixed.
     master_plugins: [Option<Box<PluginSlot>>; MAX_INSERTS],
+    /// Ovrtone's own effects on Stereo Out, before its plugins.
+    master_chain: Option<Box<Chain>>,
     /// Whether any is there: the mix should not look through the slots every sample for nothing.
     master_any: bool,
     /// The clips that can sound in this callback, so that the sample loop does not walk through
@@ -908,6 +1105,9 @@ pub struct EngineCore {
     plugins_may_rest: bool,
     /// The low bits of the pitch bend whose high bits come next.
     bend_low: u8,
+    /// The note and low bits of a single-note tuning on its way (see [`NOTE_TUNE_CONTROL`]).
+    tune_key: u8,
+    tune_low: u8,
     /// Varispeed: how fast the whole song runs, 1 for normal. Speed and pitch move together, as
     /// on a tape machine. Not in offline renders.
     varispeed: f64,
@@ -961,6 +1161,19 @@ pub struct EngineCore {
     /// What the strips sum to, for the span being rendered.
     mix_l: [f64; SPAN],
     mix_r: [f64; SPAN],
+    /// The spatial bus, and each strip's way into it. `object_any` keeps this all out of the way of
+    /// a project that does not use it.
+    spatial: Box<crate::spatial::SpatialRender>,
+    objects: Vec<Option<ObjectFeed>>,
+    object_any: bool,
+    /// An object strip's sound for the span, on its way to the bus.
+    object_l: [f64; SPAN],
+    object_r: [f64; SPAN],
+    /// Every channel of the bus as it goes out, gathered for a file. Empty unless asked for.
+    spatial_capture: Option<Vec<f32>>,
+    /// Object strips going to a file as tracks of their own, and the frames each should have by now.
+    object_capture: Option<Vec<(u16, Vec<f32>)>>,
+    object_frames: usize,
     /// The playhead at each frame of the span.
     beats: [f64; SPAN],
     /// Peaks and overs of the callback so far.
@@ -1091,6 +1304,7 @@ impl EngineCore {
             input: None,
             monitors: [MonitorTrack::default(); MAX_MONITORS],
             monitor_count: 0,
+            track_trim: vec![1.0; MAX_TRACKS],
             track_gain_l: vec![1.0; MAX_TRACKS],
             track_gain_r: vec![1.0; MAX_TRACKS],
             track_ramp_l: vec![GainRamp::new(1.0); MAX_TRACKS],
@@ -1098,6 +1312,8 @@ impl EngineCore {
             mix_ramp_remaining: 0,
             pre_fader_meter: false,
             track_pk_l: vec![0.0; MAX_TRACKS],
+            track_ms: vec![0.0; MAX_TRACKS],
+            track_ms_n: vec![0; MAX_TRACKS],
             track_pk_r: vec![0.0; MAX_TRACKS],
             track_audible: vec![true; MAX_TRACKS],
             track_patch: vec![SynthPatch::default(); MAX_TRACKS],
@@ -1108,6 +1324,7 @@ impl EngineCore {
                 .collect(),
             instruments: (0..MAX_TRACKS).map(|_| None).collect(),
             master_plugins: std::array::from_fn(|_| None),
+            master_chain: None,
             master_any: false,
             plugin_round: None,
             active_clips: Vec::with_capacity(ACTIVE_CLIPS),
@@ -1117,6 +1334,8 @@ impl EngineCore {
             keep_headroom: false,
             plugins_may_rest: true,
             bend_low: 0,
+            tune_key: 0,
+            tune_low: 0,
             varispeed: 1.0,
             vari_buf: vec![0.0; (VARI_CHUNK + VARI_KEEP) * 2],
             vari_have: VARI_KEEP,
@@ -1149,6 +1368,14 @@ impl EngineCore {
             parallel_aux: false,
             mix_l: [0.0; SPAN],
             mix_r: [0.0; SPAN],
+            spatial: crate::spatial::SpatialRender::new(crate::spatial::SpatialMode::Off, sample_rate),
+            objects: vec![None; MAX_TRACKS],
+            object_any: false,
+            object_l: [0.0; SPAN],
+            object_r: [0.0; SPAN],
+            spatial_capture: None,
+            object_capture: None,
+            object_frames: 0,
             beats: [0.0; SPAN],
             span_pk_l: 0.0,
             span_pk_r: 0.0,
@@ -1365,7 +1592,50 @@ impl EngineCore {
             self.bend_low = c.value;
             return;
         }
+        // A slide goes to the one note for an instrument that can bend single notes, and as a
+        // bend of the whole instrument to one that cannot: each gets one of the two, not both.
+        let per_note = matches!(
+            self.instruments.get(c.track as usize),
+            Some(Some(instrument)) if instrument.note_tuning()
+        );
+        if c.number == PRESSURE_CONTROL || c.number == BEND_LANE_CONTROL {
+            let kind = if c.number == PRESSURE_CONTROL {
+                PluginEventKind::ChannelPressure {
+                    value: f32::from(c.value.min(127)) / 127.0,
+                }
+            } else {
+                PluginEventKind::PitchBend {
+                    value: ((f32::from(c.value.min(127)) - 64.0) / 63.0).clamp(-1.0, 1.0),
+                }
+            };
+            if let Some(Some(instrument)) = self.instruments.get_mut(c.track as usize) {
+                instrument.push_event(kind);
+            }
+            return;
+        }
+        if c.number == NOTE_TUNE_KEY_CONTROL {
+            self.tune_key = c.value;
+            return;
+        }
+        if c.number == NOTE_TUNE_FINE_CONTROL {
+            self.tune_low = c.value;
+            return;
+        }
+        if c.number == NOTE_TUNE_CONTROL {
+            if per_note {
+                let raw = (u16::from(c.value & 0x7f) << 7) | u16::from(self.tune_low & 0x7f);
+                let semitones = (f32::from(raw) - 8192.0) / 128.0;
+                let key = self.tune_key;
+                if let Some(Some(instrument)) = self.instruments.get_mut(c.track as usize) {
+                    instrument.push_event(PluginEventKind::NoteTune { key, semitones });
+                }
+            }
+            return;
+        }
         if c.number == PITCH_BEND_CONTROL {
+            if per_note {
+                return;
+            }
             let value = bend_of(c.value, self.bend_low);
             if let Some(Some(instrument)) = self.instruments.get_mut(c.track as usize) {
                 instrument.push_event(PluginEventKind::PitchBend { value });
@@ -1480,11 +1750,20 @@ impl EngineCore {
     }
 
     fn reposition_clips(&mut self) {
+        let sr = self.sr as f64;
         // Clips play in real time, so their offset is the time since the region start.
         let map = &self.tempo_map;
         let now = map.seconds_at(self.beat);
         for c in self.song.clips.iter_mut() {
             let start = map.seconds_at(c.start_beat);
+            // A clip that follows the tempo plays at the speed the tempo at its start asks for,
+            // from now on: the disk thread reads the speed with the seek below.
+            if c.edit.follow_bpm > 0.0 && !c.edit.reverse {
+                let speed = (f64::from(map.tempo_at(c.start_beat)) / c.edit.follow_bpm).clamp(0.05, 20.0);
+                // Its length through every change of tempo under it, as the disk thread works it out.
+                c.len_frames = crate::disk::follow_len(map, c.start_beat, c.edit.follow_bpm, c.src_frames, sr);
+                c.shared.set_speed(speed);
+            }
             // Refresh on song/map changes and seeks. The region's end is constant
             // between these events, including while transport is stopped.
             c.end_beat = map.beat_at(start + c.len_frames as f64 / self.sr as f64);
@@ -1520,6 +1799,12 @@ impl EngineCore {
                     // soloed strips (the others have no signal to send).
                     let aux = self.routes[i].bus_in > 0;
                     self.track_audible[i] = !t.mute && (!any_solo || t.solo || aux);
+                    let trim = t.sanitized().trim_db;
+                    self.track_trim[i] = if trim == 0.0 {
+                        1.0
+                    } else {
+                        10f32.powf(trim / 20.0)
+                    };
                     if samples > 0 && changed_track.is_some_and(|track| track != i) {
                         continue;
                     }
@@ -1532,6 +1817,7 @@ impl EngineCore {
                     );
                 }
                 None => {
+                    self.track_trim[i] = 1.0;
                     self.track_ramp_l[i].set(1.0, 0);
                     self.track_ramp_r[i].set(1.0, 0);
                     self.track_audible[i] = true;
@@ -1576,6 +1862,14 @@ impl EngineCore {
         for slot in effects.chain(others).flatten() {
             if let Some(source) = slot.side_source() {
                 self.side_source[source as usize] = true;
+            }
+        }
+        // The Ovrtone effects keyed by another strip.
+        for chain in self.chains.iter().flatten() {
+            for source in chain.side_sources() {
+                if let Some(s) = self.side_source.get_mut(source as usize) {
+                    *s = true;
+                }
             }
         }
         for i in 0..MAX_TRACKS {
@@ -1675,6 +1969,16 @@ impl EngineCore {
                     self.auto_vol[t] = Some((v + lane.offset_db).clamp(-96.0, 6.0))
                 }
                 AutoTarget::Pan => self.auto_pan[t] = Some(v.clamp(-1.0, 1.0)),
+                AutoTarget::Object(axis) => {
+                    if let Some(feed) = self.objects[t].as_mut() {
+                        let mut place = feed.place;
+                        place.set(axis, v);
+                        if place != feed.place {
+                            feed.place = place;
+                            feed.target = self.spatial.object_gains(place);
+                        }
+                    }
+                }
                 AutoTarget::Fx { slot, param } => {
                     if let Some(chain) = self.chains[t].as_mut() {
                         chain.set_param_norm(slot as usize, param as usize, v);
@@ -1743,19 +2047,17 @@ impl EngineCore {
         let (gain_l, gain_r) = (mine!(track_gain_l), mine!(track_gain_r));
         let (ramp_l, ramp_r) = (mine!(track_ramp_l), mine!(track_ramp_r));
         let (pk_l, pk_r) = (mine!(track_pk_l), mine!(track_pk_r));
+        let (ms, ms_n) = (mine!(track_ms), mine!(track_ms_n));
         let (pre_l, pre_r) = (mine!(pre_l), mine!(pre_r));
         let (post_l, post_r) = (mine!(post_l), mine!(post_r));
         let (done_l, done_r) = (mine!(done_l), mine!(done_r));
         let (instrument, chain) = (mine!(instruments), mine!(chains));
         let (plugins, pdc) = (mine!(plugins), mine!(pdc));
+        // First the input, the instrument and the trim for the whole span, into the strip's input
+        // buffer (as 32-bit values: the effects work in 32 bits)...
+        let trim = this.track_trim[t];
         for j in 0..n {
-            if ramped {
-                *gain_l = ramp_l.next();
-                *gain_r = ramp_r.next();
-            }
             let (mut xl, mut xr) = (in_l[j], in_r[j]);
-            in_l[j] = 0.0;
-            in_r[j] = 0.0;
             if route.bus_in > 0 {
                 let b = route.bus_in as usize - 1;
                 xl += this.bus_l[b][j];
@@ -1765,7 +2067,6 @@ impl EngineCore {
                 xl = 0.0;
                 xr = 0.0;
             }
-            // The effects work in 32 bits.
             let (mut xl, mut xr) = (xl as f32, xr as f32);
             if let Some(instrument) = instrument.as_mut() {
                 if let Some(source) = instrument.side_source() {
@@ -1779,9 +2080,34 @@ impl EngineCore {
                     xr += ir;
                 }
             }
-            if let Some(chain) = chain.as_mut() {
-                (xl, xr) = chain.process(xl, xr);
+            // The input trim: what goes into the effects.
+            if trim != 1.0 {
+                xl *= trim;
+                xr *= trim;
             }
+            in_l[j] = f64::from(xl);
+            in_r[j] = f64::from(xr);
+        }
+        // ...then the effects over the span, one at a time...
+        if let Some(chain) = chain.as_mut() {
+            chain.set_tempo(transport.tempo as f32);
+            chain.process_block(&mut in_l[..n], &mut in_r[..n], |s, j| {
+                if s < MAX_TRACKS {
+                    (this.side_l[s][j], this.side_r[s][j])
+                } else {
+                    (0.0, 0.0)
+                }
+            });
+        }
+        // ...then the plugins, the fader and the meters frame by frame.
+        for j in 0..n {
+            if ramped {
+                *gain_l = ramp_l.next();
+                *gain_r = ramp_r.next();
+            }
+            let (mut xl, mut xr) = (in_l[j] as f32, in_r[j] as f32);
+            in_l[j] = 0.0;
+            in_r[j] = 0.0;
             for plugin in plugins.iter_mut().flatten() {
                 if let Some(source) = plugin.side_source() {
                     let source = source as usize;
@@ -1813,6 +2139,8 @@ impl EngineCore {
                 let (ml, mr) = if pre_fader { (xl, xr) } else { (yl, yr) };
                 *pk_l = pk_l.max(ml.abs() as f32);
                 *pk_r = pk_r.max(mr.abs() as f32);
+                *ms += (ml * ml + mr * mr) * 0.5;
+                *ms_n += 1;
             }
             // The compensation after the fader keeps running while the strip is silent, so its
             // timing is right the moment it is heard.
@@ -1834,6 +2162,11 @@ impl EngineCore {
             return;
         }
         let route = self.routes[t];
+        // Only what would have gone to Stereo Out: a strip sent to a bus or an output stays there.
+        let object = self.object_any
+            && self.objects[t].is_some()
+            && route.output == 0
+            && route.hardware_out == 0;
         for j in 0..n {
             for s in route.sends.iter().filter(|s| s.bus > 0 && s.pre) {
                 let g = send_gain(s.level) as f64;
@@ -1859,11 +2192,56 @@ impl EngineCore {
                 self.hardware[at + 1] += yr as f32;
             } else if route.output > 0 && pair == 0 {
                 self.add_to_bus(route.output, j, yl, yr);
+            } else if object {
+                self.object_l[j] = yl;
+                self.object_r[j] = yr;
             } else {
                 self.mix_l[j] += yl;
                 self.mix_r[j] += yr;
             }
         }
+        if object {
+            self.pan_object(t, n);
+        }
+    }
+
+    /// An object strip's span into the spatial bus, gliding across it to where it is going.
+    fn pan_object(&mut self, t: usize, n: usize) {
+        // Going to a file as a track of its own: it stays out of the bus.
+        if let Some(captured) = self.object_capture.as_mut() {
+            if let Some((_, frames)) = captured.iter_mut().find(|(track, _)| usize::from(*track) == t) {
+                for j in 0..n {
+                    frames.push(self.object_l[j] as f32);
+                    frames.push(self.object_r[j] as f32);
+                }
+                self.object_l[..n].fill(0.0);
+                self.object_r[..n].fill(0.0);
+                return;
+            }
+        }
+        let Some(feed) = self.objects[t].as_mut() else {
+            return;
+        };
+        let step = 1.0 / n.max(1) as f32;
+        let distance = feed.own.distance;
+        let bus = feed.place.bus;
+        for c in 0..crate::spatial::SPATIAL_CHANNELS {
+            let (from_l, to_l) = (feed.now.left[c], feed.target.left[c]);
+            let (from_r, to_r) = (feed.now.right[c], feed.target.right[c]);
+            if from_l == 0.0 && to_l == 0.0 && from_r == 0.0 && to_r == 0.0 {
+                continue;
+            }
+            for j in 0..n {
+                let k = (j + 1) as f32 * step;
+                let l = from_l + (to_l - from_l) * k;
+                let r = from_r + (to_r - from_r) * k;
+                let v = self.object_l[j] * f64::from(l) + self.object_r[j] * f64::from(r);
+                self.spatial.add_object(bus, distance, c, j, v);
+            }
+        }
+        feed.now = feed.target;
+        self.object_l[..n].fill(0.0);
+        self.object_r[..n].fill(0.0);
     }
 
     /// Runs the strips of a list: their sound on as many cores as help, then their routing here, in
@@ -1883,6 +2261,7 @@ impl EngineCore {
             self.parallel_complex
         };
         let mut shared = false;
+        let timed = self.shared.measuring_strips();
         if wide && count > 1 {
             if let Some(round) = self.plugin_round.as_ref() {
                 let core = StripJobs(self as *const Self);
@@ -1892,7 +2271,12 @@ impl EngineCore {
                     unsafe {
                         let this = &*core.get();
                         let list = if aux { &this.aux } else { &this.complex };
-                        Self::strip_sound(this, list[j] as usize, n);
+                        let t = list[j] as usize;
+                        let began = timed.then(std::time::Instant::now);
+                        Self::strip_sound(this, t, n);
+                        if let Some(began) = began {
+                            this.shared.add_strip_time(t, began.elapsed().as_nanos() as u64);
+                        }
                     }
                 };
                 let graph = if aux {
@@ -1906,8 +2290,12 @@ impl EngineCore {
         if !shared {
             for k in 0..count {
                 let t = if aux { self.aux[k] } else { self.complex[k] } as usize;
+                let began = timed.then(std::time::Instant::now);
                 // SAFETY: one thread, one strip at a time.
                 unsafe { Self::strip_sound(self, t, n) };
+                if let Some(began) = began {
+                    self.shared.add_strip_time(t, began.elapsed().as_nanos() as u64);
+                }
             }
         }
         for k in 0..count {
@@ -1978,18 +2366,51 @@ impl EngineCore {
             let ramped = self.auto_any && self.auto_on[t];
             let (mut gain_l, mut gain_r) = (self.track_gain_l[t], self.track_gain_r[t]);
             let (mut pk_l, mut pk_r) = (self.track_pk_l[t], self.track_pk_r[t]);
+            let object = self.object_any && self.objects[t].is_some();
+            // A steady fader into the mix: the vector kernel does the frames together.
+            if !ramped && !object {
+                let trim = f64::from(self.track_trim[t]);
+                let m = crate::simd::mix_into(
+                    &self.in_l[t][..n],
+                    &self.in_r[t][..n],
+                    trim,
+                    f64::from(gain_l),
+                    f64::from(gain_r),
+                    pre_fader,
+                    &mut self.mix_l[..n],
+                    &mut self.mix_r[..n],
+                );
+                pk_l = pk_l.max(m.peak_l as f32);
+                pk_r = pk_r.max(m.peak_r as f32);
+                self.track_ms[t] += m.square_sum;
+                self.track_ms_n[t] += n as u32;
+            }
             for j in 0..n {
+                if !ramped && !object {
+                    break;
+                }
                 if ramped {
                     gain_l = self.track_ramp_l[t].next();
                     gain_r = self.track_ramp_r[t].next();
                 }
-                let (xl, xr) = (self.in_l[t][j], self.in_r[t][j]);
+                let trim = f64::from(self.track_trim[t]);
+                let (xl, xr) = (self.in_l[t][j] * trim, self.in_r[t][j] * trim);
                 let (yl, yr) = (xl * gain_l as f64, xr * gain_r as f64);
                 let (ml, mr) = if pre_fader { (xl, xr) } else { (yl, yr) };
-                self.mix_l[j] += yl;
-                self.mix_r[j] += yr;
+                if object {
+                    self.object_l[j] = yl;
+                    self.object_r[j] = yr;
+                } else {
+                    self.mix_l[j] += yl;
+                    self.mix_r[j] += yr;
+                }
                 pk_l = pk_l.max(ml.abs() as f32);
                 pk_r = pk_r.max(mr.abs() as f32);
+                self.track_ms[t] += (ml * ml + mr * mr) * 0.5;
+                self.track_ms_n[t] += 1;
+            }
+            if object {
+                self.pan_object(t, n);
             }
             self.track_gain_l[t] = gain_l;
             self.track_gain_r[t] = gain_r;
@@ -2158,6 +2579,19 @@ impl EngineCore {
                     self.plugin_round = Some(round);
                     self.sort_strips();
                 }
+                Command::SetFxTap { track, tap } => {
+                    let chain = self
+                        .chains
+                        .get_mut(track as usize)
+                        .and_then(|c| c.as_mut());
+                    let old = match chain {
+                        Some(c) => std::mem::replace(&mut c.tap, tap),
+                        None => tap,
+                    };
+                    if let Some(old) = old {
+                        let _ = self.trash.push(Garbage::MasterTap(old.out));
+                    }
+                }
                 Command::SetMasterTap(tap) => {
                     if let Some(old) = std::mem::replace(&mut self.master_tap, tap) {
                         let _ = self.trash.push(Garbage::MasterTap(old));
@@ -2224,13 +2658,25 @@ impl EngineCore {
                         *slot = patch.sanitized();
                     }
                 }
+                Command::SetInserts { track, chain } if track == crate::plugin::MASTER_STRIP => {
+                    let mut chain = chain;
+                    if let Some(mut old) = self.master_chain.take() {
+                        chain.tap = old.tap.take();
+                        let _ = self.trash.push(Garbage::Chain(old));
+                    }
+                    self.master_chain = (!chain.fx.is_empty()).then_some(chain);
+                }
                 Command::SetInserts { track, chain } => {
                     let t = track as usize;
                     if t < MAX_TRACKS {
-                        let old = self.chains[t].replace(chain);
-                        if let Some(old) = old {
+                        let mut chain = chain;
+                        let old = self.chains[t].take();
+                        if let Some(mut old) = old {
+                            // The window listening goes on listening to the new chain.
+                            chain.tap = old.tap.take();
                             let _ = self.trash.push(Garbage::Chain(old));
                         }
+                        self.chains[t] = Some(chain);
                         self.shown.gain_reduction[t] = 0.0;
                         self.sort_strips();
                     } else {
@@ -2357,12 +2803,12 @@ impl EngineCore {
                     params,
                     bypass,
                 } => {
-                    if let Some(fx) = self
-                        .chains
-                        .get_mut(track as usize)
-                        .and_then(|c| c.as_mut())
-                        .and_then(|c| c.fx.get_mut(slot as usize))
-                    {
+                    let chain = if track == crate::plugin::MASTER_STRIP {
+                        self.master_chain.as_mut()
+                    } else {
+                        self.chains.get_mut(track as usize).and_then(|c| c.as_mut())
+                    };
+                    if let Some(fx) = chain.and_then(|c| c.fx.get_mut(slot as usize)) {
                         fx.set(params, bypass);
                     }
                 }
@@ -2386,11 +2832,20 @@ impl EngineCore {
                     for chain in self.chains.iter_mut().flatten() {
                         chain.restore();
                     }
+                    // Objects go back to their own places; the lanes that are played move them again.
+                    for feed in self.objects.iter_mut().flatten() {
+                        if feed.place != feed.own {
+                            feed.place = feed.own;
+                            feed.target = self.spatial.object_gains(feed.own);
+                        }
+                    }
                     self.auto_any = self.automation.iter().any(|l| l.follow);
                     for lane in self
                         .automation
                         .iter()
-                        .filter(|l| l.follow && !matches!(l.target, AutoTarget::Fx { .. }))
+                        .filter(|l| {
+                            l.follow && !matches!(l.target, AutoTarget::Fx { .. } | AutoTarget::Object(_))
+                        })
                     {
                         let t = lane.track as usize;
                         if t < MAX_TRACKS && !self.auto_on[t] {
@@ -2412,6 +2867,42 @@ impl EngineCore {
                     } else {
                         0.0
                     };
+                }
+                Command::SetSpatial(new) => {
+                    let old = std::mem::replace(&mut self.spatial, new);
+                    self.object_any = self.spatial.is_on() && self.objects.iter().any(Option::is_some);
+                    let (room, setup) = (old.room(), old.setup());
+                    self.spatial.set_room(room);
+                    self.spatial.set_setup(setup);
+                    let _ = self.trash.push(Garbage::Spatial(old));
+                    // Another layout: the same places on other speakers.
+                    for feed in self.objects.iter_mut().flatten() {
+                        feed.target = self.spatial.object_gains(feed.place);
+                    }
+                }
+                Command::SetSpatialRoom(room) => self.spatial.set_room(room),
+                Command::SetSpatialTest(c) => self.spatial.set_test(c.map(usize::from)),
+                Command::SetSpatialBus { bus, place } => {
+                    self.spatial.set_bus_place(usize::from(bus), place);
+                }
+                Command::SetSpatialChannels(setup) => self.spatial.set_setup(setup),
+                Command::SetStripObject { track, place } => {
+                    if let Some(slot) = self.objects.get_mut(usize::from(track)) {
+                        *slot = place.map(|own| {
+                            let target = self.spatial.object_gains(own);
+                            ObjectFeed {
+                                own,
+                                place: own,
+                                // A new one starts where it is going: there is nothing to glide from.
+                                now: slot.map_or(target, |old| old.now),
+                                target,
+                            }
+                        });
+                        self.object_any =
+                            self.spatial.is_on() && self.objects.iter().any(Option::is_some);
+                        // A lane playing takes it back on the next block.
+                        self.auto_left = 0;
+                    }
                 }
                 Command::SetPreview(new) => {
                     if let Some(old) = std::mem::replace(&mut self.preview, new) {
@@ -2628,7 +3119,7 @@ impl EngineCore {
                 let c = &mut self.song.clips[i];
                 let t = (c.track as usize).min(MAX_TRACKS - 1);
                 let audible = self.track_audible[t] || self.side_source[t];
-                let faded = c.edit.fade_in_beats > 0.0 || c.edit.fade_out_beats > 0.0;
+                let faded = c.shaped();
                 let gain = c.gain_linear;
                 let (in_l, in_r) = (&mut self.in_l[t], &mut self.in_r[t]);
                 let mut sounded = false;
@@ -2759,6 +3250,22 @@ impl EngineCore {
             }
         }
         self.mix_strips(n);
+        self.spatial.mix_buses(n);
+        // The channels past the first two go out on their own if the device has them. A file and
+        // Varispeed have only two, unless every channel is being gathered for a file.
+        let capturing = self.spatial_capture.is_some();
+        let spatial_on = self.spatial.is_on();
+        if spatial_on {
+            self.report_spatial_peaks(n);
+        }
+        let straight = spatial_on && {
+            let fits = self.spatial.channels_needed() <= self.hardware_pairs * 2 + 2
+                && !self.keep_headroom
+                && self.varispeed == 1.0;
+            self.spatial
+                .finish_span(&mut self.mix_l[..n], &mut self.mix_r[..n], fits || capturing)
+        };
+        let mut last_master = 1.0;
         for j in 0..n {
             let (mut l, mut r) = (self.mix_l[j], self.mix_r[j]);
             if self.test_hz > 0.0 {
@@ -2790,6 +3297,12 @@ impl EngineCore {
                     r += f64::from(finite_or_zero(*b) * g);
                     self.preview_pos += 1;
                 }
+            }
+            if let Some(chain) = self.master_chain.as_mut() {
+                chain.set_tempo(self.transport.tempo as f32);
+                let (a, b) = chain.process(l as f32, r as f32);
+                l = f64::from(a);
+                r = f64::from(b);
             }
             if self.master_any {
                 let transport = self.transport;
@@ -2832,6 +3345,14 @@ impl EngineCore {
             self.out_dim += (self.out_dim_target - self.out_dim) * 0.002;
             out[j * 2] = l * self.out_dim;
             out[j * 2 + 1] = r * self.out_dim;
+            if straight {
+                self.spatial_channels_out(j, master, out[j * 2], out[j * 2 + 1]);
+            }
+            last_master = master;
+        }
+        self.even_object_capture(n, last_master as f32);
+        if spatial_on {
+            self.spatial.clear(n);
         }
         // Render events at the current sample position, then advance to the next one.
         if self.playing {
@@ -2926,6 +3447,95 @@ impl EngineCore {
 
     /// The last block's sound for device channel `channel` (2 and up), at `frame`.
     #[inline]
+    /// Tells the meters how loud each channel of the bus is, with the bed on the first two.
+    fn report_spatial_peaks(&self, n: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        for (c, slot) in self.shared.spatial_peaks.iter().enumerate() {
+            let mut peak = f32::from_bits(slot.load(Relaxed));
+            for j in 0..n {
+                let bed = match c {
+                    0 => self.mix_l[j],
+                    1 => self.mix_r[j],
+                    _ => 0.0,
+                };
+                peak = peak.max(((self.spatial.sample(c, j) + bed) as f32).abs());
+            }
+            slot.store(peak.to_bits(), Relaxed);
+        }
+    }
+
+    /// One frame of the spatial channels past the first two: to their outputs, and to the file if one
+    /// is being made.
+    fn spatial_channels_out(&mut self, j: usize, master: f64, left: f32, right: f32) {
+        use crate::spatial::SPATIAL_CHANNELS;
+        let live = !self.keep_headroom;
+        let mut channels = [0f32; SPATIAL_CHANNELS];
+        channels[0] = left;
+        channels[1] = right;
+        for (c, slot) in channels.iter_mut().enumerate().skip(2) {
+            *slot = finite_or_zero((self.spatial.sample(c, j) * master) as f32) * self.out_dim;
+        }
+        if live {
+            // Each output gets the channel the layout puts there.
+            let order = self.spatial.output_layout().device_order();
+            for (d, &c) in order.iter().enumerate().skip(2) {
+                let pair = (d - 2) / 2;
+                if pair < self.hardware_pairs {
+                    let at = (pair * HARDWARE_FRAMES + self.block_frame + j) * 2 + (d - 2) % 2;
+                    self.hardware[at] += channels[c];
+                }
+            }
+        }
+        if let Some(capture) = self.spatial_capture.as_mut() {
+            capture.extend_from_slice(&channels);
+        }
+    }
+
+    /// Keeps the tracks going to a file level with each other, as a strip with no sound adds nothing,
+    /// and with the master fader on what was added.
+    fn even_object_capture(&mut self, n: usize, master: f32) {
+        let Some(captured) = self.object_capture.as_mut() else {
+            return;
+        };
+        let from = self.object_frames * 2;
+        self.object_frames += n;
+        let to = self.object_frames * 2;
+        for (_, frames) in captured.iter_mut() {
+            frames.resize(to, 0.0);
+            for v in &mut frames[from..] {
+                *v *= master;
+            }
+        }
+    }
+
+    /// Sends these object strips to a file as tracks of their own, each two channels, not to the bus.
+    pub fn capture_objects(&mut self, tracks: &[u16]) {
+        self.object_capture = Some(tracks.iter().map(|t| (*t, Vec::new())).collect());
+        self.object_frames = 0;
+    }
+
+    /// The frames gathered so far of each of those strips, interleaved left and right.
+    pub fn take_object_capture(&mut self) -> Vec<Vec<f32>> {
+        self.object_frames = 0;
+        self.object_capture
+            .as_mut()
+            .map(|c| c.iter_mut().map(|(_, f)| std::mem::take(f)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Gathers every spatial channel from now on, for a file: an offline render asks for this.
+    pub fn capture_spatial(&mut self) {
+        self.spatial_capture = Some(Vec::new());
+    }
+
+    /// The frames gathered so far, interleaved, [`crate::spatial::SPATIAL_CHANNELS`] to a frame.
+    pub fn take_spatial_capture(&mut self) -> Vec<f32> {
+        self.spatial_capture
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
     pub(crate) fn hardware_sample(&self, channel: usize, frame: usize) -> f32 {
         let (pair, side) = ((channel - 2) / 2, (channel - 2) % 2);
         if pair >= self.hardware_pairs || frame >= HARDWARE_FRAMES {
@@ -2942,6 +3552,8 @@ impl EngineCore {
         }
         self.track_pk_l.fill(0.0);
         self.track_pk_r.fill(0.0);
+        self.track_ms.fill(0.0);
+        self.track_ms_n.fill(0);
         if let Some(feed) = self.input.as_mut() {
             feed.trim(self.monitor_count > 0);
         }
@@ -2980,6 +3592,17 @@ impl EngineCore {
             shown.track_clips[t] |= self.track_pk_l[t] > 1.0 || self.track_pk_r[t] > 1.0;
             *l = decayed_peak(self.track_pk_l[t], *l);
             *r = decayed_peak(self.track_pk_r[t], *r);
+        }
+        // RMS: this span's, eased in so the meter reads like a 300 ms average.
+        let ease = (shown.block_frames.max(64) as f32 / (0.3 * 48_000.0)).clamp(0.01, 1.0);
+        for (t, shown_rms) in shown.track_rms.iter_mut().enumerate() {
+            let n = self.track_ms_n[t];
+            let now = if n > 0 {
+                finite_or_zero((self.track_ms[t] / f64::from(n)).sqrt() as f32)
+            } else {
+                0.0
+            };
+            *shown_rms += (now - *shown_rms) * ease;
         }
         for &t in self.complex.iter().chain(self.aux.iter()) {
             let t = t as usize;
@@ -3143,7 +3766,7 @@ mod tests {
             (0, -3.0, 0.5, true, false),
             (1, 0.0, 0.0, false, false),
         ] {
-            let mix = TrackMix {
+            let mix = TrackMix { trim_db: 0.0,
                 gain_db,
                 pan,
                 mute,
@@ -3223,7 +3846,7 @@ mod tests {
     fn invalid_public_parameters_cannot_poison_the_mix_or_transport() {
         let (mut e, mut tx, _) = rig();
         let tracks = vec![
-            TrackMix {
+            TrackMix { trim_db: 0.0,
                 gain_db: f32::NAN,
                 pan: f32::INFINITY,
                 ..TrackMix::default()
@@ -3317,7 +3940,7 @@ mod tests {
         let (mut e, mut tx, _s) = rig();
         let song = Song::new(
             vec![note(0.0, 1.0)],
-            vec![TrackMix {
+            vec![TrackMix { trim_db: 0.0,
                 gain_db: 0.0,
                 mute: true,
                 solo: false,
@@ -3448,7 +4071,7 @@ mod tests {
     #[test]
     fn pre_fader_meters_do_not_follow_the_fader() {
         let (mut e, mut tx, mut s) = rig();
-        let mix = TrackMix {
+        let mix = TrackMix { trim_db: 0.0,
             gain_db: -120.0,
             ..TrackMix::default()
         };
@@ -3474,7 +4097,7 @@ mod tests {
     #[test]
     fn hard_left_pan_silences_right_and_meters_track() {
         let (mut e, mut tx, mut s) = rig();
-        let mix = TrackMix {
+        let mix = TrackMix { trim_db: 0.0,
             pan: -1.0,
             ..TrackMix::default()
         };
@@ -3751,7 +4374,7 @@ mod tests {
             },
             Command::SetTrackMix {
                 track: 0,
-                mix: TrackMix {
+                mix: TrackMix { trim_db: 0.0,
                     gain_db: -6.0,
                     mute: false,
                     solo: true,
@@ -4094,7 +4717,7 @@ mod tests {
         assert!(tx
             .push(Command::SetSong(two_tracks_song(vec![strip_note(1, 64.0)])))
             .is_ok());
-        let muted = TrackMix {
+        let muted = TrackMix { trim_db: 0.0,
             mute: true,
             ..TrackMix::default()
         };
@@ -4220,7 +4843,7 @@ mod tests {
             Vec::new(),
             vec![
                 TrackMix::default(),
-                TrackMix {
+                TrackMix { trim_db: 0.0,
                     mute: true,
                     ..TrackMix::default()
                 },
@@ -4256,6 +4879,72 @@ mod tests {
         }
         e.process(&mut buf);
         assert!(buf[511 * 2] > 0.0, "it plays on with its state");
+    }
+
+    /// With spatial audio off an object is a plain strip; on, it goes where it is put.
+    #[test]
+    fn an_object_goes_where_it_is_put_and_only_while_spatial_audio_is_on() {
+        use crate::spatial::{ObjectPlace, SpatialMode, SpatialRender, SpeakerLayout};
+        let (mut e, mut tx, _s) = rig();
+        let layout = SpeakerLayout::Surround714;
+        let right = ObjectPlace { azimuth: 90.0, ..ObjectPlace::default() };
+        assert!(tx.push(Command::SetStripObject { track: 0, place: Some(right) }).is_ok());
+        let mut buf = vec![0.0f32; 64];
+        e.process(&mut buf);
+        e.track_audible[0] = true;
+        e.done_l[0][3] = 0.5;
+        e.done_r[0][3] = 0.5;
+        e.strip_route(0, 8);
+        assert_eq!(e.mix_l[3], 0.5, "off: it plays as ever");
+        e.mix_l[3] = 0.0;
+        e.mix_r[3] = 0.0;
+        let render = SpatialRender::new(SpatialMode::Speakers(layout), 48_000);
+        assert!(tx.push(Command::SetSpatial(render)).is_ok());
+        e.process(&mut buf);
+        e.track_audible[0] = true;
+        e.done_l[0][3] = 0.5;
+        e.done_r[0][3] = 0.5;
+        e.strip_route(0, 8);
+        assert_eq!(e.mix_l[3], 0.0, "on: not in Stereo Out as well");
+        assert!(e.spatial.sample(7, 3) > 0.5, "on the right side speaker");
+        assert!(e.spatial.sample(6, 3).abs() < 1e-3, "not on the left");
+        // Asked to play with no such outputs: it folds to the right, and nothing goes missing.
+        e.process(&mut buf);
+        assert!(tx.push(Command::SetStripObject { track: 0, place: None }).is_ok());
+        e.process(&mut buf);
+        assert!(buf.iter().all(|x| x.is_finite()));
+        assert!(!e.object_any);
+    }
+
+    /// A lane moves an object as the song plays, and it goes back when the lane does.
+    #[test]
+    fn a_lane_moves_an_object_and_letting_go_puts_it_back() {
+        use crate::routing::{AutoLane, AutoPoint};
+        use crate::spatial::{ObjectAxis, ObjectPlace, SpatialMode, SpatialRender, SpeakerLayout};
+        let (mut e, mut tx, _s) = rig();
+        let layout = SpeakerLayout::Surround714;
+        assert!(tx.push(Command::SetSpatial(SpatialRender::new(SpatialMode::Speakers(layout), 48_000))).is_ok());
+        let ahead = ObjectPlace { azimuth: 0.0, ..ObjectPlace::default() };
+        assert!(tx.push(Command::SetStripObject { track: 0, place: Some(ahead) }).is_ok());
+        let lane = AutoLane {
+            track: 0,
+            target: AutoTarget::Object(ObjectAxis::Around),
+            follow: true,
+            offset_db: 0.0,
+            points: vec![AutoPoint::new(0.0, 90.0)],
+        }
+        .sanitized();
+        assert!(tx.push(Command::SetAutomation(vec![lane])).is_ok());
+        let mut buf = vec![0.0f32; 4096];
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        assert!(tx.push(Command::Play).is_ok());
+        assert_no_alloc::assert_no_alloc(|| e.process(&mut buf));
+        let feed = e.objects[0].unwrap();
+        assert_eq!(feed.place.azimuth, 90.0);
+        assert!(feed.target.left[7] > 0.5, "on the right side speaker");
+        assert!(tx.push(Command::SetAutomation(Vec::new())).is_ok());
+        e.process(&mut buf);
+        assert_eq!(e.objects[0].unwrap().place.azimuth, 0.0);
     }
 
     /// A Browser preview plays once from its start while the transport is stopped, without
@@ -4479,7 +5168,7 @@ mod tests {
             vel: 100,
             track,
         };
-        let soloed = TrackMix {
+        let soloed = TrackMix { trim_db: 0.0,
             solo: true,
             ..TrackMix::default()
         };

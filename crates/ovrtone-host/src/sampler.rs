@@ -329,7 +329,9 @@ impl PluginProcessor for SamplerProcessor {
                     PluginEventKind::PitchBend { value } => {
                         self.bend_wanted = value * SAMPLER_BEND_SEMITONES;
                     }
-                    PluginEventKind::Control { .. } => {}
+                    PluginEventKind::Control { .. }
+                    | PluginEventKind::NoteTune { .. }
+                    | PluginEventKind::ChannelPressure { .. } => {}
                 }
                 next += 1;
             }

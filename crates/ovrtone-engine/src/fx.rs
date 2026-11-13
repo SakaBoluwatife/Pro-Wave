@@ -8,10 +8,36 @@
 //! not finite is clamped, so a damaged project cannot make the output blow up.
 use std::f32::consts::{PI, TAU};
 
+#[cfg(test)]
+mod checks;
+mod clip;
+pub(crate) mod drift;
+mod ember;
+mod halo;
+mod heat;
+mod parts;
+mod press;
+mod prism;
+mod snap;
+mod spectral;
+mod swirl;
+mod bands;
+mod freq;
+mod flange;
+mod grit;
+mod pulse;
+mod reel;
+mod shift;
+mod shut;
+mod sweep;
+mod utility;
+mod wall;
+
 /// Most parameters one effect has.
-pub const MAX_FX_PARAMS: usize = 16;
-/// Most effects in one channel strip.
-pub const MAX_INSERTS: usize = 32;
+pub const MAX_FX_PARAMS: usize = 32;
+/// Most effects in one channel strip: far more than a mix uses, so that memory and CPU are the
+/// limit, not this. Slot numbers are a byte, and 255 means the instrument.
+pub const MAX_INSERTS: usize = 128;
 
 /// The kinds of effect, in the order the mixer's menu lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -27,6 +53,32 @@ pub enum FxKind {
     Gate,
     Limiter,
     MultiEq,
+    // The Ovrtone set.
+    Ember,
+    Heat,
+    Calm,
+    Prism,
+    Press,
+    Wall,
+    Snap,
+    Clip,
+    Drift,
+    Halo,
+    Swirl,
+    // The second set.
+    Bands,
+    Width,
+    Shut,
+    Reel,
+    Grit,
+    Flange,
+    Sweep,
+    Pulse,
+    Shift,
+    Utility,
+    Meter,
+    Air,
+    Freq,
 }
 
 /// One parameter of an effect.
@@ -115,12 +167,13 @@ const REVERB_PARAMS: [ParamInfo; 4] = [
     p("Width", 0.0, 1.0, 1.0, ""),
     p("Mix", 0.0, 1.0, 0.3, ""),
 ];
-const DELAY_PARAMS: [ParamInfo; 5] = [
+const DELAY_PARAMS: [ParamInfo; 6] = [
     pl("Time", 1.0, 2000.0, 375.0, "ms"),
     p("Feedback", 0.0, 0.95, 0.35, ""),
     pl("Tone", 500.0, 16000.0, 6000.0, "Hz"),
     p("Ping-Pong", 0.0, 1.0, 0.0, ""),
     p("Mix", 0.0, 1.0, 0.3, ""),
+    p("Sync", 0.0, 13.0, 0.0, ""),
 ];
 const CHORUS_PARAMS: [ParamInfo; 3] = [
     pl("Rate", 0.05, 5.0, 0.6, "Hz"),
@@ -175,6 +228,257 @@ const MULTI_PARAMS: [ParamInfo; 16] = [
     p("High Gain", -18.0, 18.0, 0.0, "dB"),
 ];
 
+const EMBER_PARAMS: [ParamInfo; 8] = [
+    p("Input", -24.0, 24.0, 0.0, "dB"),
+    p("Drive", 0.0, 1.0, 0.4, ""),
+    p("Model", 0.0, 5.0, 0.0, ""),
+    p("Bias", -1.0, 1.0, 0.0, ""),
+    pl("Tone", 400.0, 18000.0, 9000.0, "Hz"),
+    pl("Low Cut", 20.0, 1000.0, 20.0, "Hz"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const HEAT_PARAMS: [ParamInfo; 8] = [
+    p("Input", -12.0, 24.0, 0.0, "dB"),
+    p("Amount", 0.0, 1.0, 0.5, ""),
+    p("Squash", 0.0, 1.0, 0.3, ""),
+    p("Spread", 0.0, 1.0, 0.0, ""),
+    p("Character", 0.0, 2.0, 0.0, ""),
+    p("Tone", -1.0, 1.0, 0.0, ""),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const CALM_PARAMS: [ParamInfo; 10] = [
+    p("Depth", 0.0, 1.0, 0.5, ""),
+    p("Sharpness", 0.0, 1.0, 0.5, ""),
+    p("Selectivity", 0.0, 1.0, 0.5, ""),
+    p("Speed", 0.0, 1.0, 0.5, ""),
+    pl("Low", 20.0, 20000.0, 200.0, "Hz"),
+    pl("High", 20.0, 20000.0, 16000.0, "Hz"),
+    p("Mode", 0.0, 1.0, 0.0, ""),
+    p("Delta", 0.0, 1.0, 0.0, ""),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+macro_rules! band {
+    ($n:literal, $f:literal) => {
+        [
+            pl(concat!("Band ", $n, " Freq"), 20.0, 20000.0, $f, "Hz"),
+            p(concat!("Band ", $n, " Gain"), -24.0, 24.0, 0.0, "dB"),
+            pl(concat!("Band ", $n, " Q"), 0.1, 10.0, 0.9, ""),
+            p(concat!("Band ", $n, " Dynamic"), -18.0, 18.0, 0.0, "dB"),
+            p(concat!("Band ", $n, " Threshold"), -60.0, 0.0, -24.0, "dB"),
+        ]
+    };
+}
+const PRISM_BANDS: [[ParamInfo; 5]; 6] = [
+    band!("1", 80.0),
+    band!("2", 250.0),
+    band!("3", 800.0),
+    band!("4", 2500.0),
+    band!("5", 6000.0),
+    band!("6", 12000.0),
+];
+const PRISM_PARAMS: [ParamInfo; 32] = {
+    let mut out = [p("Tame", 0.0, 1.0, 0.0, ""); 32];
+    let mut k = 0;
+    while k < 30 {
+        out[k] = PRISM_BANDS[k / 5][k % 5];
+        k += 1;
+    }
+    out[31] = p("Output", -24.0, 12.0, 0.0, "dB");
+    out
+};
+const PRESS_PARAMS: [ParamInfo; 16] = [
+    p("Threshold", -60.0, 0.0, -18.0, "dB"),
+    p("Ratio", 1.0, 20.0, 4.0, ":1"),
+    p("Knee", 0.0, 24.0, 6.0, "dB"),
+    pl("Attack", 0.05, 200.0, 10.0, "ms"),
+    pl("Release", 5.0, 2000.0, 150.0, "ms"),
+    p("Hold", 0.0, 500.0, 0.0, "ms"),
+    p("Range", 0.0, 60.0, 40.0, "dB"),
+    p("Lookahead", 0.0, 10.0, 0.0, "ms"),
+    p("Make-up", 0.0, 24.0, 0.0, "dB"),
+    p("Auto Gain", 0.0, 1.0, 0.0, ""),
+    p("Detector", 0.0, 1.0, 0.0, ""),
+    p("Link", 0.0, 1.0, 1.0, ""),
+    pl("SC High Pass", 20.0, 500.0, 20.0, "Hz"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+    p("Style", 0.0, 2.0, 0.0, ""),
+];
+const WALL_PARAMS: [ParamInfo; 5] = [
+    p("Gain", 0.0, 24.0, 0.0, "dB"),
+    p("Ceiling", -12.0, 0.0, -0.3, "dB"),
+    pl("Release", 1.0, 1000.0, 60.0, "ms"),
+    p("Lookahead", 0.5, 10.0, 2.0, "ms"),
+    p("Style", 0.0, 2.0, 0.0, ""),
+];
+const SNAP_PARAMS: [ParamInfo; 6] = [
+    p("Attack", -100.0, 100.0, 0.0, "%"),
+    p("Sustain", -100.0, 100.0, 0.0, "%"),
+    p("Speed", 0.0, 2.0, 1.0, ""),
+    p("Clip", 0.0, 1.0, 0.0, ""),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const CLIP_PARAMS: [ParamInfo; 5] = [
+    p("Input", -12.0, 24.0, 0.0, "dB"),
+    p("Ceiling", -24.0, 0.0, -0.3, "dB"),
+    p("Shape", 0.0, 5.0, 1.0, ""),
+    p("Oversample", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const DRIFT_PARAMS: [ParamInfo; 11] = [
+    pl("Time", 1.0, 2000.0, 375.0, "ms"),
+    p("Feedback", 0.0, 1.0, 0.4, ""),
+    p("Offset", -50.0, 50.0, 0.0, "ms"),
+    p("Ping-Pong", 0.0, 1.0, 0.0, ""),
+    p("Wow", 0.0, 1.0, 0.15, ""),
+    pl("Low Cut", 20.0, 2000.0, 120.0, "Hz"),
+    pl("High Cut", 500.0, 20000.0, 7000.0, "Hz"),
+    p("Saturation", 0.0, 1.0, 0.2, ""),
+    p("Duck", 0.0, 1.0, 0.0, ""),
+    p("Mix", 0.0, 1.0, 0.3, ""),
+    p("Sync", 0.0, 13.0, 6.0, ""),
+];
+const HALO_PARAMS: [ParamInfo; 10] = [
+    p("Size", 0.0, 1.0, 0.5, ""),
+    pl("Decay", 0.2, 30.0, 2.5, "s"),
+    p("Pre-delay", 0.0, 250.0, 12.0, "ms"),
+    p("Diffusion", 0.0, 1.0, 0.75, ""),
+    p("Modulation", 0.0, 1.0, 0.3, ""),
+    pl("Low Cut", 20.0, 1000.0, 80.0, "Hz"),
+    pl("High Cut", 1000.0, 20000.0, 8000.0, "Hz"),
+    p("Width", 0.0, 1.0, 1.0, ""),
+    p("Early", 0.0, 1.0, 0.3, ""),
+    p("Mix", 0.0, 1.0, 0.25, ""),
+];
+const SWIRL_PARAMS: [ParamInfo; 6] = [
+    p("Mode", 0.0, 3.0, 0.0, ""),
+    pl("Rate", 0.05, 10.0, 0.5, "Hz"),
+    p("Depth", 0.0, 1.0, 0.6, ""),
+    p("Width", 0.0, 1.0, 1.0, ""),
+    pl("Tone", 1000.0, 20000.0, 9000.0, "Hz"),
+    p("Mix", 0.0, 1.0, 0.5, ""),
+];
+const OFF_ON: [&str; 2] = ["Off", "On"];
+const BANDS_PARAMS: [ParamInfo; 15] = [
+    pl("Low Split", 40.0, 1000.0, 200.0, "Hz"),
+    pl("High Split", 1000.0, 12000.0, 2500.0, "Hz"),
+    p("Low Threshold", -60.0, 0.0, -24.0, "dB"),
+    p("Low Ratio", 1.0, 20.0, 3.0, ":1"),
+    p("Low Gain", -12.0, 24.0, 0.0, "dB"),
+    p("Mid Threshold", -60.0, 0.0, -24.0, "dB"),
+    p("Mid Ratio", 1.0, 20.0, 3.0, ":1"),
+    p("Mid Gain", -12.0, 24.0, 0.0, "dB"),
+    p("High Threshold", -60.0, 0.0, -24.0, "dB"),
+    p("High Ratio", 1.0, 20.0, 3.0, ":1"),
+    p("High Gain", -12.0, 24.0, 0.0, "dB"),
+    pl("Attack", 0.1, 100.0, 5.0, "ms"),
+    pl("Release", 10.0, 1000.0, 120.0, "ms"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const WIDTH_PARAMS: [ParamInfo; 4] = [
+    p("Width", 0.0, 2.0, 1.0, "×"),
+    pl("Mono Below", 20.0, 500.0, 20.0, "Hz"),
+    p("Pan", -1.0, 1.0, 0.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const SHUT_PARAMS: [ParamInfo; 9] = [
+    p("Threshold", -80.0, 0.0, -40.0, "dB"),
+    p("Range", -80.0, 0.0, -60.0, "dB"),
+    pl("Attack", 0.05, 50.0, 0.5, "ms"),
+    p("Hold", 0.0, 500.0, 30.0, "ms"),
+    pl("Release", 5.0, 2000.0, 150.0, "ms"),
+    p("Ratio", 1.0, 20.0, 20.0, ":1"),
+    pl("SC High Pass", 20.0, 2000.0, 20.0, "Hz"),
+    pl("SC Low Pass", 500.0, 20000.0, 20000.0, "Hz"),
+    p("Flip", 0.0, 1.0, 0.0, ""),
+];
+const REEL_PARAMS: [ParamInfo; 10] = [
+    p("Drive", -12.0, 24.0, 3.0, "dB"),
+    p("Bias", -1.0, 1.0, 0.0, ""),
+    p("Wow", 0.0, 1.0, 0.2, ""),
+    p("Flutter", 0.0, 1.0, 0.2, ""),
+    p("Head Bump", 0.0, 6.0, 2.0, "dB"),
+    pl("Top", 4000.0, 20000.0, 15000.0, "Hz"),
+    p("Speed", 0.0, 1.0, 0.0, ""),
+    p("Hiss", -90.0, -40.0, -90.0, "dB"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const GRIT_PARAMS: [ParamInfo; 7] = [
+    pl("Rate", 500.0, 48000.0, 48000.0, "Hz"),
+    p("Bits", 2.0, 24.0, 24.0, "bit"),
+    p("Noise", 0.0, 1.0, 0.0, ""),
+    p("Crackle", 0.0, 1.0, 0.0, ""),
+    pl("Tone", 500.0, 20000.0, 20000.0, "Hz"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+const FLANGE_PARAMS: [ParamInfo; 7] = [
+    pl("Rate", 0.02, 10.0, 0.3, "Hz"),
+    p("Depth", 0.0, 1.0, 0.7, ""),
+    p("Feedback", -0.95, 0.95, 0.5, ""),
+    p("Delay", 0.1, 12.0, 2.0, "ms"),
+    p("Width", 0.0, 1.0, 0.5, ""),
+    p("Mix", 0.0, 1.0, 0.5, ""),
+    p("Through-Zero", 0.0, 1.0, 0.0, ""),
+];
+const SWEEP_PARAMS: [ParamInfo; 10] = [
+    p("Mode", 0.0, 2.0, 0.0, ""),
+    pl("Cutoff", 20.0, 20000.0, 1000.0, "Hz"),
+    p("Resonance", 0.0, 1.0, 0.4, ""),
+    pl("Rate", 0.02, 20.0, 1.0, "Hz"),
+    p("Sync", 0.0, 13.0, 0.0, ""),
+    p("LFO Depth", 0.0, 4.0, 1.0, "oct"),
+    p("Envelope", -4.0, 4.0, 0.0, "oct"),
+    p("Env Speed", 0.0, 1.0, 0.3, ""),
+    p("Shape", 0.0, 3.0, 0.0, ""),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+];
+const PULSE_PARAMS: [ParamInfo; 6] = [
+    p("Mode", 0.0, 1.0, 0.0, ""),
+    pl("Rate", 0.05, 20.0, 4.0, "Hz"),
+    p("Sync", 0.0, 13.0, 0.0, ""),
+    p("Depth", 0.0, 1.0, 0.5, ""),
+    p("Shape", 0.0, 3.0, 0.0, ""),
+    p("Phase", 0.0, 180.0, 0.0, "°"),
+];
+const SHIFT_PARAMS: [ParamInfo; 5] = [
+    p("Semitones", -12.0, 12.0, 0.0, "st"),
+    p("Cents", -50.0, 50.0, 0.0, "ct"),
+    p("Delay", 0.0, 50.0, 0.0, "ms"),
+    p("Width", 0.0, 30.0, 0.0, "ct"),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+];
+const UTILITY_PARAMS: [ParamInfo; 8] = [
+    p("Gain", -36.0, 36.0, 0.0, "dB"),
+    p("Pan", -1.0, 1.0, 0.0, ""),
+    p("Width", 0.0, 2.0, 1.0, "×"),
+    p("Flip Left", 0.0, 1.0, 0.0, ""),
+    p("Flip Right", 0.0, 1.0, 0.0, ""),
+    p("Mono", 0.0, 1.0, 0.0, ""),
+    p("Swap", 0.0, 1.0, 0.0, ""),
+    p("DC Filter", 0.0, 1.0, 0.0, ""),
+];
+const FREQ_PARAMS: [ParamInfo; 5] = [
+    p("Shift", -2000.0, 2000.0, 20.0, "Hz"),
+    p("Fine", -10.0, 10.0, 0.0, "Hz"),
+    p("Width", 0.0, 1.0, 0.0, ""),
+    p("Feedback", 0.0, 0.9, 0.0, ""),
+    p("Mix", 0.0, 1.0, 1.0, ""),
+];
+const METER_PARAMS: [ParamInfo; 1] = [p("Target", -24.0, -6.0, -14.0, "LUFS")];
+const AIR_PARAMS: [ParamInfo; 4] = [
+    pl("Frequency", 1000.0, 16000.0, 5000.0, "Hz"),
+    p("Drive", 0.0, 1.0, 0.5, ""),
+    p("Amount", 0.0, 1.0, 0.3, ""),
+    p("Output", -24.0, 12.0, 0.0, "dB"),
+];
+
 /// How long the Limiter looks ahead, in seconds.
 const LOOKAHEAD: f32 = 0.002;
 
@@ -184,7 +488,7 @@ fn limiter_len(sr: f32) -> usize {
 }
 
 impl FxKind {
-    pub const ALL: [FxKind; 11] = [
+    pub const ALL: [FxKind; 35] = [
         FxKind::ChannelEq,
         FxKind::Compressor,
         FxKind::Reverb,
@@ -196,6 +500,73 @@ impl FxKind {
         FxKind::Gate,
         FxKind::Limiter,
         FxKind::MultiEq,
+        FxKind::Ember,
+        FxKind::Heat,
+        FxKind::Calm,
+        FxKind::Prism,
+        FxKind::Press,
+        FxKind::Wall,
+        FxKind::Snap,
+        FxKind::Clip,
+        FxKind::Drift,
+        FxKind::Halo,
+        FxKind::Swirl,
+        FxKind::Bands,
+        FxKind::Width,
+        FxKind::Shut,
+        FxKind::Reel,
+        FxKind::Grit,
+        FxKind::Flange,
+        FxKind::Sweep,
+        FxKind::Pulse,
+        FxKind::Shift,
+        FxKind::Utility,
+        FxKind::Meter,
+        FxKind::Air,
+        FxKind::Freq,
+    ];
+
+    /// The effects the mixer's menu offers first: one of each kind.
+    pub const MENU: [FxKind; 25] = [
+        FxKind::Prism,
+        FxKind::Press,
+        FxKind::Bands,
+        FxKind::Wall,
+        FxKind::Shut,
+        FxKind::Heat,
+        FxKind::Ember,
+        FxKind::Reel,
+        FxKind::Grit,
+        FxKind::Clip,
+        FxKind::Air,
+        FxKind::Snap,
+        FxKind::Calm,
+        FxKind::Width,
+        FxKind::Halo,
+        FxKind::Drift,
+        FxKind::Swirl,
+        FxKind::Flange,
+        FxKind::Phaser,
+        FxKind::Sweep,
+        FxKind::Pulse,
+        FxKind::Shift,
+        FxKind::Freq,
+        FxKind::Utility,
+        FxKind::Meter,
+    ];
+
+    /// The first set of effects, kept so that projects made with them play as they did.
+    pub const CLASSIC: [FxKind; 10] = [
+        FxKind::Gate,
+        FxKind::Filter,
+        FxKind::ChannelEq,
+        FxKind::MultiEq,
+        FxKind::Compressor,
+        FxKind::Limiter,
+        FxKind::Overdrive,
+        FxKind::Reverb,
+        FxKind::Delay,
+        FxKind::Chorus,
     ];
 
     /// The name the mixer shows in the slot.
@@ -212,16 +583,124 @@ impl FxKind {
             FxKind::Gate => "Noise Gate",
             FxKind::Limiter => "Limiter",
             FxKind::MultiEq => "Multi-Band EQ",
+            FxKind::Ember => "Ember",
+            FxKind::Heat => "Heat",
+            FxKind::Calm => "Calm",
+            FxKind::Prism => "Prism EQ",
+            FxKind::Press => "Press",
+            FxKind::Wall => "Wall",
+            FxKind::Snap => "Snap",
+            FxKind::Clip => "Clip",
+            FxKind::Drift => "Drift",
+            FxKind::Halo => "Halo",
+            FxKind::Swirl => "Swirl",
+            FxKind::Bands => "Bands",
+            FxKind::Width => "Width",
+            FxKind::Shut => "Shut",
+            FxKind::Reel => "Reel",
+            FxKind::Grit => "Grit",
+            FxKind::Flange => "Flange",
+            FxKind::Sweep => "Sweep",
+            FxKind::Pulse => "Pulse",
+            FxKind::Shift => "Shift",
+            FxKind::Utility => "Utility",
+            FxKind::Meter => "Meter",
+            FxKind::Air => "Air",
+            FxKind::Freq => "Freq",
+        }
+    }
+
+    /// What the effect is, in a word, for the menu and the window.
+    pub fn kind_word(self) -> &'static str {
+        match self {
+            FxKind::ChannelEq | FxKind::MultiEq | FxKind::Prism => "EQ",
+            FxKind::Compressor | FxKind::Press => "Compressor",
+            FxKind::Limiter | FxKind::Wall => "Limiter",
+            FxKind::Reverb | FxKind::Halo => "Reverb",
+            FxKind::Delay | FxKind::Drift => "Delay",
+            FxKind::Chorus | FxKind::Swirl => "Chorus",
+            FxKind::Phaser => "Modulation",
+            FxKind::Overdrive | FxKind::Ember => "Distortion",
+            FxKind::Filter => "Filter",
+            FxKind::Gate => "Gate",
+            FxKind::Heat => "Saturation",
+            FxKind::Calm => "Resonance",
+            FxKind::Snap => "Transient",
+            FxKind::Clip => "Clipper",
+            FxKind::Bands => "Multiband",
+            FxKind::Width => "Imager",
+            FxKind::Shut => "Gate",
+            FxKind::Reel => "Tape",
+            FxKind::Grit => "Lo-Fi",
+            FxKind::Flange => "Flanger",
+            FxKind::Sweep => "Auto Filter",
+            FxKind::Pulse => "Tremolo",
+            FxKind::Shift => "Pitch",
+            FxKind::Utility => "Utility",
+            FxKind::Meter => "Metering",
+            FxKind::Air => "Exciter",
+            FxKind::Freq => "Frequency Shifter",
         }
     }
 
     /// How many samples the effect delays the sound by (its look-ahead), at `sample_rate`.
     /// The mixer delays every other strip by the same amount.
     pub fn latency_samples(self, sample_rate: f32) -> usize {
+        self.latency_for(&self.defaults(), sample_rate)
+    }
+
+    /// The delay with these settings (look-ahead and spectral effects depend on them).
+    pub fn latency_for(self, params: &[f32; MAX_FX_PARAMS], sample_rate: f32) -> usize {
+        let sr = sample_rate.clamp(8_000.0, 384_000.0);
+        let params = self.clamp_params(*params);
         match self {
-            FxKind::Limiter => limiter_len(sample_rate.clamp(8_000.0, 384_000.0)) - 1,
+            FxKind::Limiter => limiter_len(sr) - 1,
+            FxKind::Calm => spectral::LATENCY,
+            FxKind::Prism if prism::tame_on(&params) => spectral::LATENCY,
+            FxKind::Press => press::Press::lookahead(&params, sr),
+            FxKind::Wall => wall::window(&params, sr) - 1,
+            FxKind::Reel => (reel::CENTRE_MS * 0.001 * sr) as usize,
+            FxKind::Flange => flange::latency(&params, sr),
             _ => 0,
         }
+    }
+
+    /// Whether it can be keyed by another strip's sound (a side-chain): the dynamics, the ducking
+    /// delay and the envelope-following filter.
+    pub fn takes_side(self) -> bool {
+        matches!(
+            self,
+            FxKind::Press | FxKind::Compressor | FxKind::Gate | FxKind::Drift | FxKind::Shut | FxKind::Sweep
+        )
+    }
+
+    /// The names of the choices of parameter `i`, when it is a choice or a switch.
+    pub fn choices(self, i: usize) -> Option<&'static [&'static str]> {
+        Some(match (self, i) {
+            (FxKind::Ember, 2) => &ember::MODELS,
+            (FxKind::Heat, 4) => &heat::CHARACTERS,
+            (FxKind::Calm, 6) => &prism::CALM_MODES,
+            (FxKind::Calm, 7) | (FxKind::Press, 9) | (FxKind::Snap, 3) | (FxKind::Clip, 3) => {
+                &OFF_ON
+            }
+            (FxKind::Press, 10) => &["Peak", "RMS"],
+            (FxKind::Press, 15) => &press::STYLES,
+            (FxKind::Wall, 4) => &wall::STYLES,
+            (FxKind::Snap, 2) => &snap::SPEEDS,
+            (FxKind::Clip, 2) => &clip::SHAPES,
+            (FxKind::Swirl, 0) => &swirl::MODES,
+            (FxKind::Drift, drift::SYNC_PARAM)
+            | (FxKind::Delay, 5)
+            | (FxKind::Sweep, 4)
+            | (FxKind::Pulse, 2) => &drift::SYNC,
+            (FxKind::Reel, 6) => &reel::SPEEDS,
+            (FxKind::Sweep, 0) => &sweep::MODES,
+            (FxKind::Sweep, 8) | (FxKind::Pulse, 4) => &sweep::SHAPES,
+            (FxKind::Pulse, 0) => &pulse::MODES,
+            (FxKind::Shut, 8) | (FxKind::Flange, 6) | (FxKind::Utility, 3..=7) => &OFF_ON,
+            (FxKind::Filter, 2) => &["Low Pass", "High Pass", "Band Pass"],
+            _ => return None,
+        })
     }
 
     /// The kind for a name from a project file or a Library patch (several spellings).
@@ -239,6 +718,30 @@ impl FxKind {
             "noise gate" | "gate" => FxKind::Gate,
             "limiter" | "adaptive limiter" => FxKind::Limiter,
             "multi-band eq" | "multiband eq" | "multi band eq" => FxKind::MultiEq,
+            "ember" => FxKind::Ember,
+            "heat" => FxKind::Heat,
+            "calm" => FxKind::Calm,
+            "prism eq" | "prism" => FxKind::Prism,
+            "press" => FxKind::Press,
+            "wall" => FxKind::Wall,
+            "snap" => FxKind::Snap,
+            "clip" => FxKind::Clip,
+            "drift" => FxKind::Drift,
+            "halo" => FxKind::Halo,
+            "swirl" => FxKind::Swirl,
+            "bands" => FxKind::Bands,
+            "width" => FxKind::Width,
+            "shut" => FxKind::Shut,
+            "reel" => FxKind::Reel,
+            "grit" => FxKind::Grit,
+            "flange" | "flanger" => FxKind::Flange,
+            "sweep" | "auto filter" => FxKind::Sweep,
+            "pulse" | "tremolo" => FxKind::Pulse,
+            "shift" | "pitch shifter" => FxKind::Shift,
+            "utility" => FxKind::Utility,
+            "meter" => FxKind::Meter,
+            "air" | "exciter" => FxKind::Air,
+            "freq" | "frequency shifter" => FxKind::Freq,
             _ => return None,
         })
     }
@@ -257,6 +760,30 @@ impl FxKind {
             FxKind::Gate => &GATE_PARAMS,
             FxKind::Limiter => &LIMIT_PARAMS,
             FxKind::MultiEq => &MULTI_PARAMS,
+            FxKind::Ember => &EMBER_PARAMS,
+            FxKind::Heat => &HEAT_PARAMS,
+            FxKind::Calm => &CALM_PARAMS,
+            FxKind::Prism => &PRISM_PARAMS,
+            FxKind::Press => &PRESS_PARAMS,
+            FxKind::Wall => &WALL_PARAMS,
+            FxKind::Snap => &SNAP_PARAMS,
+            FxKind::Clip => &CLIP_PARAMS,
+            FxKind::Drift => &DRIFT_PARAMS,
+            FxKind::Halo => &HALO_PARAMS,
+            FxKind::Swirl => &SWIRL_PARAMS,
+            FxKind::Bands => &BANDS_PARAMS,
+            FxKind::Width => &WIDTH_PARAMS,
+            FxKind::Shut => &SHUT_PARAMS,
+            FxKind::Reel => &REEL_PARAMS,
+            FxKind::Grit => &GRIT_PARAMS,
+            FxKind::Flange => &FLANGE_PARAMS,
+            FxKind::Sweep => &SWEEP_PARAMS,
+            FxKind::Pulse => &PULSE_PARAMS,
+            FxKind::Shift => &SHIFT_PARAMS,
+            FxKind::Utility => &UTILITY_PARAMS,
+            FxKind::Meter => &METER_PARAMS,
+            FxKind::Air => &AIR_PARAMS,
+            FxKind::Freq => &FREQ_PARAMS,
         }
     }
 
@@ -439,12 +966,56 @@ pub fn response_db(kind: FxKind, params: [f32; MAX_FX_PARAMS], freqs: &[f32], sr
     let filters: Vec<Biquad> = match kind {
         FxKind::ChannelEq => eq_filters(&params, sr).to_vec(),
         FxKind::MultiEq => multi_filters(&params, sr).to_vec(),
+        FxKind::Prism => prism::static_filters(&params, sr).to_vec(),
         _ => Vec::new(),
     };
     freqs
         .iter()
         .map(|f| filters.iter().map(|b| b.response_db(*f, sr)).sum())
         .collect()
+}
+
+/// The time in ms Drift repeats at with these settings and tempo.
+pub fn drift_time_ms(params: [f32; MAX_FX_PARAMS], bpm: f32) -> f32 {
+    drift::time_ms(&FxKind::Drift.clamp_params(params), bpm)
+}
+
+/// A delay time in ms, or the note value of Sync choice `sync` at `bpm` when it is not Off.
+pub fn synced_ms(time: f32, sync: f32, bpm: f32) -> f32 {
+    drift::synced(time, sync, bpm)
+}
+
+/// Prism's gain in dB at each of `freqs` with every band at the far end of its dynamic range:
+/// the most the curve can move to.
+pub fn prism_reach_db(params: [f32; MAX_FX_PARAMS], freqs: &[f32], sr: f32) -> Vec<f32> {
+    let mut p = FxKind::Prism.clamp_params(params);
+    for k in 0..prism::BANDS {
+        p[k * prism::PER_BAND + 1] = prism::band_reach(&p, k);
+    }
+    response_db(FxKind::Prism, p, freqs, sr)
+}
+
+/// The curve a dynamics or shaping effect draws: for a compressor or limiter the output
+/// level in dB for an input level in dB; for a shaper the output (-1..1) for an input (-1..1).
+pub fn curve_point(kind: FxKind, params: [f32; MAX_FX_PARAMS], x: f32) -> f32 {
+    let p = kind.clamp_params(params);
+    match kind {
+        FxKind::Press => press::transfer(&p, x),
+        FxKind::Wall => (x + p[0]).min(p[1]),
+        FxKind::Shut => x + shut::curve(&p, x),
+        FxKind::Clip => {
+            let c = parts::gain(p[1]);
+            let g = parts::gain(p[0]);
+            clip::shape(parts::choice(p[2], clip::SHAPES.len()), x * g / c) * c
+        }
+        FxKind::Ember => ember::curve(parts::choice(p[2], ember::MODELS.len()), p[1], p[3], x),
+        FxKind::Heat => {
+            let drive = parts::gain(p[1] * 24.0 + p[0]);
+            let ch = parts::choice(p[4], heat::CHARACTERS.len());
+            heat::shape(ch, x * drive) / heat::shape(ch, drive).abs().max(1e-3)
+        }
+        _ => x,
+    }
 }
 
 /// The Channel EQ's gain in dB at each of `freqs` (for drawing its curve).
@@ -664,6 +1235,30 @@ enum State {
     Phaser(Box<PhaserState>),
     Drive(DriveState),
     Filter([Biquad; 2]),
+    Ember(Box<ember::Ember>),
+    Heat(Box<heat::Heat>),
+    Calm(Box<prism::Calm>),
+    Prism(Box<prism::Prism>),
+    Press(Box<press::Press>),
+    Wall(Box<wall::Wall>),
+    Snap(Box<snap::Snap>),
+    Clip(Box<clip::Clip>),
+    Drift(Box<drift::Drift>),
+    Halo(Box<halo::Halo>),
+    Swirl(Box<swirl::Swirl>),
+    Bands(Box<bands::Bands>),
+    Width(Box<utility::Width>),
+    Shut(Box<shut::Shut>),
+    Reel(Box<reel::Reel>),
+    Grit(Box<grit::Grit>),
+    Flange(Box<flange::Flange>),
+    Sweep(Box<sweep::Sweep>),
+    Pulse(Box<pulse::Pulse>),
+    Shift(Box<shift::Shift>),
+    Utility(Box<utility::Utility>),
+    Meter,
+    Air(Box<utility::Air>),
+    Freq(Box<freq::Freq>),
 }
 
 /// One effect with its state. Make it with [`Fx::new`] off the audio thread.
@@ -677,9 +1272,47 @@ pub struct Fx {
     base: [f32; MAX_FX_PARAMS],
     bypass: bool,
     state: State,
+    /// The project tempo, for effects synced to it.
+    bpm: f32,
+    /// The strip whose sound keys it (a side-chain), and that sound now.
+    side: Option<u16>,
+    key: (f32, f32),
 }
 
 impl Fx {
+    /// The same effect keyed by strip `source` (`None`: by its own sound). Off the audio thread.
+    pub fn with_side(mut self, source: Option<u16>) -> Self {
+        self.side = source.filter(|_| self.kind.takes_side());
+        self
+    }
+
+    /// The strip that keys it, if any.
+    pub fn side_source(&self) -> Option<u16> {
+        self.side
+    }
+
+    /// A whole span at once, for the effects that have a block form (no key, no tap). False:
+    /// run it frame by frame.
+    fn run_block(&mut self, l: &mut [f64], r: &mut [f64]) -> bool {
+        if self.bypass {
+            return true;
+        }
+        match &mut self.state {
+            State::Utility(s) => {
+                s.run_block(l, r, &self.params);
+                true
+            }
+            State::Meter => true,
+            _ => false,
+        }
+    }
+
+    /// The keying strip's sound for the sample about to be processed.
+    #[inline]
+    pub fn feed_side(&mut self, l: f32, r: f32) {
+        self.key = (l, r);
+    }
+
     pub fn new(kind: FxKind, params: [f32; MAX_FX_PARAMS], bypass: bool, sample_rate: f32) -> Self {
         let sr = if sample_rate.is_finite() {
             sample_rate.clamp(8_000.0, 384_000.0)
@@ -724,6 +1357,30 @@ impl Fx {
             }),
             FxKind::Limiter => State::Limiter(Box::new(LimiterState::new(sr))),
             FxKind::MultiEq => State::MultiEq([[Biquad::unity(); 6]; 2]),
+            FxKind::Ember => State::Ember(Box::new(ember::Ember::new(sr))),
+            FxKind::Heat => State::Heat(Box::new(heat::Heat::new(sr))),
+            FxKind::Calm => State::Calm(Box::new(prism::Calm::new(sr))),
+            FxKind::Prism => State::Prism(Box::new(prism::Prism::new(sr))),
+            FxKind::Press => State::Press(Box::new(press::Press::new(sr))),
+            FxKind::Wall => State::Wall(Box::new(wall::Wall::new(sr))),
+            FxKind::Snap => State::Snap(Box::new(snap::Snap::new(sr))),
+            FxKind::Clip => State::Clip(Box::new(clip::Clip::new(sr))),
+            FxKind::Drift => State::Drift(Box::new(drift::Drift::new(sr))),
+            FxKind::Halo => State::Halo(Box::new(halo::Halo::new(sr))),
+            FxKind::Swirl => State::Swirl(Box::new(swirl::Swirl::new(sr))),
+            FxKind::Bands => State::Bands(Box::new(bands::Bands::new(sr))),
+            FxKind::Width => State::Width(Box::new(utility::Width::new(sr))),
+            FxKind::Shut => State::Shut(Box::new(shut::Shut::new(sr))),
+            FxKind::Reel => State::Reel(Box::new(reel::Reel::new(sr))),
+            FxKind::Grit => State::Grit(Box::new(grit::Grit::new(sr))),
+            FxKind::Flange => State::Flange(Box::new(flange::Flange::new(sr))),
+            FxKind::Sweep => State::Sweep(Box::new(sweep::Sweep::new(sr))),
+            FxKind::Pulse => State::Pulse(Box::new(pulse::Pulse::new(sr))),
+            FxKind::Shift => State::Shift(Box::new(shift::Shift::new(sr))),
+            FxKind::Utility => State::Utility(Box::default()),
+            FxKind::Meter => State::Meter,
+            FxKind::Air => State::Air(Box::new(utility::Air::new(sr))),
+            FxKind::Freq => State::Freq(Box::new(freq::Freq::new(sr))),
         };
         let mut fx = Self {
             kind,
@@ -732,6 +1389,9 @@ impl Fx {
             base: kind.defaults(),
             bypass,
             state,
+            bpm: 120.0,
+            side: None,
+            key: (0.0, 0.0),
         };
         fx.set(params, bypass);
         fx
@@ -779,7 +1439,7 @@ impl Fx {
         if self.bypass {
             0
         } else {
-            self.kind.latency_samples(self.sr)
+            self.kind.latency_for(&self.base, self.sr)
         }
     }
 
@@ -787,8 +1447,25 @@ impl Fx {
     /// click.
     fn apply(&mut self) {
         let pr = self.params;
+        let base = self.base;
         let sr = self.sr;
         match &mut self.state {
+            State::Ember(s) => s.set(&pr),
+            State::Heat(s) => s.set(&pr),
+            State::Calm(s) => s.set(&pr),
+            State::Prism(s) => s.set(&pr, &base),
+            State::Press(s) => s.set(&pr),
+            State::Wall(s) => s.set(&base),
+            State::Snap(s) => s.set(&pr),
+            State::Drift(s) => s.set(&pr),
+            State::Halo(s) => s.set(&pr),
+            State::Bands(s) => s.set(&pr),
+            State::Width(s) => s.set(&pr),
+            State::Shut(s) => s.set(&pr),
+            State::Reel(s) => s.set(&pr),
+            State::Grit(s) => s.set(&pr),
+            State::Sweep(s) => s.set(&pr),
+            State::Air(s) => s.set(&pr),
             State::Eq(f) => {
                 let new = eq_filters(&pr, sr);
                 for ch in f.iter_mut() {
@@ -833,6 +1510,18 @@ impl Fx {
         }
     }
 
+    /// The project tempo now: effects that follow it (a synced delay) use it.
+    #[inline]
+    pub fn set_tempo(&mut self, bpm: f32) {
+        self.bpm = bpm;
+        match &mut self.state {
+            State::Drift(d) => d.bpm = bpm,
+            State::Sweep(s) => s.bpm = bpm,
+            State::Pulse(s) => s.bpm = bpm,
+            _ => {}
+        }
+    }
+
     pub fn bypassed(&self) -> bool {
         self.bypass
     }
@@ -844,6 +1533,14 @@ impl Fx {
             State::Comp(c) if !self.bypass => c.reduction,
             State::Gate(g) if !self.bypass => db(g.gain),
             State::Limiter(l) if !self.bypass => db(l.gain),
+            State::Wall(w) if !self.bypass => db(w.gain),
+            State::Press(c) if !self.bypass => c.reduction_db(),
+            State::Heat(c) if !self.bypass => c.reduction,
+            State::Calm(c) if !self.bypass => c.spectral.most,
+            State::Prism(c) if !self.bypass => c.reduction_db(),
+            State::Clip(c) if !self.bypass => c.over_db,
+            State::Bands(c) if !self.bypass => c.reduction_db(),
+            State::Shut(c) if !self.bypass => c.red,
             _ => 0.0,
         }
     }
@@ -856,7 +1553,41 @@ impl Fx {
         }
         let pr = self.params;
         let sr = self.sr;
+        // What the detectors listen to: the keying strip, or the effect's own input.
+        let keyed = self.side.map(|_| self.key);
+        let (kl, kr) = keyed.unwrap_or((l, r));
         let (ol, or) = match &mut self.state {
+            State::Ember(s) => s.tick(l, r, &pr),
+            State::Heat(s) => s.tick(l, r, &pr),
+            State::Calm(s) => s.tick(l, r, &pr),
+            State::Prism(s) => s.tick(l, r, &pr),
+            State::Press(s) => {
+                let look = press::Press::lookahead(&self.base, sr);
+                s.key = keyed;
+                s.tick(l, r, &pr, look)
+            }
+            State::Wall(s) => s.tick(l, r, &pr),
+            State::Snap(s) => s.tick(l, r, &pr),
+            State::Clip(s) => s.tick(l, r, &pr),
+            State::Drift(s) => {
+                s.key = keyed;
+                s.tick(l, r, &pr)
+            }
+            State::Halo(s) => s.tick(l, r, &pr),
+            State::Swirl(s) => s.tick(l, r, &pr),
+            State::Bands(s) => s.tick(l, r, &pr),
+            State::Width(s) => s.tick(l, r, &pr),
+            State::Shut(s) => s.tick(l, r, (kl, kr), &pr),
+            State::Reel(s) => s.tick(l, r, &pr),
+            State::Grit(s) => s.tick(l, r, &pr),
+            State::Flange(s) => s.tick(l, r, &pr, &self.base),
+            State::Sweep(s) => s.tick(l, r, (kl, kr), &pr),
+            State::Pulse(s) => s.tick(l, r, &pr),
+            State::Shift(s) => s.tick(l, r, &pr),
+            State::Utility(s) => s.tick(l, r, &pr),
+            State::Meter => (l, r),
+            State::Air(s) => s.tick(l, r, &pr),
+            State::Freq(s) => s.tick(l, r, &pr),
             State::Eq(f) => {
                 let [left, right] = f;
                 let a = left.iter_mut().fold(l, |x, filter| filter.tick(x));
@@ -864,7 +1595,7 @@ impl Fx {
                 (a, b)
             }
             State::Comp(c) => {
-                let level = l.abs().max(r.abs()).max(1e-6);
+                let level = kl.abs().max(kr.abs()).max(1e-6);
                 let level_db = 20.0 * level.log10();
                 let over = level_db - pr[0];
                 let knee = 6.0;
@@ -908,7 +1639,8 @@ impl Fx {
                 )
             }
             State::Delay(s) => {
-                let d = (pr[0] * 0.001 * sr).max(1.0);
+                let ms = drift::synced(pr[0], pr[5], self.bpm);
+                let d = (ms * 0.001 * sr).max(1.0);
                 let tone = 1.0 - (-TAU * pr[2] / sr).exp();
                 let (dl, dr) = (s.lines[0].read(d), s.lines[1].read(d));
                 // Ping-pong sends each repeat to the other side.
@@ -992,7 +1724,7 @@ impl Fx {
             State::Gate(s) => {
                 // About 5 ms of memory in the level, so one low sample of a wave does not
                 // close the gate.
-                s.env = l.abs().max(r.abs()).max(s.env * (1.0 - 200.0 / sr));
+                s.env = kl.abs().max(kr.abs()).max(s.env * (1.0 - 200.0 / sr));
                 let open_at = 10f32.powf(pr[0] / 20.0);
                 if s.env > open_at {
                     s.open = true;
@@ -1076,6 +1808,30 @@ impl Fx {
                 s.tone = [0.0; 2];
             }
             State::Chorus(s) => s.lines.iter_mut().for_each(|l| l.buf.fill(0.0)),
+            State::Ember(s) => s.reset(),
+            State::Heat(s) => s.reset(),
+            State::Calm(s) => s.reset(),
+            State::Prism(s) => s.reset(),
+            State::Press(s) => s.reset(),
+            State::Wall(s) => s.reset(),
+            State::Snap(s) => s.reset(),
+            State::Clip(s) => s.reset(),
+            State::Drift(s) => s.reset(),
+            State::Halo(s) => s.reset(),
+            State::Swirl(s) => s.reset(),
+            State::Bands(s) => s.reset(),
+            State::Width(s) => s.reset(),
+            State::Shut(s) => s.reset(),
+            State::Reel(s) => s.reset(),
+            State::Grit(s) => s.reset(),
+            State::Flange(s) => s.reset(),
+            State::Sweep(s) => s.reset(),
+            State::Pulse(s) => s.reset(),
+            State::Shift(s) => s.reset(),
+            State::Utility(s) => s.reset(),
+            State::Meter => {}
+            State::Air(s) => s.reset(),
+            State::Freq(s) => s.reset(),
             State::Phaser(s) => {
                 s.x1 = [[0.0; 4]; 2];
                 s.y1 = [[0.0; 4]; 2];
@@ -1091,24 +1847,138 @@ impl Fx {
 }
 
 /// The effects of one channel strip, in order.
-#[derive(Clone, Debug, Default)]
+/// A copy of what goes into and comes out of one effect, for its window to draw: three numbers a
+/// sample, the input's middle (left plus right, halved), then the output's left and right.
+pub struct FxTap {
+    pub slot: usize,
+    pub out: Box<rtrb::Producer<f32>>,
+}
+
+impl std::fmt::Debug for FxTap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FxTap({})", self.slot)
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct Chain {
     pub fx: Vec<Fx>,
+    bpm: f32,
+    /// The effect whose window is in front listens here.
+    pub tap: Option<FxTap>,
+}
+
+impl Clone for Chain {
+    /// A copy plays the same, without the tap (only one window listens).
+    fn clone(&self) -> Self {
+        Self {
+            fx: self.fx.clone(),
+            bpm: self.bpm,
+            tap: None,
+        }
+    }
 }
 
 impl Chain {
     /// A chain of at most [`MAX_INSERTS`] effects.
     pub fn new(mut fx: Vec<Fx>) -> Self {
         fx.truncate(MAX_INSERTS);
-        Self { fx }
+        Self {
+            fx,
+            bpm: 0.0,
+            tap: None,
+        }
     }
 
     #[inline]
     pub fn process(&mut self, mut l: f32, mut r: f32) -> (f32, f32) {
+        if let Some(tap) = self.tap.as_mut() {
+            for (k, f) in self.fx.iter_mut().enumerate() {
+                let before = (l + r) * 0.5;
+                (l, r) = f.process(l, r);
+                // If nobody is reading, it is lost: the audio does not wait.
+                if k == tap.slot && tap.out.slots() >= 3 {
+                    let _ = tap.out.push(before);
+                    let _ = tap.out.push(l);
+                    let _ = tap.out.push(r);
+                }
+            }
+            return (l, r);
+        }
         for f in self.fx.iter_mut() {
             (l, r) = f.process(l, r);
         }
         (l, r)
+    }
+
+    /// The whole span through the chain, one effect at a time over every frame (rather than every
+    /// effect for one frame): each effect's code and state stay in cache and its branches settle.
+    /// The sound is the same as [`Chain::process`] frame by frame, as the settings do not change
+    /// within a span. The frames are 32-bit values held in 64 bits. `side(strip, frame)` is the
+    /// key of a keyed effect.
+    pub fn process_block(
+        &mut self,
+        l: &mut [f64],
+        r: &mut [f64],
+        side: impl Fn(usize, usize) -> (f32, f32),
+    ) {
+        let n = l.len().min(r.len());
+        let tap = &mut self.tap;
+        for (k, f) in self.fx.iter_mut().enumerate() {
+            let tapped = tap.as_ref().is_some_and(|t| t.slot == k);
+            if f.bypassed() && !tapped {
+                continue;
+            }
+            let key = f.side;
+            if key.is_none() && !tapped && f.run_block(&mut l[..n], &mut r[..n]) {
+                continue;
+            }
+            for j in 0..n {
+                if let Some(s) = key {
+                    let (a, b) = side(s as usize, j);
+                    f.feed_side(a, b);
+                }
+                let (x, y) = (l[j] as f32, r[j] as f32);
+                let (a, b) = f.process(x, y);
+                if tapped {
+                    if let Some(tap) = tap.as_mut() {
+                        // If nobody is reading, it is lost: the audio does not wait.
+                        if tap.out.slots() >= 3 {
+                            let _ = tap.out.push((x + y) * 0.5);
+                            let _ = tap.out.push(a);
+                            let _ = tap.out.push(b);
+                        }
+                    }
+                }
+                l[j] = f64::from(a);
+                r[j] = f64::from(b);
+            }
+        }
+    }
+
+    /// Gives each keyed effect its key's sound for this sample: `side(strip)` is that strip's.
+    #[inline]
+    pub fn feed_sides(&mut self, side: impl Fn(usize) -> (f32, f32)) {
+        for f in self.fx.iter_mut() {
+            if let Some(s) = f.side {
+                let (l, r) = side(s as usize);
+                f.feed_side(l, r);
+            }
+        }
+    }
+
+    /// The strips that key effects of this chain.
+    pub fn side_sources(&self) -> impl Iterator<Item = u16> + '_ {
+        self.fx.iter().filter_map(Fx::side_source)
+    }
+
+    /// Tells the effects the project tempo (only passed on when it changes).
+    #[inline]
+    pub fn set_tempo(&mut self, bpm: f32) {
+        if bpm != self.bpm {
+            self.bpm = bpm;
+            self.fx.iter_mut().for_each(|f| f.set_tempo(bpm));
+        }
     }
 
     /// The largest gain reduction of the compressors in the chain, in dB.

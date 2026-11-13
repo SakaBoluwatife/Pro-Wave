@@ -1246,6 +1246,19 @@ impl LoadedPlugin for LoadedVst3 {
         self.ara.is_some()
     }
 
+    fn ara_notes(&mut self) -> Option<Vec<(f64, f64, f32, f32)>> {
+        let document = self.ara.as_ref()?;
+        // SAFETY: called from the UI thread, which owns the document, between its edits.
+        unsafe { document.detected_notes() }
+    }
+
+    fn ara_timeline(&mut self, timeline: &crate::AraTimeline) {
+        if let Some(document) = &mut self.ara {
+            // SAFETY: called from the UI thread, which owns the document, between its edits.
+            unsafe { document.set_timeline(timeline) };
+        }
+    }
+
     fn ara_sync(&mut self, regions: &[crate::AraRegion]) -> Result<bool, Error> {
         let Some(document) = &mut self.ara else {
             return Ok(true);
@@ -1712,6 +1725,13 @@ impl Vst3Processor {
                     if let Some(id) = self.midi[ControllerNumbers_::kPitchBend as usize] {
                         let v = (f64::from(value.clamp(-1.0, 1.0)) + 1.0) * 0.5;
                         self.params.add(id, e.frame as i32, v);
+                    }
+                }
+                // Not offered to VST3 plugins yet: they get the whole-instrument bend.
+                PluginEventKind::NoteTune { .. } => {}
+                PluginEventKind::ChannelPressure { value } => {
+                    if let Some(id) = self.midi[ControllerNumbers_::kAfterTouch as usize] {
+                        self.params.add(id, e.frame as i32, f64::from(value.clamp(0.0, 1.0)));
                     }
                 }
             }

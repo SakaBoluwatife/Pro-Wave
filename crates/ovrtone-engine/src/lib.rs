@@ -10,6 +10,7 @@
 #[global_allocator]
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod ahead;
 mod analysis;
 #[cfg(not(target_arch = "wasm32"))]
 mod asio_panel;
@@ -20,6 +21,8 @@ mod flex;
 mod fx;
 mod gain_smoothing;
 #[cfg(not(target_arch = "wasm32"))]
+mod hq_stretch;
+#[cfg(not(target_arch = "wasm32"))]
 mod mapped;
 mod monitor;
 mod mtc;
@@ -27,8 +30,11 @@ mod output;
 pub mod parallel;
 mod plugin;
 mod routing;
+pub mod simd;
+mod spatial;
 mod synth;
 mod tempo_map;
+mod vbap;
 mod triple;
 #[cfg(windows)]
 mod wasapi;
@@ -40,10 +46,17 @@ pub use crate::capture::{
     input_devices, Capture, CaptureError, InputInfo, InputSource, LivePeaks, Recorded, LIVE_HOP,
     MAX_INPUT_CHANNELS,
 };
+pub use crate::spatial::{
+    downmix_matrix, object_gains, point_gains, point_gains_with, ChannelSetup, SpeakerSetup,
+    MAX_SPEAKER_DELAY_MS, BusPlace, MAX_SPATIAL_BUSES, HrtfSet, HrtfSpeaker, MAX_HRIR, Distance, ObjectAxis, ObjectGains,
+    ObjectPlace, SpatialLaw, SpatialMode, SpatialRender, SpeakerLayout,
+    CHANNEL_NAMES, LFE as LFE_CHANNEL, SPATIAL_CHANNELS,
+};
 pub use crate::core::{
     dsp_load, set_built_in_voices, AudioClip, ClipEdit, Command, ControlEvent, EngineCore,
     EngineState, FadeCurve, Garbage, MidiOutEvent, NoteEvent, Preview, Shared, Song, StateReader,
-    TrackMix, MAX_TRACKS, PITCH_BEND_CONTROL, PITCH_BEND_FINE_CONTROL,
+    TrackMix, MAX_TRACKS, PITCH_BEND_CONTROL, PITCH_BEND_FINE_CONTROL, NOTE_TUNE_CONTROL, NOTE_TUNE_FINE_CONTROL,
+    NOTE_TUNE_KEY_CONTROL, PRESSURE_CONTROL, BEND_LANE_CONTROL,
 };
 pub use crate::disk::{
     ring_blocks_for, AudioError, AudioFile, DiskThread, RING_BLOCKS, RING_BLOCKS_MAX,
@@ -53,14 +66,14 @@ pub use crate::flex::{
     PitchShift, WarpPoint, MAX_POINTS as MAX_FLEX_POINTS,
 };
 pub use crate::fx::{
-    eq_response_db, response_db, Chain, Fx, FxKind, ParamInfo, Pdc, MAX_FX_PARAMS, MAX_INSERTS,
+    curve_point, drift_time_ms, synced_ms, eq_response_db, prism_reach_db, response_db, Chain, FxTap, Fx, FxKind, ParamInfo, Pdc, MAX_FX_PARAMS, MAX_INSERTS,
 };
 pub use crate::monitor::{InputFeed, MonitorTrack, MAX_MONITORS};
 pub use crate::mtc::{
     full_frame, quarter_frame_data, rate_code, rate_of_code, MtcDecoder, MtcEvent, MtcGenerator,
     MtcMessage,
 };
-pub use crate::output::{peak_of, Engine, EngineError};
+pub use crate::output::{peak_of, DeviceCaps, Engine, EngineError};
 pub use crate::plugin::{
     plugin_block, plugins_chained, set_plugin_block, PluginEvent, PluginEventKind, PluginProcessor,
     PluginRound, PluginSlot, PluginTransport, INSTRUMENT_SLOT, MASTER_STRIP, MAX_PLUGIN_EVENTS,
@@ -70,6 +83,7 @@ pub use crate::routing::{
     curve_shape, lane_value, send_gain, AutoLane, AutoPoint, AutoTarget, Route, SendSpec,
     MAX_AUTO_POINTS, MAX_BUSES, MAX_SENDS,
 };
+pub use crate::simd::{simd_level, SimdLevel};
 pub use crate::synth::{Kit, SynthPatch, Wave};
 pub use crate::tempo_map::{
     MusicalPosition, SignatureEvent, Smpte, SmpteRate, TempoCurve, TempoEvent, TempoMap, MAX_BPM,

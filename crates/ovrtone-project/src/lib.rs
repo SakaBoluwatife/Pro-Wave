@@ -97,6 +97,12 @@ pub struct TakeDoc {
     pub window: Option<[f32; 2]>,
     /// Its own gain in dB, on top of the folder's.
     pub gain_db: f32,
+    /// The name it shows (empty: "Take n").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Its colour, red, green and blue, when the user gave it one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
 }
 
 /// A comp kept under a name.
@@ -133,6 +139,9 @@ pub struct ControlDoc {
 pub struct LaneDoc {
     pub channel: u64,
     pub step_pitch: u8,
+    /// Each step's pan, -64 (left) to 63 (right); empty when every step is centred.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pan: Vec<i8>,
     pub notes: Vec<NoteDoc>,
 }
 
@@ -154,6 +163,9 @@ pub struct RegionDoc {
     pub shape: RegionShape,
     /// The region's own automation.
     pub auto: Vec<RegionLaneDoc>,
+    /// Clip gain as a line: [beats from the region's start, dB].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gain_line: Vec<[f32; 2]>,
     /// The Channel Rack pattern it is placed from; 0 for none.
     pub song_pattern: u64,
     pub name: String,
@@ -310,6 +322,18 @@ pub struct TrackDoc {
     pub solo: bool,
     pub volume_db: f32,
     pub pan: f32,
+    /// Its place in the room, if it is an object of the spatial mix.
+    pub object: Option<ObjectDoc>,
+    /// The place is a surround pan in the bed, not an object.
+    pub bed_pan: bool,
+    /// Input trim in dB, before the track's effects.
+    pub trim_db: f32,
+    /// Its regions cannot be edited.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+    /// A reference track, left out of exports.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reference: bool,
     pub inserts: Vec<String>,
     pub instrument: Option<String>,
     /// Library category of the loaded patch.
@@ -342,6 +366,8 @@ pub struct TrackDoc {
     /// Points as [beat, value, curve].
     pub auto_volume: Vec<[f64; 3]>,
     pub auto_pan: Vec<[f64; 3]>,
+    /// The lanes of its place as an object: around, height, size, LFE.
+    pub auto_object: Vec<Vec<[f64; 3]>>,
     /// The lanes of the effect parameters; a point's value is a position 0..=1 along the
     /// parameter's range.
     pub auto_fx: Vec<AutoFxDoc>,
@@ -450,12 +476,37 @@ pub struct StripDoc {
     pub plugins: Vec<PluginDoc>,
 }
 
+/// One strip of a mixer snapshot.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct SnapshotStripDoc {
+    pub name: String,
+    pub volume_db: f32,
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+    pub trim_db: f32,
+    pub fx: Vec<InsertDoc>,
+    pub sends: Vec<SendDoc>,
+}
+
+/// The mixer at one moment: faders, pans, mutes, solos, trims, the built-in effects and the sends.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct MixerSnapshotDoc {
+    pub name: String,
+    pub strips: Vec<SnapshotStripDoc>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct InsertDoc {
     pub kind: String,
     pub bypass: bool,
     pub params: Vec<f32>,
+    /// The track that keys it (its side chain), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<u32>,
 }
 
 /// The rows under More in the Region Inspector, all applied on playback. Each is 0 for no change.
@@ -583,6 +634,7 @@ impl Default for TrackDoc {
             solo: false,
             volume_db: 0.0,
             pan: 0.0,
+            object: None,
             inserts: Vec::new(),
             instrument: None,
             category: None,
@@ -601,6 +653,11 @@ impl Default for TrackDoc {
             auto_mode: "Read".into(),
             auto_volume: Vec::new(),
             auto_pan: Vec::new(),
+            auto_object: Vec::new(),
+            bed_pan: false,
+            trim_db: 0.0,
+            locked: false,
+            reference: false,
             auto_fx: Vec::new(),
             auto_plugins: Vec::new(),
             group: None,
@@ -632,12 +689,18 @@ pub struct ProjectDoc {
     pub punch: bool,
     pub punch_start: f64,
     pub punch_end: f64,
+    /// Pre-roll and post-roll, in bars (0: none).
+    pub pre_roll: f32,
+    pub post_roll: f32,
     /// A new recording takes away what it was recorded over.
     pub rec_replace: bool,
     /// Cuts and trims of audio regions land where the waveform crosses zero.
     pub snap_zero: bool,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
+    /// Stereo Out's own effects, before its plugins.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub master_fx: Vec<InsertDoc>,
     /// Hardware controls assigned with MIDI learn.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub midi_map: Vec<MidiMapDoc>,
@@ -654,6 +717,24 @@ pub struct ProjectDoc {
     pub cycle_end: f64,
     pub metronome: bool,
     pub count_in: bool,
+    /// What the spatial mix goes to: empty for off, `headphones`, `5.1`, `7.1`, `7.1.2` or `7.1.4`.
+    pub spatial_mode: String,
+    /// How objects are panned: `vbap` or `smooth`; empty in a file from before VBAP (smooth).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub spatial_law: String,
+    /// How much room the headphone render has, 0..=1; negative in a file from before it had one.
+    pub spatial_room: f32,
+    /// The renderer's volume in dB, and each channel's headphone distance: `off`, `near`, `mid`, `far`.
+    pub spatial_volume_db: f32,
+    pub spatial_distance: Vec<String>,
+    /// The LFE's low-pass in Hz; 0 off.
+    pub spatial_lfe_hz: f32,
+    /// The spatial buses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spatial_buses: Vec<SpatialBusDoc>,
+    /// Mixer snapshots: the mixer as it was, to go back to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mixer_snapshots: Vec<MixerSnapshotDoc>,
     /// Armed audio tracks are heard while stopped and while recording.
     pub auto_monitor: bool,
     /// Recording waits until the input passes `trigger_db`.
@@ -690,6 +771,9 @@ pub struct ProjectDoc {
     pub smpte_start: [u8; 4],
     /// MIDI output port (by name) that sends MIDI Time Code, if any.
     pub mtc_out: Option<String>,
+    /// The port MIDI Clock goes to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_out: Option<String>,
     /// MIDI input port (by name) that Ovrtone chases MIDI Time Code from, if any.
     pub mtc_in: Option<String>,
     /// Groove templates, offered by Quantize.
@@ -726,6 +810,9 @@ pub struct ScreensetDoc {
     pub show_signatures: bool,
     /// Width of a bar in the Tracks area, in points.
     pub bar_w: f32,
+    /// Where each panel is docked, one `panel=place` a line; empty in older files.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub panels: String,
 }
 
 impl Default for ScreensetDoc {
@@ -751,6 +838,7 @@ impl Default for ScreensetDoc {
             show_markers: false,
             show_signatures: false,
             bar_w: 0.0,
+            panels: String::new(),
         }
     }
 }
@@ -817,11 +905,14 @@ impl Default for ProjectDoc {
         Self {
             song_patterns: Vec::new(),
             punch: false,
+            pre_roll: 0.0,
+            post_roll: 0.0,
             punch_start: 0.0,
             punch_end: 0.0,
             rec_replace: false,
             snap_zero: false,
             master_plugins: Vec::new(),
+            master_fx: Vec::new(),
             midi_map: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),
@@ -834,6 +925,14 @@ impl Default for ProjectDoc {
             cycle_end: 16.0,
             metronome: false,
             count_in: true,
+            spatial_mode: String::new(),
+            spatial_law: String::new(),
+            spatial_lfe_hz: 0.0,
+            spatial_buses: Vec::new(),
+            spatial_room: -1.0,
+            spatial_volume_db: 0.0,
+            spatial_distance: Vec::new(),
+            mixer_snapshots: Vec::new(),
             auto_monitor: false,
             wait_for_sound: false,
             trigger_db: -40.0,
@@ -854,6 +953,7 @@ impl Default for ProjectDoc {
             smpte_rate: "25".into(),
             smpte_start: [1, 0, 0, 0],
             mtc_out: None,
+            clock_out: None,
             mtc_in: None,
             grooves: Vec::new(),
             screensets: Vec::new(),
@@ -1301,5 +1401,84 @@ mod tests {
         ));
         assert!(!out.exists(), "partial extraction removed");
         assert!(load_with_limits(&file, &out, 1000, 1200).is_ok());
+    }
+}
+
+/// A spatial bus: its name, layout (as the layout's name) and where it is placed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpatialBusDoc {
+    pub name: String,
+    pub layout: String,
+    pub direction: f32,
+    pub elevation: f32,
+    pub spread: f32,
+    pub size: f32,
+    pub centre: f32,
+    pub lfe: f32,
+    pub gain: f32,
+    pub muted: bool,
+}
+
+impl Default for SpatialBusDoc {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            layout: "7.1.2".into(),
+            direction: 0.0,
+            elevation: 0.0,
+            spread: 1.0,
+            size: 0.0,
+            centre: 1.0,
+            lfe: 1.0,
+            gain: 1.0,
+            muted: false,
+        }
+    }
+}
+
+/// A track's place in the room.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectDoc {
+    pub azimuth: f32,
+    pub elevation: f32,
+    pub size: f32,
+    pub lfe: f32,
+    pub spread: f32,
+    pub center: f32,
+    /// Its own distance in the headphone render (0 off, 1 near, 2 mid, 3 far); none: the channels'
+    /// setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance: Option<u8>,
+    /// How far out, 0 at the listener to 1 at the walls.
+    pub radius: f32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub snap: bool,
+    pub divergence: f32,
+    /// The spatial bus it goes through, from 1; 0 the main bus.
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub bus: u8,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+impl Default for ObjectDoc {
+    fn default() -> Self {
+        Self {
+            azimuth: 0.0,
+            elevation: 0.0,
+            size: 0.0,
+            lfe: 0.0,
+            spread: 0.5,
+            center: 1.0,
+            distance: None,
+            radius: 1.0,
+            snap: false,
+            divergence: 0.0,
+            bus: 0,
+        }
     }
 }
