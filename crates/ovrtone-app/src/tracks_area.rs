@@ -18,6 +18,8 @@ use egui::{
     Sense, Shape, Stroke, StrokeKind, Ui,
 };
 
+/// A sound let go this close to the Playlist's edge asks what it becomes.
+const DROP_EDGE: f32 = 24.0;
 const TOOLBAR_H: f32 = 30.0;
 const RULER_H: f32 = 30.0;
 /// The ruler's top row, as in Logic: the bar numbers, with the Cycle band behind them.
@@ -4337,6 +4339,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     at,
                     bar: bar0 + 1.0,
                     track: Some(t),
+                    ask: true,
                 });
             }
         }
@@ -4346,6 +4349,16 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         if let Some(pt) = over {
             let bar0 = p.beats_to_bar(beat_of(pt.x)).floor();
             let x = x_of(p.bar_to_beats(bar0));
+            // The edge of the Playlist: let go there, the sound asks what it becomes.
+            let near_edge = !lanes.shrink(DROP_EDGE).contains(pt);
+            if near_edge {
+                g.rect_stroke(
+                    lanes.shrink(1.0),
+                    0.0,
+                    Stroke::new(DROP_EDGE, crate::widgets::blue().gamma_multiply(0.35)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             g.line_segment(
                 [pos2(x, lanes.top()), pos2(x, lanes.bottom())],
                 Stroke::new(2.0, crate::widgets::blue()),
@@ -4356,13 +4369,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 if crate::midi_file::is_midi_path(path) {
                     s.open_paths.push(path.clone());
                 } else {
-                    // Always asked: an audio clip, a Channel Rack channel, a step pattern, or
-                    // something to play (a one-shot is offered as a hit at this bar first).
+                    // Audio on the Playlist; on its edge, asked what it becomes (a Channel Rack
+                    // channel, a step pattern, something to play, or audio).
                     s.sample_drop = Some(crate::sample_place::SampleDrop {
                         path: path.clone(),
                         at: pt,
                         bar: bar0 + 1.0,
                         track: row_at(&rows, pt.y - lanes.top() + scroll_y),
+                        ask: near_edge,
                     });
                 }
             }

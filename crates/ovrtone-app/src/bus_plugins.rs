@@ -29,6 +29,8 @@ pub struct BusPlugins {
     kept: HashMap<u64, std::sync::Arc<Vec<u8>>>,
     /// Why a plugin would not load, by uid.
     pub failed: HashMap<u64, String>,
+    /// The scanned list as last seen (`plugin_trust::generation`).
+    trust_seen: u64,
 }
 
 impl BusPlugins {
@@ -41,6 +43,15 @@ impl BusPlugins {
             self.live.clear();
             self.sent.clear();
             self.layouts = layouts;
+        }
+        // The scan found more: buses with a plugin missing load again.
+        let trust = crate::plugin_trust::generation();
+        if trust != self.trust_seen {
+            self.trust_seen = trust;
+            let missing = |m: &String| m == crate::plugin_trust::NOT_SCANNED;
+            if self.failed.values().any(missing) {
+                self.sent.clear();
+            }
         }
         self.sent.resize(p.spatial_buses.len(), None);
         let rate = engine.sample_rate();
@@ -57,7 +68,13 @@ impl BusPlugins {
             let pairs = layout.device_order().len().div_ceil(2);
             let mut list = Vec::new();
             for (slot, ins) in p.spatial_buses[k].plugins.iter().enumerate() {
-                match ovrtone_host::load_for_bus(&ins.path, &ins.id, rate, layout.name(), pairs) {
+                // Only plugin files the user's own scan found, as on tracks.
+                let loaded = crate::plugin_trust::allowed(&ins.path, &ins.id)
+                    .map_err(|why| ovrtone_host::HostError(why.to_string()))
+                    .and_then(|path| {
+                        ovrtone_host::load_for_bus(&path, &ins.id, rate, layout.name(), pairs)
+                    });
+                match loaded {
                     Ok((loaded, native)) => {
                         let (mut units, procs): (Vec<_>, Vec<_>) = loaded.into_iter().unzip();
                         if let Some(state) = self.kept.remove(&ins.uid).or_else(|| ins.state.clone()) {

@@ -1,8 +1,9 @@
 //! Turns a finished WAV file into FLAC or MP3. A bounce is rendered to WAV first and encoded after,
 //! so the render itself is the same for every format.
 use mp3lame_encoder::{
-    max_required_buffer_size, Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality,
+    max_required_buffer_size, Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality, VbrMode,
 };
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,43 @@ const WAV_HEADER: u64 = 44;
 const MP3_FRAMES: usize = 8192;
 /// The highest rate an MP3 file can have.
 const MP3_MAX_RATE: u32 = 48_000;
+
+/// How MP3 files are made: a fixed bit rate, or VBR at its best (V0).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mp3Quality {
+    #[default]
+    Kbps320,
+    V0,
+    Kbps256,
+    Kbps192,
+    Kbps128,
+}
+
+impl Mp3Quality {
+    pub const ALL: [Self; 5] = [Self::Kbps320, Self::V0, Self::Kbps256, Self::Kbps192, Self::Kbps128];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Kbps320 => "320 kbps",
+            Self::V0 => "VBR V0",
+            Self::Kbps256 => "256 kbps",
+            Self::Kbps192 => "192 kbps",
+            Self::Kbps128 => "128 kbps",
+        }
+    }
+}
+
+/// The choice in the Bounce window, for every MP3 made after it.
+static MP3_QUALITY: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_mp3_quality(q: Mp3Quality) {
+    MP3_QUALITY.store(q as u8, Ordering::Relaxed);
+}
+
+fn mp3_quality() -> Mp3Quality {
+    let n = usize::from(MP3_QUALITY.load(Ordering::Relaxed));
+    Mp3Quality::ALL.into_iter().find(|q| *q as usize == n).unwrap_or_default()
+}
 
 fn part_of(out: &Path) -> PathBuf {
     let mut name = out.as_os_str().to_owned();
@@ -138,14 +176,32 @@ pub fn resample(stereo: &[f32], from: u32, to: u32) -> Vec<f32> {
     out
 }
 
-/// A 320 kbps file from the 32-bit float `wav` into `out`.
+/// An MP3 (320 kbps unless chosen otherwise) from the 32-bit float `wav` into `out`, gapless, turned down instead of clipped
+/// when the mix goes over full scale.
 pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
     let lame = |e: mp3lame_encoder::BuildError| format!("MP3: {e:?}");
     let mut builder = Builder::new().ok_or("MP3: the encoder could not start")?;
     builder.set_num_channels(2).map_err(lame)?;
     builder.set_sample_rate(rate).map_err(lame)?;
-    builder.set_brate(Bitrate::Kbps320).map_err(lame)?;
+    match mp3_quality() {
+        Mp3Quality::V0 => {
+            builder.set_vbr_mode(VbrMode::Mtrh).map_err(lame)?;
+            builder.set_vbr_quality(Quality::Best).map_err(lame)?;
+        }
+        fixed => {
+            let rate = match fixed {
+                Mp3Quality::Kbps256 => Bitrate::Kbps256,
+                Mp3Quality::Kbps192 => Bitrate::Kbps192,
+                Mp3Quality::Kbps128 => Bitrate::Kbps128,
+                _ => Bitrate::Kbps320,
+            };
+            builder.set_brate(rate).map_err(lame)?;
+        }
+    }
     builder.set_quality(Quality::Best).map_err(lame)?;
+    // The info frame at the start says how much the encoder added before and after the sound,
+    // so players and other programs trim it (gapless).
+    builder.set_to_write_vbr_tag(true).map_err(lame)?;
     if rate > MP3_MAX_RATE {
         builder
             .set_output_sample_rate(std::num::NonZeroU32::new(MP3_MAX_RATE))
@@ -153,6 +209,9 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
     }
     let mut encoder = builder.build().map_err(lame)?;
 
+    // A mix over full scale is turned down to just under it rather than clipped.
+    let peak = peak_of(wav).map_err(|e| e.to_string())?;
+    let gain = if peak > 1.0 { 0.989 / peak } else { 1.0 };
     let mut input = BufReader::new(std::fs::File::open(wav).map_err(|e| e.to_string())?);
     input
         .seek(SeekFrom::Start(WAV_HEADER))
@@ -170,13 +229,12 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
                 break;
             }
             samples.clear();
-            // MP3 has no use for what is above full scale.
             samples.extend(
                 raw[..got]
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .map(|b| f32::from_le_bytes(*b).clamp(-1.0, 1.0)),
+                    .map(|b| (f32::from_le_bytes(*b) * gain).clamp(-1.0, 1.0)),
             );
             let frames = samples.len() / 2;
             coded.clear();
@@ -192,7 +250,15 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
             .flush_to_vec::<FlushNoGap>(&mut coded)
             .map_err(|e| format!("MP3: {e:?}"))?;
         file.write_all(&coded).map_err(|e| e.to_string())?;
-        file.flush().map_err(|e| e.to_string())
+        file.flush().map_err(|e| e.to_string())?;
+        // The info frame, now that the length is known, over the placeholder at the start.
+        let mut tag = Vec::with_capacity(encoder.lame_tag_size());
+        if encoder.lame_tag_encode_to_vec(&mut tag).is_some() {
+            let file = file.get_mut();
+            file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+            file.write_all(&tag).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     };
     let written = write();
     if written.is_err() {
@@ -200,6 +266,26 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
     }
     written?;
     std::fs::rename(&part, out).map_err(|e| e.to_string())
+}
+
+/// The highest sample in the 32-bit float `wav`.
+fn peak_of(wav: &Path) -> std::io::Result<f32> {
+    let mut input = BufReader::new(std::fs::File::open(wav)?);
+    input.seek(SeekFrom::Start(WAV_HEADER))?;
+    let mut raw = vec![0u8; MP3_FRAMES * 2 * 4];
+    let mut peak = 0.0f32;
+    loop {
+        let got = read_all(&mut input, &mut raw)?;
+        if got == 0 {
+            return Ok(peak);
+        }
+        for b in raw[..got].as_chunks::<4>().0 {
+            let v = f32::from_le_bytes(*b).abs();
+            if v.is_finite() {
+                peak = peak.max(v);
+            }
+        }
+    }
 }
 
 /// Fills `buf` as far as the file goes.

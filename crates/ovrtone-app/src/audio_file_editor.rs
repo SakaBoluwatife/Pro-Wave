@@ -775,7 +775,6 @@ mod tests {
         let mut p = Project::empty();
         let t = p.add_track(TrackKind::Audio);
         crate::import::import_audio_at(&mut p, &file.path, ctx, 3.0, Some(t)).unwrap();
-        crate::project_audio::sync_pool(&mut p);
         (p, t)
     }
 
@@ -843,6 +842,8 @@ mod tests {
             comp: Vec::new(),
             len: 1.0,
             open: false,
+            saved: Vec::new(),
+            audition: None,
         });
         assert!(refusal(&p, &file.path, Op::Trim).is_some());
         assert!(refusal(&p, &file.path, Op::Silence).is_none(), "time stays");

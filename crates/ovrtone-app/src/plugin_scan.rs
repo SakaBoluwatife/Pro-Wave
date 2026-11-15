@@ -534,11 +534,12 @@ impl PluginScan {
     }
 
     fn show(&mut self, all: &[Scanned]) {
-        self.plugins = prefer_clap(
-            all.iter()
-                .flat_map(|s| s.result.iter().flatten().cloned())
-                .collect(),
-        );
+        let found: Vec<PluginInfo> = all
+            .iter()
+            .flat_map(|s| s.result.iter().flatten().cloned())
+            .collect();
+        crate::plugin_trust::set_known(&found);
+        self.plugins = prefer_clap(found);
         self.plugins
             .sort_by_key(|p| (p.name.to_lowercase(), p.id.clone()));
         self.failed = all

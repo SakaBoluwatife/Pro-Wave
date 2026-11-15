@@ -94,6 +94,10 @@ pub struct InputChoice {
     pub device: Option<String>,
     changed: bool,
     file: Option<PathBuf>,
+    /// The user's names for inputs ("Kick In", "Vox Mic"), by device id and channel. The device
+    /// id is empty for the system default.
+    labels: std::collections::BTreeMap<(String, u16), String>,
+    labels_file: Option<PathBuf>,
 }
 
 impl InputChoice {
@@ -104,10 +108,63 @@ impl InputChoice {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .map(|text| text.trim().to_string())
             .filter(|id| !id.is_empty());
+        let labels_file = crate::recent_files::config_dir().map(|d| d.join("input-names"));
+        let labels = labels_file
+            .as_deref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .map(|text| parse_labels(&text))
+            .unwrap_or_default();
         Self {
             device,
             file,
+            labels,
+            labels_file,
             ..Self::default()
+        }
+    }
+
+    /// The user's name for channel `c` of the chosen device, if given.
+    pub fn label(&self, c: u16) -> Option<&str> {
+        let device = self.device.clone().unwrap_or_default();
+        self.labels.get(&(device, c)).map(String::as_str)
+    }
+
+    /// Names channel `c` of the chosen device; an empty name goes back to "Input N".
+    pub fn set_label(&mut self, c: u16, name: &str) {
+        let key = (self.device.clone().unwrap_or_default(), c);
+        let name = name.trim();
+        if name.is_empty() {
+            self.labels.remove(&key);
+        } else {
+            self.labels.insert(key, name.to_string());
+        }
+        let Some(file) = &self.labels_file else { return };
+        let text: String = self
+            .labels
+            .iter()
+            .map(|((d, c), n)| format!("{d}\t{c}\t{n}\n"))
+            .collect();
+        let result = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(file, text));
+        if let Err(e) = result {
+            tracing::warn!("could not save the input names: {e}");
+        }
+    }
+
+    /// An input's name for menus and the channel strip: the user's names, else "Input N".
+    pub fn name(&self, source: InputSource) -> String {
+        match source {
+            InputSource::Mono(c) => self.label(c).map_or_else(|| input_label(source), str::to_string),
+            InputSource::Stereo(c) => match (self.label(c), self.label(c + 1)) {
+                (None, None) => input_label(source),
+                (a, b) => format!(
+                    "{} + {}",
+                    a.map_or_else(|| format!("{}", c + 1), str::to_string),
+                    b.map_or_else(|| format!("{}", c + 2), str::to_string)
+                ),
+            },
         }
     }
 
@@ -147,7 +204,20 @@ impl InputChoice {
     }
 }
 
-/// The name of an input in the channel strip's Input slot.
+/// Reads the saved input names: one per line, device id, channel and name split by tabs.
+fn parse_labels(text: &str) -> std::collections::BTreeMap<(String, u16), String> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let device = parts.next()?.to_string();
+            let channel = parts.next()?.parse().ok()?;
+            let name = parts.next()?.trim();
+            (!name.is_empty()).then(|| ((device, channel), name.to_string()))
+        })
+        .collect()
+}
+
+/// The name of an input in the channel strip's Input slot, before the user names it.
 pub fn input_label(source: InputSource) -> String {
     match source {
         InputSource::Mono(c) => trf("Input {}", &[&(c + 1)]),

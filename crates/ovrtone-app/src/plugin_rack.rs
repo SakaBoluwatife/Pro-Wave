@@ -395,7 +395,16 @@ pub struct Rack {
     owner: Option<isize>,
     /// A/B compare, by plugin. For this run: what goes in the project is the side in use.
     compare: HashMap<u64, Compare>,
+    /// The scanned list as last seen (`plugin_trust::generation`).
+    trust_seen: u64,
+    /// Plugins loading in their helper processes, by uid.
+    pending: HashMap<u64, ovrtone_host::PendingLoad>,
+    /// Plugins whose slow load the user was told about.
+    slow_told: Vec<u64>,
 }
+
+/// A load this long gets a word to the user: the plugin may be waiting on a window of its own.
+const SLOW_LOAD: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Rack {
     /// The delay of the plugin with this uid in its slot, 0 when it is not running.
@@ -803,6 +812,22 @@ impl Rack {
         message: &mut Option<String>,
     ) -> bool {
         self.follow_lanes(p);
+        // The scan found more: plugins missing before are tried again.
+        let trust = crate::plugin_trust::generation();
+        if trust != self.trust_seen {
+            self.trust_seen = trust;
+            for i in p.all_hosted_mut() {
+                if i.failed.as_deref() == Some(crate::plugin_trust::NOT_SCANNED) {
+                    i.failed = None;
+                }
+            }
+        }
+        // A plugin removed while it was loading: its load is given up.
+        if !self.pending.is_empty() {
+            let present: std::collections::HashSet<u64> = p.all_hosted_mut().map(|i| i.uid).collect();
+            self.pending.retain(|uid, _| present.contains(uid));
+            self.slow_told.retain(|uid| present.contains(uid));
+        }
         let mut closed = Vec::new();
         for live in self.live.values_mut() {
             live.loaded.tick();
@@ -1007,6 +1032,19 @@ impl Rack {
         let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
             return true;
         };
+        // Only plugin files the user's own scan found; one installed elsewhere loads from there.
+        match crate::plugin_trust::allowed(&plugin.path, &plugin.id) {
+            Ok(found) => {
+                if found != plugin.path {
+                    plugin.path = found;
+                }
+            }
+            Err(why) => {
+                *message = Some(format!("{}: {why}", plugin.name));
+                plugin.failed = Some(why.to_string());
+                return true;
+            }
+        }
         // In a process of its own a crash while loading is only a failed load.
         let guarded = !ovrtone_host::isolation_on();
         if guarded && crate::plugin_guard::is_blocked(&plugin.path) {
@@ -1022,16 +1060,52 @@ impl Rack {
         let side = plugin.sidechain.is_some();
         let path = plugin.path.clone();
         let id = plugin.id.clone();
+        let name = plugin.name.clone();
         // Only an audio track has regions for ARA to play: elsewhere it would be silent.
         let on_audio = place.1 != INSTRUMENT_SLOT
             && p.tracks
                 .get(usize::from(place.0))
                 .is_some_and(|t| t.kind == TrackKind::Audio);
-        let result = if on_audio && crate::settings::use_ara() {
+        let ara = on_audio && crate::settings::use_ara();
+        // In a helper process the load goes on there while the window keeps running: a slow
+        // plugin, or one showing a licence window, no longer freezes Ovrtone.
+        let in_helper =
+            !guarded && !ara && ovrtone_host::PluginFormat::of(&path) != ovrtone_host::PluginFormat::Sampler;
+        let result = if in_helper {
+            let started = match self.pending.remove(&uid) {
+                Some(pending) => Ok(pending),
+                None => {
+                    *message = Some(format!("Loading {name}..."));
+                    ovrtone_host::start_isolated(&path, &id, engine.sample_rate(), side)
+                }
+            };
+            match started {
+                Err(e) => Err(e),
+                Ok(mut pending) => match pending.poll() {
+                    Some(done) => done,
+                    None => {
+                        let waited = pending.waited();
+                        if waited >= SLOW_LOAD && !self.slow_told.contains(&uid) {
+                            self.slow_told.push(uid);
+                            *message = Some(format!(
+                                "{} is still loading after {} minutes. It may be waiting on its \
+                                 own window (a licence or sign-in): look for it on the taskbar. \
+                                 Remove it from its slot to stop waiting.",
+                                name,
+                                waited.as_secs() / 60
+                            ));
+                        }
+                        self.pending.insert(uid, pending);
+                        return true;
+                    }
+                },
+            }
+        } else if ara {
             load_plugin_for_audio(&path, &id, engine.sample_rate(), side)
         } else {
             load_plugin_safely(&path, &id, engine.sample_rate(), side)
         };
+        self.slow_told.retain(|u| *u != uid);
         let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) else {
             return true;
         };

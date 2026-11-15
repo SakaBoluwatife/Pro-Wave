@@ -29,8 +29,8 @@ mod window {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
         GetMessageW, GetSystemMetrics, LoadCursorW, PostQuitMessage, RegisterClassW, SetTimer,
-        SetWindowPos, TranslateMessage, CS_DROPSHADOW, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN,
-        SM_CYSCREEN, SWP_NOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER,
+        SetWindowPos, TranslateMessage, CS_DROPSHADOW, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN,
+        SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER,
         WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
     };
 
@@ -56,6 +56,9 @@ mod window {
         shown: f32,
         closing: bool,
         began: Instant,
+        /// Plugins are loading: the screen stops staying on top, so their own windows (a licence,
+        /// an activation) come up in front of it. `true` once done.
+        under: Option<bool>,
     }
 
     static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -90,6 +93,7 @@ mod window {
             shown: 0.0,
             closing: false,
             began: Instant::now(),
+            under: None,
         });
         drop(state);
         let started = std::thread::Builder::new()
@@ -107,6 +111,14 @@ mod window {
             if let Some(state) = state.as_mut() {
                 state.step = text.to_string();
                 state.target = fraction.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    pub fn let_others_over() {
+        if let Ok(mut state) = STATE.lock() {
+            if let Some(state) = state.as_mut() {
+                state.under.get_or_insert(false);
             }
         }
     }
@@ -201,6 +213,18 @@ mod window {
                     if let Some(state) = state.as_mut() {
                         state.shown += (state.target - state.shown) * 0.12;
                         finished = state.closing && state.began.elapsed() >= SHORTEST;
+                        if state.under == Some(false) {
+                            state.under = Some(true);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                Some(HWND_NOTOPMOST),
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
                 if finished {
@@ -494,6 +518,13 @@ pub fn step(text: &str, fraction: f32) {
     window::step(text, fraction);
     #[cfg(not(windows))]
     let _ = (text, fraction);
+}
+
+/// Plugins are loading: the screen no longer stays on top, so a plugin's own windows (a licence,
+/// an activation) come up in front of it.
+pub fn let_others_over() {
+    #[cfg(windows)]
+    window::let_others_over();
 }
 
 /// The main window has drawn: the screen goes, once it has been up long enough to be read.

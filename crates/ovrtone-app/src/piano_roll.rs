@@ -377,6 +377,8 @@ pub struct PianoView {
     swing: f32,
     scale_root: Option<u8>,
     scale_mode: usize,
+    /// New and moved notes land on notes of the scale shown.
+    stick_scale: bool,
     /// What a new note copies: the length and velocity of the last one placed or touched.
     last_len: f32,
     new_velocity: u8,
@@ -431,6 +433,7 @@ impl Default for PianoView {
             swing: 0.0,
             scale_root: None,
             scale_mode: 0,
+            stick_scale: false,
             last_len: 0.25,
             new_velocity: 100,
             color_group: 0,
@@ -505,6 +508,18 @@ fn piano_step(snap: Snap, beat_px: f32, beats_per_bar: f64, beat_unit: f64) -> f
 
 fn id(key: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
     egui::Id::unique(("piano_roll", key))
+}
+
+/// The scale the rows show: the one picked for Scale Quantize, else the project's key.
+fn shown_scale(v: &PianoView, p: &Project) -> Option<(u8, usize)> {
+    v.scale_root
+        .map(|root| (root, v.scale_mode))
+        .or_else(|| note_edit::key_scale(p.key))
+}
+
+/// `pitch`, or the scale note nearest it when notes stick to `scale`.
+fn stuck(pitch: i32, scale: Option<(u8, usize)>) -> i32 {
+    scale.map_or(pitch, |s| note_edit::snap_to_scale(pitch, s))
 }
 
 fn is_black(pitch: i32) -> bool {
@@ -1273,6 +1288,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     gg.rect_filled(grid, 0.0, row_white_col());
     let top_pitch = pitch_at(grid.top());
     let bottom_pitch = pitch_at(grid.bottom());
+    let shown_scale = shown_scale(v, p);
+    let stick_to = if v.stick_scale { shown_scale } else { None };
     for pitch in bottom_pitch..=top_pitch {
         let y = y_of(pitch);
         let row = Rect::from_min_size(pos2(grid.left(), y), vec2(grid.width(), key_h));
@@ -1285,13 +1302,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 row_white_col()
             },
         );
-        // The notes of the scale picked for Scale Quantize stand out.
-        let in_scale = v.scale_root.is_some_and(|root| {
-            let degree = (pitch - i32::from(root)).rem_euclid(12) as u8;
-            MODES[v.scale_mode].1.contains(&degree)
-        });
-        if in_scale {
-            gg.rect_filled(row, 0.0, blue().gamma_multiply(0.14));
+        // The notes of the scale stand out, its root more: the scale picked for Scale Quantize,
+        // else the project's key.
+        if let Some(root) = shown_scale.and_then(|s| note_edit::scale_degree(pitch, s)) {
+            gg.rect_filled(row, 0.0, blue().gamma_multiply(if root { 0.26 } else { 0.14 }));
         }
         if pitch % 12 == 0 {
             gg.line_segment(
@@ -1441,7 +1455,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                         let start = (beat / snap).floor() * snap;
                         v.selected.clear();
                         v.drag = Drag::Paint {
-                            pitch: pitch as u8,
+                            pitch: stuck(pitch, stick_to) as u8,
                             start,
                         };
                         audition(
@@ -1460,7 +1474,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                         notes.push(Note {
                             start,
                             len: v.last_len.max(1.0 / 64.0),
-                            pitch: pitch as u8,
+                            pitch: stuck(pitch, stick_to) as u8,
                             vel: v.new_velocity,
                             muted: false,
                             color: v.color_group,
@@ -1471,7 +1485,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                         v.drag = Drag::Move {
                             anchor_beat: beat,
                             anchor_pitch: pitch,
-                            orig: vec![(index, start, pitch as u8)],
+                            orig: vec![(index, start, stuck(pitch, stick_to) as u8)],
                         };
                         audition(
                             &mut s.audition,
@@ -1561,7 +1575,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                     for &(i, start, pc) in orig.iter() {
                         if let Some(n) = notes.get_mut(i) {
                             n.start = (start + delta).max(0.0);
-                            n.pitch = (pc as i32 + dp).clamp(0, 127) as u8;
+                            n.pitch = stuck((pc as i32 + dp).clamp(0, 127), stick_to) as u8;
                         }
                     }
                     let first = orig.first().map_or(0, |o| o.2 as i32);
@@ -2122,7 +2136,13 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     ) {
         act.scale = true;
     }
-    y += 38.0;
+    y += 24.0;
+    // New and moved notes land on the scale shown (this one, or else the project's key).
+    ui.put(
+        Rect::from_min_size(pos2(ix, y), vec2(iw, 18.0)),
+        egui::Checkbox::new(&mut v.stick_scale, "Stick to Scale"),
+    );
+    y += 36.0;
     gi.line_segment(
         [
             pos2(insp.left() + 6.0, y - 10.0),
@@ -2400,6 +2420,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 [row.left_bottom(), row.right_bottom()],
                 Stroke::new(1.0, crate::theme::gray(0x84)),
             );
+        }
+        // The scale on the keys too: a mark at the key's edge, stronger on the root.
+        if let Some(root) = shown_scale.and_then(|s| note_edit::scale_degree(pitch, s)) {
+            let mark = Rect::from_min_max(pos2(row.right() - 4.0, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
+            gk.rect_filled(mark, 0.0, blue().gamma_multiply(if root { 1.0 } else { 0.5 }));
         }
         if v.held == Some(pitch as u8) {
             gk.rect_filled(

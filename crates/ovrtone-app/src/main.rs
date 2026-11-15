@@ -45,6 +45,7 @@ mod midi_fx_ui;
 mod midi_in;
 mod midi_learn;
 mod midi_out;
+mod midi_routing;
 mod mixer;
 mod model;
 mod mtc_in;
@@ -60,6 +61,7 @@ mod plugin_guard;
 mod plugin_presets;
 mod plugin_rack;
 mod plugin_scan;
+mod plugin_trust;
 mod project_history;
 mod project_io;
 mod project_thumbs;
@@ -141,6 +143,8 @@ pub struct UiState {
     pub lists: event_list::ListView,
     /// The MIDI recording in progress.
     pub rec: recorder::Recorder,
+    /// Recordings on the other armed tracks, while armed tracks listen to their own MIDI devices.
+    pub rec_more: std::collections::BTreeMap<usize, recorder::Recorder>,
     /// The audio recording in progress, and the open audio input.
     pub audio_rec: audio_rec::AudioRecorder,
     /// Capture Recording was asked for.
@@ -162,6 +166,8 @@ pub struct UiState {
     pub bus_plugin_editor: Option<(u64, String)>,
     /// An export for the beat store under way (File > Export > For Beat Store).
     pub beat_store: Option<beat_store::Pending>,
+    /// The For Beat Store window: which stores open after the export.
+    pub beat_store_dialog: Option<beat_store::Dialog>,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -230,6 +236,8 @@ pub struct UiState {
     pub layout: dock::Layout,
     /// While the plugins of a project just opened load: the most that were left.
     pub opening_plugins: Option<usize>,
+    /// When the plugin load screen came up: after a while it can be clicked away.
+    pub opening_since: Option<std::time::Instant>,
     pub strip_silence: strip_silence::StripSilence,
     pub keys: key_commands::KeyMap,
     /// What the steps of Undo and Redo were, for the Undo History.
@@ -312,6 +320,7 @@ impl UiState {
             show_lists: false,
             lists: event_list::ListView::default(),
             rec: recorder::Recorder::default(),
+            rec_more: std::collections::BTreeMap::new(),
             audio_rec: audio_rec::AudioRecorder::default(),
             capture_cmd: false,
             underruns_told: 0,
@@ -324,6 +333,7 @@ impl UiState {
             ara_midi: None,
             bus_plugin_editor: None,
             beat_store: None,
+            beat_store_dialog: None,
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
@@ -370,6 +380,7 @@ impl UiState {
             performance: performance::PerformanceView::default(),
             layout: dock::Layout::load(),
             opening_plugins: None,
+            opening_since: None,
             strip_silence: strip_silence::StripSilence::default(),
             keys: key_commands::KeyMap::default(),
             undo_labels: Vec::new(),
@@ -609,13 +620,47 @@ impl App {
         // What was typed on the computer keyboard goes the way a MIDI keyboard's notes do.
         let mut input = std::mem::take(&mut self.ui.typed);
         let mut ages = vec![0.0; input.len()];
+        let mut from: Vec<midi_in::NoteFrom> = vec![None; input.len()];
         let latency_us = self
             .sync
             .as_mut()
             .map_or(0, |sync| sync.engine.state().output_latency_us);
         let mut controls = Vec::new();
         if let Some(midi) = self.midi.as_mut() {
-            midi.poll(&mut input, &mut ages);
+            midi.poll(&mut input, &mut ages, &mut from);
+        }
+        // Armed tracks that listen to a device or channel of their own each play and record what
+        // they hear; the first goes the usual way below, the others here.
+        let routed = midi_routing::split(&self.project, &input, &ages, &from);
+        let mut first_track = None;
+        let mut others = Vec::new();
+        if let Some(mut tracks) = routed {
+            let (t, notes, note_ages) = tracks.remove(0);
+            first_track = Some(t);
+            input = notes;
+            ages = note_ages;
+            let latency = f64::from(latency_us) / 1e6;
+            let p = &mut self.project;
+            let s = &mut self.ui;
+            for (t, notes, note_ages) in tracks {
+                midi_routing::audition(&mut s.audition, t, &notes);
+                let rec = s.rec_more.entry(t).or_default();
+                rec.only_track = Some(t);
+                rec.timing(note_ages, latency);
+                recorder::update(rec, p, &notes);
+                others.push(t);
+            }
+        }
+        // Tracks that stopped listening on their own finish what they were recording, then go.
+        {
+            let p = &mut self.project;
+            let more = &mut self.ui.rec_more;
+            for (t, rec) in more.iter_mut() {
+                if !others.contains(t) {
+                    recorder::update(rec, p, &[]);
+                }
+            }
+            more.retain(|t, rec| others.contains(t) || rec.active());
         }
         if !input.is_empty() {
             self.ui.live_note_at = Some(std::time::Instant::now());
@@ -630,7 +675,12 @@ impl App {
         if said.is_some() {
             s.status = said;
         }
-        let track = s.rec.target().map_or(p.selected_track, |(t, _)| t);
+        let track = s
+            .rec
+            .target()
+            .map(|(t, _)| t)
+            .or(first_track)
+            .unwrap_or(p.selected_track);
         let plays = p
             .tracks
             .get(track)
@@ -720,7 +770,7 @@ impl App {
                 None => s.status = Some(i18n::tr("Capture Recording: nothing was played").into()),
             }
         }
-        if s.rec.active() || !input.is_empty() {
+        if s.rec.active() || !input.is_empty() || !s.rec_more.is_empty() {
             ctx.request_repaint();
         }
     }
@@ -967,6 +1017,10 @@ impl App {
             return;
         };
         let total = sync.plugins_left(&mut self.project).0;
+        // A plugin's licence or activation window comes up in front of the launch screen.
+        if total > 0 {
+            ovrtone_host::splash::let_others_over();
+        }
         let (mut last, mut since) = (total, std::time::Instant::now());
         loop {
             let (left, next) = sync.plugins_left(&mut self.project);
@@ -1001,11 +1055,18 @@ impl App {
         let (left, next) = sync.plugins_left(&mut self.project);
         if left == 0 {
             self.ui.opening_plugins = None;
+            self.ui.opening_since = None;
             return;
         }
         let Some(most) = self.ui.opening_plugins.as_mut() else {
+            self.ui.opening_since = None;
             return;
         };
+        // Plugins in their own processes go on loading behind the window: after a while the user
+        // can carry on while they do.
+        let since = *self.ui.opening_since.get_or_insert_with(std::time::Instant::now);
+        let can_leave = since.elapsed() >= std::time::Duration::from_secs(10);
+        let mut leave = false;
         *most = (*most).max(left);
         let total = *most;
         ctx.request_repaint();
@@ -1014,7 +1075,8 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let (r, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                let (r, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                leave = can_leave && resp.clicked();
                 let g = ui.painter();
                 g.rect_filled(r, 0.0, egui::Color32::from_black_alpha(170));
                 let text = theme::text();
@@ -1039,7 +1101,20 @@ impl App {
                 let mut lit = bar;
                 lit.set_width(bar.width() * done as f32 / total.max(1) as f32);
                 g.rect_filled(lit, 2.0, theme::accent());
+                if can_leave {
+                    g.text(
+                        c + egui::vec2(0.0, 48.0),
+                        egui::Align2::CENTER_CENTER,
+                        "Click to work while the rest load",
+                        egui::FontId::proportional(12.0),
+                        theme::text_dim(),
+                    );
+                }
             });
+        if leave {
+            self.ui.opening_plugins = None;
+            self.ui.opening_since = None;
+        }
     }
 
     /// The launch screen goes once the scan is done and the main window has drawn.
@@ -1120,6 +1195,7 @@ impl eframe::App for App {
         groove_template::poll(&ctx, &mut self.project, &mut self.ui);
         menus::expire_status(&ctx, &mut self.ui);
         beat_store::poll(&mut self.ui);
+        beat_store::dialog(&ctx, &self.project, &mut self.ui);
         // MIDI from Melodyne: the plugin is asked for the notes it found.
         if let Some(t) = self.ui.ara_midi.take() {
             let result = match self.sync.as_mut() {
@@ -1183,6 +1259,7 @@ impl eframe::App for App {
                     at,
                     bar,
                     track: Some(self.project.selected_track),
+                    ask: false,
                 });
             } else {
                 self.import(path, &ctx);

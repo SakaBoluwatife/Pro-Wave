@@ -1248,7 +1248,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.bounce.dialog = Some(crate::bounce::Purpose::Track)
         }
         "All Tracks as Audio Files…" => s.bounce.dialog = Some(crate::bounce::Purpose::Stems),
-        "For Beat Store…" => crate::beat_store::start(p, s),
+        "For Beat Store…" => crate::beat_store::ask(s),
         "Regions in Place…" | "Bounce In Place" => crate::bounce::bounce_selection(p, s, false),
         "Bounce and Join" => crate::bounce::bounce_selection(p, s, true),
         "Process Selection…" => crate::bounce::open_process(p, s),

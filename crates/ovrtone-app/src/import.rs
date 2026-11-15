@@ -266,6 +266,8 @@ pub fn import_audio_at(
         reference: false,
         midi_port: None,
         midi_channel: 1,
+        midi_in_port: None,
+        midi_in_channel: 0,
         midi_fx: Vec::new(),
         show_auto: false,
         alternatives: Vec::new(),

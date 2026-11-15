@@ -17,6 +17,50 @@ pub const ROOTS: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
+/// The root (0 is C) and the mode (an index into `MODES`) of a project key such as "F#min".
+pub fn key_scale(key: &str) -> Option<(u8, usize)> {
+    let mut chars = key.chars();
+    let base: i32 = match chars.next()? {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let rest: String = chars.collect();
+    let (shift, mode) = match rest.as_str() {
+        "maj" => (0, 0),
+        "min" => (0, 1),
+        "#maj" => (1, 0),
+        "#min" => (1, 1),
+        "bmaj" => (-1, 0),
+        "bmin" => (-1, 1),
+        _ => return None,
+    };
+    Some(((base + shift).rem_euclid(12) as u8, mode))
+}
+
+/// Where `pitch` is in a scale: `None` outside it, `Some(true)` on the root.
+pub fn scale_degree(pitch: i32, (root, mode): (u8, usize)) -> Option<bool> {
+    let degree = (pitch - i32::from(root)).rem_euclid(12) as u8;
+    MODES.get(mode)?.1.contains(&degree).then_some(degree == 0)
+}
+
+/// The scale note nearest `pitch` (the lower one when two are as near).
+pub fn snap_to_scale(pitch: i32, scale: (u8, usize)) -> i32 {
+    for d in 0..12 {
+        for p in [pitch - d, pitch + d] {
+            if scale_degree(p, scale).is_some() {
+                return p.clamp(0, 127);
+            }
+        }
+    }
+    pitch
+}
+
 /// Time Quantize grid choices: label and length in beats.
 pub const GRIDS: [(&str, f32); 8] = [
     ("1/4 Note", 1.0),

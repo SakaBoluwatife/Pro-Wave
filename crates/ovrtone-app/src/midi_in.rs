@@ -5,7 +5,12 @@
 use crate::recorder::LiveNote;
 use midir::{MidiInput, MidiInputConnection};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Where a played note came from: the input port by name, and its channel, 1-16. `None` for notes
+/// typed on the computer keyboard.
+pub type NoteFrom = Option<(Arc<str>, u8)>;
 
 /// How often to look for a MIDI keyboard while none is connected.
 const RESCAN: Duration = Duration::from_secs(3);
@@ -40,11 +45,25 @@ pub struct MidiIn {
     /// let only one program or connection open a port.
     avoided: Option<String>,
     /// Each note with when it arrived.
-    tx: SyncSender<(Instant, LiveNote)>,
-    rx: Receiver<(Instant, LiveNote)>,
+    tx: SyncSender<(Instant, LiveNote, Arc<str>, u8)>,
+    rx: Receiver<(Instant, LiveNote, Arc<str>, u8)>,
     controls_tx: SyncSender<Control>,
     controls_rx: Receiver<Control>,
     last_try: Option<Instant>,
+}
+
+/// The MIDI input ports of this computer, by name (not the system's "Through" port), for a track's
+/// MIDI In Port menu.
+pub fn ports() -> Vec<String> {
+    let Ok(input) = MidiInput::new("Ovrtone") else {
+        return Vec::new();
+    };
+    input
+        .ports()
+        .iter()
+        .filter_map(|port| input.port_name(port).ok())
+        .filter(|name| !name.to_lowercase().contains("through"))
+        .collect()
 }
 
 /// The note message in a raw MIDI message, if it is one (Note On with velocity 0 is a Note
@@ -137,13 +156,15 @@ impl MidiIn {
             return;
         };
         let tx = self.tx.clone();
+        let port_name: Arc<str> = name.as_str().into();
         let controls_tx = self.controls_tx.clone();
         match input.connect(
             port,
             "ovrtone-in",
             move |_stamp, msg, _| {
                 if let Some(note) = parse(msg) {
-                    let _ = tx.try_send((Instant::now(), note));
+                    let channel = msg.first().map_or(1, |s| (s & 0x0f) + 1);
+                    let _ = tx.try_send((Instant::now(), note, port_name.clone(), channel));
                 }
                 if let Some(control) = parse_control(msg) {
                     let _ = controls_tx.try_send(control);
@@ -167,14 +188,15 @@ impl MidiIn {
     }
 
     /// Appends the notes played since the last call to `out`, and to `ages` how many seconds ago
-    /// each arrived.
-    pub fn poll(&mut self, out: &mut Vec<LiveNote>, ages: &mut Vec<f64>) {
+    /// each arrived, and to `from` where.
+    pub fn poll(&mut self, out: &mut Vec<LiveNote>, ages: &mut Vec<f64>, from: &mut Vec<NoteFrom>) {
         if self.last_try.is_none_or(|t| t.elapsed() >= RESCAN) {
             self.connect();
         }
-        while let Ok((at, note)) = self.rx.try_recv() {
+        while let Ok((at, note, port, channel)) = self.rx.try_recv() {
             out.push(note);
             ages.push(at.elapsed().as_secs_f64());
+            from.push(Some((port, channel)));
         }
     }
 

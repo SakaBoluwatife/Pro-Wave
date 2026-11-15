@@ -1979,6 +1979,7 @@ mod tests {
                 spread: f32::NAN,
                 center: f32::NAN,
                 distance: None,
+                ..ObjectPlace::default()
             },
         );
         assert!(g.left.iter().chain(&g.right).all(|v| v.is_finite()));
@@ -1988,7 +1989,7 @@ mod tests {
     fn ears_for(channel: usize) -> (f64, f64, usize, usize) {
         let mut r = SpatialRender::new(SpatialMode::Binaural(SpeakerLayout::Surround714), 48_000);
         for j in 0..64 {
-            r.add(channel, j, if j == 0 { 1.0 } else { 0.0 });
+            r.add_object(0, None, channel, j, if j == 0 { 1.0 } else { 0.0 });
         }
         let (mut left, mut right) = (vec![0.0; 64], vec![0.0; 64]);
         r.finish_span(&mut left, &mut right, false);
@@ -2022,7 +2023,7 @@ mod tests {
         setup.muted[7] = true;
         setup.gain = 0.5;
         r.set_setup(setup);
-        r.add(7, 0, 1.0);
+        r.add_object(0, None, 7, 0, 1.0);
         let (mut left, mut right) = (vec![0.4; 1], vec![0.0; 1]);
         r.finish_span(&mut left, &mut right, false);
         assert!((left[0] - 0.2).abs() < 1e-9, "{}", left[0]);
@@ -2032,7 +2033,7 @@ mod tests {
     #[test]
     fn folding_keeps_every_channel_of_the_layout_on_its_side() {
         let mut r = SpatialRender::new(SpatialMode::Speakers(SpeakerLayout::Surround714), 48_000);
-        r.add(7, 0, 1.0);
+        r.add_object(0, None, 7, 0, 1.0);
         let (mut left, mut right) = (vec![0.0; 1], vec![0.0; 1]);
         assert!(!r.finish_span(&mut left, &mut right, false));
         assert_eq!(left[0], 0.0);

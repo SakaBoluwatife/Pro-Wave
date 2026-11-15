@@ -3456,10 +3456,9 @@ fn input_slot(
     i: usize,
     id: egui::Id,
 ) {
-    use crate::audio_rec::input_label;
     use ovrtone_engine::InputSource;
     let source = p.tracks[i].input;
-    slot(g, r, &input_label(source), slot_gray_col(), text_col());
+    slot(g, r, &inputs.name(source), slot_gray_col(), text_col());
     // One ring for a mono input, two for a stereo pair.
     let ring = pos2(r.left() + 8.0, r.center().y);
     g.circle_stroke(ring, 3.5, stroke(text_col()));
@@ -3472,21 +3471,45 @@ fn input_slot(
     }
     let channels = inputs.channels();
     let (mut picked, mut device) = (None, None);
+    let mut renamed: Option<(u16, String)> = None;
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(150.0);
-        let mut item = |ui: &mut Ui, s: InputSource| {
-            if ui.selectable_label(s == source, input_label(s)).clicked() {
+        let names: Vec<String> = (0..channels)
+            .map(|c| inputs.name(InputSource::Mono(c)))
+            .collect();
+        let pairs: Vec<String> = (0..channels.saturating_sub(1))
+            .step_by(2)
+            .map(|c| inputs.name(InputSource::Stereo(c)))
+            .collect();
+        let mut item = |ui: &mut Ui, s: InputSource, name: &str| {
+            if ui.selectable_label(s == source, name).clicked() {
                 picked = Some(s);
                 ui.close();
             }
         };
-        for c in 0..channels {
-            item(ui, InputSource::Mono(c));
+        for (c, name) in (0..channels).zip(&names) {
+            item(ui, InputSource::Mono(c), name);
         }
         ui.separator();
-        for c in (0..channels.saturating_sub(1)).step_by(2) {
-            item(ui, InputSource::Stereo(c));
+        for (c, name) in (0..channels.saturating_sub(1)).step_by(2).zip(&pairs) {
+            item(ui, InputSource::Stereo(c), name);
         }
+        ui.separator();
+        // The user's names for the inputs of this device, kept on this computer.
+        ui.menu_button("Name Inputs", |ui| {
+            for c in 0..channels {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}", c + 1));
+                    let mut text = inputs.label(c).unwrap_or_default().to_string();
+                    let edit = egui::TextEdit::singleline(&mut text)
+                        .hint_text(format!("Input {}", c + 1))
+                        .desired_width(120.0);
+                    if ui.add(edit).changed() {
+                        renamed = Some((c, text));
+                    }
+                });
+            }
+        });
         ui.separator();
         ui.menu_button(tr("Input Device"), |ui| {
             if ui
@@ -3513,6 +3536,9 @@ fn input_slot(
     }
     if let Some(d) = device {
         inputs.pick(d);
+    }
+    if let Some((c, name)) = renamed {
+        inputs.set_label(c, &name);
     }
 }
 

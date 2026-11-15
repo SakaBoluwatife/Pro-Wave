@@ -531,7 +531,7 @@ mod tests {
     fn the_file_holds_its_sound_and_says_which_track_is_which_speaker() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mix.wav");
-        let mut writer = AdmWriter::create(&path, 48_000, 0).unwrap();
+        let mut writer = AdmWriter::create(&path, 48_000, 0, Shape::SEVEN_ONE_FOUR).unwrap();
         let mut frame = [0f32; BUS_CHANNELS];
         frame[7] = 0.5;
         writer.write(&frame, &[], 0).unwrap();
@@ -597,13 +597,13 @@ mod tests {
                 place,
             }],
         };
-        let table = chna(std::slice::from_ref(&object));
+        let table = chna(std::slice::from_ref(&object), Shape::SEVEN_ONE_FOUR);
         assert_eq!(u16::from_le_bytes([table[0], table[1]]), 14);
         let thirteenth = &table[4 + 12 * 40..4 + 13 * 40];
         assert_eq!(&thirteenth[2..14], b"ATU_0000000d");
         assert_eq!(&thirteenth[14..28], b"AT_00031001_01");
         assert_eq!(&thirteenth[28..39], b"AP_00031001");
-        let xml = axml("x", &[object]);
+        let xml = axml("x", &[object], Shape::SEVEN_ONE_FOUR);
         assert!(xml.contains("audioObjectName=\"Vox L\""));
         assert!(xml.contains("audioBlockFormatID=\"AB_00031002_00000001\""));
         assert_eq!(xml.matches("<audioObject ").count(), 3, "the bed and two");

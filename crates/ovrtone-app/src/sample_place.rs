@@ -1,5 +1,5 @@
-//! What a sample dropped on the Tracks area becomes: a hit a Channel Rack channel, a loop a clip
-//! (see [`menu`]); with Alt held, the user chooses from:
+//! What a sample dropped on the Tracks area becomes: audio on the Playlist (see [`menu`]). Let go on
+//! the Playlist's edge, chosen from the Browser's menu, or with Alt held, the user chooses from:
 //!
 //! - an audio clip on the timeline, which follows the project's tempo if it is a loop;
 //! - a new instrument track that plays it from the piano roll;
@@ -22,6 +22,9 @@ pub struct SampleDrop {
     pub bar: f64,
     /// The track under it, if any.
     pub track: Option<usize>,
+    /// Ask what it becomes (let go on the Playlist's edge, or from the Browser's menu) rather than
+    /// making it audio. A `bar` below 1 means at the playhead.
+    pub ask: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,22 +103,6 @@ pub fn is_one_shot(path: &Path) -> bool {
     ovrtone_engine::AudioFile::open(path).is_ok_and(|f| f.duration_secs() <= ONE_SHOT_SECONDS)
 }
 
-/// Longer than this, a sound is a stem or a song part: always audio on the Playlist.
-const STEM_SECONDS: f64 = 15.0;
-
-/// Where a dropped sound goes without asking: a stem (over 15 s) or a loop (a BPM in its name and
-/// longer than a hit) is audio on the Playlist; anything else is a channel of the Channel Rack.
-pub fn auto_placement(path: &Path) -> Placement {
-    let seconds = ovrtone_engine::AudioFile::open(path).map_or(0.0, |f| f.duration_secs());
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let loop_tempo = crate::sample_tags::name_info(&name).0.is_some();
-    if seconds > STEM_SECONDS || (loop_tempo && seconds > ONE_SHOT_SECONDS) {
-        Placement::AudioClip
-    } else {
-        Placement::ChannelRack
-    }
-}
-
 /// A one-shot let go on the timeline: its own sampler track, with a note where it was let go, so that
 /// it sounds at once and its key can be changed. Returns the region.
 pub fn place_one_shot(p: &mut Project, path: &Path, bar: f32) -> Result<(usize, usize), String> {
@@ -152,7 +139,13 @@ pub fn place(
     choice: Placement,
     ctx: &egui::Context,
 ) -> Result<Option<(usize, usize)>, String> {
-    let bar = drop.bar as f32;
+    // From the Browser's menu: at the playhead.
+    let at = if drop.bar < 1.0 {
+        p.beats_to_bar(p.position_beats).floor() + 1.0
+    } else {
+        drop.bar
+    };
+    let bar = at as f32;
     match choice {
         Placement::OneShot => place_one_shot(p, &drop.path, bar).map(Some),
         Placement::ChannelRack => {
@@ -167,7 +160,7 @@ pub fn place(
             Ok(None)
         }
         Placement::AudioClip => {
-            crate::import::import_audio_at(p, &drop.path, ctx, drop.bar, drop.track)
+            crate::import::import_audio_at(p, &drop.path, ctx, at, drop.track)
                 .map_err(|e| format!("cannot import {}: {e}", drop.path.display()))?;
             let t = p.selected_track;
             if let Some(r) = p.tracks[t].regions.len().checked_sub(1) {
@@ -227,22 +220,22 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
             v
         }
     };
-    // As FL Studio: no question. A hit becomes a channel of the Channel Rack's pattern, on the
-    // Playlist at once and on a mixer strip of its own; a loop becomes a clip that follows the
-    // tempo. Alt held while letting go asks, with the rarer choices.
+    // Let go on the Playlist, any sound is audio there, whatever its length (a loop follows the
+    // tempo). On the Playlist's edge, from the Browser's menu, or with Alt held, it asks.
     let asking = egui::Id::unique(("sample_place_asking", drop.path.clone()));
     let asked = ctx.data(|d| d.get_temp::<bool>(asking)).unwrap_or(false);
     if !asked {
-        if ctx.input(|i| i.modifiers.alt) {
+        if drop.ask || ctx.input(|i| i.modifiers.alt) {
             ctx.data_mut(|d| d.insert_temp(asking, true));
         } else {
             s.sample_drop = None;
-            let what = auto_placement(&drop.path);
-            let one_shot = what == Placement::ChannelRack;
-            if let Err(e) = place(p, s, &drop, what, &ctx) {
+            if let Err(e) = place(p, s, &drop, Placement::AudioClip, &ctx) {
                 s.status = Some(e);
-            } else if one_shot {
-                s.status = Some(format!("{name}: a new channel in the Channel Rack (Alt-drop for other choices)"));
+            } else {
+                s.status = Some(format!(
+                    "{name}: audio on the Playlist (drop on its edge, or right-click it in the \r
+                     Browser, for other choices)"
+                ));
             }
             return;
         }
@@ -350,6 +343,7 @@ mod tests {
             at: egui::Pos2::ZERO,
             bar: 3.0,
             track,
+            ask: true,
         }
     }
 

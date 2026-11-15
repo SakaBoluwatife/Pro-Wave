@@ -375,7 +375,12 @@ impl Source {
         let probed = symphonia::default::get_probe().format(
             &hint,
             mss,
-            &FormatOptions::default(),
+            // Gapless: an MP3's encoder delay and end padding are left out, so a loop starts on
+            // the beat and repeats without a gap.
+            &FormatOptions {
+                enable_gapless: true,
+                ..FormatOptions::default()
+            },
             &MetadataOptions::default(),
         )?;
         let format = probed.format;

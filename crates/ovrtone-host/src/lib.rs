@@ -20,7 +20,7 @@ mod vst3_plugin;
 #[cfg(windows)]
 pub use crate::bridge::{
     host_request, isolation_on, load_isolated, load_plugin_safely, run_plugin_host, set_host_exe,
-    set_isolation,
+    set_isolation, start_isolated, PendingLoad,
 };
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
 pub use crate::sampler::{load_sampler, params as sampler_params, SAMPLER_BEND_SEMITONES};
@@ -270,6 +270,31 @@ pub fn load_plugin_safely(
 #[cfg(not(windows))]
 pub fn isolation_on() -> bool {
     false
+}
+
+/// Plugins run in helper processes only on Windows for now: elsewhere nothing loads this way.
+#[cfg(not(windows))]
+pub struct PendingLoad;
+
+#[cfg(not(windows))]
+impl PendingLoad {
+    pub fn waited(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    pub fn poll(&mut self) -> Option<Result<Loaded, HostError>> {
+        Some(Err(HostError("plugin processes need Windows for now".to_string())))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn start_isolated(
+    _path: &Path,
+    _id: &str,
+    _sample_rate: u32,
+    _side: bool,
+) -> Result<PendingLoad, HostError> {
+    Err(HostError("plugin processes need Windows for now".to_string()))
 }
 
 /// Where plugins of every format are installed, plus the folders `extra`, and the files there.

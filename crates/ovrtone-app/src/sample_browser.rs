@@ -1020,6 +1020,8 @@ enum RowAct {
     Add(PathBuf),
     Favorite(PathBuf),
     RemoveRoot(PathBuf),
+    /// Right-click: choose what the sound becomes, at the playhead.
+    Use(PathBuf),
 }
 
 /// How a row is drawn besides what it holds.
@@ -1134,6 +1136,14 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
             }
         }
         crate::widgets::context_menu(&resp, |ui| {
+            if crate::import::is_audio_path(&r.path) {
+                if ui.button("Use it as...").clicked() {
+                    let id = egui::Id::unique("sample_browser_use");
+                    ui.ctx().data_mut(|d| d.insert_temp(id, r.path.clone()));
+                    ui.close();
+                }
+                ui.separator();
+            }
             ui.label(egui::RichText::new("Tags, with commas between").small());
             let id = egui::Id::unique(("sample_tags_edit", r.path.display().to_string()));
             let mut text: String = ui
@@ -1173,6 +1183,10 @@ fn row(ui: &mut Ui, r: &Row, look: &RowLook) -> Option<RowAct> {
     }
     if look.parent.is_some() || name.right() > text_rect.right() {
         resp.clone().on_hover_text(r.path.display().to_string());
+    }
+    let used = egui::Id::unique("sample_browser_use");
+    if let Some(path) = resp.ctx.data_mut(|d| d.remove_temp::<PathBuf>(used)) {
+        return Some(RowAct::Use(path));
     }
     if end_resp.clicked() {
         Some(if r.location {
@@ -1224,11 +1238,12 @@ pub fn show(ui: &mut Ui, s: &mut UiState) {
     let UiState {
         samples: b,
         open_paths,
+        sample_drop,
         ..
     } = s;
     b.ensure_loaded();
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
-        content(ui, b, open_paths, &ctx);
+        content(ui, b, open_paths, sample_drop, &ctx);
     });
     // The sample being dragged follows the pointer until it is dropped.
     if let Some(drag) = egui::DragAndDrop::payload::<SampleDrag>(&ctx) {
@@ -1256,7 +1271,13 @@ fn pick_root(b: &mut SampleBrowser) {
     }
 }
 
-fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ctx: &egui::Context) {
+fn content(
+    ui: &mut Ui,
+    b: &mut SampleBrowser,
+    open_paths: &mut Vec<PathBuf>,
+    use_choice: &mut Option<crate::sample_place::SampleDrop>,
+    ctx: &egui::Context,
+) {
     // Locations.
     let mut add = false;
     ui.horizontal(|ui| {
@@ -1448,6 +1469,16 @@ fn content(ui: &mut Ui, b: &mut SampleBrowser, open_paths: &mut Vec<PathBuf>, ct
         }
         Some(RowAct::Favorite(path)) => b.toggle_favorite(&path),
         Some(RowAct::RemoveRoot(path)) => b.remove_root(&path),
+        Some(RowAct::Use(path)) => {
+            let at = ctx.input(|i| i.pointer.hover_pos()).unwrap_or_else(|| ctx.content_rect().center());
+            use_choice.replace(crate::sample_place::SampleDrop {
+                path,
+                at,
+                bar: 0.0,
+                track: None,
+                ask: true,
+            });
+        }
         None => {}
     }
 }
@@ -1834,7 +1865,7 @@ mod tests {
     fn draw<'a>(b: &'a mut SampleBrowser, open: &'a mut Vec<PathBuf>) -> impl FnMut(&mut Ui) + 'a {
         move |ui| {
             let ctx = ui.ctx().clone();
-            content(ui, b, open, &ctx);
+            content(ui, b, open, &mut None, &ctx);
         }
     }
 

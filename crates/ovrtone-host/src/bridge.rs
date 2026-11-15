@@ -515,6 +515,10 @@ struct Helper {
     notes: Arc<Mutex<HashMap<u32, Arc<Mutex<Notes>>>>>,
     watched: Mutex<Vec<Weak<Shm>>>,
     next_id: AtomicU32,
+    /// Requests answered later, by a load that does not wait (see [`PendingLoad`]).
+    waiting: Mutex<std::collections::HashSet<u32>>,
+    /// Their answers, when a request that waits read them first.
+    stray: Mutex<HashMap<u32, Vec<u8>>>,
 }
 
 impl Helper {
@@ -547,6 +551,8 @@ impl Helper {
             notes: Arc::default(),
             watched: Mutex::default(),
             next_id: AtomicU32::new(1),
+            waiting: Mutex::default(),
+            stray: Mutex::default(),
         });
         let (dead, notes) = (helper.dead.clone(), helper.notes.clone());
         std::thread::spawn(move || read_helper(&mut stdout, &tx, &notes, &dead));
@@ -558,6 +564,194 @@ impl Helper {
     fn is_dead(&self) -> bool {
         self.dead.load(Ordering::Relaxed)
     }
+
+    /// Keeps the answer to request `id` if a load that does not wait is waiting for it.
+    fn keep_stray(&self, id: u32, reply: &[u8]) {
+        let wanted = self.waiting.lock().is_ok_and(|w| w.contains(&id));
+        if let (true, Ok(mut stray)) = (wanted, self.stray.lock()) {
+            stray.insert(id, reply.to_vec());
+        }
+    }
+}
+
+/// An answer's outcome: what follows the request's id when it went well, else why not.
+fn reply_result(reply: &[u8]) -> Result<Vec<u8>, HostError> {
+    let mut r = In(reply);
+    let _ = r.u32();
+    if r.bool() == Some(true) {
+        Ok(r.0.to_vec())
+    } else {
+        Err(HostError(r.text().unwrap_or_else(|| "failed".to_string())))
+    }
+}
+
+/// A plugin loading in its helper while the program goes on (a slow plugin, or one showing a
+/// licence window, no longer freezes the window). Call [`PendingLoad::poll`] once a frame; dropping
+/// it gives the load up.
+pub struct PendingLoad {
+    helper: Arc<Helper>,
+    request: u32,
+    instance: u32,
+    notes: Arc<Mutex<Notes>>,
+    shm: Arc<Shm>,
+    id: String,
+    began: Instant,
+    done: bool,
+}
+
+impl PendingLoad {
+    /// How long it has been loading.
+    pub fn waited(&self) -> Duration {
+        self.began.elapsed()
+    }
+
+    /// The loaded plugin once its helper has answered, `None` while it is still loading.
+    pub fn poll(&mut self) -> Option<Result<Loaded, HostError>> {
+        if self.done {
+            return None;
+        }
+        let mut reply = self.helper.stray.lock().ok()?.remove(&self.request);
+        if reply.is_none() {
+            // Another request on this helper is waiting for its answer: it keeps ours for us.
+            if let Ok(replies) = self.helper.replies.try_lock() {
+                answer_sent_messages();
+                while let Ok(r) = replies.try_recv() {
+                    match In(&r).u32() {
+                        Some(of) if of == self.request => {
+                            reply = Some(r);
+                            break;
+                        }
+                        Some(of) => self.helper.keep_stray(of, &r),
+                        None => {}
+                    }
+                }
+            }
+        }
+        let outcome = match reply {
+            Some(reply) => reply_result(&reply).and_then(|body| {
+                finish_isolated(
+                    self.helper.clone(),
+                    self.instance,
+                    self.notes.clone(),
+                    self.shm.clone(),
+                    &body,
+                )
+            }),
+            None if self.helper.is_dead() => {
+                Err(HostError(format!("{}: crashed while loading", self.id)))
+            }
+            None if self.waited() >= LOAD_WAIT => {
+                Err(HostError("the plugin did not answer in time".to_string()))
+            }
+            None => return None,
+        };
+        self.done = true;
+        if let Ok(mut waiting) = self.helper.waiting.lock() {
+            waiting.remove(&self.request);
+        }
+        if outcome.is_err() {
+            if let Ok(mut all) = self.helper.notes.lock() {
+                all.remove(&self.instance);
+            }
+        }
+        Some(outcome)
+    }
+}
+
+impl Drop for PendingLoad {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        // Given up: the helper drops the instance once it has made it.
+        if let Ok(mut waiting) = self.helper.waiting.lock() {
+            waiting.remove(&self.request);
+        }
+        if let Ok(mut stray) = self.helper.stray.lock() {
+            stray.remove(&self.request);
+        }
+        self.helper.tell(&Out::new(DESTROY).u32(self.instance));
+        if let Ok(mut all) = self.helper.notes.lock() {
+            all.remove(&self.instance);
+        }
+    }
+}
+
+/// Starts loading plugin `id` of a file in its file's helper process, without waiting for it.
+pub fn start_isolated(
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+) -> Result<PendingLoad, HostError> {
+    let helper = helper_for(path)?;
+    let (instance, notes, shm, name) = prepare_isolated(&helper)?;
+    // The helper may bring a licence or activation window of the plugin to the front.
+    allow_to_front(helper.pid);
+    let request = helper.next_id.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut waiting) = helper.waiting.lock() {
+        waiting.insert(request);
+    }
+    helper.tell(&load_message(request, instance, path, id, sample_rate, side, &name));
+    Ok(PendingLoad {
+        helper,
+        request,
+        instance,
+        notes,
+        shm,
+        id: id.to_string(),
+        began: Instant::now(),
+        done: false,
+    })
+}
+
+fn allow_to_front(pid: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+    // SAFETY: only names a process; a failure leaves its windows where Windows puts them.
+    let _ = unsafe { AllowSetForegroundWindow(pid) };
+}
+
+/// The shared memory and notes of a new instance in `helper`: (instance, notes, memory, its name).
+fn prepare_isolated(
+    helper: &Helper,
+) -> Result<(u32, Arc<Mutex<Notes>>, Arc<Shm>, String), HostError> {
+    let block = ovrtone_engine::plugin_block();
+    let name = format!(
+        "OvrtoneBridge-{}-{}",
+        std::process::id(),
+        NEXT_NAME.fetch_add(1, Ordering::Relaxed)
+    );
+    let shm = Arc::new(Shm::create(&name, block)?);
+    let instance = helper.next_id.fetch_add(1, Ordering::Relaxed);
+    let notes = Arc::new(Mutex::new(Notes::default()));
+    helper
+        .notes
+        .lock()
+        .map_err(|_| HostError("the plugin's process is unusable".to_string()))?
+        .insert(instance, notes.clone());
+    Ok((instance, notes, shm, name))
+}
+
+fn load_message(
+    request: u32,
+    instance: u32,
+    path: &Path,
+    id: &str,
+    sample_rate: u32,
+    side: bool,
+    name: &str,
+) -> Out {
+    Out::new(LOAD)
+        .u32(request)
+        .u32(instance)
+        .text(&path.to_string_lossy())
+        .text(id)
+        .u32(sample_rate)
+        .bool(side)
+        .text(name)
+}
+
+impl Helper {
 
     /// A message with no answer. Lost if the helper is gone, which is seen elsewhere.
     fn tell(&self, message: &Out) {
@@ -584,8 +778,13 @@ impl Helper {
             match replies.recv_timeout(Duration::from_millis(1)) {
                 Ok(reply) => {
                     let mut r = In(&reply);
-                    // An answer that came after its request gave up is not this one's.
-                    if r.u32() != Some(id) {
+                    // An answer that came after its request gave up is not this one's; one for a
+                    // load that does not wait is kept for it.
+                    let of = r.u32();
+                    if of != Some(id) {
+                        if let Some(of) = of {
+                            self.keep_stray(of, &reply);
+                        }
                         continue;
                     }
                     return if r.bool() == Some(true) {
@@ -952,29 +1151,9 @@ pub fn load_isolated(
     side: bool,
 ) -> Result<Loaded, HostError> {
     let helper = helper_for(path)?;
-    let block = ovrtone_engine::plugin_block();
-    let name = format!(
-        "OvrtoneBridge-{}-{}",
-        std::process::id(),
-        NEXT_NAME.fetch_add(1, Ordering::Relaxed)
-    );
-    let shm = Arc::new(Shm::create(&name, block)?);
-    let instance = helper.next_id.fetch_add(1, Ordering::Relaxed);
-    let notes = Arc::new(Mutex::new(Notes::default()));
-    helper
-        .notes
-        .lock()
-        .map_err(|_| HostError("the plugin's process is unusable".to_string()))?
-        .insert(instance, notes.clone());
+    let (instance, notes, shm, name) = prepare_isolated(&helper)?;
     let reply = helper.ask(LOAD_WAIT, |rid| {
-        Out::new(LOAD)
-            .u32(rid)
-            .u32(instance)
-            .text(&path.to_string_lossy())
-            .text(id)
-            .u32(sample_rate)
-            .bool(side)
-            .text(&name)
+        load_message(rid, instance, path, id, sample_rate, side, &name)
     });
     let reply = match reply {
         Ok(reply) => reply,
@@ -988,8 +1167,20 @@ pub fn load_isolated(
             return Err(e);
         }
     };
+    finish_isolated(helper, instance, notes, shm, &reply)
+}
+
+/// Makes the two halves of a plugin its helper has loaded, from the helper's answer.
+fn finish_isolated(
+    helper: Arc<Helper>,
+    instance: u32,
+    notes: Arc<Mutex<Notes>>,
+    shm: Arc<Shm>,
+    reply: &[u8],
+) -> Result<Loaded, HostError> {
+    let block = ovrtone_engine::plugin_block();
     let malformed = || HostError("the plugin's process gave a wrong answer".to_string());
-    let mut r = In(&reply);
+    let mut r = In(reply);
     let latency = r.u32().ok_or_else(malformed)? as usize;
     let has_side = r.bool().ok_or_else(malformed)?;
     let reload_side = (

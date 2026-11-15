@@ -4,6 +4,8 @@ The owner's list for the first stable build (after 1.0 Beta 1). Nothing here is 
 
 ## 1. Safe project files
 
+**Status (2026-11-15): built.** `plugin_trust.rs`: plugins load only from the scanned list (id, then path); a plugin installed elsewhere loads from there; files in project media are refused; missing ones retry after a Rescan. Tracks and buses.
+
 A `.ovrtone` file names each plugin by file path, and Ovrtone loads that path as written (`project_io.rs` `plugin_from_doc`, then `plugin_rack.rs` `load_plugin_safely`). A project from someone else can therefore make Ovrtone load any plugin file, including one packed in the project's own media.
 
 - Load a plugin only if its file is in the user's scanned plugin list (match by id, then path). Otherwise show it as missing ("not in your plugins: install it, then Rescan") and keep its settings for when it is installed.
@@ -11,6 +13,8 @@ A `.ovrtone` file names each plugin by file path, and Ovrtone loads that path as
 - Do the same for bus plugins (`bus_plugins.rs`, `load_for_bus`).
 
 ## 2. Several inputs at once (multi-input interfaces)
+
+**Status (2026-11-15): built.** Several armed tracks already recorded their own inputs together, with per-track input meters. Added: Name Inputs in the Input slot menu (saved per device in `input-names`). Driver channel names: cpal does not give them.
 
 Today a track picks one input (`InputSource::Mono(n)` or `Stereo(n)` in `ovrtone-engine/src/capture.rs`).
 
@@ -20,6 +24,8 @@ Today a track picks one input (`InputSource::Mono(n)` or `Stereo(n)` in `ovrtone
 - Record-arm several tracks at once, with the same count-in and punch for all.
 
 ## 3. Several MIDI devices at once
+
+**Status (2026-11-15): built.** Inspector MIDI In Port and MIDI In Channel work and are saved. When an armed track listens to its own device or channel, every armed track plays and records only what it hears, each with its own recorder (`midi_routing.rs`).
 
 Today every MIDI input port is opened and their notes are merged (`midi_in.rs`), so a keyboard and a drum pad both play the same track.
 
@@ -36,6 +42,8 @@ MIDI learn exists (`midi_learn.rs`) for single controls.
 - Motorized faders follow automation.
 
 ## 5. Waves plugins: Ovrtone stops responding
+
+**Status (2026-11-15): built.** Plugins in their own process load without blocking the window (`PendingLoad` in `bridge.rs`); after 2 minutes the status line says the plugin may be waiting on its own window; removing it from the slot stops the wait; the helper may bring its windows to the front; the launch screen stops staying on top once plugins load; the plugin load screen can be clicked away after 10 seconds. Left: a Loading label with Cancel on the slot, in-process loads (they still run on the UI thread), the Lemon ideas below.
 
 Seen with Clarity Vx Pro, with "Run plugins in their own process" on: Windows says Ovrtone stopped responding. Cause found: `PluginRack::sync` (`plugin_rack.rs`) loads plugins on the UI thread, and an isolated load waits up to `LOAD_WAIT` (15 minutes, `bridge.rs`) for the helper. A slow plugin (Clarity loads an AI model) or one waiting on a hidden licence dialog freezes the window.
 
@@ -58,6 +66,8 @@ To find out: which Waves plugin, and when (scan, load, opening its window, or pl
 - If a plugin still crashes, run it in its own process automatically (Settings > Run plugins in their own process, per plugin).
 
 ## 6. Dropping samples (owner's notes, 2026-11-15)
+
+**Status (2026-11-15): built.** Audio let go on the Playlist is audio there; let go on its edge (a blue band shows it) it asks; Browser right-click has Use it as... (at the playhead); Alt still asks.
 
 Replaces the drop rule in `sample_place.rs` (hits to the Channel Rack, stems and loops to the Playlist):
 
@@ -110,6 +120,8 @@ Logic's behaviour, our own artwork.
 
 ## 12. Scale highlighting in the Piano Roll
 
+**Status (2026-11-15): partly built.** Rows follow the project key unless Scale Quantize has its own scale; root rows stronger; marks on the piano keys; Stick to Scale for new and moved notes. Left: Fold to scale, the Channel Rack's piano roll and step pitch.
+
 Today the rows of a scale are tinted only once a scale is picked for Scale Quantize (`piano_roll.rs`, `scale_root`, `MODES`).
 
 - Follows the project's key (the key picker on the control bar) by default, with its own choice of root and scale in the Piano Roll.
@@ -120,6 +132,8 @@ Today the rows of a scale are tinted only once a scale is picked for Scale Quant
 
 ## 13. MP3 quality, in and out
 
+**Status (2026-11-15): built, but the round-trip test is not written yet.** Gapless import (symphonia) and export (LAME info frame); a mix over full scale is turned down instead of clipped; above 48 kHz Ovrtone's own resampler; Quality in the Bounce window: 320, VBR V0, 256, 192, 128.
+
 Export today (`audio_encode.rs` `mp3`): 320 kbps CBR, LAME quality Best, samples hard-clamped to full scale, rates above 48 kHz resampled by LAME. Import (`ovrtone-engine/src/disk.rs`): symphonia with `FormatOptions::default()`, so gapless trimming is off.
 
 - Import gapless: turn on symphonia's gapless option so the encoder delay and end padding are trimmed. Imported MP3 loops then start on the beat and loop without a gap.
@@ -128,3 +142,64 @@ Export today (`audio_encode.rs` `mp3`): 320 kbps CBR, LAME quality Best, samples
 - Resample above 48 kHz with Ovrtone's own resampler (the one used for bounces), not LAME's.
 - A choice in the Bounce window: 320 kbps CBR (default, beat stores), VBR V0, and 128/192/256 kbps for previews.
 - Test: encode, decode, line up and compare with the WAV (level, length and start within a few samples).
+
+## 13b. Beat stores of the user's choosing
+
+**Status (2026-11-15): built.** File > Export > For Beat Store opens a window: the stores to open after the export (Trakroom to begin with), add a store by name and address, remove one. Kept in `beat-stores` in the config folder; only http and https addresses open.
+
+## 14. From other DAWs, made better
+
+None of these are stock instruments or effects. Their habits, not their look.
+
+- **Command palette** (Ctrl+K, as Reaper's actions and Ableton's search): every action, plugin, preset, track and setting in one search box, recent first, each with its key command.
+- **Modulators** (Bitwig, FL's Formula Controller): LFO, envelope, envelope follower and sidechain-to-parameter on any parameter, a hosted plugin's too. Drag from the modulator to a knob; the amount shows as a ring on the knob.
+- **Plugin racks** (Ableton's Racks, FL's Patcher): parallel branches, wet and dry per branch, 8 macros tied to Smart Controls, saved as presets.
+- **Clip FX** (Studio One's Event FX, Reaper's item FX): plugins on one region, and rendering a plugin onto a clip offline (Pro Tools' AudioSuite).
+- **CPU savers:** plugins that sleep on silence, plugins processed ahead of time on a buffer (Reaper's anticipative FX), a CPU meter per plugin.
+- **Reference A/B** (Cubase's Control Room): a reference track matched in loudness, mono and side checks, solo one band. A utility, not an effect.
+- **Arranger track** (Studio One; Logic's is greyed in Ovrtone): move or copy whole song sections, Playlist and Channel Rack patterns together.
+- **Chord track** (Studio One, Cubase): regions follow the chords; feeds the scale highlighting of section 12.
+- **Per-note chance, conditions and repeats** (Bitwig, FL, Ableton), on Channel Rack steps too.
+- **Audio to MIDI** (Ableton): drums, melody and chords, after the Stem Splitter if wanted.
+- **Scratch pads** (Studio One): try an arrangement without touching the song.
+- **Several projects open as tabs** (Reaper, Studio One), and an undo history window.
+- **Voice tag on MP3 exports** for beat stores, one click in For Beat Store.
+
+## 15. A premium feel
+
+Adds to section 10.
+
+- One set of controls (button, knob, fader, menu, field) used on every screen, and every value edited the same way: double-click to type, Alt+click to reset, Ctrl+drag for fine moves, wheel to change.
+- One font with tabular numbers on meters and the LCD (Inter, OFL), an 8 px spacing grid, one set of corner radii.
+- Motion: 100 to 150 ms transitions on hover, press and panels; eased zoom. Redraw only what changed, which also saves CPU.
+- Feedback: a ghost image while dragging, snap lines, a cursor for each tool, messages with an Undo button instead of the status line, tooltips that name the key command.
+- A start screen with recent projects and templates; hints in empty places ("Drop audio here").
+- Plugin windows: pin on top, the track name in the title, positions remembered per project.
+- A UI scale slider, an accent colour of the user's choice, colour-blind-safe track colours, sharp at every DPI.
+- The window up in under 2 seconds; big projects load over several frames with a progress panel (section 5).
+
+## 16. Closed source: what to rewrite
+
+Not legal advice; get a lawyer before a public release. Builds already given out (1.0 Beta 1) stay GPL. See section 11, item 1.
+
+### GPL code in the program: get written permission or rewrite
+
+1. **Pro Wave (Fábox, GPL-3.0).** On 2026-11-15, `git blame` gave 53,248 of 134,917 Rust lines (39%) to Fábox: about 37,000 in `ovrtone-app`, 14,000 in `ovrtone-engine`, all of `ovrtone-project` (903) and 1,000 in `xtask`. Lines changed on top of theirs still derive from them, so the real share is higher.
+   - Engine: `core.rs` (mix graph, transport), `disk.rs` (streaming), `tempo_map.rs`, `capture.rs` (recording), `flex.rs` (stretch and pitch), the `.ovrtone` format crate. `fx.rs` goes with Task 3.
+   - App, most lines first: `tracks_area`, `model`, `mixer`, `project_io`, `updater`, `pattern`, `score`, `piano_roll`, `step_editor`, `midi_fx`, `engine_sync`, `main`, `menus`, `midi_file`, `flex_edit`, `smart_tempo`, `inspector`, `automation`, `recorder`, `transport`.
+2. **Lemon Studio (ItsAlphaNeon, GPL-3.0).** `parallel.rs` (588 lines, the worker pool, copied whole), `hq_stretch.rs` (200 lines, adapted), the algorithms in `note_edit.rs` (Quick Legato, Chop, Glue and others). The Lemon ideas in section 5 are written from their behaviour, not their code.
+
+Order: ask Fábox and ItsAlphaNeon first. If not, rewrite the Lemon parts (small), then the project format, then the engine files. The rewrite is done from a written description of behaviour, not from the old code.
+
+### Libraries: keep, with conditions
+
+- **ASIO SDK:** used under its GPL-3 option today. Closed source needs Steinberg's proprietary ASIO licence agreement, signed by Steinberg.
+- **LAME** (`mp3lame-sys`, LGPL-3.0, built in): ship it as a separate, replaceable DLL.
+- **MPL-2.0** (symphonia, audio_thread_priority, smartstring): fine while their files are not changed.
+- **self_cell, r-efi:** take their MIT or Apache option.
+- **ARA (Apache-2.0), CLAP and clack, ONNX Runtime:** fine; keep the notices.
+- **To check:** the DrumSep and HTDemucs model licences, the VST3 SDK licence and Steinberg's terms for the VST logo.
+
+### Then
+
+Change `LICENSE`, every crate's `license`, `deny.toml`, the About box (`quick_dialogs.rs`), `native_menu.rs`. Closed work goes to the `private` remote only, not the public fork.

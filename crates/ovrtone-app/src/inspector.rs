@@ -898,11 +898,74 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
                 }
                 y += ROW_H;
             }
-            for (t, v) in [
-                (tr("MIDI In Port:"), tr("All")),
-                (tr("MIDI In Channel:"), tr("All")),
-                (tr("MIDI Out Channel:"), tr("All")),
-            ]
+            // Which device and channel the track listens to while armed.
+            label(&g, left, y, tr("MIDI In Port:"), true);
+            let port = p.tracks[ti]
+                .midi_in_port
+                .clone()
+                .unwrap_or_else(|| tr("All").to_string());
+            if let Some(resp) = popup(
+                ui,
+                &g,
+                Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
+                "midi_in_port",
+                &port,
+                true,
+            ) {
+                egui::Popup::menu(&resp).show(|ui| {
+                    let current = p.tracks[ti].midi_in_port.clone();
+                    if ui.selectable_label(current.is_none(), tr("All")).clicked() {
+                        p.tracks[ti].midi_in_port = None;
+                        ui.close();
+                    }
+                    let mut names = crate::midi_in::ports();
+                    // A device unplugged since keeps its place in the menu.
+                    if let Some(c) = current.clone().filter(|c| !names.contains(c)) {
+                        names.push(c);
+                    }
+                    for name in names {
+                        if ui
+                            .selectable_label(current.as_deref() == Some(&name), &name)
+                            .clicked()
+                        {
+                            p.tracks[ti].midi_in_port = Some(name);
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            y += ROW_H;
+            label(&g, left, y, tr("MIDI In Channel:"), true);
+            let channel = p.tracks[ti].midi_in_channel.min(16);
+            let shown = if channel == 0 {
+                tr("All").to_string()
+            } else {
+                channel.to_string()
+            };
+            if let Some(resp) = popup(
+                ui,
+                &g,
+                Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0)),
+                "midi_in_channel",
+                &shown,
+                true,
+            ) {
+                egui::Popup::menu(&resp).show(|ui| {
+                    for c in 0..=16u8 {
+                        let name = if c == 0 {
+                            tr("All").to_string()
+                        } else {
+                            c.to_string()
+                        };
+                        if ui.selectable_label(channel == c, name).clicked() {
+                            p.tracks[ti].midi_in_channel = c;
+                            ui.close();
+                        }
+                    }
+                });
+            }
+            y += ROW_H;
+            for (t, v) in [(tr("MIDI Out Channel:"), tr("All"))]
             .into_iter()
             .filter(|(t, _)| !(external && *t == tr("MIDI Out Channel:")))
             {

@@ -809,6 +809,8 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             vca: t.vca,
             midi_port: t.midi_port.clone(),
             midi_channel: t.midi_channel,
+            midi_in_port: t.midi_in_port.clone(),
+            midi_in_channel: t.midi_in_channel,
             input: match t.input {
                 InputSource::Mono(c) | InputSource::Stereo(c) => c,
             },
@@ -1365,6 +1367,8 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             vca: t.vca,
             midi_port: port_name(&t.midi_port),
             midi_channel: t.midi_channel.clamp(1, 16),
+            midi_in_port: port_name(&t.midi_in_port),
+            midi_in_channel: t.midi_in_channel.min(16),
             input: input_source(t.input, t.input_stereo),
             hardware_out: t.hardware_out,
             aux_bus: t.aux_bus.min(ovrtone_engine::MAX_BUSES as u16),
@@ -1849,7 +1853,7 @@ fn port_name(name: &Option<String>) -> Option<String> {
 }
 
 /// Root of all extracted project media.
-fn media_root() -> PathBuf {
+pub fn media_root() -> PathBuf {
     std::env::temp_dir().join("ovrtone-media")
 }
 

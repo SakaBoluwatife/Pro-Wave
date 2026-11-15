@@ -615,6 +615,12 @@ fn convert(
     if format == FileFormat::Wav {
         return write_converted(wav, target, depth, rate, out_rate, shape);
     }
+    // An MP3 goes no higher than 48 kHz: Ovrtone's own resampler takes it there, not the encoder's.
+    let out_rate = if format == FileFormat::Mp3 {
+        out_rate.min(48_000)
+    } else {
+        out_rate
+    };
     let stage = target.with_extension("stage.wav");
     write_converted(wav, &stage, depth, rate, out_rate, shape)?;
     let bits = usize::from(depth.bytes()) * 8;
@@ -1383,6 +1389,8 @@ pub struct BounceState {
     pub format: FileFormat,
     pub depth: BitDepth,
     pub range: RangeChoice,
+    /// How MP3 files are made.
+    pub mp3: crate::audio_encode::Mp3Quality,
     /// The file's sample rate; 0 for the engine's.
     pub out_rate: u32,
     /// Renders asked for; `App` starts them, one at a time.
@@ -1680,7 +1688,10 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut crate::UiState) {
             let format = s.bounce.format;
             if format == FileFormat::Mp3 {
                 ui.label("Quality");
-                ui.label("320 kbps");
+                for q in crate::audio_encode::Mp3Quality::ALL {
+                    ui.selectable_value(&mut s.bounce.mp3, q, q.name());
+                }
+                crate::audio_encode::set_mp3_quality(s.bounce.mp3);
                 return;
             }
             s.bounce.depth = format.depth(s.bounce.depth);
@@ -1832,6 +1843,8 @@ mod tests {
             depth: BitDepth::Float32,
             solo: None,
             after: After::Report,
+            mono: false,
+            normalize: None,
         }
     }
 

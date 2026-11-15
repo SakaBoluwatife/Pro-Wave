@@ -66,6 +66,9 @@ pub struct Recorder {
     latency_secs: f64,
     /// Keys held as the count-in runs out: a note on the downbeat is often played a little early.
     pickup: HashMap<u8, u8>,
+    /// Records on this track only (a track listening to its own MIDI device), and leaves the
+    /// selection alone. `None`: the usual record track.
+    pub only_track: Option<usize>,
 }
 
 impl Recorder {
@@ -267,7 +270,7 @@ fn is_recording_region(p: &Project, t: usize, r: usize) -> bool {
 }
 
 fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
-    let Some(t) = record_track(p) else {
+    let Some(t) = rec.only_track.or_else(|| record_track(p)) else {
         p.recording = false;
         return Outcome::NoTrack;
     };
@@ -316,6 +319,7 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         as_take: rec.as_take,
         ages: std::mem::take(&mut rec.ages),
         latency_secs: rec.latency_secs,
+        only_track: rec.only_track,
         ..Recorder::default()
     };
     let at = (p.position_beats - start).max(0.0) as f32;
@@ -332,7 +336,9 @@ fn start(rec: &mut Recorder, p: &mut Project, pedal: u8) -> Outcome {
         });
         rec.open.insert(pitch, notes.len() - 1);
     }
-    p.selected_track = t;
+    if rec.only_track.is_none() {
+        p.selected_track = t;
+    }
     Outcome::Started(t, r)
 }
 
