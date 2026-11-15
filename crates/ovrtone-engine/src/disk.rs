@@ -654,7 +654,9 @@ struct Stream {
     speed: f64,
     follows: bool,
     keep_pitch: bool,
-    /// The live time stretch of a clip that follows the tempo and keeps its pitch.
+    /// Semitones it is transposed by, live (the region's Transpose).
+    transpose: f32,
+    /// The live time stretch of a clip that follows the tempo and keeps its pitch, or is transposed.
     stretch: Option<Stretcher>,
     /// Where the clip starts in the song, and the tempo its audio was made at (following).
     start_beat: f64,
@@ -748,8 +750,10 @@ impl Stream {
 
     /// Readies the stretcher to play from output frame `self.out_frame`.
     fn start_stretch(&mut self) {
-        if !(self.follows && self.keep_pitch)
-            || (self.map.is_none() && (self.speed - 1.0).abs() < 1e-6)
+        let transposed = self.transpose.abs() > 1e-3;
+        if !transposed
+            && (!(self.follows && self.keep_pitch)
+                || (self.map.is_none() && (self.speed - 1.0).abs() < 1e-6))
         {
             self.stretch = None;
             return;
@@ -767,6 +771,7 @@ impl Stream {
                 output: Vec::new(),
             },
         };
+        s.st.set_transpose_factor_semitones(self.transpose, None);
         let (lat_in, lat_out) = (s.st.input_latency(), s.st.output_latency());
         let start = self.src_at(self.out_frame).round() as u64;
         s.in_pos = start;
@@ -982,37 +987,50 @@ impl Stream {
     }
 }
 
-/// Owns the streaming thread. Dropping it stops the thread.
+/// Owns the streaming threads. Dropping it stops them. Clips are shared out among them in turn,
+/// so many clips that are time-stretched live (which costs more than reading) do not all wait on
+/// one thread.
 pub struct DiskThread {
-    tx: mpsc::Sender<Msg>,
-    handle: Option<JoinHandle<()>>,
+    workers: Vec<(mpsc::Sender<Msg>, Option<JoinHandle<()>>, Arc<std::sync::atomic::AtomicU32>)>,
+    next: std::sync::atomic::AtomicUsize,
     tempo: SharedTempo,
-    /// How busy reading the files keeps the disk thread, in thousandths of its time (Logic's
-    /// HD meter): near 1000 the drive cannot keep up.
-    load: Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// How many streaming threads: half the cores, from 2 to 4.
+fn disk_threads() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(2, 4)
 }
 
 impl DiskThread {
     pub fn spawn() -> Self {
-        let (tx, rx) = mpsc::channel::<Msg>();
-        let load = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let load_out = load.clone();
-        let handle = std::thread::Builder::new()
-            .name("ovrtone-disk".into())
-            .spawn(move || run(rx, &load_out))
-            .map_err(|e| tracing::error!("cannot spawn disk thread: {e}"))
-            .ok();
+        let workers = (0..disk_threads())
+            .map(|k| {
+                let (tx, rx) = mpsc::channel::<Msg>();
+                let load = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let load_out = load.clone();
+                let handle = std::thread::Builder::new()
+                    .name(format!("ovrtone-disk-{k}"))
+                    .spawn(move || run(rx, &load_out))
+                    .map_err(|e| tracing::error!("cannot spawn disk thread: {e}"))
+                    .ok();
+                (tx, handle, load)
+            })
+            .collect();
         Self {
-            tx,
-            handle,
+            workers,
+            next: std::sync::atomic::AtomicUsize::new(0),
             tempo: SharedTempo::default(),
-            load,
         }
     }
 
-    /// How busy the disk thread is reading, 0..=1 (Logic's HD meter).
+    /// How busy the busiest streaming thread is, 0..=1 (Logic's HD meter).
     pub fn load(&self) -> f32 {
-        self.load.load(Ordering::Relaxed) as f32 / 1000.0
+        self.workers
+            .iter()
+            .map(|(_, _, l)| l.load(Ordering::Relaxed))
+            .max()
+            .unwrap_or(0) as f32
+            / 1000.0
     }
 
     /// The song's tempo map, for clips that follow the tempo. Set before the engine gets it.
@@ -1083,7 +1101,9 @@ impl DiskThread {
             start_beat,
             tempo: self.tempo.clone(),
         };
-        if self.tx.send(msg).is_err() {
+        // The next thread in turn.
+        let k = self.next.fetch_add(1, Ordering::Relaxed) % self.workers.len().max(1);
+        if self.workers.get(k).is_none_or(|(tx, _, _)| tx.send(msg).is_err()) {
             tracing::error!("disk thread is not running");
         }
         AudioClip::new(track, start_beat, out_len, edit, consumer, shared)
@@ -1092,9 +1112,13 @@ impl DiskThread {
 
 impl Drop for DiskThread {
     fn drop(&mut self) {
-        let _ = self.tx.send(Msg::Quit);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
+        for (tx, _, _) in &self.workers {
+            let _ = tx.send(Msg::Quit);
+        }
+        for (_, handle, _) in &mut self.workers {
+            if let Some(h) = handle.take() {
+                let _ = h.join();
+            }
         }
     }
 }
@@ -1135,6 +1159,7 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
                     speed: 1.0,
                     follows: edit.follow_bpm > 0.0,
                     keep_pitch: edit.keep_pitch,
+                    transpose: edit.transpose,
                     stretch: None,
                     start_beat,
                     follow_bpm: edit.follow_bpm,
@@ -1578,6 +1603,7 @@ mod tests {
                 speed: 1.0,
                 follows: false,
                 keep_pitch: true,
+                transpose: 0.0,
                 stretch: None,
                 start_beat: 0.0,
                 follow_bpm: 0.0,
@@ -2006,6 +2032,7 @@ mod tests {
             speed: 1.0,
             follows: false,
             keep_pitch: true,
+            transpose: 0.0,
             stretch: None,
             start_beat: 0.0,
             follow_bpm: 0.0,

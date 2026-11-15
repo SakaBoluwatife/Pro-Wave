@@ -720,6 +720,9 @@ pub struct ProjectDoc {
     pub tempo: f32,
     pub sig: (u8, u8),
     pub key: String,
+    /// Who mixed it, written into every bounce and export.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub engineer: String,
     pub position_beats: f64,
     pub cycle: bool,
     pub cycle_start: f64,
@@ -928,6 +931,7 @@ impl Default for ProjectDoc {
             tempo: 120.0,
             sig: (4, 4),
             key: "Cmaj".into(),
+            engineer: String::new(),
             position_beats: 0.0,
             cycle: false,
             cycle_start: 0.0,

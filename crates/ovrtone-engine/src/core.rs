@@ -261,6 +261,9 @@ pub struct ClipEdit {
     pub follow_bpm: f64,
     /// Following the tempo, keep the pitch (time stretch) rather than resample.
     pub keep_pitch: bool,
+    /// Semitones up or down, played live by the time stretcher (the region's Transpose). 0: as
+    /// recorded.
+    pub transpose: f32,
 }
 
 impl Default for ClipEdit {
@@ -275,6 +278,7 @@ impl Default for ClipEdit {
             length_secs: 0.0,
             follow_bpm: 0.0,
             keep_pitch: true,
+            transpose: 0.0,
         }
     }
 }
@@ -320,6 +324,7 @@ impl ClipEdit {
             } else {
                 0.0
             },
+            transpose: if self.transpose.is_finite() { self.transpose.clamp(-24.0, 24.0) } else { 0.0 },
             ..self
         }
     }
