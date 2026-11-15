@@ -107,3 +107,24 @@ Logic's behaviour, our own artwork.
 5. High-DPI scaling and windows on a second monitor.
 6. Code signing for the installer and the program.
 7. A short first-run tour, and the manual one key away.
+
+## 12. Scale highlighting in the Piano Roll
+
+Today the rows of a scale are tinted only once a scale is picked for Scale Quantize (`piano_roll.rs`, `scale_root`, `MODES`).
+
+- Follows the project's key (the key picker on the control bar) by default, with its own choice of root and scale in the Piano Roll.
+- The root note's rows marked more strongly than the other scale notes; the piano keys tinted too.
+- Fold to scale: show only the rows in the scale.
+- Stick to scale: new and moved notes land on scale notes.
+- The Channel Rack's small piano roll and the step pitch follow the same scale.
+
+## 13. MP3 quality, in and out
+
+Export today (`audio_encode.rs` `mp3`): 320 kbps CBR, LAME quality Best, samples hard-clamped to full scale, rates above 48 kHz resampled by LAME. Import (`ovrtone-engine/src/disk.rs`): symphonia with `FormatOptions::default()`, so gapless trimming is off.
+
+- Import gapless: turn on symphonia's gapless option so the encoder delay and end padding are trimmed. Imported MP3 loops then start on the beat and loop without a gap.
+- Export gapless: write the LAME/Xing info frame at the start of the file (delay and padding), so players and other DAWs trim it too. Check what `mp3lame-encoder` writes today.
+- No hard clipping: a true-peak limit (about -1 dBTP) before encoding, or a warning when the mix goes over, instead of `clamp(-1.0, 1.0)`. MP3 decoding overshoots peaks that are near full scale.
+- Resample above 48 kHz with Ovrtone's own resampler (the one used for bounces), not LAME's.
+- A choice in the Bounce window: 320 kbps CBR (default, beat stores), VBR V0, and 128/192/256 kbps for previews.
+- Test: encode, decode, line up and compare with the WAV (level, length and start within a few samples).
