@@ -1429,8 +1429,15 @@ impl BounceState {
                 self.done += 1;
                 match result {
                     Ok(file) => {
-                        if self.tag_paths.contains(&render.path) {
-                            if let Err(e) = crate::audio_tags::write(&file, &self.tags) {
+                        // The batch's own tags where asked for; the mix engineer on every file.
+                        let mut tags = if self.tag_paths.contains(&render.path) {
+                            self.tags.clone()
+                        } else {
+                            crate::audio_tags::Tags::default()
+                        };
+                        tags.engineer = p.engineer.trim().to_string();
+                        if !tags.is_empty() {
+                            if let Err(e) = crate::audio_tags::write(&file, &tags) {
                                 tracing::warn!("could not tag {}: {e}", file.display());
                             }
                         }
@@ -1618,7 +1625,7 @@ pub fn bounce_selection(p: &Project, s: &mut crate::UiState, replace: bool) {
 }
 
 /// The window. While something renders it shows how far along it is, with nothing else clickable.
-pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
+pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut crate::UiState) {
     if s.bounce.busy() {
         let (fraction, name) = s
             .bounce
@@ -1735,7 +1742,7 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
                 }
             }
         });
-        ui.collapsing("File details (title, artist…)", |ui| {
+        ui.collapsing("File details (title, artist, mix engineer…)", |ui| {
             egui::Grid::new(egui::Id::unique("bounce_tags")).num_columns(2).show(ui, |ui| {
                 let t = &mut s.bounce.tags;
                 for (label, field) in [
@@ -1748,6 +1755,10 @@ pub fn show(ctx: &egui::Context, p: &Project, s: &mut crate::UiState) {
                     ui.add(egui::TextEdit::singleline(field).desired_width(220.0));
                     ui.end_row();
                 }
+                // Kept in the project, so every bounce and export of this mix carries it.
+                ui.label("Mix engineer");
+                ui.add(egui::TextEdit::singleline(&mut p.engineer).desired_width(220.0).hint_text("Who mixed it"));
+                ui.end_row();
             });
         });
         if s.bounce.depth == BitDepth::Int16 && s.bounce.format != FileFormat::Mp3 {

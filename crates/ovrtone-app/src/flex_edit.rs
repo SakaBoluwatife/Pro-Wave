@@ -239,6 +239,11 @@ pub fn follow_source_tempo(p: &mut Project, t: usize, r: usize, bpm: f64) {
         return;
     };
     a.follow_bpm = Some(bpm);
+    // The engine plays it at the new speed only once it rebuilds the song.
+    p.song_rev += 1;
+    let Some(a) = p.tracks[t].regions[r].audio.as_ref() else {
+        return;
+    };
     let duration = a
         .flex
         .as_ref()
@@ -597,41 +602,6 @@ pub fn mode_label(mode: FlexMode) -> &'static str {
     }
 }
 
-/// Transposes audio region `r` of track `t` by `semitones`, its length kept (the Region
-/// Inspector's Transpose for audio): a pitch move over the whole recording, beside any note moves.
-pub fn set_audio_transpose(p: &mut Project, t: usize, r: usize, semitones: i8) {
-    if audio_of(p, t, r).is_none() {
-        return;
-    }
-    if audio_of(p, t, r).is_some_and(|a| a.flex.is_none()) {
-        set_mode(p, t, r, FlexMode::Polyphonic);
-    }
-    let Some(f) = p
-        .tracks
-        .get_mut(t)
-        .and_then(|t| t.regions.get_mut(r))
-        .and_then(|r| r.audio.as_mut())
-        .and_then(|a| a.flex.as_mut())
-    else {
-        return;
-    };
-    let length = f.original.duration_secs();
-    let whole = |s: &PitchShift| s.start <= 1e-6 && s.end >= length - 1e-3;
-    f.pitch.retain(|s| !whole(s));
-    if semitones != 0 {
-        f.pitch.insert(
-            0,
-            PitchShift {
-                start: 0.0,
-                end: length,
-                semitones: f32::from(semitones),
-                ..Default::default()
-            },
-        );
-    }
-    p.song_rev += 1;
-}
-
 /// Sets the Flex mode of an audio region (turning Flex on for it).
 pub fn set_mode(p: &mut Project, t: usize, r: usize, mode: FlexMode) {
     let Some(a) = p
@@ -646,6 +616,7 @@ pub fn set_mode(p: &mut Project, t: usize, r: usize, mode: FlexMode) {
         Some(f) => f.mode = mode,
         None => a.flex = Some(FlexEdit::new(a.file.clone(), mode)),
     }
+    p.song_rev += 1;
 }
 
 /// Removes the Flex edits of a region: it plays its recording again.
@@ -657,6 +628,7 @@ pub fn remove(p: &mut Project, t: usize, r: usize, ctx: &egui::Context) {
         .and_then(|r| r.audio.as_mut())
     {
         a.follow_bpm = None;
+        p.song_rev += 1;
     }
     let Some(a) = p
         .tracks

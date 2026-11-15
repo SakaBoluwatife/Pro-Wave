@@ -58,12 +58,15 @@ pub fn start(p: &Project, s: &mut UiState) {
     let mut renders = vec![whole(FileFormat::Wav), whole(FileFormat::Mp3)];
     renders.extend(bounce::stems(p, &stems, FileFormat::Wav, BitDepth::Int24, (0.0, end)));
     let seconds = p.tempo_map().seconds_at(end);
-    let info = format!(
+    let mut info = format!(
         "Title: {}\r\nBPM: {bpm}\r\nKey: {key}\r\nLength: {}:{:02}\r\n",
         p.name,
         (seconds / 60.0) as u32,
         (seconds % 60.0) as u32,
     );
+    if !p.engineer.trim().is_empty() {
+        info.push_str(&format!("Mixed by: {}\r\n", p.engineer.trim()));
+    }
     s.bounce.enqueue(renders);
     s.beat_store = Some(Pending { folder, stems, base, info });
     s.status = Some("Exporting for your beat store: WAV, MP3 and stems".to_string());

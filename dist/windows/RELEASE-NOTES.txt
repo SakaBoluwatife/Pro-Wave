@@ -21,6 +21,14 @@ New in 1.0 Beta 1
 - Panner: the view from above follows the elevation, and values show in whole degrees.
 - Long track and sample names are shortened to fit; Sends on Faders no longer overlaps.
 - Settings and About show who this copy is licensed to and its licence ID.
+- Dropping a sample no longer asks what to do: a hit becomes a new channel in the Channel Rack,
+  on the Playlist at once and on its own mixer strip; a stem (over 15 seconds) or a loop with a
+  BPM in its name lands on the Playlist as audio. Hold Alt while dropping for the other choices.
+- Auto Place is on by default in the Channel Rack.
+- Meters are smooth bars with Logic-style colours, in the mixer and the track headers.
+- Mix engineer (File details in the bounce window) is kept in the project and written into every
+  bounce and export.
+- Fit to Tempo regions follow tempo changes, and Transpose on audio regions is heard at once.
 
 New in 0.4.0
 ------------

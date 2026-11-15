@@ -898,6 +898,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             })
             .collect(),
         key: p.key.to_string(),
+        engineer: p.engineer.clone(),
         position_beats: p.position_beats,
         cycle: p.cycle,
         cycle_start: p.cycle_start,
@@ -1469,6 +1470,7 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .collect();
     p.tidy_signatures();
     p.key = intern(&doc.key);
+    p.engineer = doc.engineer.trim().chars().take(120).collect();
     p.position_beats = doc.position_beats.max(0.0);
     p.patterns = doc
         .song_patterns

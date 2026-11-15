@@ -9,11 +9,13 @@ pub struct Tags {
     pub artist: String,
     pub album: String,
     pub comment: String,
+    /// Who mixed it.
+    pub engineer: String,
 }
 
 impl Tags {
     pub fn is_empty(&self) -> bool {
-        [&self.title, &self.artist, &self.album, &self.comment]
+        [&self.title, &self.artist, &self.album, &self.comment, &self.engineer]
             .iter()
             .all(|s| s.trim().is_empty())
     }
@@ -42,12 +44,13 @@ pub fn write(path: &Path, tags: &Tags) -> Result<(), String> {
     std::fs::rename(&part, path).map_err(|e| e.to_string())
 }
 
-fn fields(tags: &Tags) -> [(&'static str, &str); 4] {
+fn fields(tags: &Tags) -> [(&'static str, &str); 5] {
     [
         ("title", tags.title.trim()),
         ("artist", tags.artist.trim()),
         ("album", tags.album.trim()),
         ("comment", tags.comment.trim()),
+        ("engineer", tags.engineer.trim()),
     ]
 }
 
@@ -65,6 +68,7 @@ fn wav(data: &mut Vec<u8>, tags: &Tags) -> Result<(), String> {
             "title" => b"INAM",
             "artist" => b"IART",
             "album" => b"IPRD",
+            "engineer" => b"IENG",
             _ => b"ICMT",
         };
         let mut text = value.as_bytes().to_vec();
@@ -114,6 +118,12 @@ fn aiff(data: &mut Vec<u8>, tags: &Tags) -> Result<(), String> {
             anno.push_str(". ");
         }
         anno.push_str(tags.comment.trim());
+    }
+    if !tags.engineer.trim().is_empty() {
+        if !anno.is_empty() {
+            anno.push_str(". ");
+        }
+        anno.push_str(&format!("Mixed by {}", tags.engineer.trim()));
     }
     add(b"ANNO", &anno);
     let form = (data.len() - 8) as u32;
@@ -200,6 +210,22 @@ fn mp3(data: Vec<u8>, tags: &Tags) -> Vec<u8> {
     text_frame(b"TIT2", tags.title.trim());
     text_frame(b"TPE1", tags.artist.trim());
     text_frame(b"TALB", tags.album.trim());
+    let engineer = tags.engineer.trim();
+    if !engineer.is_empty() {
+        // TXXX: a description, then the value, each UTF-16 with its byte order mark.
+        let mut body = vec![1u8, 0xff, 0xfe];
+        for u in "ENGINEER".encode_utf16() {
+            body.extend_from_slice(&u.to_le_bytes());
+        }
+        body.extend_from_slice(&[0, 0, 0xff, 0xfe]);
+        for u in engineer.encode_utf16() {
+            body.extend_from_slice(&u.to_le_bytes());
+        }
+        frames.extend_from_slice(b"TXXX");
+        frames.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        frames.extend_from_slice(&[0, 0]);
+        frames.extend_from_slice(&body);
+    }
     let comment = tags.comment.trim();
     if !comment.is_empty() {
         let mut body = vec![1u8, b'e', b'n', b'g', 0xff, 0xfe, 0, 0, 0xff, 0xfe];

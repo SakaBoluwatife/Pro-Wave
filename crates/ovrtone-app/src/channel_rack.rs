@@ -31,9 +31,9 @@ pub struct RackView {
     /// The region selected in the Tracks area when last seen, so selecting a pattern clip
     /// there shows its pattern here.
     seen_selection: Option<(usize, usize)>,
-    /// A channel goes on the Playlist as soon as it has steps (off by default: make the
-    /// patterns, then Dump to Playlist, as in FL Studio).
-    pub auto_place: bool,
+    /// Auto Place off: channels stay off the Playlist until Dump to Playlist. Auto Place is on
+    /// by default, so a channel shows up on the Playlist as soon as it has steps.
+    pub manual_place: bool,
 }
 
 impl RackView {
@@ -380,7 +380,7 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
         if changed {
             sp::push(p, id);
             // With Auto Place, a channel given its first steps shows up on the Playlist at once.
-            if s.rack.auto_place {
+            if !s.rack.manual_place {
                 let bar = p.beats_to_bar(p.position_beats).floor() as f32 + 1.0;
                 sp::fill_placements(p, id, bar, None);
             }
@@ -501,8 +501,14 @@ fn pattern_bar(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                 format!("{placed} patterns on the Playlist, each channel on its own track")
             });
         }
-        ui.checkbox(&mut s.rack.auto_place, "Auto Place")
-            .on_hover_text("On: a channel shows up on the Playlist as soon as it has steps. Off: make your patterns first, then Dump to Playlist");
+        let mut auto = !s.rack.manual_place;
+        if ui
+            .checkbox(&mut auto, "Auto Place")
+            .on_hover_text("On: a channel shows up on the Playlist as soon as it has steps. Off: make your patterns first, then Dump to Playlist")
+            .changed()
+        {
+            s.rack.manual_place = !auto;
+        }
         if button(ui, Icon::Copy, "Clone this pattern").clicked() {
             if let Some(new) = sp::clone_pattern(p, current) {
                 s.rack.current = new;

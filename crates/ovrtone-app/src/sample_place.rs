@@ -1,4 +1,5 @@
-//! What a sample dropped on the Tracks area becomes: the user chooses, as the sample is let go.
+//! What a sample dropped on the Tracks area becomes: a hit a Channel Rack channel, a loop a clip
+//! (see [`menu`]); with Alt held, the user chooses from:
 //!
 //! - an audio clip on the timeline, which follows the project's tempo if it is a loop;
 //! - a new instrument track that plays it from the piano roll;
@@ -97,6 +98,22 @@ const ONE_SHOT_SECONDS: f64 = 2.0;
 /// Whether a file is a one-shot, by its length.
 pub fn is_one_shot(path: &Path) -> bool {
     ovrtone_engine::AudioFile::open(path).is_ok_and(|f| f.duration_secs() <= ONE_SHOT_SECONDS)
+}
+
+/// Longer than this, a sound is a stem or a song part: always audio on the Playlist.
+const STEM_SECONDS: f64 = 15.0;
+
+/// Where a dropped sound goes without asking: a stem (over 15 s) or a loop (a BPM in its name and
+/// longer than a hit) is audio on the Playlist; anything else is a channel of the Channel Rack.
+pub fn auto_placement(path: &Path) -> Placement {
+    let seconds = ovrtone_engine::AudioFile::open(path).map_or(0.0, |f| f.duration_secs());
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let loop_tempo = crate::sample_tags::name_info(&name).0.is_some();
+    if seconds > STEM_SECONDS || (loop_tempo && seconds > ONE_SHOT_SECONDS) {
+        Placement::AudioClip
+    } else {
+        Placement::ChannelRack
+    }
 }
 
 /// A one-shot let go on the timeline: its own sampler track, with a note where it was let go, so that
@@ -210,6 +227,26 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
             v
         }
     };
+    // As FL Studio: no question. A hit becomes a channel of the Channel Rack's pattern, on the
+    // Playlist at once and on a mixer strip of its own; a loop becomes a clip that follows the
+    // tempo. Alt held while letting go asks, with the rarer choices.
+    let asking = egui::Id::unique(("sample_place_asking", drop.path.clone()));
+    let asked = ctx.data(|d| d.get_temp::<bool>(asking)).unwrap_or(false);
+    if !asked {
+        if ctx.input(|i| i.modifiers.alt) {
+            ctx.data_mut(|d| d.insert_temp(asking, true));
+        } else {
+            s.sample_drop = None;
+            let what = auto_placement(&drop.path);
+            let one_shot = what == Placement::ChannelRack;
+            if let Err(e) = place(p, s, &drop, what, &ctx) {
+                s.status = Some(e);
+            } else if one_shot {
+                s.status = Some(format!("{name}: a new channel in the Channel Rack (Alt-drop for other choices)"));
+            }
+            return;
+        }
+    }
     let mut choice = None;
     let area = egui::Area::new(egui::Id::unique("sample_place_menu"))
         .order(egui::Order::Foreground)
@@ -250,6 +287,7 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
         });
     if let Some(what) = choice {
         s.sample_drop = None;
+        ctx.data_mut(|d| d.remove::<bool>(asking));
         match place(p, s, &drop, what, &ctx) {
             Ok(Some(region)) => {
                 s.tracks.selected = Some(region);
@@ -261,6 +299,7 @@ pub fn menu(ui: &egui::Ui, p: &mut Project, s: &mut UiState) {
         }
     } else if dismissed {
         s.sample_drop = None;
+        ctx.data_mut(|d| d.remove::<bool>(asking));
     }
 }
 

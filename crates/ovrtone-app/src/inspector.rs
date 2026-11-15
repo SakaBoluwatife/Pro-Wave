@@ -296,7 +296,18 @@ fn drag_value(
             return Some((value + steps).clamp(range.0, range.1));
         }
     }
-    None
+    // A click opens a box to type the value in; dragging up or down still moves it.
+    let resp = resp.on_hover_text("Drag up or down, or click to type a value; double-click resets it");
+    let mut typed = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        let mut v = value;
+        let field = ui.add(egui::DragValue::new(&mut v).range(range.0..=range.1));
+        field.request_focus();
+        if field.changed() {
+            typed = Some(v);
+        }
+    });
+    typed
 }
 
 fn signed(v: i32) -> String {
@@ -476,7 +487,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         y += ROW_H;
         label(&g, left, y, tr("Q-Swing:"), false);
         y += ROW_H;
-        // MIDI regions play their notes higher or lower; audio regions are pitch-shifted (Flex).
+        // MIDI regions play their notes higher or lower; audio regions are pitch-shifted live.
         label(&g, left, y, tr("Transpose:"), has);
         let r = Rect::from_min_size(pos2(vx, y + 2.0), vec2(vw, ROW_H - 4.0));
         if let Some(v) = drag_value(
@@ -490,10 +501,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             signed(params.transpose as i32),
             has,
         ) {
+            // Audio regions play it live, through the engine's stretcher.
             params.transpose = v.clamp(-24, 24) as i8;
-            if let (true, Some((t, r))) = (is_audio, sel) {
-                crate::flex_edit::set_audio_transpose(p, t, r, params.transpose);
-            }
         }
         y += ROW_H;
         label(&g, left, y, tr("Velocity:"), midi);

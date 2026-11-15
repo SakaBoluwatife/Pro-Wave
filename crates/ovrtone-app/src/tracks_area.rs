@@ -3963,9 +3963,9 @@ fn header(
         t.volume_db = 0.0;
     }
     g.rect_filled(sl, SLIDER_H / 2.0, crate::theme::grey_rgb(0x1e, 0x1d, 0x1d));
-    // Level meter inside the pill: L over R on the slider's own scale, as LED segments that run
-    // from green through amber (from -6 dB) to red (above 0 dB), each in a faint groove, with a
-    // peak mark that holds a moment and falls back.
+    // Level meter inside the pill: L over R on the slider's own scale, a smooth bar from green
+    // through amber (from -6 dB) to red (above 0 dB) in a faint groove, with a peak mark that holds
+    // a moment and falls back.
     let silent = t.mute || silenced;
     let now = ui.input(|inp| inp.time);
     for (k, peak) in [peaks.0, peaks.1].into_iter().enumerate() {
@@ -3980,15 +3980,15 @@ fn header(
             Color32::from_white_alpha(10),
         );
         if db > -60.0 {
-            let end = x_at(db.min(6.0));
-            let mut x = x0;
-            while x < end {
-                let seg_end = (x + 2.0).min(end);
-                let at_db = slider_to_db(((x - x0) / (x1 - x0)).clamp(0.0, 1.0));
-                let color = if silent { crate::theme::gray(0x3c) } else { crate::mixer::meter_colour(at_db) };
-                g.rect_filled(Rect::from_min_max(pos2(x, y), pos2(seg_end, y + 2.5)), 0.5, color);
-                x += 3.0;
-            }
+            // One smooth bar with Logic's gradient, as the mixer's meters.
+            crate::mixer::gradient_meter(
+                &g,
+                Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.5)),
+                false,
+                &|d: f32| db_to_slider(d.min(6.0)),
+                db,
+                silent,
+            );
         }
         // The peak: holds 1.2 s, then falls 20 dB a second.
         let key = egui::Id::unique(("header_peak", i, k));

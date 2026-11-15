@@ -470,6 +470,69 @@ pub(crate) fn meter_colour(db: f32) -> Color32 {
     }
 }
 
+/// A level meter bar as Logic draws it: one smooth bar whose colour runs from green through
+/// yellow (around -6 dB) and orange to red at full scale, with no segments. `bar` is the whole
+/// well; `to_frac` places a level in dB along it (0 at the bottom or left, 1 at the top or right).
+pub(crate) fn gradient_meter(
+    g: &Painter,
+    bar: Rect,
+    vertical: bool,
+    to_frac: &dyn Fn(f32) -> f32,
+    level_db: f32,
+    dim: bool,
+) {
+    let f = to_frac(level_db.min(12.0)).clamp(0.0, 1.0);
+    if f <= 0.0 {
+        return;
+    }
+    const STOPS: [(f32, [u8; 3]); 6] = [
+        (-60.0, [0x1f, 0x9a, 0x38]),
+        (-18.0, [0x36, 0xc4, 0x40]),
+        (-6.0, [0xe2, 0xcc, 0x2c]),
+        (-2.0, [0xf0, 0x8c, 0x26]),
+        (0.0, [0xe8, 0x3a, 0x2c]),
+        (12.0, [0xe8, 0x3a, 0x2c]),
+    ];
+    let colour = |rgb: [u8; 3]| {
+        let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        if dim {
+            meter_off_col()
+        } else {
+            c
+        }
+    };
+    // A point `t` (0..1) of the way along the bar, on the side `side` (0 or 1) across it.
+    let at = |t: f32, side: f32| {
+        if vertical {
+            pos2(bar.left() + side * bar.width(), bar.bottom() - t * bar.height())
+        } else {
+            pos2(bar.left() + t * bar.width(), bar.top() + side * bar.height())
+        }
+    };
+    let mut mesh = egui::Mesh::default();
+    for pair in STOPS.windows(2) {
+        let ((d0, c0), (d1, c1)) = (pair[0], pair[1]);
+        let (f0, f1) = (to_frac(d0).max(0.0), to_frac(d1));
+        if f0 >= f {
+            break;
+        }
+        if f1 <= f0 {
+            continue;
+        }
+        let end = f1.min(f);
+        let (a, b) = (colour(c0), colour(c1));
+        let b = if end < f1 { a.lerp_to_gamma(b, (end - f0) / (f1 - f0)) } else { b };
+        let k = mesh.vertices.len() as u32;
+        mesh.colored_vertex(at(f0, 0.0), a);
+        mesh.colored_vertex(at(f0, 1.0), a);
+        mesh.colored_vertex(at(end, 1.0), b);
+        mesh.colored_vertex(at(end, 0.0), b);
+        mesh.add_triangle(k, k + 1, k + 2);
+        mesh.add_triangle(k, k + 2, k + 3);
+    }
+    g.add(egui::Shape::mesh(mesh));
+}
+
 /// Where the clip light of a meter goes, over the well that holds its bars.
 fn clip_light_rect(housing: Rect) -> Rect {
     Rect::from_min_max(
@@ -581,38 +644,7 @@ fn fader_and_meter(
         let x0 = meter_left + i as f32 * (bar_w + 1.0);
         let bar = Rect::from_min_max(pos2(x0, top), pos2(x0 + bar_w, bottom));
         g.rect_filled(bar, 0.5, crate::theme::gray(0x04));
-        let f = db_to_frac(lvl);
-        if f > 0.0 {
-            let bands = [(-120.0f32, -6.0f32), (-6.0, 0.0), (0.0, 12.0)];
-            for (lo, hi) in bands {
-                let (fa, fb) = (db_to_frac(lo), db_to_frac(hi).min(f));
-                if fb > fa {
-                    let seg =
-                        Rect::from_min_max(pos2(bar.left(), y_of(fb)), pos2(bar.right(), y_of(fa)));
-                    let col = if inactive {
-                        meter_off_col()
-                    } else {
-                        meter_colour((lo + hi) * 0.5)
-                    };
-                    g.rect_filled(seg, 0.0, col);
-                    // Lit left edge, like the LED column in Logic.
-                    g.rect_filled(
-                        Rect::from_min_max(seg.min, pos2(seg.left() + bar_w * 0.4, seg.bottom())),
-                        0.0,
-                        col.lerp_to_gamma(Color32::WHITE, 0.28),
-                    );
-                }
-            }
-            // Thin dark gaps every few pixels make the bar look segmented.
-            let mut y = bottom - 2.0;
-            while y > y_of(f) {
-                g.line_segment(
-                    [pos2(bar.left(), y), pos2(bar.right(), y)],
-                    Stroke::new(0.8, Color32::from_black_alpha(110)),
-                );
-                y -= 2.5;
-            }
-        }
+        gradient_meter(g, bar, true, &db_to_frac, lvl, inactive);
         if hd > -60.0 {
             let y = y_of(db_to_frac(hd));
             g.line_segment(

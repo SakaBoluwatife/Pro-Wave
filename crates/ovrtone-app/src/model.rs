@@ -275,6 +275,8 @@ impl RegionParams {
             reverse: self.reverse,
             source_start_secs: f64::from(self.source_start),
             length_secs: f64::from(self.source_len),
+            // Audio: played transposed, live. (MIDI regions transpose their notes.)
+            transpose: f32::from(self.transpose),
             ..Default::default()
         }
     }
@@ -1211,6 +1213,8 @@ pub struct Project {
     /// MIDI input port (by name) the transport chases MIDI Time Code from.
     pub mtc_in: Option<String>,
     pub key: &'static str,
+    /// Who mixed it (the bounce window's Mix engineer), written into every bounce and export.
+    pub engineer: String,
     pub tracks: Vec<Track>,
     pub playing: bool,
     pub recording: bool,
@@ -1558,6 +1562,7 @@ impl Project {
             snap_zero: false,
             sig: (4, 4),
             key: "Cmaj",
+            engineer: String::new(),
             tracks,
             playing: false,
             recording: false,
