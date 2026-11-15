@@ -69,3 +69,41 @@ Replaces the drop rule in `sample_place.rs` (hits to the Channel Rack, stems and
 
 - From now on, changes ship as an update patch, not a full installer: a small Inno Setup installer with the same AppId that replaces only what changed (usually `ovrtone.exe` and the docs) in an existing install, and refuses to run where Ovrtone is not installed.
 - The full installer (with the Stem Splitter files and the VC++ runtime) is made once, for the final build.
+
+## 8. Capture Recording for audio, longer and wider
+
+Capture Recording (Shift+R) already works for audio: the last 60 seconds of the inputs are kept in memory (`ovrtone-engine/src/capture.rs`, `HISTORY_SECONDS`), and the last playback is cut out onto the armed or monitoring tracks (`audio_rec.rs` `capture_played`).
+
+- A setting for how far back: 1, 5 or 10 minutes, kept in a temporary file on disk rather than in memory (about 10 MB a minute per stereo input).
+- Capture what was played while stopped, placed at the playhead.
+- Capture from any input, not only armed tracks.
+
+## 9. "Coming from" another DAW (owner's idea, 2026-11-15)
+
+Not a copy of another DAW's look (their artwork and trade dress stay theirs), but its habits:
+
+- A first-launch choice, "I'm coming from: Logic, FL Studio, Ableton Live, Pro Tools", also in Settings. It sets the key commands, the starting layout and a few mouse habits.
+- Key command sets: Logic, FL Studio and Pro Tools exist (`key_commands.rs` `KeyPreset`). Add Ableton Live.
+- Layouts from screensets (`screensets.rs`): FL (Channel Rack beside the Playlist), Ableton (a clip launcher grid and the device chain at the bottom), Pro Tools (Edit and Mix windows, the Smart Tool, Shuffle, Slip, Spot and Grid edit modes, Tab to transient).
+- An Ableton-style clip launcher (Session view) is a feature of its own, as Logic's Live Loops: plan it on its own if wanted.
+- Tooltips can name the other DAW's word for a thing (Insert = Mixer slot, Bus = Return track).
+
+## 10. Audio and comping that look and feel like Logic
+
+Logic's behaviour, our own artwork.
+
+- Waveforms: sharp at every zoom, filled in the region's colour on a darker body, a centre line, clipped peaks marked red, a waveform zoom that changes only the view.
+- Regions: a name strip, fades drawn as curves with corner handles on hover, the gain line on the region, loop repeats as ghosted copies, a clear outline when selected.
+- Take folders: closed shows the comp and the take number; open shows a lane per take, the parts in use lit and the rest greyed; swiping paints smoothly and shows the crossfade at each join; take names and colours; Flatten and New Comp. Overlapping crossfades at comp joins (feature map, section 0).
+- Flex: transient markers on the waveform, smooth marker dragging.
+- Feel: eased zoom and scroll, a smooth playhead, hover highlights, one set of corner radii and spacing, and the ~300 one-off colours moved into `theme.rs`.
+
+## 11. Also to account for
+
+1. Licensing before a public release: Ovrtone is a fork of GPL Pro Wave. Publish the source, get the authors' permission, or rewrite their parts (see the licensing note in memory).
+2. Session exchange: AAF and OMF import, and the open DAWproject format.
+3. The audio interface unplugged or asleep: pause cleanly and come back when it returns.
+4. Old projects keep opening: a set of saved test projects opened on every build.
+5. High-DPI scaling and windows on a second monitor.
+6. Code signing for the installer and the program.
+7. A short first-run tour, and the manual one key away.
