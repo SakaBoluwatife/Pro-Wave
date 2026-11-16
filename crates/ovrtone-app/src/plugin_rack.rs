@@ -732,7 +732,16 @@ impl Rack {
     ) -> Result<(), String> {
         self.owner = owner;
         let Some(id) = self.live.get(&uid).map(|l| l.id.clone()) else {
-            return Err(format!("{title} is not running"));
+            // Still loading (Waves and other big plugins take seconds): its window opens by itself
+            // when it is ready, rather than the click being lost.
+            if !self.reopen.contains(&uid) {
+                self.reopen.push(uid);
+            }
+            return Err(if self.pending.contains_key(&uid) {
+                format!("{title} is still loading: its window opens when it is ready")
+            } else {
+                format!("{title} is not loaded yet: its window opens when it is")
+            });
         };
         let at = self.positions().get(&id).copied();
         self.touched = true;

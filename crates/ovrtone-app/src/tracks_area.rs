@@ -4997,16 +4997,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     Rect::from_center_size(pos2(rr.center().x, rr.top() + 8.0), vec2(58.0, 14.0));
                 let h = ui
                     .interact(handle, id(("clip_gain", ti, ri)), Sense::click_and_drag())
-                    .on_hover_text("Clip gain: drag up or down. Double-click for 0 dB.");
+                    .on_hover_text("Clip gain: drag up or down (Shift for fine), wheel to nudge, Alt-click or double-click for 0 dB.");
                 let gain = &mut p.tracks[ti].regions[ri].params.gain_db;
-                if h.dragged() {
-                    let by = -h.drag_delta().y / GAIN_DRAG_PX_PER_DB;
-                    *gain = (*gain + by)
-                        .clamp(crate::model::MIN_REGION_GAIN, crate::model::MAX_REGION_GAIN);
-                    moved = true;
-                }
-                if h.double_clicked() {
-                    *gain = 0.0;
+                if let Some(to) =
+                    crate::widgets::value_gesture(ui, &h, *gain, 0.0, 1.0 / GAIN_DRAG_PX_PER_DB, 0.5)
+                {
+                    *gain = to.clamp(crate::model::MIN_REGION_GAIN, crate::model::MAX_REGION_GAIN);
                     moved = true;
                 }
                 if resp.hovered() || h.hovered() || h.dragged() {

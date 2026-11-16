@@ -225,7 +225,7 @@ pub(crate) fn reveal_in_file_manager(path: &Path) -> std::io::Result<()> {
 fn dialog() -> FileDialog {
     FileDialog::new()
         .add_filter(tr("Ovrtone Project"), &ovrtone_project::OPEN_EXTENSIONS)
-        .add_filter("Other DAW Sessions (DAWproject, REAPER, Ableton Live, Ardour)", &["dawproject", "rpp", "als", "ardour"])
+        .add_filter("Other DAW Sessions (DAWproject, REAPER, Ableton Live, Ardour, AAF)", &["dawproject", "rpp", "als", "ardour", "aaf"])
         .add_filter("Logic Pro project (pick a file inside the .logicx folder)", &["plist", "logicx"])
         .add_filter("Pro Tools Session Info as Text", &["txt"])
 }

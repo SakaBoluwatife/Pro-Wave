@@ -149,8 +149,19 @@ Filename: "{app}\{#AppExe}"; Description: "Start {#AppName} now"; Flags: nowait 
 [Code]
 // A page of its own, as FL Studio's installer has for plugins: a folder of the user's plugins for
 // Ovrtone to look in, besides the usual VST3 and CLAP folders it always scans.
+// A plain text box with a Browse button, not Inno's folder page: that page refuses an empty box,
+// and this folder is optional.
 var
-  PluginPage: TInputDirWizardPage;
+  PluginPage: TInputQueryWizardPage;
+
+procedure BrowsePluginFolder(Sender: TObject);
+var
+  Dir: String;
+begin
+  Dir := Trim(PluginPage.Values[0]);
+  if BrowseForFolder('Choose the folder your plugins are in:', Dir, False) then
+    PluginPage.Values[0] := Dir;
+end;
 
 // A licence ID such as OVR-7K2M-QX9D-4HTB, from letters and digits that cannot be misread.
 var
@@ -176,16 +187,45 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  Browse: TNewButton;
 begin
-  PluginPage := CreateInputDirPage(wpSelectTasks,
+  PluginPage := CreateInputQueryPage(wpSelectTasks,
     'Your plugins',
     'Where are your VST3 and CLAP plugins?',
     'Ovrtone always looks in the usual folders (Common Files\VST3 and Common Files\CLAP). ' +
     'If you keep plugins somewhere else too, choose that folder here; you can add more in Ovrtone ' +
-    'later (the Plugins list''s folder button). Leave it empty if you do not need one.',
-    False, '');
-  PluginPage.Add('Another plugin folder (optional):');
+    'later (the Plugins list''s folder button). Leave it empty if you do not need one.');
+  PluginPage.Add('Another plugin folder (optional):', False);
   PluginPage.Values[0] := '';
+  // The box makes room for a Browse button at its right, as Inno's own folder pages have.
+  PluginPage.Edits[0].Width := PluginPage.Edits[0].Width - ScaleX(85);
+  Browse := TNewButton.Create(PluginPage);
+  Browse.Parent := PluginPage.Surface;
+  Browse.Caption := 'Browse...';
+  Browse.Left := PluginPage.Edits[0].Left + PluginPage.Edits[0].Width + ScaleX(10);
+  Browse.Top := PluginPage.Edits[0].Top - ScaleY(1);
+  Browse.Width := ScaleX(75);
+  Browse.Height := ScaleY(23);
+  Browse.OnClick := @BrowsePluginFolder;
+end;
+
+// Empty is fine; a folder typed in must be there.
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Folder: String;
+begin
+  Result := True;
+  if CurPageID = PluginPage.ID then
+  begin
+    Folder := Trim(PluginPage.Values[0]);
+    if (Folder <> '') and not DirExists(Folder) then
+    begin
+      MsgBox('That folder could not be found. Choose it with Browse, or leave the box empty.',
+        mbError, MB_OK);
+      Result := False;
+    end;
+  end;
 end;
 
 // Adds the folder chosen to Ovrtone's list of plugin folders (one path a line), once.

@@ -65,6 +65,14 @@ pub struct Surface {
     lights: std::collections::HashMap<u8, bool>,
     text: String,
     touched: [bool; 8],
+    /// Speaks HUI (Pro Tools' protocol) rather than Mackie Control.
+    pub hui: bool,
+    /// HUI: the zone the last button message named, each fader's high byte, the lights, the ping.
+    hui_zone: u8,
+    hui_msb: [u8; 8],
+    hui_lights: std::collections::HashMap<(u8, u8), bool>,
+    hui_names: [String; 8],
+    last_ping: Option<std::time::Instant>,
 }
 
 impl Surface {
@@ -117,6 +125,12 @@ impl Surface {
             lights: std::collections::HashMap::new(),
             text: String::new(),
             touched: [false; 8],
+            hui: hui_chosen(),
+            hui_zone: 0,
+            hui_msb: [0; 8],
+            hui_lights: std::collections::HashMap::new(),
+            hui_names: Default::default(),
+            last_ping: None,
         })
     }
 
@@ -129,9 +143,13 @@ impl Surface {
     pub fn update(&mut self, p: &mut Project, meters: &[f32]) -> bool {
         let mut changed = false;
         while let Ok(msg) = self.rx.try_recv() {
-            changed |= self.take(p, &msg);
+            changed |= if self.hui { self.take_hui(p, &msg) } else { self.take(p, &msg) };
         }
-        self.show(p, meters);
+        if self.hui {
+            self.show_hui(p);
+        } else {
+            self.show(p, meters);
+        }
         changed
     }
 
@@ -282,6 +300,207 @@ impl Surface {
         if self.lights.get(&note) != Some(&lit) {
             self.lights.insert(note, lit);
             self.send(&[0x90, note, if lit { 0x7F } else { 0x00 }]);
+        }
+    }
+}
+
+const HUI_FILE: &str = "control-surface-hui";
+
+/// The surface speaks HUI (Pro Tools' protocol; older Mackie, many controllers' "HUI mode").
+pub fn hui_chosen() -> bool {
+    crate::recent_files::config_dir()
+        .filter(|_| !cfg!(test))
+        .is_some_and(|d| d.join(HUI_FILE).exists())
+}
+
+pub fn set_hui(on: bool) {
+    if let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) {
+        let file = dir.join(HUI_FILE);
+        if on {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(file, "1");
+        } else {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+// HUI: a button is a zone and a port. Channel strips are zones 0-7.
+const HUI_TOUCH: u8 = 0;
+const HUI_SELECT: u8 = 1;
+const HUI_MUTE: u8 = 2;
+const HUI_SOLO: u8 = 3;
+const HUI_REC: u8 = 7;
+/// Zone of the bank and channel buttons: channel left, bank left, channel right, bank right.
+const HUI_SCROLL: u8 = 0x0A;
+/// Transport: rewind 1, fast forward 2, stop 3, play 4, record 5.
+const HUI_TRANSPORT: u8 = 0x0E;
+/// Loop is port 3 of this zone.
+const HUI_TRANSPORT_MORE: u8 = 0x0F;
+
+/// A relative turn of a HUI V-Pot or the jog wheel: 7 bits, two's complement.
+fn hui_steps(value: u8) -> f32 {
+    let v = i32::from(value & 0x7F);
+    (if v >= 64 { v - 128 } else { v }) as f32
+}
+
+impl Surface {
+    /// One HUI message from the surface. True if the project changed. The layout follows the
+    /// published HUI protocol; it has not been tried on a HUI device here.
+    fn take_hui(&mut self, p: &mut Project, msg: &[u8]) -> bool {
+        let tracks = p.tracks.len();
+        let [0xB0, cc, value] = *msg else {
+            return false;
+        };
+        match cc {
+            // Fader: the high 7 bits, then the low 7 bits.
+            0x00..=0x07 => {
+                self.hui_msb[usize::from(cc)] = value;
+                false
+            }
+            0x20..=0x27 => {
+                let ch = usize::from(cc - 0x20);
+                let t = self.bank + ch;
+                if t >= tracks {
+                    return false;
+                }
+                let v = (u16::from(self.hui_msb[ch]) << 7) | u16::from(value);
+                p.tracks[t].volume_db =
+                    crate::mixer::frac_to_db(f32::from(v) / 16383.0).clamp(-60.0, 6.0);
+                self.faders[ch] = Some(v);
+                true
+            }
+            // V-Pots: pan.
+            0x40..=0x47 => {
+                let t = self.bank + usize::from(cc - 0x40);
+                if t < tracks {
+                    p.tracks[t].pan = (p.tracks[t].pan + hui_steps(value) / 64.0).clamp(-1.0, 1.0);
+                    return true;
+                }
+                false
+            }
+            // Jog wheel: a beat a step.
+            0x0D => {
+                p.position_beats = (p.position_beats + f64::from(hui_steps(value))).max(0.0);
+                true
+            }
+            0x0F => {
+                self.hui_zone = value;
+                false
+            }
+            0x2F => {
+                let (port, down) = (value & 0x0F, value & 0x40 != 0);
+                self.hui_button(p, self.hui_zone, port, down)
+            }
+            _ => false,
+        }
+    }
+
+    fn hui_button(&mut self, p: &mut Project, zone: u8, port: u8, down: bool) -> bool {
+        let tracks = p.tracks.len();
+        if zone < 8 {
+            let ch = usize::from(zone);
+            if port == HUI_TOUCH {
+                self.touched[ch] = down;
+                return false;
+            }
+            let t = self.bank + ch;
+            if !down || t >= tracks {
+                return false;
+            }
+            match port {
+                HUI_SELECT => p.selected_track = t,
+                HUI_MUTE => p.tracks[t].mute = !p.tracks[t].mute,
+                HUI_SOLO => p.tracks[t].solo = !p.tracks[t].solo,
+                HUI_REC => p.tracks[t].rec = !p.tracks[t].rec,
+                _ => return false,
+            }
+            return true;
+        }
+        if !down {
+            return false;
+        }
+        match (zone, port) {
+            (HUI_SCROLL, 0) => self.move_bank(-1, tracks),
+            (HUI_SCROLL, 1) => self.move_bank(-8, tracks),
+            (HUI_SCROLL, 2) => self.move_bank(1, tracks),
+            (HUI_SCROLL, 3) => self.move_bank(8, tracks),
+            (HUI_TRANSPORT, 1 | 2) => {
+                let bar = p.beats_to_bar(p.position_beats).floor();
+                let to = if port == 1 { (bar - 1.0).max(0.0) } else { bar + 1.0 };
+                p.position_beats = p.bar_to_beats(to);
+            }
+            (HUI_TRANSPORT, 3) => {
+                if !p.playing {
+                    p.position_beats = 0.0;
+                }
+                p.playing = false;
+            }
+            (HUI_TRANSPORT, 4) => p.playing = true,
+            (HUI_TRANSPORT, 5) => p.recording = !p.recording,
+            (HUI_TRANSPORT_MORE, 3) => p.cycle = !p.cycle,
+            _ => return false,
+        }
+        if zone == HUI_SCROLL {
+            self.hui_lights.clear();
+            self.hui_names = Default::default();
+        }
+        true
+    }
+
+    /// Sends a HUI surface what changed: the ping it needs to stay online, faders, lights, names.
+    fn show_hui(&mut self, p: &Project) {
+        // A HUI goes offline without the host's ping about once a second.
+        if self.last_ping.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(900)) {
+            self.last_ping = Some(std::time::Instant::now());
+            self.send(&[0x90, 0x00, 0x00]);
+        }
+        for ch in 0..8usize {
+            let t = self.bank + ch;
+            let track = p.tracks.get(t);
+            if !self.touched[ch] {
+                let v = track.map_or(0, |tr| {
+                    (crate::mixer::db_to_frac(tr.volume_db).clamp(0.0, 1.0) * 16383.0).round() as u16
+                });
+                if self.faders[ch] != Some(v) {
+                    self.faders[ch] = Some(v);
+                    self.send(&[0xB0, ch as u8, (v >> 7) as u8]);
+                    self.send(&[0xB0, 0x20 + ch as u8, (v & 0x7F) as u8]);
+                }
+            }
+            let (sel, mute, solo, rec) = track.map_or((false, false, false, false), |tr| {
+                (p.selected_track == t, tr.mute, tr.solo, tr.rec)
+            });
+            for (port, lit) in [(HUI_SELECT, sel), (HUI_MUTE, mute), (HUI_SOLO, solo), (HUI_REC, rec)] {
+                self.hui_light(ch as u8, port, lit);
+            }
+            // Four letters a channel on the scribble strip.
+            let name: String = track
+                .map_or("", |tr| tr.name.as_str())
+                .chars()
+                .filter(char::is_ascii)
+                .take(4)
+                .collect();
+            let name = format!("{name:<4}");
+            if self.hui_names[ch] != name {
+                let mut sysex = vec![0xF0, 0x00, 0x00, 0x66, 0x05, 0x00, 0x10, ch as u8];
+                sysex.extend(name.bytes().map(|b| b & 0x7F));
+                sysex.push(0xF7);
+                self.send(&sysex);
+                self.hui_names[ch] = name;
+            }
+        }
+        self.hui_light(HUI_TRANSPORT, 4, p.playing);
+        self.hui_light(HUI_TRANSPORT, 3, !p.playing);
+        self.hui_light(HUI_TRANSPORT, 5, p.recording);
+        self.hui_light(HUI_TRANSPORT_MORE, 3, p.cycle);
+    }
+
+    fn hui_light(&mut self, zone: u8, port: u8, lit: bool) {
+        if self.hui_lights.get(&(zone, port)) != Some(&lit) {
+            self.hui_lights.insert((zone, port), lit);
+            self.send(&[0xB0, 0x0C, zone]);
+            self.send(&[0xB0, 0x2C, if lit { 0x40 | port } else { port }]);
         }
     }
 }

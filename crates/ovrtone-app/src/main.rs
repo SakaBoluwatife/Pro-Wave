@@ -93,6 +93,7 @@ mod smart_tempo;
 mod song_pattern;
 mod start_screen;
 mod stem_splitter;
+mod aaf;
 mod adm;
 mod audio_tags;
 mod dock;
@@ -180,8 +181,12 @@ pub struct UiState {
     pub feedback: feedback::FeedbackView,
     /// The audio device went away: when it was last looked for.
     pub audio_lost: Option<std::time::Instant>,
+    /// Playing at the last frame, so loudness can start again when playback starts.
+    pub mastering_was_playing: bool,
     /// The Mackie Control surface's MIDI port, as chosen in Settings.
     pub surface_port: Option<String>,
+    /// The surface speaks HUI rather than Mackie Control.
+    pub surface_hui: bool,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -352,7 +357,9 @@ impl UiState {
             launcher: clip_launcher::LauncherView::default(),
             feedback: feedback::FeedbackView::default(),
             audio_lost: None,
+            mastering_was_playing: false,
             surface_port: control_surface::chosen(),
+            surface_hui: control_surface::hui_chosen(),
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
@@ -921,8 +928,19 @@ impl App {
     }
 
     fn connect_mastering(&mut self) {
-        // The Spatial Renderer shows the loudness too.
-        let wanted = self.ui.mastering.open || self.ui.spatial.open;
+        // Always on, for the loudness on Stereo Out (the Mastering window and the Spatial Renderer
+        // show it too). The measuring is on this thread; the engine only hands the samples over.
+        let wanted = true;
+        // Integrated loudness starts again each time playback starts, as in Logic.
+        let playing = self.project.playing;
+        if playing && !self.ui.mastering_was_playing {
+            if let Some(sync) = self.sync.as_ref() {
+                self.ui.mastering.reset(sync.engine.sample_rate());
+            }
+        }
+        self.ui.mastering_was_playing = playing;
+        // Read every frame, the mixer shown or not, so integrated loudness misses nothing.
+        let _ = self.ui.mastering.readings();
         if wanted == self.ui.mastering.tap.is_some() {
             return;
         }
@@ -953,6 +971,10 @@ impl App {
     /// is not there), its port kept out of note input, and run once a frame.
     fn run_surface(&mut self, levels: &[f32]) {
         let wanted = self.ui.surface_port.clone();
+        if self.surface.as_ref().is_some_and(|s| s.hui != self.ui.surface_hui) {
+            self.surface = None;
+            self.surface_tried = None;
+        }
         if self.surface.as_ref().map(|s| &s.port) != wanted.as_ref() {
             self.surface = None;
         }

@@ -10,6 +10,8 @@
 //! - Ardour and Mixbus (`.ardour`): its XML session.
 //! - Pro Tools: its File > Export > Session Info as Text (`.txt`), with the session's Audio Files.
 //! - Logic Pro (`.logicx`, or any file inside one): partly, as its arrangement is undocumented.
+//! - AAF (`.aaf`): audio tracks and clips from Pro Tools, Logic, Media Composer and video editors
+//!   (see `aaf.rs`). OMF is not read yet.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -25,7 +27,7 @@ pub fn can_open(path: &Path) -> bool {
     }
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| ["dawproject", "rpp", "als", "ardour"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .is_some_and(|e| ["dawproject", "rpp", "als", "ardour", "aaf"].iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 /// A session as read, before it becomes a project. Times are in quarter-note beats.
@@ -82,6 +84,7 @@ pub fn open(path: &Path, ctx: &egui::Context) -> Result<(Project, Vec<String>), 
         "dawproject" => dawproject(path)?,
         "rpp" => reaper(path)?,
         "als" => ableton(path)?,
+        "aaf" => crate::aaf::read(path)?,
         _ => return Err(format!("{} is not a session this can open", path.display())),
     };
     Ok(to_project(session, path, ctx))

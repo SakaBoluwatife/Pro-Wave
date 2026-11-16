@@ -165,6 +165,10 @@ pub struct Render {
     /// The longest block, and the blocks that took longer than the sound they made.
     pub worst_block: Duration,
     pub misses: usize,
+    /// Misses after the first second: once every effect is running, what a listener would hear.
+    pub late_misses: usize,
+    /// The longest block after the first second.
+    pub late_worst: Duration,
 }
 
 /// Plays `p` from the start for `secs` through the engine, offline (no sound card), with each
@@ -172,6 +176,9 @@ pub struct Render {
 pub fn render(p: &Project, secs: f64) -> Render {
     use ovrtone_engine::{Command, EngineCore, Shared};
     use std::sync::Arc;
+    // As the real audio thread: Windows' "Pro Audio" scheduling, so the times are what a listener
+    // would get, not what a background thread gets.
+    ovrtone_engine::Engine::prepare_worker_thread();
 
     let (mut tx, rx) = rtrb::RingBuffer::<Command>::new(1024);
     let (trash_tx, mut trash_rx) = rtrb::RingBuffer::new(64);
@@ -211,9 +218,12 @@ pub fn render(p: &Project, secs: f64) -> Render {
         bad_meters: Vec::new(),
         worst_block: Duration::ZERO,
         misses: 0,
+        late_misses: 0,
+        late_worst: Duration::ZERO,
     };
     let deadline = Duration::from_secs_f64(BLOCK_FRAMES as f64 / SAMPLE_RATE as f64);
-    for _ in 0..blocks {
+    let first_second = SAMPLE_RATE as usize / BLOCK_FRAMES;
+    for block in 0..blocks {
         let t0 = Instant::now();
         core.process(&mut out);
         let took = t0.elapsed();
@@ -221,6 +231,12 @@ pub fn render(p: &Project, secs: f64) -> Render {
         r.worst_block = r.worst_block.max(took);
         if took > deadline {
             r.misses += 1;
+        }
+        if block >= first_second {
+            r.late_worst = r.late_worst.max(took);
+            if took > deadline {
+                r.late_misses += 1;
+            }
         }
         for s in &out {
             if s.is_finite() {
@@ -463,6 +479,12 @@ fn session_lines(report: &mut String) {
         );
         let _ = writeln!(report, "session_{name}_deadline_us={deadline:.0}");
         let _ = writeln!(report, "session_{name}_misses={}", r.misses);
+        let _ = writeln!(report, "session_{name}_late_misses={}", r.late_misses);
+        let _ = writeln!(
+            report,
+            "session_{name}_late_worst_us={:.0}",
+            r.late_worst.as_secs_f64() * 1e6
+        );
         if r.non_finite > 0 {
             let _ = writeln!(report, "session_{name}_non_finite={}", r.non_finite);
         }

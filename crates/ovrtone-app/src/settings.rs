@@ -11,7 +11,7 @@ use std::sync::mpsc::{channel, Receiver};
 const AUDIO_FILE: &str = "audio-setup";
 const TYPING_OFF_FILE: &str = "typing-off";
 pub(crate) const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
-pub(crate) const RATES: [u32; 4] = [44_100, 48_000, 88_200, 96_000];
+pub(crate) const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 
 /// Which driver, device and buffer size to play through. Empty means the usual choice.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1038,6 +1038,10 @@ fn general_tab(ui: &mut Ui, s: &mut UiState) {
         if let Some(port) = picked {
             crate::control_surface::choose(port.as_deref());
             s.surface_port = port;
+        }
+        // Mackie Control by default; HUI for surfaces set to it (Pro Tools' protocol).
+        if ui.checkbox(&mut s.surface_hui, "HUI").changed() {
+            crate::control_surface::set_hui(s.surface_hui);
         }
     })
     .response

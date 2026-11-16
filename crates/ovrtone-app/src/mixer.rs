@@ -87,6 +87,8 @@ pub enum StripRequest {
 }
 
 pub struct MixerView {
+    /// Short-term loudness (LUFS) and true peak (dBTP) of the output, shown on Stereo Out.
+    pub loudness: Option<(f64, f32)>,
     /// The insert slot at the top, when they do not all fit above the fader.
     pub fx_scroll: f32,
     /// The plugins on this computer, for the slots' menus.
@@ -241,6 +243,7 @@ impl Default for MixerView {
             open_gain_staging: false,
             fx_scroll: 0.0,
             installed: std::sync::Arc::default(),
+            loudness: None,
             preset_cmd: None,
             learn: None,
             learn_window: false,
@@ -2878,7 +2881,17 @@ pub fn channel_strip(
                     v.new_aux = Some((i, true));
                 }
             }
-            StripKey::StereoOut => slot(g, row(r.sends, 16.0), "", slot_empty_col(), text_col()),
+            StripKey::StereoOut => {
+                // Loudness where the sends would be: short-term LUFS and true peak, as Logic's
+                // Loudness Meter and Pro Tools' output meters show them.
+                let text = match v.loudness {
+                    Some((lufs, tp)) if lufs > -70.0 => format!("{lufs:.1} LU  TP {tp:.1}"),
+                    Some(_) => "-- LUFS".to_string(),
+                    None => String::new(),
+                };
+                let over = v.loudness.is_some_and(|(_, tp)| tp > -1.0);
+                slot(g, row(r.sends, 16.0), &text, slot_empty_col(), if over { crate::theme::DANGER } else { text_col() });
+            }
         }
         if let StripKey::Track(_) = key {
             let out = if name_style == NameStyle::Plain {
@@ -3965,6 +3978,7 @@ fn strip_visible(kind: TrackKind, filters: &[bool; 8]) -> bool {
 }
 
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
+    s.mixer.loudness = s.mastering.readings().map(|(_, short, tp)| (short, tp));
     if std::mem::take(&mut s.mixer.want_bounce) {
         crate::menus::apply("Bounce", p, s);
     }

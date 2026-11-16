@@ -49,12 +49,55 @@ fn loops_of(cell: &Region, from: f64) -> Vec<Region> {
         .collect()
 }
 
+/// Record into Arrangement: while on, what each track played from the launcher becomes regions.
+static RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn recording() -> bool {
+    RECORD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// While Record into Arrangement is on and the song plays: what track `t` has played of its launched
+/// cell, up to now, becomes regions of its arrangement, in place of the regions that started there.
+fn commit(p: &mut Project, t: usize) {
+    if !recording() || !p.playing {
+        return;
+    }
+    let now = p.beats_to_bar(p.position_beats) as f32 + 1.0;
+    let Some(track) = p.tracks.get_mut(t) else {
+        return;
+    };
+    if track.launched.is_none() {
+        return;
+    }
+    let Some(first) = track.launch_loops.first().map(|r| r.start_bar) else {
+        return;
+    };
+    if now <= first {
+        return;
+    }
+    let played: Vec<Region> = track
+        .launch_loops
+        .iter()
+        .filter(|r| r.start_bar < now)
+        .map(|r| {
+            let mut r = r.clone();
+            r.len_bars = r.len_bars.min(now - r.start_bar);
+            r
+        })
+        .collect();
+    track.regions.retain(|r| !(first..now).contains(&r.start_bar));
+    track.regions.extend(played);
+    track.regions.sort_by(|a, b| a.start_bar.total_cmp(&b.start_bar));
+    p.song_rev += 1;
+}
+
 /// Starts the cell of `scene` on track `t`. False when the cell is empty.
 pub fn launch(p: &mut Project, t: usize, scene: usize) -> bool {
     let from = launch_bar(p);
     let Some(cell) = p.tracks.get(t).and_then(|tr| tr.cells.get(scene)).cloned().flatten() else {
         return false;
     };
+    commit(p, t);
     let track = &mut p.tracks[t];
     track.launch_loops = loops_of(&cell, from);
     track.launched = Some(scene);
@@ -64,6 +107,7 @@ pub fn launch(p: &mut Project, t: usize, scene: usize) -> bool {
 
 /// Stops what is launched on track `t`: its arrangement plays again.
 pub fn stop(p: &mut Project, t: usize) {
+    commit(p, t);
     if let Some(track) = p.tracks.get_mut(t) {
         if track.launched.take().is_some() {
             track.launch_loops.clear();
@@ -113,6 +157,14 @@ pub fn window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
         .resizable(true)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                let mut rec = recording();
+                if ui
+                    .toggle_value(&mut rec, "{25cf} Record into Arrangement")
+                    .on_hover_text("While the song plays, what each track plays here is written into its arrangement as regions")
+                    .changed()
+                {
+                    RECORD.store(rec, std::sync::atomic::Ordering::Relaxed);
+                }
                 if ui.button("Back to Arrangement").clicked() {
                     for t in 0..p.tracks.len() {
                         stop(p, t);

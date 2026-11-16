@@ -74,7 +74,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Track icon, header config | HAVE | Assign Track Icon is saved; Configure Track Header is for this run |
 | VCA | HAVE | |
 | Freeze | HAVE | Right-click a track, or the Inspector. Not saved: a project opens with its tracks live |
-| Track alternatives (playlists) | TODO | |
+| Track alternatives (playlists) | HAVE | From the track header (`alternatives.rs`), saved |
 | Groove track | PART | MIDI followers only |
 | Global tracks (Marker, Tempo, Signature) | HAVE | Chord, Arrangement, Movie GREY or OUT |
 
@@ -96,7 +96,7 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 | Feature | Status | Notes |
 |---|---|---|
 | Trim, move, fade handles, Split, Join, Cut, Copy, Paste | HAVE | |
-| Clip gain, fade curves, crossfades | HAVE | Gain in the Region panel; no gain handle on the region itself |
+| Clip gain, fade curves, crossfades | HAVE | Gain in the Region panel and a handle on the region (hover an audio region) |
 | Normalize, Reverse | HAVE | |
 | Tempo following | HAVE | Sample BPM typed or found; other regions resize live with the tempo |
 | Flex Time / Flex Pitch | PART | Modes, quantize, correct to key work. Markers by mouse and per-note pitch editing TODO |
@@ -139,8 +139,8 @@ HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 | Effect plugins in any slot, instrument plugins on the Inst slot | HAVE | Bypass and remove buttons, hover names |
 | Mixer groups, VCA | HAVE | |
 | Automation lanes and modes | HAVE | Fader, pan, built-in effects. Show/Create/Convert menu entries GREY |
-| Plugin parameter automation | PART | Drawn lanes play, in bounces too. Writing from the plugin window, and on-screen knobs following, TODO |
-| Metering (peak) | HAVE | LUFS, true peak, pre-fader TODO |
+| Plugin parameter automation | HAVE | Drawn lanes play, in bounces too; moving a plugin's own controls writes in Touch, Latch, Write and Trim, and lanes move the plugin's controls (`automation::plugin_moved`, `Rack::follow_lanes`) |
+| Metering (peak) | HAVE | Short-term LUFS and true peak on Stereo Out, always on; momentary, integrated and a reference in Mix > Mastering. Pre-fader TODO |
 | Channel strip settings save/load | HAVE | Setting menu: effects and plugins with their settings, as `.pwstrip` files |
 | Signal flow view | HAVE | Mixer View menu |
 
@@ -180,7 +180,7 @@ PART. Clip Launcher (F10, `clip_launcher.rs`): cells per track and scene, launch
 | Feature | Status | Notes |
 |---|---|---|
 | Settings window (Ctrl+,) | HAVE | Audio, Keyboard, Plugins, General |
-| Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. All five outputs of the dev PC start. Sample rate and the driver's panel TODO |
+| Audio driver, device, buffer size | HAVE | WASAPI, and ASIO with `--features asio`. Sample rate (44.1 to 192 kHz) and a separate input device in Settings > Audio |
 | Project Settings entries | HAVE | General, Synchronization, Metronome, Recording, Audio and MIDI. Tuning is GREY |
 | MIDI ports | HAVE | All ports, automatically |
 | Key commands | HAVE | Logic's, moved to Ctrl and Alt (`key_commands.rs`), with an editor to remap them in Settings |
