@@ -5903,6 +5903,52 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             Stroke::new(1.0, edge_c),
         ));
     }
+    // An empty project says how to begin, quietly, in the middle of the Playlist.
+    if p.tracks.iter().all(|t| t.regions.is_empty()) && !p.playing && !p.recording {
+        let g = ui.painter_at(lanes);
+        let c = lanes.center();
+        let dim = crate::theme::text_dim();
+        g.text(
+            c + vec2(0.0, -10.0),
+            Align2::CENTER_CENTER,
+            "Drop audio, loops or MIDI files here",
+            FontId::proportional(15.0),
+            dim,
+        );
+        g.text(
+            c + vec2(0.0, 14.0),
+            Align2::CENTER_CENTER,
+            "or drag a pattern from the Channel Rack (F6), or draw a region with the Pencil",
+            FontId::proportional(12.0),
+            dim.gamma_multiply(0.75),
+        );
+    }
+    // The tool in hand is the pointer over the regions, as in Logic.
+    tool_cursor(ui, lanes, s.tracks.tool);
+}
+
+/// Over `area`, the pointer becomes `tool`'s picture: a dot where it clicks, the picture beside it.
+/// Left alone while something else (a resize edge) has set the pointer this frame.
+fn tool_cursor(ui: &Ui, area: Rect, tool: TrackTool) {
+    if tool == TrackTool::Pointer {
+        return;
+    }
+    let Some(pt) = ui.input(|i| i.pointer.hover_pos()).filter(|pt| area.contains(*pt)) else {
+        return;
+    };
+    if ui.ctx().output(|o| o.cursor_icon) != egui::CursorIcon::Default {
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+    let g = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::unique("ovrtone_tool_cursor"),
+    ));
+    let at = pt + vec2(9.0, 9.0);
+    g.circle_filled(at, 10.0, Color32::from_black_alpha(150));
+    tool.draw(&g, at, Color32::WHITE);
+    g.circle_filled(pt, 2.0, Color32::WHITE);
+    g.circle_stroke(pt, 2.5, Stroke::new(1.0, Color32::BLACK));
 }
 
 #[cfg(test)]

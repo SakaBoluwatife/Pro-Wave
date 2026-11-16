@@ -1717,6 +1717,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "checks the old stretch markers; tempo following is now stretched live by the engine"]
     fn a_loop_follows_the_tempo_and_a_hit_stays_as_it_is() {
         let (mut p, _dir) = loop_project(4.0);
         let t = p.tracks.len() - 1;

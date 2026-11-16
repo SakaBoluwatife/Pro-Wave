@@ -43,8 +43,8 @@ pub use crate::analysis::{tempo_curve, Analysis, Analyzer, TempoEstimate, STRENG
 pub use crate::asio_panel::AsioPanel;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::capture::{
-    input_devices, Capture, CaptureError, InputInfo, InputSource, LivePeaks, Recorded, LIVE_HOP,
-    MAX_INPUT_CHANNELS,
+    input_devices, set_capture_minutes, Capture, CaptureError, InputInfo, InputSource, LivePeaks,
+    Recorded, LIVE_HOP, MAX_INPUT_CHANNELS,
 };
 pub use crate::spatial::{
     BusPlugin,

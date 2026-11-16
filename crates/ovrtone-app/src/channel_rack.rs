@@ -221,6 +221,8 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
 }
 
 fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
+    // The project's scale on the rows, as in the Piano Roll.
+    let scale = crate::note_edit::key_scale(p.key);
     let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
         return false;
     };
@@ -244,6 +246,16 @@ fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
     let g = ui.painter_at(rect);
     g.rect_filled(rect, 2.0, crate::theme::gray(0x17));
     let row_h = ROLL_H / rows as f32;
+    if let Some(scale) = scale {
+        for r in 0..rows {
+            let pitch = low + r;
+            if let Some(root) = crate::note_edit::scale_degree(pitch, scale) {
+                let y = rect.bottom() - (r + 1) as f32 * row_h;
+                let band = egui::Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), row_h));
+                g.rect_filled(band, 0.0, crate::widgets::blue().gamma_multiply(if root { 0.22 } else { 0.1 }));
+            }
+        }
+    }
     for step in (0..steps).step_by(4) {
         let x = rect.left() + step as f32 * STEP_W;
         g.line_segment(
@@ -360,13 +372,21 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
         {
             open_in_piano_roll(p, s, t, id);
         }
+        let scale = crate::note_edit::key_scale(p.key);
         if let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) {
             let lane = pattern.lane_mut(channel);
             ui.add_sized(
                 [40.0, 18.0],
                 egui::DragValue::new(&mut lane.step_pitch)
                     .range(0..=127)
-                    .custom_formatter(|v, _| crate::step_editor::note_name(v as u8)),
+                    .custom_formatter(|v, _| {
+                        // A dot on the notes of the project's key.
+                        let name = crate::step_editor::note_name(v as u8);
+                        match scale.and_then(|s| crate::note_edit::scale_degree(v as i32, s)) {
+                            Some(_) => format!("{name}\u{2022}"),
+                            None => name,
+                        }
+                    }),
             )
             .on_hover_text("The pitch of the step buttons");
         }

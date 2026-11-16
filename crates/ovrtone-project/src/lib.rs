@@ -403,6 +403,8 @@ pub struct TrackDoc {
     /// and the channel, 1-16, or 0 for all.
     pub midi_in_port: Option<String>,
     pub midi_in_channel: u8,
+    /// The clip launcher's cells, by scene; `None` is an empty cell.
+    pub cells: Vec<Option<RegionDoc>>,
     /// Audio tracks: the first input channel they record (0 is Input 1), and whether they
     /// record it and the next one as a stereo pair.
     pub input: u16,
@@ -684,6 +686,7 @@ impl Default for TrackDoc {
             midi_channel: 1,
             midi_in_port: None,
             midi_in_channel: 0,
+            cells: Vec::new(),
             input: 0,
             input_stereo: false,
             output: 0,

@@ -982,6 +982,23 @@ pub fn autosave_minutes() -> u32 {
         .unwrap_or(2)
 }
 
+/// How far back Capture Recording reaches, in minutes, as saved: 1, 5 or 10.
+pub fn capture_minutes() -> u32 {
+    crate::recent_files::config_dir()
+        .filter(|_| !cfg!(test))
+        .and_then(|d| std::fs::read_to_string(d.join("capture-minutes")).ok())
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(1)
+}
+
+fn set_capture_minutes(m: u32) {
+    ovrtone_engine::set_capture_minutes(m);
+    if let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("capture-minutes"), m.to_string());
+    }
+}
+
 fn set_autosave_minutes(m: u32) {
     if let Some(dir) = crate::recent_files::config_dir().filter(|_| !cfg!(test)) {
         let _ = std::fs::create_dir_all(&dir);
@@ -992,6 +1009,57 @@ fn set_autosave_minutes(m: u32) {
 fn general_tab(ui: &mut Ui, s: &mut UiState) {
     ui.label(egui::RichText::new(crate::license::line()).strong());
     ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Coming from");
+        ui.weak(crate::coming_from::chosen().unwrap_or_else(|| "not chosen".to_string()));
+        if ui.button("Choose...").clicked() {
+            s.coming_from.open = true;
+        }
+    })
+    .response
+    .on_hover_text("The program you know: Ovrtone takes its key commands and starting layout");
+    ui.horizontal(|ui| {
+        ui.label("Control surface (Mackie Control)");
+        let shown = s.surface_port.clone().unwrap_or_else(|| "None".to_string());
+        let mut picked: Option<Option<String>> = None;
+        egui::ComboBox::from_id_salt(egui::Id::unique("surface_port"))
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(s.surface_port.is_none(), "None").clicked() {
+                    picked = Some(None);
+                }
+                for port in crate::control_surface::ports() {
+                    let on = s.surface_port.as_deref() == Some(port.as_str());
+                    if ui.selectable_label(on, &port).clicked() {
+                        picked = Some(Some(port));
+                    }
+                }
+            });
+        if let Some(port) = picked {
+            crate::control_surface::choose(port.as_deref());
+            s.surface_port = port;
+        }
+    })
+    .response
+    .on_hover_text(
+        "A Mackie Control, X-Touch, iCON, FaderPort or keyboard in MCU mode: faders, pan, mute, solo, \
+         record, select, banks, transport and the display. Its port then plays no notes.",
+    );
+    let mut back = capture_minutes();
+    ui.horizontal(|ui| {
+        ui.label("Capture Recording reaches back");
+        for (name, m) in [("1 minute", 1), ("5 minutes", 5), ("10 minutes", 10)] {
+            ui.selectable_value(&mut back, m, name);
+        }
+    })
+    .response
+    .on_hover_text(
+        "More than a minute is kept in a file on disk (about 10 MB a minute for each stereo input). \r
+         Takes effect when the input next opens.",
+    );
+    if back != capture_minutes() {
+        set_capture_minutes(back);
+    }
     let mut every = s.autosave_minutes;
     ui.horizontal(|ui| {
         ui.label("Crash-recovery copy");

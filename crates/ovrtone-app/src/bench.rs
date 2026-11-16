@@ -93,6 +93,11 @@ pub fn many_tracks(n: usize) -> Project {
 }
 
 /// Marks the start of `main`; `startup_ms` counts from here.
+/// Milliseconds since `main` began, for timing the launch in the log.
+pub fn since_start_ms() -> f64 {
+    START.get().map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0)
+}
+
 pub fn mark_start() {
     let _ = START.set(Instant::now());
 }
@@ -263,6 +268,7 @@ impl Probe {
         self.frames += 1;
         if self.startup_ms.is_none() {
             self.startup_ms = START.get().map(|s| s.elapsed().as_secs_f64() * 1000.0);
+            tracing::info!("launch: {:.0} ms, first frame", since_start_ms());
         }
         ctx.request_repaint();
         if self.frames < SETTLE_FRAMES {

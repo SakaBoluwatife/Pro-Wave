@@ -833,6 +833,8 @@ mod tests {
             frames_since_record: 0,
             midi: None,
             midi_out: None,
+            surface: None,
+            surface_tried: None,
             mtc_in: None,
             chase: crate::mtc_in::Chase::default(),
             updater: crate::updater::Updater::new(),

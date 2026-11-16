@@ -889,6 +889,11 @@ impl Rack {
                     if !self.load(p, uid, place, engine, message) {
                         return false;
                     }
+                    // Still loading in its own process: the next one starts too, so a project's
+                    // plugins load side by side rather than one after another.
+                    if self.pending.contains_key(&uid) {
+                        loaded_one = false;
+                    }
                 }
             }
         }
@@ -1045,14 +1050,17 @@ impl Rack {
                 return true;
             }
         }
-        // In a process of its own a crash while loading is only a failed load.
-        let guarded = !ovrtone_host::isolation_on();
-        if guarded && crate::plugin_guard::is_blocked(&plugin.path) {
-            let why = "Ovrtone closed while loading this last time. \
-                       Press Rescan on the Plugins tab to allow it again.";
-            *message = Some(format!("{}: {why}", plugin.name));
-            plugin.failed = Some(why.to_string());
-            return true;
+        // Plugins load inside Ovrtone, which is quickest, unless the setting puts them all in
+        // processes of their own. One that closed Ovrtone while loading runs in its own process from
+        // then on, as Reaper and Bitwig do: its next crash is only a failed load.
+        let crashed_before =
+            !ovrtone_host::isolation_on() && crate::plugin_guard::is_blocked(&plugin.path);
+        let guarded = !ovrtone_host::isolation_on() && !crashed_before;
+        if crashed_before && !self.pending.contains_key(&uid) {
+            *message = Some(format!(
+                "{} closed Ovrtone while loading last time, so it now runs in its own process.",
+                plugin.name
+            ));
         }
         if guarded {
             crate::plugin_guard::before_load(&plugin.path);
@@ -1066,7 +1074,7 @@ impl Rack {
             && p.tracks
                 .get(usize::from(place.0))
                 .is_some_and(|t| t.kind == TrackKind::Audio);
-        let ara = on_audio && crate::settings::use_ara();
+        let ara = on_audio && crate::settings::use_ara() && !crashed_before;
         // In a helper process the load goes on there while the window keeps running: a slow
         // plugin, or one showing a licence window, no longer freezes Ovrtone.
         let in_helper =

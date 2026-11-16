@@ -20,7 +20,7 @@ mod vst3_plugin;
 #[cfg(windows)]
 pub use crate::bridge::{
     host_request, isolation_on, load_isolated, load_plugin_safely, run_plugin_host, set_host_exe,
-    set_isolation, start_isolated, PendingLoad,
+    set_isolation, start_isolated, warm_up, PendingLoad,
 };
 pub use crate::clap::{clap_folders, find_clap_files, load_clap, scan_clap_file, LoadedClap};
 pub use crate::sampler::{load_sampler, params as sampler_params, SAMPLER_BEND_SEMITONES};
@@ -271,6 +271,9 @@ pub fn load_plugin_safely(
 pub fn isolation_on() -> bool {
     false
 }
+
+#[cfg(not(windows))]
+pub fn warm_up() {}
 
 /// Plugins run in helper processes only on Windows for now: elsewhere nothing loads this way.
 #[cfg(not(windows))]

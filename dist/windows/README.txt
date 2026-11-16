@@ -2,8 +2,9 @@ Ovrtone - Windows x64
 ======================
 
 Ovrtone is a DAW (music production app), written in Rust.
-This is a beta build, for feedback: expect missing features and rough edges, and keep backups of
-your projects. It has no stock instruments or sounds: bring your own VST3 or CLAP plugins and samples.
+This is version 1.0. Each save keeps a backup beside the project, and a crash-recovery copy is
+kept while you work. It has no stock instruments or sounds: bring your own VST3 or CLAP plugins and
+samples.
 It does come with its own effects: EQ, compressor, multiband, limiter, gate, saturation, tape,
 distortion, lo-fi, clipper, exciter, transient designer, resonance suppressor, stereo imager,
 reverb, delay, chorus, flanger, phaser, auto filter, tremolo, pitch shifter, utility and meter.

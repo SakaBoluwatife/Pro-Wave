@@ -494,12 +494,13 @@ mod tests {
 
     #[test]
     fn the_scissors_have_their_two_rings_and_two_blades() {
+        // Each ring drawn twice (a soft fill, then its outline), and the two blades.
         let lines = &parsed()[Icon::Scissors as usize];
-        assert_eq!(lines.len(), 4);
-        // The first ring has its centre at (6, 7) and a radius of 3.
+        assert_eq!(lines.len(), 6);
+        // The first ring has its centre at (6.5, 7) and a radius of 2.6.
         for point in &lines[0].points {
-            let d = (*point - pos2(6.0, 7.0)).length();
-            assert!((d - 3.0).abs() < 0.01, "{point:?} is {d} from the centre");
+            let d = (*point - pos2(6.5, 7.0)).length();
+            assert!((d - 2.6).abs() < 0.01, "{point:?} is {d} from the centre");
         }
     }
 

@@ -44,6 +44,8 @@ pub struct MidiIn {
     /// A port another input uses (MIDI Time Code): this one leaves it alone, since some systems
     /// let only one program or connection open a port.
     avoided: Option<String>,
+    /// The control surface's port (Mackie Control): its buttons send notes that are not music.
+    surface: Option<String>,
     /// Each note with when it arrived.
     tx: SyncSender<(Instant, LiveNote, Arc<str>, u8)>,
     rx: Receiver<(Instant, LiveNote, Arc<str>, u8)>,
@@ -95,6 +97,7 @@ impl MidiIn {
             connections: Vec::new(),
             refused: Vec::new(),
             avoided: None,
+            surface: None,
             tx,
             rx,
             controls_tx,
@@ -103,6 +106,18 @@ impl MidiIn {
         };
         midi.connect();
         midi
+    }
+
+    /// Keeps away from the control surface's port, as [`MidiIn::avoid`] does for time code.
+    pub fn avoid_surface(&mut self, name: Option<&str>) {
+        if self.surface.as_deref() == name {
+            return;
+        }
+        self.surface = name.map(str::to_string);
+        if let Some(name) = name {
+            self.connections.retain(|(open, _)| open != name);
+        }
+        self.last_try = None;
     }
 
     /// Keeps away from the port named `name` (or stops doing so with `None`): a connection to
@@ -136,6 +151,7 @@ impl MidiIn {
         for name in names {
             let wanted = !name.to_lowercase().contains("through")
                 && self.avoided.as_deref() != Some(&name)
+                && self.surface.as_deref() != Some(&name)
                 && !self.connections.iter().any(|(open, _)| *open == name);
             if wanted {
                 self.open(name);

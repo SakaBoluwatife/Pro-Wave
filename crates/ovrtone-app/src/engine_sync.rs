@@ -551,7 +551,7 @@ fn playing_regions(p: &Project) -> impl Iterator<Item = (u16, &Track, &Region, f
             frozen
                 .into_iter()
                 .chain(
-                    t.regions
+                    t.sounding_regions()
                         .iter()
                         .filter(move |r| frozen.is_none() && !r.params.mute),
                 )
@@ -637,7 +637,7 @@ fn song_notes(p: &Project) -> Vec<NoteEvent> {
         .filter_map(|(ti, t)| Some((track_index(ti)?, t)))
         .flat_map(|(track, t)| {
             let mut notes: Vec<NoteEvent> = t
-                .regions
+                .sounding_regions()
                 .iter()
                 .filter(|r| !r.params.mute && t.frozen.is_none())
                 .flat_map(|r| {
@@ -1627,6 +1627,9 @@ mod tests {
             midi_channel: 1,
             midi_in_port: None,
             midi_in_channel: 0,
+            cells: Vec::new(),
+            launched: None,
+            launch_loops: Vec::new(),
             midi_fx: Vec::new(),
             show_auto: false,
             alternatives: Vec::new(),

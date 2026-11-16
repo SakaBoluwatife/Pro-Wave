@@ -884,6 +884,8 @@ impl StateReader {
 /// Engine -> UI counters, all lock-free. The per-block state is in [`EngineState`].
 pub struct Shared {
     pub xruns: AtomicU32,
+    /// The output device went away (unplugged, or the system took it away while asleep).
+    pub device_lost: std::sync::atomic::AtomicBool,
     /// Callbacks in which a streamed clip had no data ready (disk too slow).
     pub underruns: AtomicU32,
     /// Channels the output device has.
@@ -910,6 +912,7 @@ impl Shared {
     pub fn new() -> Self {
         Self {
             xruns: AtomicU32::new(0),
+            device_lost: std::sync::atomic::AtomicBool::new(false),
             underruns: AtomicU32::new(0),
             output_channels: AtomicU32::new(2),
             spatial_peaks: [const { AtomicU32::new(0) }; crate::spatial::SPATIAL_CHANNELS],

@@ -1035,6 +1035,12 @@ pub struct Track {
     /// (Logic: MIDI In Port), and the channel, 1-16, or 0 for all (MIDI In Channel).
     pub midi_in_port: Option<String>,
     pub midi_in_channel: u8,
+    /// The clip launcher's cells on this track, by scene: a region to loop (see `clip_launcher.rs`).
+    pub cells: Vec<Option<Region>>,
+    /// The scene whose cell is playing on this track; the arrangement is silent on it meanwhile.
+    pub launched: Option<usize>,
+    /// The launched cell laid out as repeats from the bar it started on. Not saved.
+    pub launch_loops: Vec<Region>,
     /// MIDI FX: effects that change the notes the track plays (see `midi_fx.rs`).
     pub midi_fx: Vec<crate::midi_fx::FxSlot>,
     /// The curve of its automation (the lane `auto.shown`) is drawn on the track in the Tracks area.
@@ -1053,6 +1059,15 @@ pub struct TrackAlternative {
 }
 
 impl Track {
+    /// What the track plays: a launched clip of the clip launcher, else its regions.
+    pub fn sounding_regions(&self) -> &[Region] {
+        if self.launched.is_some() {
+            &self.launch_loops
+        } else {
+            &self.regions
+        }
+    }
+
     /// Every hosted plugin of the track.
     pub fn hosted(&self) -> impl Iterator<Item = &PluginInsert> {
         self.instrument_plugin.iter().chain(&self.plugins)
@@ -1120,6 +1135,9 @@ impl Track {
             midi_channel: 1,
             midi_in_port: None,
             midi_in_channel: 0,
+            cells: Vec::new(),
+            launched: None,
+            launch_loops: Vec::new(),
             midi_fx: Vec::new(),
             show_auto: false,
             alternatives: Vec::new(),
@@ -1387,6 +1405,9 @@ impl Project {
             midi_channel: 1,
             midi_in_port: None,
             midi_in_channel: 0,
+            cells: Vec::new(),
+            launched: None,
+            launch_loops: Vec::new(),
             midi_fx: Vec::new(),
             show_auto: false,
             alternatives: Vec::new(),
@@ -1468,6 +1489,9 @@ impl Project {
             midi_channel: 1,
             midi_in_port: None,
             midi_in_channel: 0,
+            cells: Vec::new(),
+            launched: None,
+            launch_loops: Vec::new(),
             midi_fx: Vec::new(),
             show_auto: false,
             alternatives: Vec::new(),

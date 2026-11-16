@@ -1,11 +1,58 @@
-Ovrtone 1.0 Beta 1
-==================
+Ovrtone 1.0
+===========
 
 Installing over an earlier Ovrtone keeps your settings, themes, presets, templates, plugin scan,
 favourites and tags: they live in %APPDATA%\ovrtone, which the installer and uninstaller leave
 alone. Close Ovrtone before installing; the installer offers to close it for you.
 
-This is the first stable beta. Save often, and send what you find: it goes into Beta 2.
+New in 1.0
+----------
+
+Plugins
+- Plugins open faster: a plugin file stays loaded once opened, a plugin process is ready before
+  it is needed, and a project's plugins in their own processes load side by side.
+- A plugin that closed Ovrtone while loading now runs in its own process from then on, instead
+  of being blocked. A slow plugin, or one showing its own licence window, no longer freezes
+  Ovrtone: its windows come to the front, also over the launch screen.
+- A project loads only plugins your own scan found; a plugin installed in another folder on this
+  computer is found there. Plugin files inside a project are never loaded.
+
+Recording and MIDI
+- Name your audio inputs ("Kick In", "Vox Mic") in the Input slot's menu.
+- Each instrument track can listen to one MIDI device and channel (Inspector: MIDI In Port and
+  MIDI In Channel). Keys on one track and a drum pad on another play and record together.
+- Capture Recording reaches back 1, 5 or 10 minutes (Settings > General).
+- Mackie Control surfaces (Mackie, X-Touch, iCON, FaderPort, keyboards in MCU mode): faders,
+  pan, mute, solo, record, select, banks, transport, jog wheel, the display and meters.
+  Settings > General > Control surface.
+
+Arranging and editing
+- Clip Launcher (F10): cells per track and scene that loop from the next bar, scene buttons,
+  stop buttons and Back to Arrangement. Saved with the project.
+- Audio dropped on the Playlist becomes audio there. Drop on the Playlist's edge, or right-click
+  a sound in the Browser (Use it as...), for the other choices.
+- Piano Roll: the project's key shows on the rows and keys, with the root marked; Stick to Scale
+  and Fold to Scale. The Channel Rack's piano roll and step pitch show the key too.
+- Each tool shows as the pointer in the Tracks area and the Piano Roll.
+
+Export
+- MP3: gapless (no gap at a loop's start or end, in Ovrtone and in other programs), turned down
+  rather than clipped when the mix goes over full scale, and a quality choice (320 kbps, VBR V0,
+  256, 192, 128). Fixed: the last moment of an exported MP3 was cut off.
+- For Beat Store: choose the stores that open after the export, and add your own.
+
+Look and feel
+- Welcome window: "I'm coming from" Logic, FL Studio, Ableton Live or Pro Tools sets the key
+  commands (an Ableton Live set is new) and the starting layout. Settings > General to change.
+- Project Chooser: tiles lift on hover, project pictures with rounded corners, when each project
+  was last saved, arrow keys to move.
+- Softer shadows, gentle motion, quicker tooltips. Every knob and fader: Shift or Ctrl to drag
+  finely, Alt-click or double-click to reset, the mouse wheel to nudge.
+- An empty project says how to begin.
+
+Reliability
+- When the audio interface is unplugged or the computer sleeps, Ovrtone stops cleanly and starts
+  again on the same device when it is back.
 
 New in 1.0 Beta 1
 -----------------

@@ -34,6 +34,100 @@ const RING_SECONDS: usize = 4;
 const HISTORY_SECONDS: usize = 60;
 /// The most samples of history kept, about 128 MB, for a device with many channels.
 const MAX_HISTORY_SAMPLES: usize = 32_000_000;
+/// How far back Capture Recording reaches, in minutes. One is kept in memory; more goes to a file on
+/// disk, written by the writer thread (never the audio thread). Read when the input opens.
+static CAPTURE_MINUTES: AtomicU32 = AtomicU32::new(1);
+/// The largest history file, so an interface with many inputs does not fill the disk.
+const MAX_DISK_HISTORY_BYTES: u64 = 4 << 30;
+
+/// Sets how many minutes Capture Recording reaches back (1 to 10), from the next time the input opens.
+pub fn set_capture_minutes(minutes: u32) {
+    CAPTURE_MINUTES.store(minutes.clamp(1, 10), Ordering::Relaxed);
+}
+
+/// The input's last minutes on disk, as a ring: frame `n` of the stream is at `n % cap_frames`.
+struct DiskHistory {
+    file: File,
+    path: PathBuf,
+    cap_frames: u64,
+    channels: usize,
+    /// Frames written since the input opened.
+    written: u64,
+    bytes: Vec<u8>,
+}
+
+impl DiskHistory {
+    fn open(channels: usize, sample_rate: u32) -> Option<Self> {
+        let minutes = CAPTURE_MINUTES.load(Ordering::Relaxed);
+        if minutes <= 1 || channels == 0 {
+            return None;
+        }
+        let frame_bytes = channels as u64 * 4;
+        let cap_frames = (u64::from(minutes) * 60 * u64::from(sample_rate))
+            .min(MAX_DISK_HISTORY_BYTES / frame_bytes)
+            .max(1);
+        let path = std::env::temp_dir().join(format!("ovrtone-capture-{}.raw", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .ok()?;
+        Some(Self {
+            file,
+            path,
+            cap_frames,
+            channels,
+            written: 0,
+            bytes: Vec::new(),
+        })
+    }
+
+    fn push(&mut self, samples: &[f32]) -> std::io::Result<()> {
+        let frames = (samples.len() / self.channels) as u64;
+        let mut done = 0u64;
+        while done < frames {
+            let at = self.written % self.cap_frames;
+            let n = (self.cap_frames - at).min(frames - done);
+            let part = &samples[(done as usize * self.channels)..((done + n) as usize * self.channels)];
+            self.bytes.clear();
+            self.bytes.extend(part.iter().flat_map(|s| s.to_le_bytes()));
+            self.file.seek(SeekFrom::Start(at * self.channels as u64 * 4))?;
+            self.file.write_all(&self.bytes)?;
+            done += n;
+            self.written += n;
+        }
+        Ok(())
+    }
+
+    /// Gives `rec` the frames from `from` to `to` that are still held. Returns the first frame held.
+    fn feed(&mut self, rec: &mut Rec, from: u64, to: u64) -> std::io::Result<u64> {
+        use std::io::Read;
+        let first = self.written.saturating_sub(self.cap_frames);
+        let (mut at, end) = (from.max(first), to.min(self.written));
+        let mut samples: Vec<f32> = Vec::new();
+        while at < end {
+            let slot = at % self.cap_frames;
+            let n = (end - at).min(self.cap_frames - slot).min(8192);
+            self.bytes.resize(n as usize * self.channels * 4, 0);
+            self.file.seek(SeekFrom::Start(slot * self.channels as u64 * 4))?;
+            self.file.read_exact(&mut self.bytes)?;
+            samples.clear();
+            samples.extend(self.bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
+            rec.feed(at, &samples, self.channels);
+            at += n;
+        }
+        Ok(first)
+    }
+}
+
+impl Drop for DiskHistory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// How often the header of a growing file is brought up to date.
 const HEADER_REFRESH: Duration = Duration::from_secs(1);
 /// A WAV file cannot hold more audio than its 32-bit sizes can count.
@@ -398,6 +492,8 @@ fn writer_loop(
     let mut scratch: Vec<f32> = Vec::new();
     // The latest audio, for a recording that starts a moment before the thread hears of it.
     let mut history: VecDeque<f32> = VecDeque::new();
+    // Longer than a minute, kept on disk for Capture Recording.
+    let mut disk = DiskHistory::open(channels, sample_rate);
     let one_second = sample_rate as usize * channels;
     let history_samples = (one_second * HISTORY_SECONDS).min(MAX_HISTORY_SAMPLES.max(one_second));
     let mut overruns_seen = 0u64;
@@ -440,6 +536,12 @@ fn writer_loop(
             }
             consumed += (scratch.len() / channels) as u64;
             history.extend(scratch.iter().copied());
+            if let Some(d) = disk.as_mut() {
+                if let Err(e) = d.push(&scratch) {
+                    tracing::warn!("capture history on disk stopped: {e}");
+                    disk = None;
+                }
+            }
             let extra = history.len().saturating_sub(history_samples);
             history.drain(..extra);
         }
@@ -487,6 +589,11 @@ fn writer_loop(
             }) => {
                 let result = start_rec(&path, source, from_frame, channels, sample_rate).and_then(
                     |mut rec| {
+                        // From the file on disk when there is one: it reaches further back.
+                        if let Some(d) = disk.as_mut() {
+                            let first = d.feed(&mut rec, from_frame, to_frame)?;
+                            return rec.finish().map(|done| (done, first.saturating_sub(from_frame)));
+                        }
                         let first = consumed - (history.len() / channels) as u64;
                         let (a, b) = history.as_slices();
                         let second = first + (a.len() / channels) as u64;

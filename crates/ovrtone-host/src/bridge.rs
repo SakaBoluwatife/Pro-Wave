@@ -927,9 +927,35 @@ fn helper_for(path: &Path) -> Result<Arc<Helper>, HostError> {
     if let Some(helper) = all.get(path).filter(|h| !h.is_dead()) {
         return Ok(helper.clone());
     }
-    let helper = Helper::spawn()?;
+    // The helper started ahead of time, if there is one: the plugin opens without waiting for a
+    // process to start. Another is started for the next plugin file.
+    let spare = spare().lock().ok().and_then(|mut s| s.take()).filter(|h| !h.is_dead());
+    let helper = match spare {
+        Some(helper) => helper,
+        None => Helper::spawn()?,
+    };
     all.insert(path.to_path_buf(), helper.clone());
+    drop(all);
+    warm_up();
     Ok(helper)
+}
+
+fn spare() -> &'static Mutex<Option<Arc<Helper>>> {
+    static SPARE: Mutex<Option<Arc<Helper>>> = Mutex::new(None);
+    &SPARE
+}
+
+/// Starts a helper process ahead of time, while plugins run in their own processes, so the next
+/// plugin file opens without waiting for one to start. Call at launch; it keeps one ready after.
+pub fn warm_up() {
+    if !isolation_on() {
+        return;
+    }
+    let Ok(mut spare) = spare().lock() else { return };
+    if spare.as_ref().is_some_and(|h| !h.is_dead()) {
+        return;
+    }
+    *spare = Helper::spawn().ok();
 }
 
 /// The UI-thread half of a plugin in a helper.

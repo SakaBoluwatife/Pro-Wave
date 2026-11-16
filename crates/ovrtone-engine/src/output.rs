@@ -804,6 +804,11 @@ impl Engine {
         &self.device_name
     }
 
+    /// The output device went away: the engine makes no more sound until it is started again.
+    pub fn device_lost(&self) -> bool {
+        self.shared.device_lost.load(Ordering::Relaxed)
+    }
+
     /// Streams `file` from disk as an audio region on `track` starting at `start_beat`.
     /// Put the result in [`crate::Song::with_clips`] and send it with `Command::SetSong`.
     pub fn stream_clip(&self, file: &AudioFile, track: u16, start_beat: f64) -> AudioClip {
@@ -858,6 +863,10 @@ where
     let err_fn = move |err: Error| match err.kind() {
         ErrorKind::Xrun => {
             shared.xruns.fetch_add(1, Ordering::Relaxed);
+        }
+        ErrorKind::DeviceNotAvailable | ErrorKind::HostUnavailable => {
+            shared.device_lost.store(true, Ordering::Relaxed);
+            tracing::warn!("audio device lost: {err}");
         }
         _ => tracing::error!("audio stream error: {err}"),
     };

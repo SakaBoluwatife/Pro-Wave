@@ -1,7 +1,7 @@
 //! Turns a finished WAV file into FLAC or MP3. A bounce is rendered to WAV first and encoded after,
 //! so the render itself is the same for every format.
 use mp3lame_encoder::{
-    max_required_buffer_size, Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality, VbrMode,
+    max_required_buffer_size, Bitrate, Builder, FlushGap, InterleavedPcm, Quality, VbrMode,
 };
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -247,7 +247,7 @@ pub fn mp3(wav: &Path, out: &Path, rate: u32) -> Result<(), String> {
         coded.clear();
         coded.reserve(max_required_buffer_size(MP3_FRAMES));
         encoder
-            .flush_to_vec::<FlushNoGap>(&mut coded)
+            .flush_to_vec::<FlushGap>(&mut coded)
             .map_err(|e| format!("MP3: {e:?}"))?;
         file.write_all(&coded).map_err(|e| e.to_string())?;
         file.flush().map_err(|e| e.to_string())?;

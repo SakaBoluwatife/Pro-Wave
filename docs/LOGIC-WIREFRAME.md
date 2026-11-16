@@ -157,7 +157,7 @@ HAVE (`channel_rack.rs`, `song_pattern.rs`), F6.
 
 ## 10. Live Loops
 
-TODO. Grid of cells and scenes, quantized launch, record performance to arrangement. Needs an engine clip launcher. To decide if it is wanted now that the channel rack exists.
+PART. Clip Launcher (F10, `clip_launcher.rs`): cells per track and scene, launch on the next bar, scenes, stop, Back to Arrangement, saved. It plays by laying the cell out as repeats in the song, so no engine change. Left: recording a performance into the arrangement, follow actions, other launch quantizes.
 
 ## 11. Plugin hosting
 
@@ -184,8 +184,8 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 | Project Settings entries | HAVE | General, Synchronization, Metronome, Recording, Audio and MIDI. Tuning is GREY |
 | MIDI ports | HAVE | All ports, automatically |
 | Key commands | HAVE | Logic's, moved to Ctrl and Alt (`key_commands.rs`), with an editor to remap them in Settings |
-| MIDI learn, controller assignments | TODO | |
-| Mackie / HUI support | TODO | |
+| MIDI learn, controller assignments | PART | MIDI learn (`midi_learn.rs`); no assignment page yet |
+| Mackie / HUI support | PART | Mackie Control (`control_surface.rs`): faders, V-Pots, buttons, banks, transport, display, meters. HUI not yet |
 | Remote control from phone/web | TODO | ROADMAP suggests WebSocket |
 | Environment window | OUT | Not needed |
 
@@ -201,7 +201,7 @@ TODO. Grid of cells and scenes, quantized launch, record performance to arrangem
 | Task | Status | Notes |
 |---|---|---|
 | ASIO cargo feature and driver picker | HAVE | SDK in `third_party/asio-sdk` under its GPL3 option. Building it needs LLVM |
-| Installer and `.ovrtone` file association | PART | `dist/windows/installer.iss`, never run: Inno Setup is not installed here |
+| Installer and `.ovrtone` file association | HAVE | `dist/windows/installer.iss` (full) and `patch.iss` (updates); Inno Setup 6.7.3 is installed per-user (`%LOCALAPPDATA%ProgramsInno Setup 6`) |
 | Per-user config under `%APPDATA%` | HAVE | |
 | High-DPI, dark title bar | PART | The program draws its own dark title bar; high-DPI not checked on its own |
 | Code signing | TODO | |

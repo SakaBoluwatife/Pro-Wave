@@ -1718,17 +1718,19 @@ fn knob(ui: &mut Ui, lk: &Look, kind: FxKind, k: usize, value: f32, radius: f32,
     if !enabled {
         return;
     }
-    if resp.double_clicked() {
-        edits.push(Edit { param: k, value: info.default, ended: true });
-        return;
-    }
-    if resp.dragged() {
-        let fine = ui.input(|i| i.modifiers.shift);
-        let dy = resp.drag_delta().y;
-        if dy != 0.0 {
-            let step = if fine { 1200.0 } else { 220.0 };
-            let v = info.from_norm((n - dy / step).clamp(0.0, 1.0));
-            edits.push(Edit { param: k, value: v, ended: false });
+    // The same gestures as every knob: Shift or Ctrl for fine, Alt-click or double-click to reset,
+    // the wheel to nudge.
+    let reset = info.to_norm(info.default);
+    if let Some(to) = crate::widgets::value_gesture(ui, &resp, n, reset, 1.0 / 220.0, 0.01) {
+        let whole = !resp.dragged();
+        let v = if whole && to == reset {
+            info.default
+        } else {
+            info.from_norm(to.clamp(0.0, 1.0))
+        };
+        edits.push(Edit { param: k, value: v, ended: whole });
+        if whole {
+            return;
         }
     }
     if resp.drag_stopped() {

@@ -185,14 +185,16 @@ pub enum KeyPreset {
     Logic,
     FlStudio,
     ProTools,
+    Ableton,
 }
 
 impl KeyPreset {
-    pub const ALL: [KeyPreset; 4] = [
+    pub const ALL: [KeyPreset; 5] = [
         KeyPreset::Ovrtone,
         KeyPreset::Logic,
         KeyPreset::FlStudio,
         KeyPreset::ProTools,
+        KeyPreset::Ableton,
     ];
 
     pub fn name(self) -> &'static str {
@@ -201,6 +203,7 @@ impl KeyPreset {
             KeyPreset::Logic => "Logic Pro",
             KeyPreset::FlStudio => "FL Studio",
             KeyPreset::ProTools => "Pro Tools",
+            KeyPreset::Ableton => "Ableton Live",
         }
     }
 
@@ -211,6 +214,7 @@ impl KeyPreset {
             KeyPreset::Logic => "logic",
             KeyPreset::FlStudio => "fl",
             KeyPreset::ProTools => "protools",
+            KeyPreset::Ableton => "ableton",
         }
     }
 
@@ -229,6 +233,7 @@ impl KeyPreset {
             KeyPreset::Logic => LOGIC_KEYS,
             KeyPreset::FlStudio => FL_KEYS,
             KeyPreset::ProTools => PRO_TOOLS_KEYS,
+            KeyPreset::Ableton => ABLETON_KEYS,
         }
     }
 }
@@ -262,6 +267,19 @@ const PRO_TOOLS_KEYS: &[KeyMove] = &[
     (Action::Edit(EditCmd::Split), Key::E, ctrl),
     (Action::MuteTrack, Key::M, shift),
     (Action::SoloTrack, Key::S, shift),
+];
+
+/// Ableton Live's usual keys on Windows, for the commands Ovrtone has. The owner is to confirm them.
+const ABLETON_KEYS: &[KeyMove] = &[
+    (Action::Menu("Record"), Key::F9, none),
+    (Action::Cycle, Key::L, ctrl),
+    (Action::Repeat, Key::D, ctrl),
+    (Action::Edit(EditCmd::Split), Key::E, ctrl),
+    (Action::Menu("New Tracks…"), Key::T, ctrl),
+    (Action::MuteRegions, Key::Num0, none),
+    (Action::Menu("Zoom In"), Key::Equals, none),
+    (Action::Menu("Zoom Out"), Key::Minus, none),
+    (Action::Menu("Show Browser"), Key::B, ctrl_alt),
 ];
 
 /// The key command number `index` has in `preset`, before the user's own changes. A command the set

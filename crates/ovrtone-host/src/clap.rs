@@ -154,11 +154,22 @@ pub fn find_clap_files(dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn load_entry(path: &Path) -> Result<PluginEntry, Error> {
+    // A file opened once stays loaded until the program ends, as `.vst3` files do: the next insert
+    // of it, in this project or another, skips starting the file again.
+    thread_local! {
+        static ENTRIES: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, PluginEntry>> =
+            std::cell::RefCell::default();
+    }
+    if let Some(entry) = ENTRIES.with(|e| e.borrow().get(path).cloned()) {
+        return Ok(entry);
+    }
     // SAFETY: loading a plugin runs its code, which nothing here can check. That is what a host
     // is for: the file is one the user installed as a plugin, and it stays loaded for as long as
     // the entry and the instances made from it live.
-    unsafe { PluginEntry::load(path.as_os_str()) }
-        .map_err(|e| Error(format!("cannot load {}: {e}", path.display())))
+    let entry = unsafe { PluginEntry::load(path.as_os_str()) }
+        .map_err(|e| Error(format!("cannot load {}: {e}", path.display())))?;
+    ENTRIES.with(|e| e.borrow_mut().insert(path.to_path_buf(), entry.clone()));
+    Ok(entry)
 }
 
 /// Loads a `.clap` file and reads what plugins it offers. This runs the file's code, so a plugin

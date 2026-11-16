@@ -382,19 +382,32 @@ const DETAILS_H: f32 = 270.0;
 fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bool) {
     let (r, _) = ui.allocate_exact_size(vec2(TILE_W, CELL_H), Sense::hover());
     let resp = ui.interact(r, egui::Id::unique(("chooser_tile", key)), Sense::click());
-    let picture = Rect::from_min_size(r.min, vec2(TILE_W, PICTURE_H));
+    // On hover the picture lifts a little on a soft shadow, eased.
+    let lift = ui
+        .ctx()
+        .animate_bool_with_time(egui::Id::unique(("chooser_lift", key)), resp.hovered(), 0.14);
+    let picture = Rect::from_min_size(r.min, vec2(TILE_W, PICTURE_H)).translate(vec2(0.0, -3.0 * lift));
     let thumb = item
         .choice
         .file()
         .and_then(|path| crate::project_thumbs::texture(ui.ctx(), path));
     let g = ui.painter();
+    for (grow, alpha) in [(6.0, 18), (3.0, 28), (1.0, 40)] {
+        let shadow = picture.translate(vec2(0.0, 2.0 + 4.0 * lift)).expand(grow * (0.4 + lift));
+        g.rect_filled(shadow, 6.0 + grow, Color32::from_black_alpha(alpha));
+    }
     match thumb {
         Some(thumb) => {
-            g.image(
-                thumb.id(),
+            // Rounded as the tiles without a picture are.
+            g.add(
+                egui::epaint::RectShape::filled(picture, 6.0, Color32::WHITE)
+                    .with_texture(thumb.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+            );
+            g.rect_stroke(
                 picture,
-                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                Color32::WHITE,
+                6.0,
+                Stroke::new(1.0, Color32::from_white_alpha(18 + (30.0 * lift) as u8)),
+                StrokeKind::Inside,
             );
         }
         None => {
@@ -431,9 +444,43 @@ fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bo
         let pill = Rect::from_min_size(at, vec2(width, name.size().y)).expand2(vec2(7.0, 2.0));
         g.rect_filled(pill, 4.0, crate::theme::accent());
     }
+    let name_bottom = at.y + name.size().y;
     g.with_clip_rect(r.expand2(vec2(8.0, 0.0)))
         .galley(at, name, text_col());
+    // A recent project says when it was last saved.
+    if let Choice::Recent(path) = &item.choice {
+        if let Some(when) = saved_ago(path) {
+            g.text(
+                pos2(r.center().x, name_bottom + 4.0),
+                Align2::CENTER_TOP,
+                when,
+                FontId::proportional(11.0),
+                dim_col(),
+            );
+        }
+    }
     (resp.clicked(), resp.double_clicked())
+}
+
+/// How long ago a file was last saved, in words: "just now", "5 minutes ago", "2 days ago".
+fn saved_ago(path: &std::path::Path) -> Option<String> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let secs = modified.elapsed().ok()?.as_secs();
+    let say = |n: u64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+    Some(match secs {
+        0..=59 => "just now".to_string(),
+        60..=3_599 => say(secs / 60, "minute"),
+        3_600..=86_399 => say(secs / 3_600, "hour"),
+        86_400..=2_591_999 => say(secs / 86_400, "day"),
+        2_592_000..=31_535_999 => say(secs / 2_592_000, "month"),
+        _ => say(secs / 31_536_000, "year"),
+    })
 }
 
 /// A key's name as the panel shows it: `F#min` is F# Minor.
@@ -666,7 +713,17 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         ),
     );
     let g = ui.painter().clone();
+    // The panel floats on a soft shadow and fades in when the chooser opens.
+    let shown = ctx.animate_bool_with_time(egui::Id::unique("chooser_shown"), true, 0.22);
+    for (grow, alpha) in [(28.0, 20.0), (16.0, 34.0), (6.0, 52.0)] {
+        g.rect_filled(
+            panel.translate(vec2(0.0, 10.0)).expand(grow),
+            10.0 + grow,
+            Color32::from_black_alpha((alpha * shown) as u8),
+        );
+    }
     g.rect_filled(panel, 10.0, bg_col());
+    g.rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_white_alpha(14)), StrokeKind::Inside);
 
     // Sidebar.
     let side = Rect::from_min_size(panel.min, vec2(210.0, panel.height()));
@@ -734,8 +791,12 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
     g.text(
         pos2(main.center().x, main.top() + title_h / 2.0),
         Align2::CENTER_CENTER,
-        "Start or open a project",
-        FontId::proportional(13.0),
+        if recent.is_empty() {
+            "Welcome to Ovrtone: start a project"
+        } else {
+            "Welcome back: start or open a project"
+        },
+        FontId::proportional(13.5),
         dim_col(),
     );
     g.line_segment(
@@ -746,6 +807,16 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         Stroke::new(1.0, line_col()),
     );
     let list = items(c.section, &recent, &mine);
+    // The arrow keys move between tiles; Enter opens the one chosen.
+    if !list.is_empty() && ctx.memory(|m| m.focused().is_none()) {
+        let (left, right) = ui.input(|i| (i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight)));
+        if left {
+            c.selected = c.selected.saturating_sub(1);
+        }
+        if right {
+            c.selected = (c.selected + 1).min(list.len() - 1);
+        }
+    }
     let takes_details = c.section != Section::Recent;
     let bar_h = 34.0;
     let panel_h = if takes_details && c.details_open {
@@ -930,7 +1001,8 @@ mod tests {
         for t in Template::ALL {
             let p = t.project();
             assert_eq!(p.name, "Untitled", "{t:?}");
-            assert!(!p.tracks.is_empty(), "{t:?}");
+            // Surround starts empty on purpose: each track added is set up for the bed or as an object.
+            assert!(!p.tracks.is_empty() || t == Template::Surround, "{t:?}");
             assert_eq!(p.selected_track, 0);
         }
         assert_eq!(Template::Empty.project().tracks.len(), 1);

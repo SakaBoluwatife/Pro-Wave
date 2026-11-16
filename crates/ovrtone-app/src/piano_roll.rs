@@ -379,6 +379,8 @@ pub struct PianoView {
     scale_mode: usize,
     /// New and moved notes land on notes of the scale shown.
     stick_scale: bool,
+    /// Only the rows of the scale shown.
+    fold_scale: bool,
     /// What a new note copies: the length and velocity of the last one placed or touched.
     last_len: f32,
     new_velocity: u8,
@@ -434,6 +436,7 @@ impl Default for PianoView {
             scale_root: None,
             scale_mode: 0,
             stick_scale: false,
+            fold_scale: false,
             last_len: 0.25,
             new_velocity: 100,
             color_group: 0,
@@ -1174,6 +1177,15 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let notes_len = p.tracks[ti].regions[ri].notes.len();
     v.selected.retain(|i| *i < notes_len);
 
+    // Fold to Scale: only the rows of the scale shown. `above[pitch]` is how many rows are above it.
+    let folded = if v.fold_scale { shown_scale(v, p) } else { None };
+    let shows = |q: i32| folded.is_none_or(|s| note_edit::scale_degree(q, s).is_some());
+    let rows: Vec<i32> = (0..=127).rev().filter(|q| shows(*q)).collect();
+    let mut above = [0usize; 128];
+    for q in (0..127usize).rev() {
+        above[q] = above[q + 1] + usize::from(shows(q as i32 + 1));
+    }
+    let row_count = rows.len().max(1) as f32;
     // Centre on the notes when a different region is opened.
     if v.centered_for != Some((ti, ri)) {
         v.centered_for = Some((ti, ri));
@@ -1187,7 +1199,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         } else {
             (lo as f32 + hi as f32) / 2.0
         };
-        v.scroll_y = (127.0 - mid) * v.key_h - grid.height() / 2.0;
+        v.scroll_y = above[(mid.round() as usize).min(127)] as f32 * v.key_h - grid.height() / 2.0;
         v.scroll_x = 0.0;
         v.selected.clear();
         v.time_sel = None;
@@ -1215,9 +1227,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
     v.scroll_y = v
         .scroll_y
-        .clamp(0.0, (128.0 * v.key_h - grid.height()).max(0.0));
+        .clamp(0.0, (row_count * v.key_h - grid.height()).max(0.0));
     let content_w = ((len_beats + 2.0) * v.beat_px).max(grid.width());
-    let content_h = 128.0 * v.key_h;
+    let content_h = row_count * v.key_h;
     {
         let gs = ui.painter_at(Rect::from_min_max(hbar.min, vbar.max));
         gs.rect_filled(hbar, 0.0, crate::theme::gray(0x17));
@@ -1270,10 +1282,12 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     v.scroll_x = v.scroll_x.clamp(0.0, (content_w - grid.width()).max(0.0));
     let (beat_px, key_h, scroll_x, scroll_y) = (v.beat_px, v.key_h, v.scroll_x, v.scroll_y);
     let x_of = |beat: f32| grid.left() + beat * beat_px - scroll_x;
-    let y_of = |pitch: i32| grid.top() + (127 - pitch) as f32 * key_h - scroll_y;
+    let y_of = |pitch: i32| grid.top() + above[pitch.clamp(0, 127) as usize] as f32 * key_h - scroll_y;
     let beat_at = |x: f32| (x - grid.left() + scroll_x) / beat_px;
-    let pitch_at =
-        |y: f32| (127 - ((y - grid.top() + scroll_y) / key_h).floor() as i32).clamp(0, 127);
+    let pitch_at = |y: f32| {
+        let row = ((y - grid.top() + scroll_y) / key_h).floor().max(0.0) as usize;
+        rows.get(row.min(rows.len().saturating_sub(1))).copied().unwrap_or(60)
+    };
     let step = piano_step(s.tracks.snap, beat_px, bpb, unit);
     v.step_len = if step > 0.0 { step } else { 0.25 };
     let bars = bar_starts(
@@ -1291,6 +1305,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let shown_scale = shown_scale(v, p);
     let stick_to = if v.stick_scale { shown_scale } else { None };
     for pitch in bottom_pitch..=top_pitch {
+        if !shows(pitch) {
+            continue;
+        }
         let y = y_of(pitch);
         let row = Rect::from_min_size(pos2(grid.left(), y), vec2(grid.width(), key_h));
         gg.rect_filled(
@@ -1680,7 +1697,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                             .clamp(12.0, 400.0);
                         v.key_h = (grid.height() / span).clamp(6.0, 24.0);
                         v.scroll_x = (first_beat * v.beat_px).max(0.0);
-                        v.scroll_y = ((127.0 - top + 1.0) * v.key_h).max(0.0);
+                        let top_row = above[((top - 1.0).max(0.0) as usize).min(127)] as f32;
+                        v.scroll_y = (top_row * v.key_h).max(0.0);
                     }
                 }
             }
@@ -2142,6 +2160,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         Rect::from_min_size(pos2(ix, y), vec2(iw, 18.0)),
         egui::Checkbox::new(&mut v.stick_scale, "Stick to Scale"),
     );
+    y += 20.0;
+    ui.put(
+        Rect::from_min_size(pos2(ix, y), vec2(iw, 18.0)),
+        egui::Checkbox::new(&mut v.fold_scale, "Fold to Scale"),
+    );
     y += 36.0;
     gi.line_segment(
         [
@@ -2401,6 +2424,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     let gk = ui.painter_at(keys);
     gk.rect_filled(keys, 0.0, crate::theme::gray(0x12));
     for pitch in bottom_pitch..=top_pitch {
+        if !shows(pitch) {
+            continue;
+        }
         let y = y_of(pitch);
         let row = Rect::from_min_size(pos2(keys.left(), y), vec2(KEYS_W, key_h));
         if is_black(pitch) {
@@ -2829,6 +2855,23 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
     if act.make_groove {
         crate::groove_template::make(p, s, ti, ri);
+    }
+    // The tool in hand is the pointer over the notes.
+    let tool = s.piano.tool;
+    if tool != Tool::Select {
+        let hover = ui.input(|i| i.pointer.hover_pos()).filter(|pt| grid.contains(*pt));
+        if let Some(pt) = hover.filter(|_| ui.ctx().output(|o| o.cursor_icon) == egui::CursorIcon::Default) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+            let g = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::unique("ovrtone_piano_tool_cursor"),
+            ));
+            let at = pt + vec2(9.0, 9.0);
+            g.circle_filled(at, 10.0, Color32::from_black_alpha(150));
+            crate::icons::paint(&g, at, 15.0, tool.icon(), Color32::WHITE);
+            g.circle_filled(pt, 2.0, Color32::WHITE);
+            g.circle_stroke(pt, 2.5, Stroke::new(1.0, Color32::BLACK));
+        }
     }
 }
 

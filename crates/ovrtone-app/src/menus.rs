@@ -323,6 +323,7 @@ const HELP: &[&str] = &[
     "-",
     "Check for Updates…",
     "Check for Updates Automatically",
+    "Send Feedback…",
     "-",
     "About Ovrtone",
 ];
@@ -565,6 +566,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Split at Playhead" => crate::region_edit::can_split_at_playhead(p, &s.tracks),
         "Delete Track" => !p.tracks.is_empty(),
         "Check for Updates…" | "Check for Updates Automatically" => crate::updater::UPDATES,
+        "Send Feedback…" => true,
         "Minimize" | "Zoom" | "Bring All to Front" | "Enter Full Screen" => true,
         // Key commands with no menu entry.
         "Show Loop Browser" | "Count-in" => true,
@@ -1062,6 +1064,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
         "Discard Recording" => s.rec_cmd = Some(crate::takes::RecCmd::Discard),
         "Recording Meter" => s.dialogs.rec_meter = !s.dialogs.rec_meter,
         "Check for Updates…" => s.update_check = true,
+        "Send Feedback…" => s.feedback.open = true,
         "Check for Updates Automatically" => {
             s.update_auto = !s.update_auto;
             crate::updater::set_auto_enabled(s.update_auto);
@@ -1785,6 +1788,15 @@ mod tests {
                     s.dialogs.rename_project.clone(),
                     p.tracks.iter().filter(|t| t.rec).count(),
                     s.status.clone(),
+                    // Windows the menus open.
+                    (
+                        s.layout.open,
+                        s.performance.open,
+                        s.gain_staging.open,
+                        s.organizer.open,
+                        s.beat_store_dialog.is_some(),
+                        s.feedback.open,
+                    ),
                 ),
             )
         )

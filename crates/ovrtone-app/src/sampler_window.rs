@@ -108,19 +108,7 @@ fn knob(
         FontId::proportional(10.5),
         text_col(),
     );
-    if resp.double_clicked() {
-        return Some(default);
-    }
-    if resp.dragged() {
-        let fine = if ui.input(|i| i.modifiers.shift) {
-            0.2
-        } else {
-            1.0
-        };
-        let by = -resp.drag_delta().y * 0.005 * fine;
-        return Some((value + by).clamp(0.0, 1.0));
-    }
-    None
+    crate::widgets::value_gesture(ui, &resp, value, default, 0.005, 0.02).map(|v| v.clamp(0.0, 1.0))
 }
 
 /// A switch for a setting that is on or off.

@@ -431,14 +431,16 @@ fn pan_knob(
     let r = Rect::from_center_size(c, vec2(26.0, 26.0));
     let mut out = Moved::default();
     if editable {
-        let resp = ui.interact(r, id, Sense::click_and_drag());
-        if resp.dragged() {
-            out.value = Some((value - resp.drag_delta().y * 0.01).clamp(-1.0, 1.0));
-        }
-        if resp.double_clicked() {
-            out.value = Some(0.0);
-            out.started = true;
-            out.stopped = true;
+        let resp = ui
+            .interact(r, id, Sense::click_and_drag())
+            .on_hover_text("Drag to pan (Shift for fine), wheel to nudge, Alt-click or double-click for centre");
+        if let Some(v) = crate::widgets::value_gesture(ui, &resp, value, 0.0, 0.01, 1.0 / 64.0) {
+            out.value = Some(v.clamp(-1.0, 1.0));
+            // A reset or a wheel notch is a whole move of its own.
+            if !resp.dragged() {
+                out.started = true;
+                out.stopped = true;
+            }
         }
         out.started |= resp.drag_started();
         out.stopped |= resp.drag_stopped();
@@ -699,14 +701,15 @@ fn fader_and_meter(
             pos2(fader_x + 14.0, bottom + 17.0),
         );
         let resp = ui.interact(hit, id, Sense::click_and_drag());
-        if resp.dragged() {
-            let f = db_to_frac(db) - resp.drag_delta().y / h;
-            out.value = Some(frac_to_db(f).clamp(-60.0, 6.0));
-        }
-        if resp.double_clicked() {
-            out.value = Some(0.0);
-            out.started = true;
-            out.stopped = true;
+        // Moved along the fader's own travel, so a drag follows the pointer; reset to 0 dB.
+        let frac = db_to_frac(db);
+        let reset = db_to_frac(0.0);
+        if let Some(f) = crate::widgets::value_gesture(ui, &resp, frac, reset, 1.0 / h, 0.01) {
+            out.value = Some(if f == reset { 0.0 } else { frac_to_db(f).clamp(-60.0, 6.0) });
+            if !resp.dragged() {
+                out.started = true;
+                out.stopped = true;
+            }
         }
         out.started |= resp.drag_started();
         out.stopped |= resp.drag_stopped();
@@ -821,10 +824,11 @@ pub fn rows_fit(top: f32, bottom: f32, fx_rows: usize, send_rows: usize, scroll:
     if spare >= 0.0 {
         return full;
     }
-    // At least three, so the last effect, the one before it and the plus stay in sight.
+    // At least two, so the last effect and the plus stay in sight; the wheel reaches the rest. Three
+    // took the fader below its least height in a short mixer once the strip had grown.
     let shown = total
         .saturating_sub((-spare / 17.0).ceil() as usize)
-        .max(3)
+        .max(2)
         .min(total);
     let mut fit = rows(top, shown, send_rows);
     fit.fx_total = total;
@@ -1034,11 +1038,9 @@ fn send_slot(
         uid.with("level"),
         Sense::click_and_drag(),
     );
-    if kresp.dragged() {
-        send.level = (send.level - kresp.drag_delta().y * 0.01).clamp(0.0, 1.0);
-    }
-    if kresp.double_clicked() {
-        send.level = 0.0;
+    // The same gestures as every knob; reset is no send.
+    if let Some(v) = crate::widgets::value_gesture(ui, &kresp, send.level, 0.0, 0.01, 0.02) {
+        send.level = v.clamp(0.0, 1.0);
     }
     crate::widgets::value_arc(g, knob_c, 8.2, -1.0, send.level * 2.0 - 1.0);
     g.circle_filled(knob_c, 6.5, crate::theme::gray(0x32));
@@ -4761,13 +4763,15 @@ mod tests {
         let mut v = MixerView::default();
         for offset in (6..240).step_by(6) {
             h.settle(|ui| draw_slot(ui, &mut p, &mut v));
+            // Duplicate Effect is above Remove in the menu: what counts is one going.
+            let before = p.tracks[0].inserts.len();
             let centre = SLOT.center();
             h.right_click(centre, |ui| draw_slot(ui, &mut p, &mut v));
             h.settle(|ui| draw_slot(ui, &mut p, &mut v));
             h.click(pos2(centre.x + 10.0, SLOT.bottom() + offset as f32), |ui| {
                 draw_slot(ui, &mut p, &mut v)
             });
-            if p.tracks[0].inserts.is_empty() {
+            if p.tracks[0].inserts.len() < before {
                 found = true;
                 break;
             }

@@ -811,6 +811,11 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             midi_channel: t.midi_channel,
             midi_in_port: t.midi_in_port.clone(),
             midi_in_channel: t.midi_in_channel,
+            cells: t
+                .cells
+                .iter()
+                .map(|c| c.as_ref().map(|r| region_to_doc(t, r, &mut media, &mut by_source)))
+                .collect(),
             input: match t.input {
                 InputSource::Mono(c) | InputSource::Stereo(c) => c,
             },
@@ -1297,6 +1302,17 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
     let mut tracks = Vec::new();
     for t in &doc.tracks {
         let regions = regions_from_doc(&t.regions, &mut opened, &mut warnings, media_dir, ctx);
+        let cells: Vec<Option<Region>> = t
+            .cells
+            .iter()
+            .map(|c| {
+                c.as_ref().and_then(|r| {
+                    regions_from_doc(std::slice::from_ref(r), &mut opened, &mut warnings, media_dir, ctx)
+                        .into_iter()
+                        .next()
+                })
+            })
+            .collect();
         tracks.push(Track {
             name: t.name.clone(),
             kind: kind_from_doc(t.kind),
@@ -1369,6 +1385,9 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
             midi_channel: t.midi_channel.clamp(1, 16),
             midi_in_port: port_name(&t.midi_in_port),
             midi_in_channel: t.midi_in_channel.min(16),
+            cells,
+            launched: None,
+            launch_loops: Vec::new(),
             input: input_source(t.input, t.input_stereo),
             hardware_out: t.hardware_out,
             aux_bus: t.aux_bus.min(ovrtone_engine::MAX_BUSES as u16),

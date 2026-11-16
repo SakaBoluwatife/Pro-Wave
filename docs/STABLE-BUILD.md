@@ -35,6 +35,8 @@ Today every MIDI input port is opened and their notes are merged (`midi_in.rs`),
 
 ## 4. Controllers: MIDI CC and Mackie Control
 
+**Status (2026-11-16): Mackie Control built.** `control_surface.rs`, Settings > General > Control surface: faders (motorised ones follow, not under a touching hand), V-Pots for pan, Rec, Solo, Mute and Select with lights, bank and channel buttons, transport and jog, track names on the display, meters. Its port plays no notes. Left: HUI, sends on the V-Pots, an assignment page for single knobs and faders.
+
 MIDI learn exists (`midi_learn.rs`) for single controls.
 
 - Controller assignments: a page of what each knob and fader does, saved per controller and per project.
@@ -43,7 +45,7 @@ MIDI learn exists (`midi_learn.rs`) for single controls.
 
 ## 5. Waves plugins: Ovrtone stops responding
 
-**Status (2026-11-15): built.** Plugins in their own process load without blocking the window (`PendingLoad` in `bridge.rs`); after 2 minutes the status line says the plugin may be waiting on its own window; removing it from the slot stops the wait; the helper may bring its windows to the front; the launch screen stops staying on top once plugins load; the plugin load screen can be clicked away after 10 seconds. Left: a Loading label with Cancel on the slot, in-process loads (they still run on the UI thread), the Lemon ideas below.
+**Status (2026-11-15): built.** Plugins in their own process load without blocking the window (`PendingLoad` in `bridge.rs`); after 2 minutes the status line says the plugin may be waiting on its own window; removing it from the slot stops the wait; the helper may bring its windows to the front; the launch screen stops staying on top once plugins load; the plugin load screen can be clicked away after 10 seconds. Since: no Loading label (owner: other DAWs have none); one plugin process is started ahead of time so the next plugin file opens without waiting for one; a project's plugins in their own processes load side by side; a CLAP file stays loaded for the session once opened, as `.vst3` files already did, so its next insert, in any project, is quick. Plugins load inside Ovrtone (quickest); one that closed Ovrtone while loading runs in its own process from then on, by itself (as Reaper and Bitwig do), instead of being blocked. Left: in-process loads still run on the UI thread, the Lemon ideas below.
 
 Seen with Clarity Vx Pro, with "Run plugins in their own process" on: Windows says Ovrtone stopped responding. Cause found: `PluginRack::sync` (`plugin_rack.rs`) loads plugins on the UI thread, and an isolated load waits up to `LOAD_WAIT` (15 minutes, `bridge.rs`) for the helper. A slow plugin (Clarity loads an AI model) or one waiting on a hidden licence dialog freezes the window.
 
@@ -77,10 +79,14 @@ Replaces the drop rule in `sample_place.rs` (hits to the Channel Rack, stems and
 
 ## 7. Updates between builds
 
+**Status (2026-11-15): script written.** `dist/windows/patch.iss`: same AppId, installs only `ovrtone.exe` and the documents into the folder the full installer used (from Windows' uninstall entry), refuses to run where Ovrtone is not installed, updates the version Windows shows. Compiles (checked with `ISCC /O-`); no patch made yet.
+
 - From now on, changes ship as an update patch, not a full installer: a small Inno Setup installer with the same AppId that replaces only what changed (usually `ovrtone.exe` and the docs) in an existing install, and refuses to run where Ovrtone is not installed.
 - The full installer (with the Stem Splitter files and the VC++ runtime) is made once, for the final build.
 
 ## 8. Capture Recording for audio, longer and wider
+
+**Status (2026-11-15): partly built.** Settings > General: Capture Recording reaches back 1, 5 or 10 minutes; over a minute is kept in a file on disk by the writer thread (`DiskHistory` in `capture.rs`, at most 4 GB). Left: capture while stopped, capture from inputs no track is armed on.
 
 Capture Recording (Shift+R) already works for audio: the last 60 seconds of the inputs are kept in memory (`ovrtone-engine/src/capture.rs`, `HISTORY_SECONDS`), and the last playback is cut out onto the armed or monitoring tracks (`audio_rec.rs` `capture_played`).
 
@@ -89,6 +95,8 @@ Capture Recording (Shift+R) already works for audio: the last 60 seconds of the 
 - Capture from any input, not only armed tracks.
 
 ## 9. "Coming from" another DAW (owner's idea, 2026-11-15)
+
+**Status (2026-11-15): partly built.** A first-launch window, also in Settings > General: Logic, FL Studio, Ableton Live, Pro Tools. It sets the key commands (an Ableton Live set is new) and the starting layout. Left: Pro Tools edit modes and Tab to transient, a clip launcher, tooltips with the other DAW's words.
 
 Not a copy of another DAW's look (their artwork and trade dress stay theirs), but its habits:
 
@@ -112,7 +120,7 @@ Logic's behaviour, our own artwork.
 
 1. Licensing before a public release: Ovrtone is a fork of GPL Pro Wave. Publish the source, get the authors' permission, or rewrite their parts (see the licensing note in memory).
 2. Session exchange: AAF and OMF import, and the open DAWproject format.
-3. The audio interface unplugged or asleep: pause cleanly and come back when it returns.
+3. The audio interface unplugged or asleep: pause cleanly and come back when it returns. **Built (2026-11-15):** the engine notices the device going (`device_lost`), Ovrtone stops, says so, and starts again on the same device when it is back, looking every 2 seconds.
 4. Old projects keep opening: a set of saved test projects opened on every build.
 5. High-DPI scaling and windows on a second monitor.
 6. Code signing for the installer and the program.
@@ -120,7 +128,7 @@ Logic's behaviour, our own artwork.
 
 ## 12. Scale highlighting in the Piano Roll
 
-**Status (2026-11-15): partly built.** Rows follow the project key unless Scale Quantize has its own scale; root rows stronger; marks on the piano keys; Stick to Scale for new and moved notes. Left: Fold to scale, the Channel Rack's piano roll and step pitch.
+**Status (2026-11-15): built.** Rows follow the project key unless Scale Quantize has its own scale; root rows stronger; marks on the piano keys; Stick to Scale; Fold to Scale; the Channel Rack's small piano roll shows the key's rows. Left: the step pitch box marking scale notes.
 
 Today the rows of a scale are tinted only once a scale is picked for Scale Quantize (`piano_roll.rs`, `scale_root`, `MODES`).
 
@@ -132,7 +140,7 @@ Today the rows of a scale are tinted only once a scale is picked for Scale Quant
 
 ## 13. MP3 quality, in and out
 
-**Status (2026-11-15): built, but the round-trip test is not written yet.** Gapless import (symphonia) and export (LAME info frame); a mix over full scale is turned down instead of clipped; above 48 kHz Ovrtone's own resampler; Quality in the Bounce window: 320, VBR V0, 256, 192, 128.
+**Status (2026-11-15): built and tested.** The round-trip test (length and line-up within a frame) found the end of every MP3 cut short by the encoder's flush; fixed. Gapless import (symphonia) and export (LAME info frame); a mix over full scale is turned down instead of clipped; above 48 kHz Ovrtone's own resampler; Quality in the Bounce window: 320, VBR V0, 256, 192, 128.
 
 Export today (`audio_encode.rs` `mp3`): 320 kbps CBR, LAME quality Best, samples hard-clamped to full scale, rates above 48 kHz resampled by LAME. Import (`ovrtone-engine/src/disk.rs`): symphonia with `FormatOptions::default()`, so gapless trimming is off.
 
@@ -166,6 +174,8 @@ None of these are stock instruments or effects. Their habits, not their look.
 - **Voice tag on MP3 exports** for beat stores, one click in For Beat Store.
 
 ## 15. A premium feel
+
+**Status (2026-11-16):** the Project Chooser has tiles that lift on hover, rounded pictures, when each project was last saved, a fade-in, arrow keys and a welcome line; send knobs take the same gestures; an empty project says how to begin. Before that: **Status (2026-11-15): started.** Soft shadows under windows and menus, controls that grow a hair on hover, 0.12 s motion, quicker tooltips; one set of gestures on the mixer fader, pan knob, effect knobs and sampler knobs (`widgets::value_gesture`: Shift or Ctrl for fine, Alt-click or double-click to reset, wheel to nudge); each tool's picture as the pointer in the Tracks area and the Piano Roll. Left: send knobs and other sliders, the start screen, empty-place hints, plugin windows remembering place per project, the colours left outside `theme.rs`.
 
 Adds to section 10.
 

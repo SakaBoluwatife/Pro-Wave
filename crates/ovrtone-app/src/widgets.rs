@@ -13,6 +13,43 @@ pub fn wheel_pointer(ui: &Ui) -> Option<Pos2> {
     (ui.clip_rect().contains(at) && on_top.is_none_or(|layer| layer == ui.layer_id())).then_some(at)
 }
 
+/// The same gestures on every value control (knob, fader, slider), as in Logic:
+/// - drag up or down; Shift or Ctrl held moves it a tenth as far, for fine changes;
+/// - Alt+click or double-click puts it back to its default;
+/// - the mouse wheel over it nudges it.
+///
+/// `value` and `default` are where it is and where it goes back to, `per_px` how much a pixel of
+/// dragging moves it, `step` how much a notch of the wheel does. Returns the new value, unclamped.
+pub fn value_gesture(
+    ui: &Ui,
+    resp: &egui::Response,
+    value: f32,
+    default: f32,
+    per_px: f32,
+    step: f32,
+) -> Option<f32> {
+    let (alt, fine) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.ctrl));
+    if resp.double_clicked() || (resp.clicked() && alt) {
+        return Some(default);
+    }
+    let scale = if fine { 0.1 } else { 1.0 };
+    if resp.dragged() {
+        let dy = resp.drag_delta().y;
+        if dy != 0.0 {
+            return Some(value - dy * per_px * scale);
+        }
+    }
+    if resp.hovered() && !resp.dragged() {
+        let notches = ui.input(|i| i.smooth_scroll_delta.y) / 40.0;
+        if notches != 0.0 {
+            // Taken here, so the list under the control does not scroll as well.
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+            return Some(value + notches * step * scale);
+        }
+    }
+    None
+}
+
 pub fn text_col() -> Color32 {
     crate::theme::text()
 }

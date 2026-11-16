@@ -18,6 +18,10 @@ mod autosave;
 mod bench;
 mod bounce;
 mod channel_rack;
+mod clip_launcher;
+mod coming_from;
+mod feedback;
+mod control_surface;
 mod chord_track;
 mod engine_sync;
 mod event_list;
@@ -168,6 +172,16 @@ pub struct UiState {
     pub beat_store: Option<beat_store::Pending>,
     /// The For Beat Store window: which stores open after the export.
     pub beat_store_dialog: Option<beat_store::Dialog>,
+    /// The "coming from" window: which program the user knows.
+    pub coming_from: coming_from::ComingFrom,
+    /// The clip launcher window (F10).
+    pub launcher: clip_launcher::LauncherView,
+    /// Help > Send Feedback.
+    pub feedback: feedback::FeedbackView,
+    /// The audio device went away: when it was last looked for.
+    pub audio_lost: Option<std::time::Instant>,
+    /// The Mackie Control surface's MIDI port, as chosen in Settings.
+    pub surface_port: Option<String>,
     /// The Note Pad.
     pub show_notes: bool,
     /// The Loop Browser and All Files.
@@ -334,6 +348,11 @@ impl UiState {
             bus_plugin_editor: None,
             beat_store: None,
             beat_store_dialog: None,
+            coming_from: coming_from::ComingFrom::default(),
+            launcher: clip_launcher::LauncherView::default(),
+            feedback: feedback::FeedbackView::default(),
+            audio_lost: None,
+            surface_port: control_surface::chosen(),
             show_notes: false,
             browser: file_browser::BrowserView::default(),
             left_tab: left_panel::LeftTab::default(),
@@ -459,6 +478,10 @@ struct App {
     midi: Option<midi_in::MidiIn>,
     /// Sends the notes of External MIDI tracks to their ports (none while benchmarking).
     midi_out: Option<midi_out::MidiOut>,
+    /// The Mackie Control surface, while one is chosen and connected.
+    surface: Option<control_surface::Surface>,
+    /// When the chosen surface was last looked for.
+    surface_tried: Option<std::time::Instant>,
     /// Reads MIDI Time Code from the project's port (none while benchmarking).
     mtc_in: Option<mtc_in::MtcIn>,
     /// Makes the transport follow that time code.
@@ -926,7 +949,94 @@ impl App {
 
     /// Changes the audio driver, device or buffer size: a new engine, which plays the project from
     /// where the old one was. If the choice will not start, the usual device plays and it says so.
+    /// The control surface: opened when one is chosen (looked for again every few seconds while it
+    /// is not there), its port kept out of note input, and run once a frame.
+    fn run_surface(&mut self, levels: &[f32]) {
+        let wanted = self.ui.surface_port.clone();
+        if self.surface.as_ref().map(|s| &s.port) != wanted.as_ref() {
+            self.surface = None;
+        }
+        if let Some(midi) = self.midi.as_mut() {
+            midi.avoid_surface(wanted.as_deref());
+        }
+        let Some(port) = wanted else {
+            return;
+        };
+        if self.surface.is_none() {
+            let due = self
+                .surface_tried
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3));
+            if !due {
+                return;
+            }
+            self.surface_tried = Some(std::time::Instant::now());
+            match control_surface::Surface::open(&port) {
+                Ok(surface) => {
+                    self.surface = Some(surface);
+                    self.ui.status = Some(format!("Control surface: {port}"));
+                }
+                Err(e) => tracing::info!("control surface {port}: {e}"),
+            }
+        }
+        if let Some(surface) = self.surface.as_mut() {
+            if surface.update(&mut self.project, levels) {
+                self.project.song_rev += 1;
+            }
+        }
+    }
+
+    /// The audio device went away (unplugged, or the computer slept): Ovrtone stops cleanly, says
+    /// so, and starts again on the same device when it is back, looking every two seconds.
+    fn watch_audio_device(&mut self, ctx: &egui::Context) {
+        if self.sync.as_ref().is_some_and(|s| s.engine.device_lost()) {
+            if let Some(sync) = self.sync.as_mut() {
+                sync.collect_plugin_states(&mut self.project);
+            }
+            self.project.playing = false;
+            self.project.recording = false;
+            self.midi_out = None;
+            self.ui.mastering.tap = None;
+            self.sync = None;
+            self.ui.audio_lost = Some(std::time::Instant::now());
+            self.ui.status = Some(
+                "The audio device went away. Ovrtone has stopped, and starts again when it is back."
+                    .to_string(),
+            );
+        }
+        let Some(since) = self.ui.audio_lost else {
+            return;
+        };
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        if since.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.ui.audio_lost = Some(std::time::Instant::now());
+        let setup = self.ui.settings.setup.clone();
+        // Only the device that went away: not the default in its place.
+        if let Ok(engine) = ovrtone_engine::Engine::start_chosen(
+            &setup.system,
+            &setup.device,
+            setup.buffer,
+            setup.rate,
+        ) {
+            self.ui.audio_lost = None;
+            self.adopt_engine(engine);
+            self.ui.status = Some("The audio device is back.".to_string());
+        }
+    }
+
+    /// Runs the project on `engine`.
+    fn adopt_engine(&mut self, engine: ovrtone_engine::Engine) {
+        let mut sync = engine_sync::EngineSync::new(engine, &self.project);
+        self.midi_out = sync
+            .take_midi_out()
+            .zip(sync.take_mtc_out())
+            .map(|(notes, mtc)| midi_out::MidiOut::start(notes, mtc));
+        self.sync = Some(sync);
+    }
+
     fn restart_audio(&mut self, setup: &settings::AudioSetup) {
+        self.ui.audio_lost = None;
         if let Some(sync) = self.sync.as_mut() {
             sync.collect_plugin_states(&mut self.project);
         }
@@ -1004,7 +1114,7 @@ impl App {
             show_scan_on_launch_screen(scan);
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        ovrtone_host::splash::step("Opening the window", 0.97);
+        launch_step("Opening the window", 0.97);
     }
 
     /// Holds the launch until the plugins of the project asked for are loaded, or have failed, showing
@@ -1037,7 +1147,7 @@ impl App {
             let done = total.saturating_sub(left);
             let name = next.unwrap_or_default();
             let part = done as f32 / total.max(1) as f32;
-            ovrtone_host::splash::step(
+            launch_step(
                 &format!("Loading plugins: {} of {total}, {name}", done + 1),
                 0.95 + 0.04 * part,
             );
@@ -1154,7 +1264,7 @@ fn show_scan_on_launch_screen(scan: &plugin_scan::PluginScan) {
     } else {
         done as f32 / total as f32
     };
-    ovrtone_host::splash::step(&words, 0.3 + 0.65 * part);
+    launch_step(&words, 0.3 + 0.65 * part);
 }
 
 impl eframe::App for App {
@@ -1196,6 +1306,12 @@ impl eframe::App for App {
         menus::expire_status(&ctx, &mut self.ui);
         beat_store::poll(&mut self.ui);
         beat_store::dialog(&ctx, &self.project, &mut self.ui);
+        if !self.ui.launching {
+            coming_from::on_launch(&mut self.ui);
+        }
+        coming_from::window(&ctx, &mut self.ui);
+        clip_launcher::window(&ctx, &mut self.project, &mut self.ui);
+        feedback::window(&ctx, &mut self.ui);
         // MIDI from Melodyne: the plugin is asked for the notes it found.
         if let Some(t) = self.ui.ara_midi.take() {
             let result = match self.sync.as_mut() {
@@ -1580,8 +1696,10 @@ impl eframe::App for App {
         performance::show(&ctx, p, s);
         import_log_window(&ctx, s);
         fx_ui::show(&ctx, p, s, &meters);
+        let levels: Vec<f32> = meters.tracks.iter().map(|(l, r)| l.max(*r)).collect();
         automation::show(&ctx, p, s);
 
+        self.run_surface(&levels);
         side_panes::quick_help(&ctx, &mut self.ui);
         for path in std::mem::take(&mut self.ui.open_paths) {
             self.import(&path, &ctx);
@@ -1589,6 +1707,7 @@ impl eframe::App for App {
         if let Some(setup) = self.ui.settings.apply.take() {
             self.restart_audio(&setup);
         }
+        self.watch_audio_device(&ctx);
         if let Some(driver) = self.ui.settings.panel_wanted.take() {
             // The driver has to be free before its panel can have it.
             if let Some(sync) = self.sync.as_mut() {
@@ -1990,6 +2109,7 @@ fn main() -> eframe::Result {
     settings::load_view();
     #[cfg(windows)]
     ovrtone_host::set_isolation(settings::plugin_isolation());
+    ovrtone_engine::set_capture_minutes(settings::capture_minutes());
     bench::mark_start();
     // Started by an update that is waiting for the program to close: put the update in place.
     if updater::run_helper_if_requested() {
@@ -2081,11 +2201,12 @@ fn main() -> eframe::Result {
         wgpu_options,
         ..Default::default()
     };
+    tracing::info!("launch: {:.0} ms, making the window", bench::since_start_ms());
     let result = eframe::run_native(
         "Ovrtone",
         opts,
         Box::new(|cc| {
-            ovrtone_host::splash::step("Loading the interface", 0.1);
+            launch_step("Loading the interface", 0.1);
             themes::load_chosen();
             theme::load_type();
             theme::install_fonts(&cc.egui_ctx);
@@ -2102,7 +2223,7 @@ fn main() -> eframe::Result {
             };
             let mut audio_error = None;
             let mut midi_out = None;
-            ovrtone_host::splash::step("Starting the audio engine", 0.15);
+            launch_step("Starting the audio engine", 0.15);
             // What was chosen in Settings, or the usual device if that will not start.
             let setup = settings::AudioSetup::load();
             let started = ovrtone_engine::Engine::start_chosen(
@@ -2133,7 +2254,7 @@ fn main() -> eframe::Result {
                     None
                 }
             };
-            ovrtone_host::splash::step("Connecting MIDI", 0.25);
+            launch_step("Connecting MIDI", 0.25);
             let mut app = App {
                 autosave: autosave::Autosave::default(),
                 saved: file_commands::content(&project),
@@ -2148,6 +2269,8 @@ fn main() -> eframe::Result {
                 frames_since_record: 0,
                 midi: (!measuring).then(midi_in::MidiIn::new),
                 midi_out,
+                surface: None,
+                surface_tried: None,
                 mtc_in: (!measuring).then(|| mtc_in::MtcIn::new(cc.egui_ctx.clone())),
                 chase: mtc_in::Chase::default(),
                 updater: updater::Updater::new(),
@@ -2162,9 +2285,11 @@ fn main() -> eframe::Result {
             {
                 app.native_menu = Some(native_menu::NativeMenu::install(&cc.egui_ctx));
             }
-            ovrtone_host::splash::step("Looking for plugins", 0.3);
+            launch_step("Looking for plugins", 0.3);
             if !measuring {
                 app.ui.plugins.clap.start(false, &cc.egui_ctx);
+                // A plugin process started now, so the first plugin opens without waiting for one.
+                ovrtone_host::warm_up();
                 app.wait_for_launch_scan();
                 app.ui.launching = true;
             }
@@ -2391,4 +2516,11 @@ fn import_log_window(ctx: &egui::Context, s: &mut UiState) {
     if !open {
         s.import_log = None;
     }
+}
+
+/// A step of the launch: shown on the launch screen and timed in the log (`RUST_LOG=info`), so a
+/// slow start shows where its time goes.
+fn launch_step(words: &str, fraction: f32) {
+    tracing::info!("launch: {:.0} ms, {words}", bench::since_start_ms());
+    ovrtone_host::splash::step(words, fraction);
 }

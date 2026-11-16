@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "ovrtone-app"
-version = "1.0.0-beta.1"
+version = "1.0.0"
 dependencies = [
  "assert_no_alloc",
  "base64",

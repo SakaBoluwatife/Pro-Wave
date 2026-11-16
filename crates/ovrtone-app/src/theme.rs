@@ -687,8 +687,31 @@ pub fn apply(ctx: &egui::Context) {
         v.widgets.hovered.bg_stroke = Stroke::new(2.0, accent());
         v.selection.stroke = Stroke::new(2.0, accent());
     }
+    // Depth: windows and menus float on a soft shadow, as on a pro desktop app, not a hard edge.
+    v.window_shadow = egui::Shadow {
+        offset: [0, 10],
+        blur: 28,
+        spread: 0,
+        color: Color32::from_black_alpha(110),
+    };
+    v.popup_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_black_alpha(90),
+    };
+    // A control answers the pointer: it grows a hair on hover and settles back when pressed.
+    v.widgets.hovered.expansion = 1.0;
+    v.widgets.active.expansion = 0.0;
+    v.slider_trailing_fill = true;
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
+        // Motion: hover, press, panels and scrolling ease in about a tenth of a second.
+        s.animation_time = 0.12;
+        // Tooltips come quickly once the pointer rests, and the next one at once.
+        s.interaction.tooltip_delay = 0.35;
+        s.interaction.tooltip_grace_time = 0.6;
+        s.interaction.show_tooltips_only_when_still = true;
         s.spacing.item_spacing = egui::vec2(ITEM_SPACING, 4.0);
         s.spacing.button_padding = egui::vec2(6.0, 2.0);
         s.text_styles

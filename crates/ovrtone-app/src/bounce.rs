@@ -2110,11 +2110,24 @@ mod tests {
         assert!(worst < 1e-6, "FLAC loses nothing: {worst}");
         let flac16 = make(FileFormat::Flac, BitDepth::Int16, "b.flac");
         assert_eq!(flac16.len(), wav.len());
-        // An MP3 file is padded to its frames and starts late by the encoder's delay.
+        // Gapless: the encoder's delay and padding are written into the file and left out when it is
+        // read, so the MP3 is as long as the WAV and lines up with it.
         let mp3 = make(FileFormat::Mp3, BitDepth::Int24, "a.mp3");
-        assert!(mp3.len().abs_diff(wav.len()) <= 4000, "{}", mp3.len());
+        assert!(mp3.len().abs_diff(wav.len()) <= 2 * 64, "{} and {}", mp3.len(), wav.len());
         let (a, b) = (rms(&wav), rms(&mp3));
         assert!((a - b).abs() / a < 0.1, "{a} and {b}");
+        let left = |s: &[f32], from: usize| s.iter().skip(from * 2).step_by(2).take(RATE as usize / 2).copied().collect::<Vec<f32>>();
+        let reference = left(&wav, 4096);
+        let best = (-64i32..=64)
+            .max_by(|x, y| {
+                let dot = |lag: i32| {
+                    let shifted = left(&mp3, (4096 + lag) as usize);
+                    reference.iter().zip(&shifted).map(|(a, b)| a * b).sum::<f32>()
+                };
+                dot(*x).total_cmp(&dot(*y))
+            })
+            .unwrap();
+        assert!(best.abs() <= 1, "the MP3 starts {best} frames off");
     }
 
     #[test]
