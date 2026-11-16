@@ -597,6 +597,8 @@ pub struct PendingLoad {
     id: String,
     began: Instant,
     done: bool,
+    /// The helper was let bring its windows to the front (only once the load is slow).
+    fronted: bool,
 }
 
 impl PendingLoad {
@@ -609,6 +611,13 @@ impl PendingLoad {
     pub fn poll(&mut self) -> Option<Result<Loaded, HostError>> {
         if self.done {
             return None;
+        }
+        // A load this slow is likely showing a window of its own (a licence, a sign-in): only now
+        // may the helper bring it to the front. Before, it could take the keyboard from Ovrtone in
+        // the middle of playing, and every key then got Windows' error sound.
+        if !self.fronted && self.waited() >= SLOW_TO_FRONT {
+            self.fronted = true;
+            allow_to_front(self.helper.pid);
         }
         let mut reply = self.helper.stray.lock().ok()?.remove(&self.request);
         if reply.is_none() {
@@ -686,8 +695,6 @@ pub fn start_isolated(
 ) -> Result<PendingLoad, HostError> {
     let helper = helper_for(path)?;
     let (instance, notes, shm, name) = prepare_isolated(&helper)?;
-    // The helper may bring a licence or activation window of the plugin to the front.
-    allow_to_front(helper.pid);
     let request = helper.next_id.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut waiting) = helper.waiting.lock() {
         waiting.insert(request);
@@ -702,8 +709,12 @@ pub fn start_isolated(
         id: id.to_string(),
         began: Instant::now(),
         done: false,
+        fronted: false,
     })
 }
+
+/// How long a load runs before its helper may bring a window to the front.
+const SLOW_TO_FRONT: Duration = Duration::from_secs(4);
 
 fn allow_to_front(pid: u32) {
     use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;

@@ -15,6 +15,8 @@ pub const STEP_BEATS: f32 = 0.25;
 /// How close a note must start to a step to be that step.
 const ON_STEP: f32 = 0.002;
 const DEFAULT_STEPS: usize = 16;
+/// The longest a pattern can be (as a saved project allows): 16 bars of sixteenths.
+const MAX_PATTERN_STEPS: usize = 256;
 const DEFAULT_STEP_PITCH: u8 = 60;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,6 +359,34 @@ pub fn sync(p: &mut Project) {
             let expected = sorted(looped(lane, pattern_len, len));
             if sorted(region.notes.clone()) != expected {
                 let notes = region.notes.clone();
+                // An edit past the pattern's first pass (more kicks, a roll in bar 3): the Piano
+                // Roll wins, as in FL Studio. The pattern grows to the clip's length, its other
+                // channels repeated to keep their sound, and this channel takes the clip's notes.
+                let past_first = |ns: &[Note]| -> Vec<Note> {
+                    sorted(ns.iter().filter(|n| n.start >= pattern_len).copied().collect())
+                };
+                let beyond = len > pattern_len + 1e-4 && past_first(&notes) != past_first(&expected);
+                if beyond {
+                    let steps = (len / STEP_BEATS).ceil() as usize;
+                    if steps > MAX_PATTERN_STEPS {
+                        // Too long for a pattern: the clip keeps the edit as notes of its own.
+                        let region = &mut p.tracks[t].regions[r];
+                        region.params.pattern = 0;
+                        region.params.pattern_color = None;
+                        continue;
+                    }
+                    let pattern = &mut p.patterns[at];
+                    for lane in &mut pattern.lanes {
+                        lane.notes = looped(&lane.notes, pattern_len, len);
+                    }
+                    pattern.steps = steps;
+                    pattern.lane_mut(channel).notes = notes;
+                    taken.push((id, channel));
+                    if !changed.contains(&id) {
+                        changed.push(id);
+                    }
+                    continue;
+                }
                 take_back(p.patterns[at].lane_mut(channel), &notes, pattern_len, len);
                 taken.push((id, channel));
                 if !changed.contains(&id) {
@@ -382,6 +412,17 @@ pub fn place_on(p: &mut Project, id: u64, t: usize, bar: f32) -> Option<usize> {
     let name = p.tracks.get(t).map_or_else(String::new, |x| x.name.clone());
     let channel = channel_of(p, t);
     let bar_len = p.bar_len_at(p.bar_to_beats(f64::from(bar) - 1.0)).max(1e-3);
+    // A MIDI clip already starting at this bar on this track is replaced, not stacked under the
+    // new one (two clips playing at once on one track). Audio stays.
+    if let Some(track) = p.tracks.get_mut(t) {
+        let before = track.regions.len();
+        track
+            .regions
+            .retain(|r| r.audio.is_some() || (r.start_bar - bar).abs() >= 1e-3);
+        if track.regions.len() != before {
+            p.song_rev += 1;
+        }
+    }
     let r = p.add_midi_region(t, bar)?;
     let region = &mut p.tracks[t].regions[r];
     region.name = name;
@@ -583,6 +624,28 @@ mod tests {
         sync(&mut p);
         assert_eq!(p.tracks[0].regions[0].notes.len(), 1);
         assert_eq!(pattern(&mut p, id).lane(ca).unwrap().notes.len(), 2);
+    }
+
+    #[test]
+    fn a_piano_roll_edit_past_the_first_pass_wins_and_grows_the_pattern() {
+        let (mut p, id, ca, _) = project();
+        place(&mut p, id, 1.0);
+        p.tracks[0].regions[0].len_bars = 2.0;
+        sync(&mut p);
+        let before = p.tracks[0].regions[0].notes.len();
+        // A kick added in the second bar, in the Piano Roll.
+        let mut kick = p.tracks[0].regions[0].notes[0];
+        kick.start = 6.0;
+        p.tracks[0].regions[0].notes.push(kick);
+        sync(&mut p);
+        assert_eq!(pattern(&mut p, id).steps, 32, "the pattern is now the clip's two bars");
+        let lane = pattern(&mut p, id).lane(ca).unwrap();
+        assert!(lane.notes.iter().any(|n| n.start == 6.0), "the edit is in the pattern");
+        assert_eq!(p.tracks[0].regions[0].notes.len(), before + 1, "and it is what plays");
+        // Settled: nothing more happens.
+        let rev = p.song_rev;
+        sync(&mut p);
+        assert_eq!(p.song_rev, rev);
     }
 
     #[test]

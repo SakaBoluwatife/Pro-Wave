@@ -54,7 +54,10 @@ pub fn add_plugin(p: &mut Project, track: usize, info: &PluginInfo) -> Result<()
     if t.inserts.len() + t.plugins.len() >= MAX_INSERTS {
         return Err(format!("{} has no free insert slot", t.name));
     }
-    t.plugins.push(PluginInsert::new(info));
+    // After everything on the strip, built-in effects included: they share one order.
+    let mut new = PluginInsert::new(info);
+    new.row = crate::model::next_row(t.inserts.len(), &t.plugins).min(usize::from(u8::MAX)) as u8;
+    t.plugins.push(new);
     p.selected_track = track;
     Ok(())
 }
@@ -69,8 +72,7 @@ pub fn add_effect_in_row(
     add_plugin(p, track, info)?;
     let t = &mut p.tracks[track];
     if let Some(new) = t.plugins.pop() {
-        let first = t.inserts.len();
-        crate::model::place_plugin_in_row(first, &mut t.plugins, new, row);
+        crate::model::place_plugin_in_row(0, &mut t.plugins, new, row);
     }
     Ok(())
 }
@@ -401,6 +403,8 @@ pub struct Rack {
     pending: HashMap<u64, ovrtone_host::PendingLoad>,
     /// Plugins whose slow load the user was told about.
     slow_told: Vec<u64>,
+    /// Where each instance's window was in this project (from `PluginInsert::window_at`).
+    instance_at: HashMap<u64, (i32, i32)>,
 }
 
 /// A load this long gets a word to the user: the plugin may be waiting on a window of its own.
@@ -743,7 +747,7 @@ impl Rack {
                 format!("{title} is not loaded yet: its window opens when it is")
             });
         };
-        let at = self.positions().get(&id).copied();
+        let at = self.instance_at.get(&uid).copied().or_else(|| self.positions().get(&id).copied());
         self.touched = true;
         let Some(live) = self.live.get_mut(&uid) else {
             return Err(format!("{title} is not running"));
@@ -838,7 +842,8 @@ impl Rack {
             self.slow_told.retain(|uid| present.contains(uid));
         }
         let mut closed = Vec::new();
-        for live in self.live.values_mut() {
+        let mut closed_uids: Vec<(u64, (i32, i32))> = Vec::new();
+        for (uid, live) in self.live.iter_mut() {
             live.loaded.tick();
             self.touched |= live.loaded.take_dirty();
             if let Some(why) = live.loaded.take_failure() {
@@ -846,10 +851,25 @@ impl Rack {
             }
             if let Some(at) = live.loaded.take_closed_position() {
                 closed.push((live.id.clone(), at));
+                closed_uids.push((*uid, at));
             }
         }
         for (id, at) in closed {
             self.remember_position(&id, at);
+        }
+        // Each instance's own place, kept in the project, so its window opens there again.
+        for (uid, at) in closed_uids {
+            if let Some(plugin) = p.all_hosted_mut().find(|i| i.uid == uid) {
+                if plugin.window_at != Some(at) {
+                    plugin.window_at = Some(at);
+                }
+            }
+        }
+        self.instance_at.clear();
+        for plugin in p.all_hosted_mut() {
+            if let Some(at) = plugin.window_at {
+                self.instance_at.insert(plugin.uid, at);
+            }
         }
         self.restart_crashed(p, engine, message);
         self.retiring.retain(|r| !r.released());
@@ -1166,7 +1186,7 @@ impl Rack {
             if let Some(at) = self.reopen.iter().position(|u| *u == uid) {
                 self.reopen.remove(at);
                 let name = plugin.name.clone();
-                let place = self.positions().get(&id).copied();
+                let place = self.instance_at.get(&uid).copied().or_else(|| self.positions().get(&id).copied());
                 if let Err(e) = loaded.open_editor(&name, self.owner, place) {
                     *message = Some(e.to_string());
                 }

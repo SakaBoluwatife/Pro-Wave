@@ -2123,15 +2123,43 @@ impl EngineCore {
             in_r[j] = f64::from(xr);
         }
         // ...then the effects over the span, one at a time...
+        let side = |s: usize, j: usize| {
+            if s < MAX_TRACKS {
+                (this.side_l[s][j], this.side_r[s][j])
+            } else {
+                (0.0, 0.0)
+            }
+        };
+        // A plugin put above one of the built-in effects: the strip's rows run in their order, each
+        // over the span (a plugin a frame at a time within it). Else, as always: every built-in
+        // effect, then the plugins frame by frame below.
+        let mixed = chain
+            .as_ref()
+            .is_some_and(|c| c.mixes_with(|slot| plugins.get(slot).is_some_and(Option::is_some)));
         if let Some(chain) = chain.as_mut() {
             chain.set_tempo(transport.tempo as f32);
-            chain.process_block(&mut in_l[..n], &mut in_r[..n], |s, j| {
-                if s < MAX_TRACKS {
-                    (this.side_l[s][j], this.side_r[s][j])
-                } else {
-                    (0.0, 0.0)
+            if !mixed {
+                chain.process_block(&mut in_l[..n], &mut in_r[..n], side);
+            }
+        }
+        if mixed {
+            for row in 0..MAX_INSERTS {
+                if let Some(k) = chain.as_ref().and_then(|c| c.at_row(row)) {
+                    if let Some(chain) = chain.as_mut() {
+                        chain.process_one(k, &mut in_l[..n], &mut in_r[..n], side);
+                    }
+                } else if let Some(plugin) = plugins.get_mut(row).and_then(Option::as_mut) {
+                    for j in 0..n {
+                        if let Some(source) = plugin.side_source() {
+                            let source = source as usize;
+                            plugin.feed_side(this.side_l[source][j], this.side_r[source][j]);
+                        }
+                        let (a, b) = plugin.process(in_l[j] as f32, in_r[j] as f32, transport);
+                        in_l[j] = f64::from(a);
+                        in_r[j] = f64::from(b);
+                    }
                 }
-            });
+            }
         }
         // ...then the plugins, the fader and the meters frame by frame.
         for j in 0..n {
@@ -2142,7 +2170,8 @@ impl EngineCore {
             let (mut xl, mut xr) = (in_l[j] as f32, in_r[j] as f32);
             in_l[j] = 0.0;
             in_r[j] = 0.0;
-            for plugin in plugins.iter_mut().flatten() {
+            // Run above already, in the strip's order.
+            for plugin in plugins.iter_mut().flatten().filter(|_| !mixed) {
                 if let Some(source) = plugin.side_source() {
                     let source = source as usize;
                     plugin.feed_side(this.side_l[source][j], this.side_r[source][j]);

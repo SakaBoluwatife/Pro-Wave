@@ -1,3 +1,40 @@
+Ovrtone 1.0.2 (update)
+======================
+
+- Space plays and stops wherever you are: over the Piano Roll, the Mixer, after clicking a plugin
+  slot or a button, and in a plugin's own window.
+- A pattern clip placed where a MIDI clip already starts on that track replaces it, instead of
+  two playing on top of each other.
+- Alt-drag copies: regions on the Playlist (Logic's Option-drag), and notes in the Piano Roll
+  (as Shift-drag already did).
+- Piano Roll zoom keeps its place: the mouse wheel zooms around the pointer, the slider, the View
+  menu and Page Up/Down around the middle of the view.
+- A frozen track shows its frozen audio on the Playlist; its regions come back when unfrozen.
+- Channel strips (Mixer and Inspector) label their empty rows, as Logic does: Audio FX, Sends,
+  Group.
+- Plugins and Ovrtone's own effects share one order on a strip: a plugin stays where you put it,
+  and Move Up / Move Down (right-click) or dragging takes it past effects and plugins alike.
+  Projects from before keep the order they had.
+- An EQ slot under Setting, as on Logic's strip: click it to put an EQ plugin first on the strip,
+  and again to open it.
+- The sampler window: a filled waveform with the unplayed part shaded and flagged start and end,
+  lit rings on the knobs, note names on the keys, a filled envelope, and the sample's length, rate
+  and channels.
+
+Ovrtone 1.0.1 (update)
+======================
+
+This update replaces the program of an installed Ovrtone 1.0. Your projects, settings and
+plugins are not touched.
+
+- No more Windows error beeps while you work: a plugin loading in the background no longer takes
+  the keyboard from Ovrtone. Only a plugin that is slow to load (a licence or sign-in window) may
+  bring its window to the front, after a few seconds.
+- Channel Rack and Piano Roll: an edit in the Piano Roll now wins. Notes added past the pattern's
+  first pass (more kicks, a roll in bar 3) are kept and played; the pattern grows to the clip's
+  length, its other channels repeating as before. A clip longer than 16 bars keeps its edits as
+  notes of its own.
+
 Ovrtone 1.0
 ===========
 

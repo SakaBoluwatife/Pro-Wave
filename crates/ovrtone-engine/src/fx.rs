@@ -1866,6 +1866,9 @@ pub struct Chain {
     bpm: f32,
     /// The effect whose window is in front listens here.
     pub tap: Option<FxTap>,
+    /// The insert row of each effect, in the strip's one order with its plugins (a plugin's slot is
+    /// its row). Rising; the effects first unless the user put a plugin above one.
+    pub rows: Vec<u8>,
 }
 
 impl Clone for Chain {
@@ -1875,18 +1878,85 @@ impl Clone for Chain {
             fx: self.fx.clone(),
             bpm: self.bpm,
             tap: None,
+            rows: self.rows.clone(),
         }
     }
 }
 
 impl Chain {
-    /// A chain of at most [`MAX_INSERTS`] effects.
+    /// A chain of at most [`MAX_INSERTS`] effects, in the first rows.
     pub fn new(mut fx: Vec<Fx>) -> Self {
         fx.truncate(MAX_INSERTS);
+        let rows = (0..fx.len()).map(|k| k as u8).collect();
         Self {
             fx,
             bpm: 0.0,
             tap: None,
+            rows,
+        }
+    }
+
+    /// The same, with each effect in row `rows[k]` (rising) among the strip's plugins.
+    pub fn with_rows(mut self, rows: Vec<u8>) -> Self {
+        if rows.len() == self.fx.len() && rows.windows(2).all(|w| w[0] < w[1]) {
+            self.rows = rows;
+        }
+        self
+    }
+
+    /// Whether a plugin of the strip comes before one of these effects, so the two run in turn
+    /// rather than all the effects first. `used(slot)` says whether a plugin is in that slot.
+    pub fn mixes_with(&self, used: impl Fn(usize) -> bool) -> bool {
+        let Some(&last) = self.rows.last() else {
+            return false;
+        };
+        (0..usize::from(last)).any(|slot| used(slot) && !self.rows.contains(&(slot as u8)))
+    }
+
+    /// The effect in row `row`, if one is.
+    pub fn at_row(&self, row: usize) -> Option<usize> {
+        self.rows.iter().position(|r| usize::from(*r) == row)
+    }
+
+    /// Runs effect `k` alone over the span, as [`Chain::process_block`] runs each in turn.
+    pub fn process_one(
+        &mut self,
+        k: usize,
+        l: &mut [f64],
+        r: &mut [f64],
+        side: impl Fn(usize, usize) -> (f32, f32),
+    ) {
+        let n = l.len().min(r.len());
+        let tap = &mut self.tap;
+        let Some(f) = self.fx.get_mut(k) else {
+            return;
+        };
+        let tapped = tap.as_ref().is_some_and(|t| t.slot == k);
+        if f.bypassed() && !tapped {
+            return;
+        }
+        let key = f.side;
+        if key.is_none() && !tapped && f.run_block(&mut l[..n], &mut r[..n]) {
+            return;
+        }
+        for j in 0..n {
+            if let Some(s) = key {
+                let (a, b) = side(s as usize, j);
+                f.feed_side(a, b);
+            }
+            let (x, y) = (l[j] as f32, r[j] as f32);
+            let (a, b) = f.process(x, y);
+            if tapped {
+                if let Some(tap) = tap.as_mut() {
+                    if tap.out.slots() >= 3 {
+                        let _ = tap.out.push((x + y) * 0.5);
+                        let _ = tap.out.push(a);
+                        let _ = tap.out.push(b);
+                    }
+                }
+            }
+            l[j] = f64::from(a);
+            r[j] = f64::from(b);
         }
     }
 

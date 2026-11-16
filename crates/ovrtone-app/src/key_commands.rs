@@ -299,6 +299,11 @@ fn preset_key(preset: KeyPreset, index: usize) -> Option<(Key, Modifiers)> {
 /// The set in use, for the menus, which show its keys.
 static ACTIVE_PRESET: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+/// Whether the Pro Tools key set is in use (its F1-F4 edit modes in the Tracks area).
+pub fn pro_tools_keys() -> bool {
+    active_preset() == KeyPreset::ProTools
+}
+
 fn active_preset() -> KeyPreset {
     let at = ACTIVE_PRESET.load(std::sync::atomic::Ordering::Relaxed);
     KeyPreset::ALL

@@ -1367,8 +1367,18 @@ impl eframe::App for App {
             self.chooser_ui(ui, &ctx);
             return;
         }
-        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+        // Space plays and stops wherever the pointer or the last click is, as in every DAW. It is
+        // taken here, before any widget sees it: a button clicked last (a plugin slot, M, S) has the
+        // keyboard focus, and would otherwise be "pressed" by Space instead.
+        if !ctx.egui_wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+        {
             self.project.playing = !self.project.playing;
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
         }
         if let Some(menu) = self.native_menu.as_mut() {
             menu.update(&ctx, &mut self.project, &mut self.ui);

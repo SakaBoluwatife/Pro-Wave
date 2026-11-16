@@ -359,8 +359,11 @@ pub struct TrackDoc {
     /// The effects of the channel strip, first to last (`inserts` has their names for older
     /// versions of the program).
     pub fx: Vec<InsertDoc>,
-    /// Hosted plugins of the channel strip, after `fx`.
+    /// Hosted plugins of the channel strip. Each has its row; without `shared_order` (files from
+    /// before it) they come after `fx`.
     pub plugins: Vec<PluginDoc>,
+    /// The plugins' rows are in one order with the built-in effects, which fill the rows left free.
+    pub shared_order: bool,
     /// The hosted plugin that plays the track's notes.
     pub instrument_plugin: Option<PluginDoc>,
     /// All sends of the strip (the first is also in `send_bus`, `send_level` and `send_pre`).
@@ -464,6 +467,9 @@ pub struct PluginDoc {
     /// What part of its parameter each knob covers, low and high end, 0..=1. Empty for all of it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub smart_ranges: Vec<(f32, f32)>,
+    /// Where its window was on screen in this project, if it has been opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_at: Option<(i32, i32)>,
 }
 
 /// A hardware control assigned with MIDI learn.
@@ -663,6 +669,7 @@ impl Default for TrackDoc {
             send_pre: false,
             fx: Vec::new(),
             plugins: Vec::new(),
+            shared_order: false,
             instrument_plugin: None,
             sends: Vec::new(),
             auto_mode: "Read".into(),

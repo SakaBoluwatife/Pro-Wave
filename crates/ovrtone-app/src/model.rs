@@ -856,6 +856,9 @@ pub struct PluginInsert {
     pub sidechain: Option<usize>,
     /// It said it has a side-chain input, once it has loaded. Not saved.
     pub side_offered: bool,
+    /// Where its window was on screen in this project (saved). `None`: where windows of this
+    /// plugin last were on this computer.
+    pub window_at: Option<(i32, i32)>,
     /// The parameter on each Smart Controls knob, once the user has chosen.
     pub smart_knobs: Option<[Option<u32>; SMART_KNOBS]>,
     /// What part of its parameter each knob covers, low and high end, 0..=1. The high end below
@@ -899,6 +902,7 @@ impl PluginInsert {
             params: std::sync::Arc::default(),
             sidechain: None,
             side_offered: false,
+            window_at: None,
             smart_knobs: None,
             smart_ranges: None,
         }
@@ -922,6 +926,35 @@ pub fn plugin_rows(first: usize, plugins: &[PluginInsert]) -> Vec<usize> {
             row
         })
         .collect()
+}
+
+/// A track's built-in effects and plugins share one order, as on any strip. Plugins keep the rows
+/// they were put in; the built-in effects fill the rows they leave free, in their own order. The row
+/// of each of `count` built-in effects.
+pub fn fx_rows(count: usize, plugins: &[PluginInsert]) -> Vec<usize> {
+    let taken = plugin_rows(0, plugins);
+    let mut out = Vec::with_capacity(count);
+    let mut row = 0;
+    while out.len() < count {
+        if !taken.contains(&row) {
+            out.push(row);
+        }
+        row += 1;
+    }
+    out
+}
+
+/// The row after everything on a track's strip: where the next effect or plugin goes.
+pub fn next_row(count: usize, plugins: &[PluginInsert]) -> usize {
+    let after_plugins = plugin_rows(0, plugins).last().map_or(0, |r| r + 1);
+    let after_fx = fx_rows(count, plugins).last().map_or(0, |r| r + 1);
+    after_plugins.max(after_fx)
+}
+
+/// A track's plugins as saved before the shared order: they came after every built-in effect.
+/// Their rows are fixed so, and keep that place in the shared order.
+pub fn rows_after_effects(count: usize, plugins: &mut [PluginInsert]) {
+    settle_plugin_rows(count, plugins);
 }
 
 /// The first row after `plugins`, where the next one goes.
@@ -3655,6 +3688,33 @@ pub enum SigPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugins_and_built_in_effects_share_one_order() {
+        let plugin = |row: u8| PluginInsert {
+            row,
+            ..PluginInsert::new(&ovrtone_host::PluginInfo {
+                id: "x".into(),
+                name: "CLA".into(),
+                vendor: "Waves".into(),
+                version: "1".into(),
+                format: ovrtone_host::PluginFormat::Vst3,
+                path: "x.vst3".into(),
+                is_instrument: false,
+            })
+        };
+        // A plugin put first, then two built-in effects: they take the rows after it.
+        let plugins = vec![plugin(0)];
+        assert_eq!(fx_rows(2, &plugins), [1, 2]);
+        assert_eq!(next_row(2, &plugins), 3);
+        // A plugin between them.
+        assert_eq!(fx_rows(2, &[plugin(1)]), [0, 2]);
+        // A project from before: its plugins go back after the effects.
+        let mut old = vec![plugin(0)];
+        rows_after_effects(2, &mut old);
+        assert_eq!(fx_rows(2, &old), [0, 1]);
+        assert_eq!(plugin_rows(0, &old), [2]);
+    }
 
     #[test]
     fn cycle_comes_on_over_the_selection_or_where_it_can_be_heard() {

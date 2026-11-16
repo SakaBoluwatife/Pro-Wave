@@ -731,6 +731,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
             }),
             inserts: t.inserts.iter().map(|s| s.name().to_string()).collect(),
             plugins: t.plugins.iter().map(plugin_to_doc).collect(),
+            shared_order: true,
             instrument_plugin: t.instrument_plugin.as_ref().map(plugin_to_doc),
             fx: t
                 .inserts
@@ -1430,6 +1431,13 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
                 })
                 .collect(),
         });
+        // Saved before the shared order: the plugins came after every built-in effect, and stay so.
+        if !t.shared_order {
+            if let Some(track) = tracks.last_mut() {
+                let count = track.inserts.len();
+                crate::model::rows_after_effects(count, &mut track.plugins);
+            }
+        }
     }
     let mut p = Project::empty();
     p.name = doc.name.clone();
@@ -1971,6 +1979,7 @@ fn plugin_to_doc(i: &crate::model::PluginInsert) -> ovrtone_project::PluginDoc {
         smart_ranges: i
             .smart_ranges
             .map_or_else(Vec::new, |ranges| ranges.to_vec()),
+        window_at: i.window_at,
     }
 }
 
@@ -1988,6 +1997,7 @@ fn plugin_from_doc(d: &ovrtone_project::PluginDoc) -> crate::model::PluginInsert
         params: std::sync::Arc::default(),
         sidechain: d.sidechain.map(|s| s as usize),
         side_offered: false,
+        window_at: d.window_at.filter(|(x, y)| x.abs() < 100_000 && y.abs() < 100_000),
         smart_knobs: smart_knobs_from_doc(&d.smart_knobs),
         smart_ranges: <[(f32, f32); crate::model::SMART_KNOBS]>::try_from(
             d.smart_ranges.as_slice(),
@@ -2197,6 +2207,7 @@ pub(crate) mod tests {
             params: std::sync::Arc::default(),
             sidechain: None,
             side_offered: false,
+            window_at: None,
             smart_knobs: None,
             smart_ranges: None,
         };
@@ -2295,6 +2306,7 @@ pub(crate) mod tests {
             params: std::sync::Arc::default(),
             sidechain: Some(a),
             side_offered: false,
+            window_at: None,
             smart_knobs: Some([Some(7); crate::model::SMART_KNOBS]),
             smart_ranges: Some([(0.25, 0.75); crate::model::SMART_KNOBS]),
         });

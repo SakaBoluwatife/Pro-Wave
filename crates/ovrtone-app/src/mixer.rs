@@ -797,6 +797,8 @@ pub struct Rows {
     pub(crate) fx_total: usize,
     fx_first: usize,
     setting: f32,
+    /// The EQ slot, under Setting, as on Logic's strip.
+    eq: f32,
     gain_red: f32,
     midi_fx: f32,
     icon: f32,
@@ -845,7 +847,8 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
     let fx_rows = fx_rows.max(2);
     let send_rows = send_rows.clamp(1, MAX_SENDS);
     let setting = top + 6.0;
-    let gain_red = setting + 20.0;
+    let eq = setting + 20.0;
+    let gain_red = eq + 20.0;
     let midi_fx = gain_red + 12.0;
     let input = midi_fx + 20.0;
     // Room under the input for the line that parts an instrument from its effects.
@@ -861,6 +864,7 @@ pub fn rows(top: f32, fx_rows: usize, send_rows: usize) -> Rows {
         fx_total: fx_rows,
         fx_first: 0,
         setting,
+        eq,
         gain_red,
         midi_fx,
         icon,
@@ -883,7 +887,7 @@ pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
     keys.iter()
         .map(|k| match k {
             StripKey::Track(i) => p.tracks.get(*i).map_or(0, |t| {
-                crate::model::next_plugin_row(t.inserts.len(), &t.plugins)
+                crate::model::next_row(t.inserts.len(), &t.plugins)
             }),
             StripKey::StereoOut => {
                 crate::model::next_plugin_row(p.master_strip.inserts.len(), &p.master_plugins)
@@ -934,8 +938,13 @@ fn send_slots(
             }
         } else if k == sends.len() && sends.len() < MAX_SENDS {
             let resp = ui.interact(r, uid.with(("empty", k)), Sense::click());
-            let resp = resp.on_hover_text("Add a send");
-            slot(g, r, "+", slot_empty_col(), text_col());
+            let resp = resp.on_hover_text(crate::coming_from::in_their_words("Add a send"));
+            // The first empty one says what the row is for, as Logic's strip does.
+            if sends.is_empty() {
+                slot(g, r, "Sends", slot_empty_col(), text_dim_col().gamma_multiply(0.7));
+            } else {
+                slot(g, r, "+", slot_empty_col(), text_col());
+            }
             let mut picked = None;
             egui::Popup::menu(&resp).show(|ui| {
                 ui.set_min_width(130.0);
@@ -1482,26 +1491,37 @@ fn insert_slot(
     p: &mut Project,
     v: &mut MixerView,
     i: usize,
-    k: usize,
+    row: usize,
     uid: egui::Id,
     inactive: bool,
 ) {
-    let have = p.tracks[i].inserts.get(k).copied();
     let count = p.tracks[i].inserts.len();
     let plugins = p.tracks[i].plugins.len();
-    let rows = crate::model::plugin_rows(count, &p.tracks[i].plugins);
-    if let Some(j) = rows.iter().position(|row| *row == k) {
+    // One order for the built-in effects and the plugins: plugins keep their rows, the effects fill
+    // the rows left free. `k` is the built-in effect in this row (or where a new one would go).
+    let rows = crate::model::plugin_rows(0, &p.tracks[i].plugins);
+    let fx_rows = crate::model::fx_rows(count, &p.tracks[i].plugins);
+    let k = fx_rows
+        .iter()
+        .position(|r| *r == row)
+        .unwrap_or_else(|| fx_rows.iter().filter(|r| **r < row).count());
+    let have = fx_rows
+        .contains(&row)
+        .then(|| p.tracks[i].inserts.get(k).copied())
+        .flatten();
+    if let Some(j) = rows.iter().position(|r| *r == row) {
         plugin_slot(ui, g, r, p, v, Home::Track(i), j, uid, inactive);
-        slot_drop(ui, g, r, p, Home::Track(i), k);
+        slot_drop(ui, g, r, p, Home::Track(i), row);
         return;
     }
-    slot_drop(ui, g, r, p, Home::Track(i), k);
+    slot_drop(ui, g, r, p, Home::Track(i), row);
     fx_drop(ui, g, r, p, v, i, k);
     if i >= p.tracks.len() {
         return;
     }
     // The next free slot has a plus. Every empty slot takes an effect, gaps included.
-    let next = rows.last().map_or(count, |row| row + 1);
+    let next = crate::model::next_row(count, &p.tracks[i].plugins);
+    let k_row = row;
     let full = count + plugins >= ovrtone_engine::MAX_INSERTS;
     match have {
         Some(fx) => {
@@ -1523,10 +1543,18 @@ fn insert_slot(
                 },
             );
         }
+        // A strip with no effects yet says what the slots are for, as Logic's does.
+        None if k_row == 0 && next == 0 && !full => slot(
+            g,
+            r,
+            "Audio FX",
+            slot_empty_col(),
+            text_dim_col().gamma_multiply(0.7),
+        ),
         None => slot(
             g,
             r,
-            if k == next && !full { "+" } else { "" },
+            if k_row == next && !full { "+" } else { "" },
             slot_empty_col(),
             text_col(),
         ),
@@ -1553,7 +1581,7 @@ fn insert_slot(
         }
     }
     let resp = if have.is_none() {
-        resp.on_hover_text_at_pointer("Add an effect")
+        resp.on_hover_text_at_pointer(crate::coming_from::in_their_words("Add an effect"))
     } else {
         resp
     };
@@ -1667,14 +1695,13 @@ fn insert_slot(
             plugin.failed = None;
             let t = &mut p.tracks[i];
             if t.inserts.len() + t.plugins.len() < ovrtone_engine::MAX_INSERTS {
-                let first = t.inserts.len();
-                crate::model::place_plugin_in_row(first, &mut t.plugins, plugin, k);
+                crate::model::place_plugin_in_row(0, &mut t.plugins, plugin, row);
                 p.song_rev += 1;
             }
         }
     }
     if let Some(info) = pick {
-        if let Err(e) = crate::plugin_rack::add_effect_in_row(p, i, &info, k) {
+        if let Err(e) = crate::plugin_rack::add_effect_in_row(p, i, &info, row) {
             v.message = Some(e);
         }
     }
@@ -1920,9 +1947,10 @@ enum Home {
 }
 
 impl Home {
-    fn first_row(self, p: &Project) -> usize {
+    fn first_row(self, _p: &Project) -> usize {
         match self {
-            Home::Track(i) => p.tracks[i].inserts.len(),
+            // A track's plugins share the rows with its built-in effects (see `model::fx_rows`).
+            Home::Track(_) => 0,
             Home::Master => 0,
         }
     }
@@ -2249,6 +2277,16 @@ fn plugin_slot(
     };
     let hover = format!("{hover}\nClick to open. Drag to move it. Right-click for more.");
     let count = home.plugins(p).len();
+    // Up and down: on a track, a row at a time past effects and plugins alike.
+    let (can_up, can_down) = match home {
+        Home::Track(t) => {
+            let rows = crate::model::plugin_rows(0, &p.tracks[t].plugins);
+            let row = rows.get(j).copied().unwrap_or(0);
+            let next = crate::model::next_row(p.tracks[t].inserts.len(), &p.tracks[t].plugins);
+            (row > 0, row + 1 < next)
+        }
+        Home::Master => (j > 0, j + 1 < count),
+    };
     let plugin_id = plugin.id.clone();
     let resp = ui
         .interact(r, uid, Sense::click_and_drag())
@@ -2286,13 +2324,14 @@ fn plugin_slot(
             flip_bypass = true;
             ui.close();
         }
-        ui.add_enabled_ui(j > 0, |ui| {
+        ui.add_enabled_ui(can_up, |ui| {
             if ui.button(tr("Move Up")).clicked() {
-                moved = Some(j - 1);
+                // On a track it is a row (`j` itself when only a built-in effect is above).
+                moved = Some(j.saturating_sub(1));
                 ui.close();
             }
         });
-        ui.add_enabled_ui(j + 1 < count, |ui| {
+        ui.add_enabled_ui(can_down, |ui| {
             if ui.button(tr("Move Down")).clicked() {
                 moved = Some(j + 1);
                 ui.close();
@@ -2344,10 +2383,25 @@ fn plugin_slot(
     if remove {
         plugins.remove(j);
     } else if let Some(to) = moved {
-        plugins.swap(j, to);
-        let (a, b) = (plugins[j].row, plugins[to].row);
-        plugins[j].row = b;
-        plugins[to].row = a;
+        if let Home::Track(_) = home {
+            // A row up or down in the strip's one order: past a built-in effect (which takes the
+            // row this one leaves) or another plugin (the two change places).
+            let row = usize::from(plugins[j].row);
+            let target = if to < j || (to == j && row > 0) { row.saturating_sub(1) } else { row + 1 };
+            if let Some(o) = plugins.iter().position(|x| usize::from(x.row) == target) {
+                let (a, b) = (plugins[j].row, plugins[o].row);
+                plugins[j].row = b;
+                plugins[o].row = a;
+            } else {
+                plugins[j].row = target.min(usize::from(u8::MAX)) as u8;
+            }
+            plugins.sort_by_key(|x| x.row);
+        } else {
+            plugins.swap(j, to);
+            let (a, b) = (plugins[j].row, plugins[to].row);
+            plugins[j].row = b;
+            plugins[to].row = a;
+        }
     }
 }
 
@@ -2716,6 +2770,9 @@ pub fn channel_strip(
         slot(g, row(r.setting, 16.0), tr("Setting"), slot_gray_col(), text_col());
         if let StripKey::Track(i) = key {
             setting_menu(ui, row(r.setting, 16.0), p, v, i, id(ns, (key, "setting")));
+        }
+        if let StripKey::Track(i) = key {
+            eq_slot(ui, g, row(r.eq, 16.0), p, v, i, id(ns, (key, "eq")));
         }
         let gr_bar = row(r.gain_red + 1.0, 6.0);
         g.rect_filled(gr_bar, 1.0, slot_empty_col());
@@ -3557,6 +3614,72 @@ fn input_slot(
     }
 }
 
+/// Whether a plugin is an equaliser, by its name ("EQ", "Equalizer", "Equaliser").
+fn is_eq(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.contains("equali")
+        || n.contains("pro-q")
+        || n.split(|c: char| !c.is_alphanumeric()).any(|w| w.ends_with("eq"))
+}
+
+/// The EQ slot, under Setting, as on Logic's strip: the strip's first equaliser plugin (click to
+/// open it), or, while it has none, a choice of the EQ plugins on this computer, put first in the
+/// chain where Logic's Channel EQ sits.
+fn eq_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, id: egui::Id) {
+    let found = p.tracks[i]
+        .plugins
+        .iter()
+        .find(|x| is_eq(&x.name))
+        .map(|x| (x.uid, x.name.clone(), x.bypass || x.failed.is_some()));
+    match &found {
+        Some((_, name, off)) => named_slot(
+            g,
+            r,
+            name,
+            0,
+            if *off { plugin_off_col() } else { crate::theme::accent() },
+            if *off { text_dim_col() } else { crate::theme::on_accent() },
+        ),
+        None => slot(g, r, "EQ", slot_empty_col(), text_dim_col().gamma_multiply(0.7)),
+    }
+    let resp = ui.interact(r, id, Sense::click()).on_hover_text_at_pointer(if found.is_some() {
+        "Click to open the EQ"
+    } else {
+        "Put an EQ first on this strip"
+    });
+    if let Some((uid, name, _)) = &found {
+        if resp.clicked() {
+            v.open_plugin = Some((*uid, name.clone()));
+        }
+        return;
+    }
+    let installed = v.installed.clone();
+    let mut pick = None;
+    slot_menu(&resp, true).show(|ui: &mut Ui| {
+        ui.set_min_width(170.0);
+        let eqs: Vec<_> = installed.iter().filter(|x| !x.is_instrument && is_eq(&x.name)).collect();
+        if eqs.is_empty() {
+            ui.label("No EQ plugins found yet");
+        }
+        for info in eqs {
+            if ui.button(format!("{} ({})", info.name, info.vendor)).clicked() {
+                pick = Some(info.clone());
+                ui.close();
+            }
+        }
+    });
+    if let Some(info) = pick {
+        match crate::plugin_rack::add_effect_in_row(p, i, &info, 0) {
+            Ok(()) => {
+                if let Some(x) = p.tracks[i].plugins.iter().find(|x| x.id == info.id) {
+                    v.open_plugin = Some((x.uid, x.name.clone()));
+                }
+            }
+            Err(e) => v.message = Some(e),
+        }
+    }
+}
+
 fn group_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, i: usize, id: egui::Id) {
     let group = p.tracks[i].group.filter(|g| *g < p.groups.len());
     let name = match group {
@@ -3568,13 +3691,13 @@ fn group_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, i: usize, id: egui
     } else {
         slot_gray_col()
     };
-    slot(
-        g,
-        r,
-        &elide(g, &name, &FontId::proportional(10.5), r.width() - 8.0),
-        fill,
-        text_col(),
-    );
+    // Empty, it says what it is for, dimmed, as Logic's strip does.
+    let (shown, ink) = if name.is_empty() {
+        ("Group".to_string(), text_dim_col().gamma_multiply(0.7))
+    } else {
+        (elide(g, &name, &FontId::proportional(10.5), r.width() - 8.0), text_col())
+    };
+    slot(g, r, &shown, fill, ink);
     let vcas: Vec<(usize, String)> = p
         .tracks
         .iter()
@@ -4076,6 +4199,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
         );
     };
     label_at(r.setting, 16.0, tr("Setting"));
+    label_at(r.eq, 16.0, "EQ");
     label_at(r.gain_red, 8.0, tr("Gain Reduction"));
     label_at(r.midi_fx, 16.0, "MIDI FX");
     label_at(r.input, 16.0, tr("Input"));
@@ -4432,7 +4556,7 @@ mod tests {
         p.tracks[0].plugins.clear();
         assert_eq!(fx_rows_for(&p, &keys), 1, "only the plus");
         // A short mixer: however many slots, the fader keeps its room.
-        let (top, bottom) = (0.0, 450.0);
+        let (top, bottom) = (0.0, 470.0); // 450, and the EQ row the strip has gained
         for total in [1, 3, 8, 32] {
             let r = rows_fit(top, bottom, total, 1, 0.0);
             assert!(

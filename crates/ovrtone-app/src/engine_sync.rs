@@ -64,6 +64,8 @@ pub struct EngineSync {
     layout: Option<AudioLayout>,
     /// The effects, routes and automation the engine has, by track.
     fx: Vec<Vec<Insert>>,
+    /// The row of each built-in effect in each strip's one order with its plugins, as last sent.
+    fx_rows: Vec<Vec<u8>>,
     routes: Vec<Route>,
     /// The compensation delays the engine has, by track.
     pdc: Vec<(usize, usize)>,
@@ -788,6 +790,7 @@ impl EngineSync {
             song_rev: None,
             layout: None,
             fx: Vec::new(),
+            fx_rows: Vec::new(),
             routes: Vec::new(),
             pdc: Vec::new(),
             bus_plugins: Default::default(),
@@ -1154,6 +1157,7 @@ impl EngineSync {
         let sr = self.engine.sample_rate() as f32;
         let n = p.tracks.len().min(MAX_TRACKS).max(self.fx.len());
         self.fx.resize_with(n, Vec::new);
+        self.fx_rows.resize_with(n, Vec::new);
         self.routes.resize(n, Route::default());
         for i in 0..n {
             let want: &[Insert] = p
@@ -1161,13 +1165,20 @@ impl EngineSync {
                 .get(i)
                 .filter(|t| i < MAX_TRACKS && t.frozen.is_none())
                 .map_or(&[], |t| &t.inserts);
+            let want_rows: Vec<u8> = p
+                .tracks
+                .get(i)
+                .map_or_else(Vec::new, |t| crate::model::fx_rows(want.len(), &t.plugins))
+                .into_iter()
+                .map(|r| r.min(255) as u8)
+                .collect();
             let same_kinds = self.fx[i].len() == want.len()
                 && self.fx[i]
                     .iter()
                     .zip(want)
                     .all(|(a, b)| a.kind == b.kind && a.sidechain == b.sidechain);
-            if !same_kinds {
-                let chain = chain_of(want, sr);
+            if !same_kinds || self.fx_rows[i] != want_rows {
+                let chain = Box::new((*chain_of(want, sr)).with_rows(want_rows.clone()));
                 if !self.send(Command::SetInserts {
                     track: i as u16,
                     chain,
@@ -1175,6 +1186,7 @@ impl EngineSync {
                     return;
                 }
                 self.fx[i] = want.to_vec();
+                self.fx_rows[i] = want_rows;
             } else {
                 for (slot, (have, w)) in self.fx[i].iter_mut().zip(want).enumerate() {
                     if have == w {
@@ -1996,6 +2008,7 @@ mod tests {
             params: std::sync::Arc::default(),
             sidechain: None,
             side_offered: false,
+            window_at: None,
             smart_knobs: None,
             smart_ranges: None,
         });

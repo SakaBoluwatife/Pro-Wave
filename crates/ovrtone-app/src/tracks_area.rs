@@ -58,8 +58,8 @@ fn ruler_bg_col() -> Color32 {
     crate::theme::panel_bg()
 }
 const CYCLE: Color32 = Color32::from_rgb(0xd4, 0x9e, 0x2a);
-const MUTE_ON: Color32 = Color32::from_rgb(0x3b, 0x8c, 0xe6);
-const SOLO_ON: Color32 = Color32::from_rgb(0xe6, 0xc2, 0x2e);
+const MUTE_ON: Color32 = crate::theme::MUTE;
+const SOLO_ON: Color32 = crate::theme::SOLO;
 const REC_ON: Color32 = Color32::from_rgb(0xe0, 0x3a, 0x30);
 const MON_ON: Color32 = Color32::from_rgb(0xe8, 0x8a, 0x2c);
 const AUTO_ON: Color32 = Color32::from_rgb(0x4e, 0xa8, 0x5a);
@@ -366,6 +366,10 @@ pub struct TracksView {
     pub scroll_y: f32,
     pub snap: Snap,
     pub drag_mode: DragMode,
+    /// Pro Tools' Spot mode (F3 with its keys): a click on a region opens Spot.
+    pub spot_mode: bool,
+    /// The snap Grid mode (F4) goes back to after Slip.
+    pub grid_snap: Snap,
     /// Join found audio regions of several files: they are to be consolidated (bounced in place).
     pub consolidate: bool,
     /// Region edges and the Scissors snap to the hits of audio regions near them.
@@ -541,6 +545,8 @@ impl Default for TracksView {
             lanes_w: 1000.0,
             snap: Snap::Smart,
             drag_mode: DragMode::NoOverlap,
+            spot_mode: false,
+            grid_snap: Snap::Smart,
             wave_zoom: 1.0,
             picked_tracks: Vec::new(),
             track_drag: None,
@@ -2880,7 +2886,7 @@ const TAKE_COLORS: [Color32; 8] = [
     Color32::from_rgb(0xe8, 0x5d, 0x5d),
     Color32::from_rgb(0xf0, 0x9a, 0x3e),
     Color32::from_rgb(0xe6, 0xd0, 0x4a),
-    Color32::from_rgb(0x5f, 0xc8, 0x6a),
+    crate::theme::GOOD,
     Color32::from_rgb(0x4a, 0xc6, 0xc0),
     Color32::from_rgb(0x4a, 0x9e, 0xe6),
     Color32::from_rgb(0xa3, 0x7c, 0xf0),
@@ -4036,8 +4042,47 @@ fn header(
 
 // ------------------------------------------------------------------ main view
 
+/// Pro Tools' edit modes on F1-F4, with its key set (Settings > Keyboard, or "coming from" Pro
+/// Tools): Shuffle (regions close up behind what moves or goes), Slip (free, to the tick), Spot (a
+/// click asks exactly where a region goes) and Grid (to the snap). Ovrtone's Drag and Snap menus
+/// show what each sets.
+fn pro_tools_modes(ctx: &egui::Context, s: &mut UiState) {
+    if !crate::key_commands::pro_tools_keys() || ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    let v = &mut s.tracks;
+    let pressed = |k: egui::Key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+    let said = if pressed(egui::Key::F1) {
+        v.spot_mode = false;
+        v.drag_mode = DragMode::ShuffleL;
+        "Shuffle: regions close up behind what moves or is deleted"
+    } else if pressed(egui::Key::F2) {
+        v.spot_mode = false;
+        if v.snap != Snap::Ticks {
+            v.grid_snap = v.snap;
+        }
+        v.snap = Snap::Ticks;
+        v.drag_mode = DragMode::Overlap;
+        "Slip: regions move freely, to the tick"
+    } else if pressed(egui::Key::F3) {
+        v.spot_mode = true;
+        "Spot: click a region to type exactly where it goes"
+    } else if pressed(egui::Key::F4) {
+        v.spot_mode = false;
+        v.snap = if v.snap == Snap::Ticks { v.grid_snap } else { v.snap };
+        if matches!(v.drag_mode, DragMode::ShuffleL | DragMode::ShuffleR) {
+            v.drag_mode = DragMode::NoOverlap;
+        }
+        "Grid: regions move to the snap"
+    } else {
+        return;
+    };
+    s.status = Some(said.to_string());
+}
+
 pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer::Meters) {
     spot_window(ui.ctx(), p, &mut s.tracks);
+    pro_tools_modes(ui.ctx(), s);
     let rec_targets: Vec<(usize, usize)> = s
         .rec
         .target()
@@ -4494,6 +4539,42 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             continue;
         }
         let base_h = row_h - take_rows_height(&p.tracks[ti]);
+        // Frozen: the track plays its frozen file, so that is what shows, as FL Studio shows a
+        // consolidated clip. Its regions wait underneath, as they are, until it is unfrozen.
+        if let Some(frozen) = p.tracks[ti].frozen.as_deref() {
+            let start_beat = p.region_start_beats(frozen);
+            let len_beats = p.region_len_beats(frozen);
+            let full = Rect::from_min_max(
+                pos2(x_of(start_beat), y + 1.0),
+                pos2(x_of(start_beat + len_beats), y + base_h - 1.0),
+            );
+            let rr = full.intersect(lanes);
+            if rr.width() > 0.0 && rr.height() > 0.0 {
+                draw_region(
+                    &g,
+                    rr,
+                    full,
+                    &p.tracks[ti],
+                    frozen,
+                    (0.0, 0.0),
+                    beat_px,
+                    false,
+                    false,
+                    silenced_by_solo(p, ti),
+                    None,
+                    v.show_colors,
+                    v.wave_zoom,
+                );
+                g.text(
+                    pos2(rr.right() - 6.0, rr.top() + 3.0),
+                    Align2::RIGHT_TOP,
+                    "Frozen",
+                    FontId::proportional(10.5),
+                    Color32::from_rgb(0x9f, 0xd8, 0xff),
+                );
+            }
+            continue;
+        }
         for ri in 0..p.tracks[ti].regions.len() {
             let start_beat = p.region_start_beats(&p.tracks[ti].regions[ri]);
             let len_beats = p.region_len_beats(&p.tracks[ti].regions[ri]);
@@ -4512,6 +4593,14 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                 Sense::click_and_drag()
             };
             let resp = ui.interact(rr, id(("region", ti, ri)), sense);
+            // Pro Tools' Spot mode (F3): a click on a region asks exactly where it goes.
+            if v.spot_mode && resp.clicked() {
+                let region = &p.tracks[ti].regions[ri];
+                let beat = p.region_start_beats(region);
+                let bar = f64::from(region.start_bar);
+                let seconds = p.tempo_map().seconds_at(beat);
+                v.spot = Some((ti, ri, format!("{bar:.3}"), format!("{seconds:.3}")));
+            }
             let active = if ui.input(|i| i.modifiers.command) && v.tool2 != TrackTool::Pointer {
                 v.tool2
             } else {
@@ -4653,6 +4742,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         } else {
                             None
                         };
+                        // Alt-drag copies (Logic's Option-drag, FL Studio's Alt): a copy stays where
+                        // the region was, and the drag carries the region on.
+                        let (alt, command) = ui.input(|i| (i.modifiers.alt, i.modifiers.command));
+                        if alt && !command && v.trim.is_none() && v.slip.is_none() && !v.smart_drag {
+                            let moving: Vec<(usize, usize)> = if v.group_drag.is_empty() {
+                                vec![(ti, ri)]
+                            } else {
+                                v.group_drag.iter().map(|(t, r, _)| (*t, *r)).collect()
+                            };
+                            for (t, r) in moving {
+                                if let Some(copy) = p.tracks.get(t).and_then(|x| x.regions.get(r)).cloned() {
+                                    p.tracks[t].regions.push(copy);
+                                }
+                            }
+                            p.song_rev += 1;
+                        }
                     }
                 }
                 if resp.dragged() {

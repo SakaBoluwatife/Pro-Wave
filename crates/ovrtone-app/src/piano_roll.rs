@@ -381,6 +381,8 @@ pub struct PianoView {
     stick_scale: bool,
     /// Only the rows of the scale shown.
     fold_scale: bool,
+    /// The zoom at the last frame, so a zoom since keeps its place.
+    last_beat_px: f32,
     /// What a new note copies: the length and velocity of the last one placed or touched.
     last_len: f32,
     new_velocity: u8,
@@ -437,6 +439,7 @@ impl Default for PianoView {
             scale_mode: 0,
             stick_scale: false,
             fold_scale: false,
+            last_beat_px: 0.0,
             last_len: 0.25,
             new_velocity: 100,
             color_group: 0,
@@ -1211,13 +1214,27 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         v.fit = false;
         v.beat_px = ((grid.width() - 16.0) / len_beats.max(1.0)).clamp(12.0, 400.0);
         v.scroll_x = 0.0;
+        v.last_beat_px = v.beat_px;
     }
 
+    // A zoom from the menu, the slider or Page Up/Down since the last frame keeps the middle of the
+    // view where it was, rather than everything sliding away from the left edge.
+    if v.last_beat_px > 0.0 && (v.beat_px - v.last_beat_px).abs() > 1e-3 {
+        let mid = grid.width() / 2.0;
+        let beat = (v.scroll_x + mid) / v.last_beat_px;
+        v.scroll_x = (beat * v.beat_px - mid).max(0.0);
+    }
     // Wheel: vertical scroll; Shift = horizontal; Ctrl/Cmd = horizontal zoom.
     if crate::widgets::wheel_pointer(ui).is_some_and(|pt| editor.contains(pt)) {
         let (d, m, pinch) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.zoom_delta()));
         if let Some(factor) = crate::widgets::ctrl_wheel_zoom(m.command, d.y, pinch) {
+            // Around the pointer: the beat under it stays under it.
+            let at = crate::widgets::wheel_pointer(ui).map_or(grid.width() / 2.0, |pt| {
+                (pt.x - grid.left()).clamp(0.0, grid.width())
+            });
+            let beat = (v.scroll_x + at) / v.beat_px;
             v.beat_px = (v.beat_px * factor).clamp(12.0, 400.0);
+            v.scroll_x = (beat * v.beat_px - at).max(0.0);
         } else if m.shift {
             v.scroll_x -= d.y + d.x;
         } else {
@@ -1280,6 +1297,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     }
     v.scroll_y = v.scroll_y.clamp(0.0, (content_h - grid.height()).max(0.0));
     v.scroll_x = v.scroll_x.clamp(0.0, (content_w - grid.width()).max(0.0));
+    v.last_beat_px = v.beat_px;
     let (beat_px, key_h, scroll_x, scroll_y) = (v.beat_px, v.key_h, v.scroll_x, v.scroll_y);
     let x_of = |beat: f32| grid.left() + beat * beat_px - scroll_x;
     let y_of = |pitch: i32| grid.top() + above[pitch.clamp(0, 127) as usize] as f32 * key_h - scroll_y;
@@ -1539,8 +1557,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                                 orig: moving.iter().map(|&k| (k, notes[k].len)).collect(),
                             };
                         } else {
-                            // Shift drags copies and leaves the originals.
-                            if shift {
+                            // Shift or Alt drags copies and leaves the originals (Alt as in FL Studio).
+                            if shift || alt {
                                 let clip: Vec<Note> = moving.iter().map(|&k| notes[k]).collect();
                                 let first = notes.len();
                                 notes.extend(clip);
@@ -1697,6 +1715,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                             .clamp(12.0, 400.0);
                         v.key_h = (grid.height() / span).clamp(6.0, 24.0);
                         v.scroll_x = (first_beat * v.beat_px).max(0.0);
+                        v.last_beat_px = v.beat_px;
                         let top_row = above[((top - 1.0).max(0.0) as usize).min(127)] as f32;
                         v.scroll_y = (top_row * v.key_h).max(0.0);
                     }

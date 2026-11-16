@@ -1143,7 +1143,7 @@ fn band_color(k: usize) -> Color32 {
         Color32::from_rgb(0xe8, 0x5d, 0x5d),
         Color32::from_rgb(0xf0, 0x9a, 0x3e),
         Color32::from_rgb(0xe6, 0xd0, 0x4a),
-        Color32::from_rgb(0x5f, 0xc8, 0x6a),
+        crate::theme::GOOD,
         Color32::from_rgb(0x4a, 0xb5, 0xe6),
         Color32::from_rgb(0xa3, 0x7c, 0xf0),
     ];

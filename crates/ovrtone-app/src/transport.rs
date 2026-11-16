@@ -81,7 +81,7 @@ impl LcdColors {
     }
 }
 
-const REC_RED: Color32 = Color32::from_rgb(0xe6, 0x34, 0x2c);
+const REC_RED: Color32 = crate::theme::DANGER;
 const PURPLE: Color32 = Color32::from_rgb(0x9b, 0x3f, 0xd6);
 
 
@@ -117,7 +117,7 @@ fn button_name(key: &str) -> Option<&'static str> {
 fn clicked(ui: &Ui, rect: Rect, key: &str) -> bool {
     let resp = ui.interact(rect, egui::Id::unique(("control_bar", key)), Sense::click());
     match button_name(key) {
-        Some(name) => resp.on_hover_text(name).clicked(),
+        Some(name) => resp.on_hover_text(crate::coming_from::in_their_words(name)).clicked(),
         None => resp.clicked(),
     }
 }
@@ -288,7 +288,7 @@ fn tbutton(
     let r = Rect::from_center_size(center, vec2(30.0, 26.0));
     let mut resp = ui.interact(r, egui::Id::unique(("control_bar", key)), Sense::click());
     if let Some(name) = button_name(key) {
-        resp = resp.on_hover_text(name);
+        resp = resp.on_hover_text(crate::coming_from::in_their_words(name));
     }
     if let Some(bg) = active_bg {
         g.rect_filled(r, 6.0, bg);

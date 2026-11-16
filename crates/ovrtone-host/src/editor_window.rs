@@ -413,7 +413,61 @@ unsafe extern "system" fn content_proc(
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 
+/// Space in a plugin's window starts and stops the song, as in every DAW: most plugins ignore the
+/// key, and Windows would only beep. A keyboard hook on the editors' thread hands it to the main
+/// window (the editor's owner), in this process or across from a helper process.
+fn hook_space() {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD};
+    thread_local! {
+        static HOOKED: Cell<bool> = const { Cell::new(false) };
+    }
+    if HOOKED.with(Cell::get) {
+        return;
+    }
+    HOOKED.with(|h| h.set(true));
+    // SAFETY: the hook procedure is a plain function that lives as long as the program; it is
+    // installed for this thread only, which runs the editors' messages.
+    let _ = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD,
+            Some(space_hook),
+            None,
+            windows::Win32::System::Threading::GetCurrentThreadId(),
+        )
+    };
+}
+
+/// The keyboard hook: Space while an editor window is in front goes to its owner instead.
+unsafe extern "system" fn space_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetClassNameW, GetForegroundWindow, GetWindow, PostMessageW, GW_OWNER,
+        HC_ACTION, WM_KEYDOWN, WM_KEYUP,
+    };
+    const VK_SPACE: usize = 0x20;
+    // SAFETY: Windows calls this with valid arguments; every call below only reads window state
+    // or posts a message.
+    unsafe {
+        if code == HC_ACTION as i32 && wparam.0 == VK_SPACE {
+            let front = GetForegroundWindow();
+            let mut class = [0u16; 64];
+            let n = GetClassNameW(front, &mut class) as usize;
+            let ours = String::from_utf16_lossy(&class[..n.min(class.len())]) == "OvrtonePluginEditor";
+            if ours {
+                if let Ok(owner) = GetWindow(front, GW_OWNER) {
+                    // Bit 31 of the key's flags: set when the key goes up.
+                    let up = (lparam.0 as u32) & 0x8000_0000 != 0;
+                    let msg = if up { WM_KEYUP } else { WM_KEYDOWN };
+                    let _ = PostMessageW(Some(owner), msg, wparam, lparam);
+                    return LRESULT(1);
+                }
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+}
+
 fn register_class() {
+    hook_space();
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
         // The bar's text is in the program's font. For this process only, not the whole system. If

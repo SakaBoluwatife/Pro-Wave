@@ -41,6 +41,8 @@ pub struct SamplerView {
     /// The file the waveform is of, and the waveform, which a thread reads.
     wave_of: Option<PathBuf>,
     wave: Arc<Mutex<Vec<f32>>>,
+    /// The sample's length in seconds, rate and channels, read with the waveform.
+    info: Arc<Mutex<Option<(f64, u32, u16)>>>,
     /// The key being auditioned while the mouse holds it down.
     held: Option<u8>,
 }
@@ -65,6 +67,8 @@ fn look_at_wave(view: &mut SamplerView, path: &PathBuf, ctx: &egui::Context) {
     view.wave_of = Some(path.clone());
     let out = Arc::new(Mutex::new(Vec::new()));
     view.wave = out.clone();
+    let info = Arc::new(Mutex::new(None));
+    view.info = info.clone();
     let (path, ctx) = (path.clone(), ctx.clone());
     let _ = std::thread::Builder::new()
         .name("ovrtone-sampler-wave".into())
@@ -72,6 +76,9 @@ fn look_at_wave(view: &mut SamplerView, path: &PathBuf, ctx: &egui::Context) {
             let Ok(file) = ovrtone_engine::AudioFile::open(&path) else {
                 return;
             };
+            if let Ok(mut i) = info.lock() {
+                *i = Some((file.duration_secs(), file.sample_rate, file.channels.min(usize::from(u16::MAX)) as u16));
+            }
             let frames = (file.frames as usize / WAVE_POINTS).max(1);
             if let (Ok(levels), Ok(mut out)) = (file.levels(frames), out.lock()) {
                 *out = levels;
@@ -93,6 +100,10 @@ fn knob(
     let spot = Rect::from_center_size(pos2(r.center().x, r.top() + 22.0), vec2(36.0, 36.0));
     let resp = ui.interact(spot, egui::Id::unique(id), Sense::click_and_drag());
     let g = ui.painter();
+    // A lit ring says where it is at a glance: from the middle for one that goes both ways (its
+    // default is the middle), from the start for the rest.
+    let from = if (default - 0.5).abs() < 1e-3 { 0.0 } else { -1.0 };
+    crate::widgets::value_arc(g, spot.center(), 16.5, from, value * 2.0 - 1.0);
     crate::widgets::draw_knob(g, spot.center(), 13.0, value);
     g.text(
         pos2(r.center().x, r.top() + 46.0),
@@ -129,34 +140,53 @@ fn wave_view(
     // Reversed, the sample is drawn back to front, as it plays; start and end stay where they
     // are in the file, so their handles are mirrored too.
     let shown = |v: f32| if reverse { 1.0 - v } else { v };
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 96.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 112.0), Sense::hover());
     let g = ui.painter();
-    g.rect_filled(r, 4.0, crate::theme::grey_rgb(0x14, 0x15, 0x17));
+    g.rect_filled(r, 6.0, crate::theme::grey_rgb(0x12, 0x13, 0x15));
+    g.rect_stroke(r, 6.0, Stroke::new(1.0, Color32::from_white_alpha(12)), egui::StrokeKind::Inside);
     let mid = r.center().y;
+    // Quiet guide lines: the centre, and half level above and below.
+    for y in [mid, mid - r.height() / 4.0, mid + r.height() / 4.0] {
+        g.line_segment([pos2(r.left() + 4.0, y), pos2(r.right() - 4.0, y)], Stroke::new(1.0, Color32::from_white_alpha(if y == mid { 16 } else { 7 })));
+    }
     let top = levels.iter().fold(0.0f32, |m, v| m.max(*v)).max(1e-3);
     let count = levels.len().max(1) as f32;
+    // Filled, as a shape, each column from its level above the centre to the same below.
     for (k, level) in levels.iter().enumerate() {
         let part = k as f32 / count;
-        let x = r.left() + shown(part) * r.width();
-        let h = (level / top) * (r.height() / 2.0 - 3.0);
-        let color = if part >= start && part <= end {
-            WAVE
-        } else {
-            WAVE.gamma_multiply(0.25)
-        };
-        g.line_segment(
-            [pos2(x, mid - h), pos2(x, mid + h)],
-            Stroke::new(1.0, color),
+        let x0 = r.left() + shown(part) * r.width();
+        let x1 = r.left() + shown((k + 1) as f32 / count) * r.width();
+        let h = ((level / top) * (r.height() / 2.0 - 6.0)).max(0.5);
+        let playing = part >= start && part <= end;
+        let color = if playing { WAVE } else { WAVE.gamma_multiply(0.22) };
+        g.rect_filled(
+            Rect::from_min_max(pos2(x0.min(x1), mid - h), pos2(x0.max(x1) + 0.6, mid + h)),
+            0.0,
+            color,
         );
     }
+    // What does not play is shaded over.
+    let (a, b) = (r.left() + shown(start) * r.width(), r.left() + shown(end) * r.width());
+    let (a, b) = (a.min(b), a.max(b));
+    g.rect_filled(Rect::from_min_max(r.min, pos2(a, r.bottom())), 6.0, Color32::from_black_alpha(90));
+    g.rect_filled(Rect::from_min_max(pos2(b, r.top()), r.max), 6.0, Color32::from_black_alpha(90));
     let handle = |value: f32, key: &str| -> Option<f32> {
         let x = r.left() + shown(value) * r.width();
-        let spot = Rect::from_center_size(pos2(x, r.center().y), vec2(10.0, r.height()));
+        let spot = Rect::from_center_size(pos2(x, r.center().y), vec2(12.0, r.height()));
         let resp = ui.interact(spot, egui::Id::unique(("sampler_end", key)), Sense::drag());
         let g = ui.painter();
-        g.line_segment(
-            [pos2(x, r.top()), pos2(x, r.bottom())],
-            Stroke::new(1.5, crate::theme::accent()),
+        let lit = resp.hovered() || resp.dragged();
+        let ink = if lit { Color32::WHITE } else { crate::theme::accent() };
+        g.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(if lit { 2.0 } else { 1.5 }, ink));
+        // A flag at the top says which end it is.
+        let flag = Rect::from_min_size(pos2(if key == "start" { x } else { x - 14.0 }, r.top()), vec2(14.0, 13.0));
+        g.rect_filled(flag, 2.0, ink);
+        g.text(
+            flag.center(),
+            Align2::CENTER_CENTER,
+            if key == "start" { "S" } else { "E" },
+            FontId::proportional(9.5),
+            Color32::BLACK,
         );
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -189,6 +219,16 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
                 crate::theme::gray(0xd8)
             },
         );
+        // Each C named, and the root, so the keys can be read at a glance.
+        if key % 12 == 0 || key == root {
+            g.text(
+                pos2(spot.center().x, spot.bottom() - 7.0),
+                Align2::CENTER_CENTER,
+                key_name(key),
+                FontId::proportional(8.5),
+                if key == root { crate::theme::on_accent() } else { crate::theme::gray(0x55) },
+            );
+        }
         spots.push((key, spot));
         at += w;
     }
@@ -238,7 +278,23 @@ fn envelope_view(ui: &mut egui::Ui, attack: f32, decay: f32, sustain: f32, relea
         pos2(across(a + d + hold), up(sustain)),
         pos2(across(total), up(0.0)),
     ];
-    g.add(egui::Shape::line(points, Stroke::new(1.5, WAVE)));
+    // Filled under the curve (a column at a time, so any shape fills), then the line, then a dot
+    // and a letter at each stage.
+    let fill = WAVE.gamma_multiply(0.14);
+    for w in points.windows(2) {
+        let steps = ((w[1].x - w[0].x).abs() / 2.0).ceil().max(1.0) as usize;
+        for k in 0..steps {
+            let t = k as f32 / steps as f32;
+            let x = w[0].x + (w[1].x - w[0].x) * t;
+            let y = w[0].y + (w[1].y - w[0].y) * t;
+            g.line_segment([pos2(x, y), pos2(x, r.bottom() - 6.0)], Stroke::new(2.0, fill));
+        }
+    }
+    g.add(egui::Shape::line(points.clone(), Stroke::new(2.0, WAVE)));
+    for (pt, name) in points[1..].iter().zip(["A", "D", "S", "R"]) {
+        g.circle_filled(*pt, 3.5, WAVE);
+        g.text(*pt + vec2(0.0, -10.0), Align2::CENTER_CENTER, name, FontId::proportional(9.5), dim_col());
+    }
 }
 
 /// The window. Sends what changes straight to the sampler, which reads it on the audio thread.
@@ -421,7 +477,17 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
                 }
             }
             ui.add_space(4.0);
-            ui.colored_label(dim_col(), path.display().to_string());
+            // What the sample is, at a glance; the whole path on hover.
+            let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let about = match s.sampler_view.info.lock().ok().and_then(|i| *i) {
+                Some((secs, rate, ch)) => format!(
+                    "{file}   {secs:.2} s   {:.1} kHz   {}",
+                    f64::from(rate) / 1000.0,
+                    match ch { 1 => "Mono".to_string(), 2 => "Stereo".to_string(), n => format!("{n} channels") }
+                ),
+                None => file,
+            };
+            ui.colored_label(dim_col(), about).on_hover_text(path.display().to_string());
         });
     // A sound let go on the window takes the place of this one.
     if let (Some(window), Some(drag)) = (

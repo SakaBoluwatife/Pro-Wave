@@ -81,18 +81,62 @@ fn apply(s: &mut UiState, name: &str, keys: KeyPreset) {
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::write(&f, name));
+        if let Ok(mut cached) = CHOSEN.lock() {
+            *cached = Some(Some(name.to_string()).filter(|n| *n != "None of these"));
+        }
         if let Err(e) = saved {
             tracing::warn!("could not save the choice of program: {e}");
         }
     }
 }
 
+/// What a few of Ovrtone's things are called in the program the user came from, for the tooltips:
+/// (the start of Ovrtone's tooltip, that program, what it calls it).
+const WORDS: &[(&str, &str, &str)] = &[
+    ("Cycle", "FL Studio", "the Playlist's loop (time selection)"),
+    ("Cycle", "Ableton Live", "the Loop switch and loop brace"),
+    ("Cycle", "Pro Tools", "Loop Playback"),
+    ("Count-in", "FL Studio", "the countdown before recording"),
+    ("Count-in", "Pro Tools", "Countoff"),
+    ("Add an effect", "FL Studio", "a Mixer insert slot"),
+    ("Add an effect", "Ableton Live", "the Device chain"),
+    ("Add an effect", "Pro Tools", "an Insert"),
+    ("Add a send", "FL Studio", "routing to a Mixer track"),
+    ("Add a send", "Ableton Live", "a send to a Return track"),
+    ("Add a send", "Pro Tools", "a Send to an Aux Input"),
+    ("Media Browser", "FL Studio", "the Browser"),
+    ("Media Browser", "Ableton Live", "the Browser"),
+    ("Media Browser", "Pro Tools", "the Workspace"),
+];
+
+/// `text` as Ovrtone says it, and, when the user came from another program, what that program
+/// calls it ("Cycle (C)" and "Loop Playback in Pro Tools").
+pub fn in_their_words(text: &str) -> String {
+    let Some(from) = chosen() else {
+        return text.to_string();
+    };
+    WORDS
+        .iter()
+        .find(|(ours, program, _)| text.starts_with(ours) && *program == from)
+        .map_or_else(|| text.to_string(), |(_, program, theirs)| format!("{text}\n{theirs} in {program}"))
+}
+
 /// What was chosen before, if anything.
+/// Read once, then kept: tooltips ask every frame.
+static CHOSEN: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+
 pub fn chosen() -> Option<String> {
-    file()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+    let Ok(mut cached) = CHOSEN.lock() else {
+        return None;
+    };
+    cached
+        .get_or_insert_with(|| {
+            file()
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+        })
+        .clone()
 }
 
 pub fn window(ctx: &egui::Context, s: &mut UiState) {
