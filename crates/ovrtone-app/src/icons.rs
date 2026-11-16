@@ -130,6 +130,31 @@ fn parsed() -> &'static [Vec<Line>] {
     })
 }
 
+/// The size a tool is drawn at as the mouse pointer.
+pub const POINTER_SIZE: f32 = 20.0;
+
+/// A tool as the mouse pointer: drawn with its working point at `pt` (a pencil's or brush's tip,
+/// the middle of anything else), white with a dark edge so it shows on any background.
+pub fn paint_pointer(g: &Painter, pt: Pos2, icon: Icon) {
+    let size = POINTER_SIZE;
+    let c = match icon {
+        // Their tips are at the bottom left of the drawing.
+        Icon::Pencil | Icon::Brush | Icon::Eraser => pt + vec2(size / 2.0 - 2.0, -size / 2.0 + 2.0),
+        // The magnifier's glass is up and to the left.
+        Icon::Zoom => pt + vec2(size * 0.18, size * 0.18),
+        _ => pt,
+    };
+    for d in [
+        vec2(1.2, 0.0),
+        vec2(-1.2, 0.0),
+        vec2(0.0, 1.2),
+        vec2(0.0, -1.2),
+    ] {
+        paint(g, c + d, size, icon, Color32::from_black_alpha(200));
+    }
+    paint(g, c, size, icon, Color32::WHITE);
+}
+
 /// Draws `icon` centred on `at`, `size` points high and wide.
 pub fn paint(g: &Painter, at: Pos2, size: f32, icon: Icon, color: Color32) {
     let Some(lines) = parsed().get(icon as usize) else {
@@ -141,7 +166,11 @@ pub fn paint(g: &Painter, at: Pos2, size: f32, icon: Icon, color: Color32) {
     // The fills first, behind the lines.
     for line in lines.iter().filter(|l| l.tone > 0 && l.points.len() >= 3) {
         let points: Vec<Pos2> = line.points.iter().map(place).collect();
-        let fill = if line.tone == 1 { color.gamma_multiply(0.32) } else { color };
+        let fill = if line.tone == 1 {
+            color.gamma_multiply(0.32)
+        } else {
+            color
+        };
         g.add(Shape::convex_polygon(points, fill, Stroke::NONE));
     }
     for line in lines.iter().filter(|l| l.tone == 0) {

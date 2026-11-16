@@ -48,7 +48,9 @@ impl Template {
             Template::Songwriter => "Piano, drummer, bass and vocal tracks.",
             Template::Electronic => "Synths, drum machine and a reverb aux.",
             Template::Podcast => "Two voice tracks and a music bed.",
-            Template::Surround => "A spatial mix: a 7.1.2 bed heard on headphones, set in the Spatial Renderer.",
+            Template::Surround => {
+                "A spatial mix: a 7.1.2 bed heard on headphones, set in the Spatial Renderer."
+            }
         }
     }
 
@@ -383,25 +385,32 @@ fn tile(ui: &mut egui::Ui, item: &Item, selected: bool, key: usize) -> (bool, bo
     let (r, _) = ui.allocate_exact_size(vec2(TILE_W, CELL_H), Sense::hover());
     let resp = ui.interact(r, egui::Id::unique(("chooser_tile", key)), Sense::click());
     // On hover the picture lifts a little on a soft shadow, eased.
-    let lift = ui
-        .ctx()
-        .animate_bool_with_time(egui::Id::unique(("chooser_lift", key)), resp.hovered(), 0.14);
-    let picture = Rect::from_min_size(r.min, vec2(TILE_W, PICTURE_H)).translate(vec2(0.0, -3.0 * lift));
+    let lift = ui.ctx().animate_bool_with_time(
+        egui::Id::unique(("chooser_lift", key)),
+        resp.hovered(),
+        0.14,
+    );
+    let picture =
+        Rect::from_min_size(r.min, vec2(TILE_W, PICTURE_H)).translate(vec2(0.0, -3.0 * lift));
     let thumb = item
         .choice
         .file()
         .and_then(|path| crate::project_thumbs::texture(ui.ctx(), path));
     let g = ui.painter();
     for (grow, alpha) in [(6.0, 18), (3.0, 28), (1.0, 40)] {
-        let shadow = picture.translate(vec2(0.0, 2.0 + 4.0 * lift)).expand(grow * (0.4 + lift));
+        let shadow = picture
+            .translate(vec2(0.0, 2.0 + 4.0 * lift))
+            .expand(grow * (0.4 + lift));
         g.rect_filled(shadow, 6.0 + grow, Color32::from_black_alpha(alpha));
     }
     match thumb {
         Some(thumb) => {
             // Rounded as the tiles without a picture are.
             g.add(
-                egui::epaint::RectShape::filled(picture, 6.0, Color32::WHITE)
-                    .with_texture(thumb.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))),
+                egui::epaint::RectShape::filled(picture, 6.0, Color32::WHITE).with_texture(
+                    thumb.id(),
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                ),
             );
             g.rect_stroke(
                 picture,
@@ -699,8 +708,7 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         return;
     };
     let ctx = ui.ctx().clone();
-    // Its own dark panel, whatever the rest of the program looks like: buttons and menus included.
-    ui.style_mut().visuals = egui::Visuals::dark();
+    // In the theme's colours, its text and controls included, so a light theme reads as well.
     look_for_devices(&mut c, s, &ctx);
     let area = ui.available_rect_before_wrap();
     ui.allocate_rect(area, Sense::hover());
@@ -723,7 +731,12 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
         );
     }
     g.rect_filled(panel, 10.0, bg_col());
-    g.rect_stroke(panel, 10.0, Stroke::new(1.0, Color32::from_white_alpha(14)), StrokeKind::Inside);
+    g.rect_stroke(
+        panel,
+        10.0,
+        Stroke::new(1.0, Color32::from_white_alpha(14)),
+        StrokeKind::Inside,
+    );
 
     // Sidebar.
     let side = Rect::from_min_size(panel.min, vec2(210.0, panel.height()));
@@ -809,7 +822,12 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
     let list = items(c.section, &recent, &mine);
     // The arrow keys move between tiles; Enter opens the one chosen.
     if !list.is_empty() && ctx.memory(|m| m.focused().is_none()) {
-        let (left, right) = ui.input(|i| (i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight)));
+        let (left, right) = ui.input(|i| {
+            (
+                i.key_pressed(Key::ArrowLeft),
+                i.key_pressed(Key::ArrowRight),
+            )
+        });
         if left {
             c.selected = c.selected.saturating_sub(1);
         }
@@ -887,7 +905,10 @@ pub fn show(ui: &mut egui::Ui, s: &mut UiState) {
 
     // The bar over the panel: says what is chosen, and folds the panel.
     let g = ui.painter().clone();
-    g.line_segment([bar.left_top(), bar.right_top()], Stroke::new(1.0, line_col()));
+    g.line_segment(
+        [bar.left_top(), bar.right_top()],
+        Stroke::new(1.0, line_col()),
+    );
     g.line_segment(
         [bar.left_bottom(), bar.right_bottom()],
         Stroke::new(1.0, line_col()),

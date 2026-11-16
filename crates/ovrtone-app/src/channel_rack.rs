@@ -1,19 +1,18 @@
 //! The Channel Rack (F6): a row for each instrument track, with its controls and the steps or
-//! notes it has in the current pattern. A channel's view can be switched between step buttons and
-//! a small piano roll, both showing the same notes. Drag a pattern's name onto the Tracks area to
-//! place it, and a sample from the Browser onto a row to load it there.
+//! notes it has in the current pattern. The piano button opens the channel in the Piano Roll. Drag a
+//! pattern's name onto the Tracks area to place it, and a sample from the Browser onto a row to
+//! load it there.
 use crate::icons::{button, Icon};
 use crate::model::{Project, TrackKind};
+use crate::piano_roll::Audition;
 use crate::song_pattern::{self as sp, STEP_BEATS};
 use crate::widgets::blue;
 use crate::Bottom;
 use crate::UiState;
 use egui::{pos2, vec2, Color32, FontId, Rect, Sense, Stroke, Ui};
-use std::collections::HashMap;
 
 const STEP_W: f32 = 18.0;
 const ROW_H: f32 = 24.0;
-const ROLL_H: f32 = 72.0;
 const STEP_CHOICES: [usize; 5] = [8, 16, 32, 48, 64];
 
 /// A pattern being dragged to the Tracks area.
@@ -24,8 +23,10 @@ pub struct PatternDrag(pub u64);
 pub struct RackView {
     pub open: bool,
     current: u64,
-    /// Channels showing the small piano roll rather than steps.
-    roll: HashMap<u64, bool>,
+    /// The note a step click is sounding, let go when the mouse button is.
+    held: Option<u8>,
+    /// A channel to delete once the rows are drawn.
+    delete: Option<usize>,
     /// The step buttons set each step's pan instead of switching it.
     pan_mode: bool,
     /// The region selected in the Tracks area when last seen, so selecting a pattern clip
@@ -69,6 +70,27 @@ fn open_in_piano_roll(p: &mut Project, s: &mut UiState, t: usize, id: u64) {
     s.bottom = Bottom::PianoRoll;
 }
 
+/// Sounds the channel's step pitch on its instrument, until the mouse button is let go.
+fn sound_step(p: &mut Project, s: &mut UiState, t: usize, id: u64, channel: u64) {
+    let Some(pitch) = p
+        .patterns
+        .iter_mut()
+        .find(|x| x.id == id)
+        .map(|x| x.lane_mut(channel).step_pitch)
+    else {
+        return;
+    };
+    if let Some(old) = s.rack.held.take() {
+        s.audition.push(Audition::Off { pitch: old });
+    }
+    s.audition.push(Audition::On {
+        pitch,
+        vel: 100,
+        track: t.min(usize::from(u16::MAX)) as u16,
+    });
+    s.rack.held = Some(pitch);
+}
+
 /// Each step's pan: drag a step up or down (up is right), double-click to centre it.
 fn pan_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
     let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
@@ -104,12 +126,22 @@ fn pan_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
             changed = true;
         }
         let share = if (step / 4) % 2 == 0 { 0.22 } else { 0.13 };
-        g.rect_filled(cell, 2.0, crate::theme::ink_on(crate::theme::panel(), share));
+        g.rect_filled(
+            cell,
+            2.0,
+            crate::theme::ink_on(crate::theme::panel(), share),
+        );
         let mid = cell.center().y;
-        g.line_segment([pos2(cell.left(), mid), pos2(cell.right(), mid)], Stroke::new(1.0, crate::theme::ink_on(crate::theme::panel(), 0.4)));
+        g.line_segment(
+            [pos2(cell.left(), mid), pos2(cell.right(), mid)],
+            Stroke::new(1.0, crate::theme::ink_on(crate::theme::panel(), 0.4)),
+        );
         let h = f32::from(pan) / 64.0 * cell.height() * 0.5;
         if pan != 0 {
-            let bar = Rect::from_min_max(pos2(cell.left() + 2.0, mid.min(mid - h)), pos2(cell.right() - 2.0, mid.max(mid - h)));
+            let bar = Rect::from_min_max(
+                pos2(cell.left() + 2.0, mid.min(mid - h)),
+                pos2(cell.right() - 2.0, mid.max(mid - h)),
+            );
             g.rect_filled(bar, 1.0, crate::theme::accent());
         }
         if !lane.step_is_on(step) {
@@ -134,19 +166,23 @@ fn playhead_step(p: &Project, id: u64) -> Option<usize> {
     })
 }
 
-fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
+/// Draws and edits the steps. Returns whether they changed, and whether a step was switched on (to
+/// sound it, as FL Studio does).
+fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> (bool, bool) {
     let now = playhead_step(p, id);
     if p.playing {
         ui.ctx().request_repaint();
     }
     let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
-        return false;
+        return (false, false);
     };
     let steps = pattern.steps;
     let lane = pattern.lane_mut(channel);
-    let (rect, _) = ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROW_H), Sense::click_and_drag());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROW_H), Sense::click_and_drag());
     let g = ui.painter_at(rect);
     let mut changed = false;
+    let mut switched_on = false;
     // FL-style painting: press a step and drag across the row. Left paints steps on (or off,
     // when the first one was on), right drags erase. What it paints is kept while a button is held.
     let paint_key = egui::Id::unique("rack_step_paint");
@@ -160,7 +196,8 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
         )
     });
     if !primary && !secondary {
-        ui.ctx().data_mut(|d| d.remove::<(u64, u64, bool)>(paint_key));
+        ui.ctx()
+            .data_mut(|d| d.remove::<(u64, u64, bool)>(paint_key));
     }
     let under = pointer
         .filter(|pt| rect.contains(*pt))
@@ -176,6 +213,7 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
             if pid == id && pch == channel && lane.step_is_on(step) != target {
                 lane.toggle_step(step);
                 changed = true;
+                switched_on = target;
             }
         }
     }
@@ -204,7 +242,12 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
         // The playhead: the step playing now lights up.
         if now == Some(step) {
             g.rect_filled(cell, 2.0, Color32::from_white_alpha(70));
-            g.rect_stroke(cell, 2.0, Stroke::new(1.5, crate::theme::accent()), egui::StrokeKind::Inside);
+            g.rect_stroke(
+                cell,
+                2.0,
+                Stroke::new(1.5, crate::theme::accent()),
+                egui::StrokeKind::Inside,
+            );
         }
     }
     // What the buttons cannot show is marked, never lost.
@@ -217,99 +260,11 @@ fn step_grid(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
             );
         }
     }
-    changed
-}
-
-fn small_roll(ui: &mut Ui, p: &mut Project, id: u64, channel: u64) -> bool {
-    // The project's scale on the rows, as in the Piano Roll.
-    let scale = crate::note_edit::key_scale(p.key);
-    let Some(pattern) = p.patterns.iter_mut().find(|x| x.id == id) else {
-        return false;
-    };
-    let steps = pattern.steps;
-    let lane = pattern.lane_mut(channel);
-    let low = lane
-        .notes
-        .iter()
-        .map(|n| n.pitch)
-        .min()
-        .unwrap_or(lane.step_pitch);
-    let high = lane
-        .notes
-        .iter()
-        .map(|n| n.pitch)
-        .max()
-        .unwrap_or(lane.step_pitch);
-    let low = i32::from(low) - 2;
-    let rows = (i32::from(high) + 3 - low).max(12);
-    let (rect, resp) = ui.allocate_exact_size(vec2(steps as f32 * STEP_W, ROLL_H), Sense::click());
-    let g = ui.painter_at(rect);
-    g.rect_filled(rect, 2.0, crate::theme::gray(0x17));
-    let row_h = ROLL_H / rows as f32;
-    if let Some(scale) = scale {
-        for r in 0..rows {
-            let pitch = low + r;
-            if let Some(root) = crate::note_edit::scale_degree(pitch, scale) {
-                let y = rect.bottom() - (r + 1) as f32 * row_h;
-                let band = egui::Rect::from_min_size(pos2(rect.left(), y), vec2(rect.width(), row_h));
-                g.rect_filled(band, 0.0, crate::widgets::blue().gamma_multiply(if root { 0.22 } else { 0.1 }));
-            }
-        }
-    }
-    for step in (0..steps).step_by(4) {
-        let x = rect.left() + step as f32 * STEP_W;
-        g.line_segment(
-            [pos2(x, rect.top()), pos2(x, rect.bottom())],
-            Stroke::new(1.0, crate::theme::ink_on(crate::theme::gray(0x17), 0.2)),
-        );
-    }
-    let box_of = |start: f32, len: f32, pitch: u8| {
-        let y = rect.bottom() - (i32::from(pitch) - low + 1) as f32 * row_h;
-        Rect::from_min_size(
-            pos2(rect.left() + start / STEP_BEATS * STEP_W, y),
-            vec2((len / STEP_BEATS * STEP_W).max(3.0), row_h.max(2.0)),
-        )
-    };
-    for n in &lane.notes {
-        g.rect_filled(
-            box_of(n.start, n.len, n.pitch),
-            1.0,
-            Color32::from_rgb(0x8f, 0xd0, 0x6a),
-        );
-    }
-    let Some(at) = resp.interact_pointer_pos() else {
-        return false;
-    };
-    let clicked = lane
-        .notes
-        .iter()
-        .position(|n| box_of(n.start, n.len, n.pitch).contains(at));
-    if resp.clicked() || resp.secondary_clicked() {
-        if let Some(i) = clicked {
-            lane.notes.remove(i);
-            return true;
-        }
-        if resp.clicked() {
-            let step = ((at.x - rect.left()) / STEP_W).floor();
-            let pitch = low + ((rect.bottom() - at.y) / row_h).floor() as i32;
-            lane.notes.push(crate::model::Note {
-                start: step * STEP_BEATS,
-                len: STEP_BEATS,
-                pitch: pitch.clamp(0, 127) as u8,
-                vel: crate::pattern::DEFAULT_VELOCITY,
-                muted: false,
-                color: 0,
-                slide: false,
-            });
-            return true;
-        }
-    }
-    false
+    (changed, switched_on)
 }
 
 fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64) {
     let channel = sp::channel_of(p, t);
-    let roll = s.rack.roll.get(&channel).copied().unwrap_or(false);
     let row = ui.horizontal(|ui| {
         let track = &mut p.tracks[t];
         if toggle(ui, track.mute, "M", "Mute") {
@@ -326,8 +281,11 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
                 egui::Button::selectable(selected, egui::RichText::new(&track.name).small())
                     .truncate(),
             )
-            .on_hover_text("Click to select. Click again to open its instrument.");
+            .on_hover_text(
+                "Click to select. Click again to open its instrument. Right-click to delete it.",
+            );
         let mut open = None;
+        let mut to_roll = false;
         if name.clicked() {
             if selected {
                 open = track
@@ -337,8 +295,25 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
             }
             p.selected_track = t;
         }
+        name.context_menu(|ui| {
+            if ui.button("Open in the Piano Roll").clicked() {
+                to_roll = true;
+                ui.close();
+            }
+            if ui
+                .button("Delete Channel")
+                .on_hover_text("Removes the channel's track, its steps and its clips")
+                .clicked()
+            {
+                s.rack.delete = Some(t);
+                ui.close();
+            }
+        });
         if open.is_some() {
             s.mixer.open_plugin = open;
+        }
+        if to_roll {
+            open_in_piano_roll(p, s, t, id);
         }
         let track = &mut p.tracks[t];
         ui.add_sized(
@@ -358,18 +333,12 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
                 .max_decimals(2),
         )
         .on_hover_text("Pan");
-        if button(ui, Icon::Mixer, "Show this channel in the mixer").clicked()
-        {
+        if button(ui, Icon::Mixer, "Show this channel in the mixer").clicked() {
             p.selected_track = t;
             s.show_mixer = true;
             s.bottom = Bottom::Mixer;
         }
-        let hint = "Switch between step buttons and a small piano roll";
-        if crate::icons::toggle(ui, Icon::Piano, roll, hint).clicked() {
-            s.rack.roll.insert(channel, !roll);
-        }
-        if button(ui, Icon::Pencil, "Open in the Piano Roll").clicked()
-        {
+        if button(ui, Icon::Piano, "Open in the Piano Roll").clicked() {
             open_in_piano_roll(p, s, t, id);
         }
         let scale = crate::note_edit::key_scale(p.key);
@@ -390,12 +359,14 @@ fn channel_row(ui: &mut Ui, p: &mut Project, s: &mut UiState, t: usize, id: u64)
             )
             .on_hover_text("The pitch of the step buttons");
         }
-        let changed = if roll {
-            small_roll(ui, p, id, channel)
-        } else if s.rack.pan_mode {
+        let changed = if s.rack.pan_mode {
             pan_grid(ui, p, id, channel)
         } else {
-            step_grid(ui, p, id, channel)
+            let (changed, switched_on) = step_grid(ui, p, id, channel);
+            if switched_on {
+                sound_step(p, s, t, id, channel);
+            }
+            changed
         };
         if changed {
             sp::push(p, id);
@@ -569,12 +540,32 @@ fn body(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
             }
         }
     }
+    // The note a step click sounded ends with the click.
+    if s.rack.held.is_some() && !ui.input(|i| i.pointer.any_down()) {
+        if let Some(pitch) = s.rack.held.take() {
+            s.audition.push(Audition::Off { pitch });
+        }
+    }
     pattern_bar(ui, p, s);
     ui.separator();
     let id = s.rack.current;
     egui::ScrollArea::both().max_height(420.0).show(ui, |ui| {
         for t in sp::channels(p) {
             channel_row(ui, p, s, t, id);
+        }
+        // Delete Channel, from a name's right-click: the track goes, and its steps with it.
+        if let Some(t) = s.rack.delete.take() {
+            let channel = p.tracks.get(t).map_or(0, |x| x.params.channel);
+            let name = p.tracks.get(t).map(|x| x.name.clone()).unwrap_or_default();
+            if p.delete_tracks(&[t]) {
+                for pattern in &mut p.patterns {
+                    pattern
+                        .lanes
+                        .retain(|l| channel == 0 || l.channel != channel);
+                }
+                crate::tracks_area::forget_track_indexes(s);
+                s.status = Some(format!("Deleted the channel {name}"));
+            }
         }
         let channels = sp::channels(p).len();
         let add = ui

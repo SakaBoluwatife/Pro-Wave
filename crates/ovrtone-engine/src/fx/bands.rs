@@ -14,7 +14,7 @@ pub struct Bands {
 }
 
 fn lr4(shape: Shape, f: f32, sr: f32) -> Biquad {
-    Biquad::make(shape, f, 0.707_107, 0.0, sr)
+    Biquad::make(shape, f, std::f32::consts::FRAC_1_SQRT_2, 0.0, sr)
 }
 
 impl Bands {

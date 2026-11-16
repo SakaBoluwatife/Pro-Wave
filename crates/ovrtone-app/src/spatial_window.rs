@@ -44,7 +44,12 @@ fn studio_style(ui: &mut egui::Ui) {
 /// colours): the title, and a button that closes it.
 fn studio_header(ui: &mut egui::Ui, title: &str, open: &mut bool) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).size(15.0).strong().color(Color32::WHITE));
+        ui.label(
+            egui::RichText::new(title)
+                .size(15.0)
+                .strong()
+                .color(Color32::WHITE),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(egui::Button::new(egui::RichText::new("✕").color(TEXT_DIM)).frame(false))
@@ -55,8 +60,19 @@ fn studio_header(ui: &mut egui::Ui, title: &str, open: &mut bool) {
             }
         });
     });
-    ui.add_space(2.0);
-    ui.separator();
+    // An accent line under the title, fading out, in place of a plain rule.
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+    let g = ui.painter();
+    let steps = 24;
+    for k in 0..steps {
+        let f = k as f32 / steps as f32;
+        let x0 = line.left() + line.width() * f;
+        let x1 = line.left() + line.width() * (f + 1.0 / steps as f32);
+        g.line_segment(
+            [pos2(x0, line.center().y), pos2(x1, line.center().y)],
+            Stroke::new(1.5, OBJECT.gamma_multiply((1.0 - f) * 0.8)),
+        );
+    }
 }
 
 /// The size of the top view on screen.
@@ -127,7 +143,9 @@ impl Output {
             Output::Headphones => SpatialMode::Binaural(bed),
             Output::Speakers => SpatialMode::Speakers(bed),
             Output::Folded => SpatialMode::Folded(bed),
-            Output::Downmix => SpatialMode::Downmix(bed, smaller(bed).last().copied().unwrap_or(bed)),
+            Output::Downmix => {
+                SpatialMode::Downmix(bed, smaller(bed).last().copied().unwrap_or(bed))
+            }
         }
     }
 }
@@ -152,7 +170,13 @@ pub enum RoomAngle {
 }
 
 impl RoomAngle {
-    const ALL: [RoomAngle; 5] = [Self::Perspective, Self::Top, Self::Front, Self::Side, Self::Rear];
+    const ALL: [RoomAngle; 5] = [
+        Self::Perspective,
+        Self::Top,
+        Self::Front,
+        Self::Side,
+        Self::Rear,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -225,6 +249,12 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
     let (r, _) = ui.allocate_exact_size(size, Sense::hover());
     let g = ui.painter_at(r);
     g.rect_filled(r, 6.0, crate::theme::gray(0x0e));
+    g.rect_stroke(
+        r,
+        6.0,
+        Stroke::new(1.0, crate::theme::gray(0x2a)),
+        egui::StrokeKind::Inside,
+    );
     let persp = angle == RoomAngle::Perspective;
     let c = r.center() + if persp { vec2(0.0, 18.0) } else { Vec2::ZERO };
     let scale = r.width().min(r.height() * 1.4) * 0.34;
@@ -234,7 +264,10 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
         match angle {
             RoomAngle::Perspective => {
                 let depth = 1.0 / (1.6 + y * 0.45);
-                c + vec2(x * scale * depth * 1.6, -(z * 0.9 + y * 0.35) * scale * depth * 1.6)
+                c + vec2(
+                    x * scale * depth * 1.6,
+                    -(z * 0.9 + y * 0.35) * scale * depth * 1.6,
+                )
             }
             RoomAngle::Top => c + vec2(x, -y) * flat,
             // From behind the listener, looking ahead.
@@ -246,7 +279,14 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
         }
     };
     let line = Stroke::new(1.0, crate::theme::gray(0x40));
-    let corners = |z: f32| [[-1.0, -1.0, z], [1.0, -1.0, z], [1.0, 1.0, z], [-1.0, 1.0, z]];
+    let corners = |z: f32| {
+        [
+            [-1.0, -1.0, z],
+            [1.0, -1.0, z],
+            [1.0, 1.0, z],
+            [-1.0, 1.0, z],
+        ]
+    };
     for z in [0.0, 1.0] {
         let k = corners(z).map(project);
         for i in 0..4 {
@@ -256,6 +296,13 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
     for (a, b) in corners(0.0).iter().zip(corners(1.0)) {
         g.line_segment([project(*a), project(b)], line);
     }
+    // The floor, lit faintly from the middle.
+    let floor: Vec<Pos2> = corners(0.0).iter().map(|k| project(*k)).collect();
+    g.add(egui::Shape::convex_polygon(
+        floor,
+        OBJECT.gamma_multiply(0.05),
+        Stroke::NONE,
+    ));
     // The floor's grid.
     for k in 1..4 {
         let f = -1.0 + k as f32 * 0.5;
@@ -268,25 +315,61 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
             Stroke::new(1.0, crate::theme::gray(0x24)),
         );
     }
+    // Where the objects are now, to light the speakers near them.
+    let beat = p.position_beats;
+    let objects: Vec<[f32; 3]> = p
+        .tracks
+        .iter()
+        .filter_map(|t| place_now(t, beat))
+        .map(|o| o.xyz())
+        .collect();
+    let lit = |k: [f32; 3]| -> f32 {
+        objects
+            .iter()
+            .map(|o| {
+                let d =
+                    ((o[0] - k[0]).powi(2) + (o[1] - k[1]).powi(2) + (o[2] - k[2]).powi(2)).sqrt();
+                (1.0 - d / 0.9).clamp(0.0, 1.0)
+            })
+            .fold(0.0, f32::max)
+    };
     // The listener.
-    g.circle_filled(project([0.0, 0.0, 0.0]), 6.0, crate::theme::gray(0x70));
-    for channel in 0..SPATIAL_CHANNELS {
+    let me = project([0.0, 0.0, 0.0]);
+    g.circle_filled(me, 11.0, crate::theme::gray(0x70).gamma_multiply(0.15));
+    g.circle_filled(me, 6.0, crate::theme::gray(0x70));
+    for (channel, name) in CHANNEL_NAMES.iter().enumerate().take(SPATIAL_CHANNELS) {
         if let Some((az, el)) = layout.place(channel) {
-            let at = project(in_the_box(az, el));
-            g.rect_filled(Rect::from_center_size(at, Vec2::splat(7.0)), 1.0, crate::theme::gray(0x90));
+            let k = in_the_box(az, el);
+            let at = project(k);
+            let glow = lit(k);
+            if glow > 0.0 {
+                g.circle_filled(at, 10.0, VALUE.gamma_multiply(0.25 * glow));
+            }
+            g.rect_filled(
+                Rect::from_center_size(at, Vec2::splat(7.0)),
+                1.5,
+                SPEAKER.lerp_to_gamma(VALUE, glow),
+            );
             g.text(
                 at + vec2(0.0, 6.0),
                 Align2::CENTER_TOP,
-                CHANNEL_NAMES[channel],
+                *name,
                 FontId::proportional(9.0),
                 crate::theme::text_dim(),
             );
         }
     }
-    let beat = p.position_beats;
     for (i, t) in p.tracks.iter().enumerate() {
         if let Some(o) = place_now(t, beat) {
-            let at = project(o.xyz());
+            let [x, y, z] = o.xyz();
+            let at = project([x, y, z]);
+            // A line down to the floor and a shadow there, so its height reads.
+            let below = project([x, y, 0.0]);
+            g.line_segment([at, below], Stroke::new(1.0, t.color.gamma_multiply(0.35)));
+            g.circle_filled(below, 3.0, Color32::from_black_alpha(90));
+            for (k, a) in [(14.0, 0.06), (10.0, 0.12)] {
+                g.circle_filled(at, k, t.color.gamma_multiply(a));
+            }
             g.circle_filled(at, if i == p.selected_track { 7.0 } else { 5.0 }, t.color);
             if i == p.selected_track {
                 g.circle_stroke(at, 8.5, Stroke::new(1.5, Color32::WHITE));
@@ -309,11 +392,11 @@ fn channels(ui: &mut egui::Ui, p: &mut Project, view: &SpatialView, layout: Spea
             ui.label("");
             ui.label("Level");
             ui.end_row();
-            for c in 0..SPATIAL_CHANNELS {
+            for (c, name) in CHANNEL_NAMES.iter().enumerate().take(SPATIAL_CHANNELS) {
                 if !layout.has_channel(c) {
                     continue;
                 }
-                ui.label(CHANNEL_NAMES[c]);
+                ui.label(*name);
                 if headphones && c != LFE_CHANNEL {
                     let now = p.spatial_channels.distance[c];
                     egui::ComboBox::from_id_salt(egui::Id::unique(("distance", c)))
@@ -330,7 +413,11 @@ fn channels(ui: &mut egui::Ui, p: &mut Project, view: &SpatialView, layout: Spea
                     ui.label("");
                 }
                 let muted = p.spatial_mute[c];
-                if ui.selectable_label(muted, "M").on_hover_text("Mute this channel").clicked() {
+                if ui
+                    .selectable_label(muted, "M")
+                    .on_hover_text("Mute this channel")
+                    .clicked()
+                {
                     p.spatial_mute[c] = !muted;
                 }
                 let solo = p.spatial_solo[c];
@@ -701,30 +788,45 @@ fn buses_section(
                                 ui.selectable_value(&mut b.layout, l, l.name());
                             }
                         });
-                    ui.toggle_value(&mut b.place.muted, "M").on_hover_text("Mute this bus");
+                    ui.toggle_value(&mut b.place.muted, "M")
+                        .on_hover_text("Mute this bus");
                     if ui.small_button("Remove").clicked() {
                         remove = Some(k);
                     }
                 });
-                egui::Grid::new(egui::Id::unique(("bus_grid", k))).num_columns(2).show(ui, |ui| {
-                    let row = |ui: &mut egui::Ui, name: &str, v: &mut f32, lo: f32, hi: f32, suffix: &str| {
-                        ui.label(name);
-                        ui.add(egui::Slider::new(v, lo..=hi).suffix(suffix).fixed_decimals(if suffix == "°" { 0 } else { 2 }));
+                egui::Grid::new(egui::Id::unique(("bus_grid", k)))
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        let row = |ui: &mut egui::Ui,
+                                   name: &str,
+                                   v: &mut f32,
+                                   lo: f32,
+                                   hi: f32,
+                                   suffix: &str| {
+                            ui.label(name);
+                            ui.add(
+                                egui::Slider::new(v, lo..=hi)
+                                    .suffix(suffix)
+                                    .fixed_decimals(if suffix == "°" { 0 } else { 2 }),
+                            );
+                            ui.end_row();
+                        };
+                        row(ui, "Direction", &mut b.place.direction, -180.0, 180.0, "°");
+                        row(ui, "Elevation", &mut b.place.elevation, 0.0, 90.0, "°");
+                        row(ui, "Spread", &mut b.place.spread, 0.0, 1.0, "");
+                        row(ui, "Size", &mut b.place.size, 0.0, 1.0, "");
+                        row(ui, "Centre level", &mut b.place.centre, 0.0, 1.0, "");
+                        row(ui, "LFE level", &mut b.place.lfe, 0.0, 1.0, "");
+                        let mut db = 20.0 * b.place.gain.max(1e-4).log10();
+                        ui.label("Level");
+                        if ui
+                            .add(egui::Slider::new(&mut db, -60.0..=12.0).suffix(" dB"))
+                            .changed()
+                        {
+                            b.place.gain = 10f32.powf(db / 20.0);
+                        }
                         ui.end_row();
-                    };
-                    row(ui, "Direction", &mut b.place.direction, -180.0, 180.0, "°");
-                    row(ui, "Elevation", &mut b.place.elevation, 0.0, 90.0, "°");
-                    row(ui, "Spread", &mut b.place.spread, 0.0, 1.0, "");
-                    row(ui, "Size", &mut b.place.size, 0.0, 1.0, "");
-                    row(ui, "Centre level", &mut b.place.centre, 0.0, 1.0, "");
-                    row(ui, "LFE level", &mut b.place.lfe, 0.0, 1.0, "");
-                    let mut db = 20.0 * b.place.gain.max(1e-4).log10();
-                    ui.label("Level");
-                    if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).suffix(" dB")).changed() {
-                        b.place.gain = 10f32.powf(db / 20.0);
-                    }
-                    ui.end_row();
-                });
+                    });
                 bus_effects(ui, &mut b.fx, k);
                 bus_plugins(ui, &mut b.plugins, k, installed, open);
             });
@@ -744,7 +846,9 @@ fn buses_section(
             }
         }
     }
-    if p.spatial_buses.len() < ovrtone_engine::MAX_SPATIAL_BUSES && ui.button("Add Spatial Bus").clicked() {
+    if p.spatial_buses.len() < ovrtone_engine::MAX_SPATIAL_BUSES
+        && ui.button("Add Spatial Bus").clicked()
+    {
         let n = p.spatial_buses.len() + 1;
         p.spatial_buses.push(crate::model::SpatialBusDef {
             name: format!("Bus {n}"),
@@ -777,7 +881,11 @@ fn bus_effects(ui: &mut egui::Ui, fx: &mut Vec<crate::model::Insert>, bus: usize
                         ui.add(slider);
                     }
                 });
-            if ui.small_button("\u{00d7}").on_hover_text("Remove this effect").clicked() {
+            if ui
+                .small_button("\u{00d7}")
+                .on_hover_text("Remove this effect")
+                .clicked()
+            {
                 remove = Some(i);
             }
         });
@@ -813,13 +921,22 @@ fn bus_plugins(
     for (i, ins) in plugins.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.checkbox(&mut ins.bypass, "Bypass");
-            if ui.button(&ins.name).on_hover_text("Open its window").clicked() {
+            if ui
+                .button(&ins.name)
+                .on_hover_text("Open its window")
+                .clicked()
+            {
                 *open = Some((ins.uid, ins.name.clone()));
             }
             if let Some(why) = &ins.failed {
-                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x70, 0x60), "failed").on_hover_text(why);
+                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x70, 0x60), "failed")
+                    .on_hover_text(why);
             }
-            if ui.small_button("\u{00d7}").on_hover_text("Remove this plugin").clicked() {
+            if ui
+                .small_button("\u{00d7}")
+                .on_hover_text("Remove this plugin")
+                .clicked()
+            {
                 remove = Some(i);
             }
         });
@@ -827,24 +944,35 @@ fn bus_plugins(
     if let Some(i) = remove {
         plugins.remove(i);
     }
-    let effects: Vec<&ovrtone_host::PluginInfo> = installed.iter().filter(|i| !i.is_instrument).collect();
+    let effects: Vec<&ovrtone_host::PluginInfo> =
+        installed.iter().filter(|i| !i.is_instrument).collect();
     if effects.is_empty() {
         return;
     }
     ui.menu_button("+ Plugin", |ui| {
         let search_id = egui::Id::unique(("bus_plugin_search", bus));
-        let mut search = ui.data_mut(|d| d.get_temp::<String>(search_id)).unwrap_or_default();
+        let mut search = ui
+            .data_mut(|d| d.get_temp::<String>(search_id))
+            .unwrap_or_default();
         ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search"));
         ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
         let wanted = search.to_lowercase();
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for info in effects.iter().filter(|i| wanted.is_empty() || i.name.to_lowercase().contains(&wanted)) {
-                if ui.button(format!("{} ({})", info.name, info.vendor)).clicked() {
-                    plugins.push(crate::model::PluginInsert::new(info));
-                    ui.close();
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for info in effects
+                    .iter()
+                    .filter(|i| wanted.is_empty() || i.name.to_lowercase().contains(&wanted))
+                {
+                    if ui
+                        .button(format!("{} ({})", info.name, info.vendor))
+                        .clicked()
+                    {
+                        plugins.push(crate::model::PluginInsert::new(info));
+                        ui.close();
+                    }
                 }
-            }
-        });
+            });
     });
 }
 
@@ -864,10 +992,20 @@ fn bus_view(ui: &mut egui::Ui, layout: SpeakerLayout, place: ovrtone_engine::Bus
         let az = place.direction + az * place.spread;
         let el = (el + place.elevation).clamp(0.0, 90.0);
         let at = c + point_of(az, el, radius);
-        let color = if place.muted { crate::theme::gray(0x50) } else { crate::theme::GOOD };
+        let color = if place.muted {
+            crate::theme::gray(0x50)
+        } else {
+            crate::theme::GOOD
+        };
         g.circle_filled(at, 7.0, color.gamma_multiply(0.35));
         g.circle_stroke(at, 7.0, Stroke::new(1.0, color));
-        g.text(at, Align2::CENTER_CENTER, CHANNEL_NAMES[ch], FontId::proportional(7.5), crate::theme::text_dim());
+        g.text(
+            at,
+            Align2::CENTER_CENTER,
+            CHANNEL_NAMES[ch],
+            FontId::proportional(7.5),
+            crate::theme::text_dim(),
+        );
     }
     label_at(g, c - vec2(0.0, radius + 6.0), "Front");
 }
@@ -910,41 +1048,108 @@ fn downmix_grid(ui: &mut egui::Ui, bed: SpeakerLayout, to: SpeakerLayout) {
 }
 
 fn label_at(g: &egui::Painter, at: Pos2, text: &str) {
-    g.text(at, Align2::CENTER_CENTER, text, FontId::proportional(10.5), crate::theme::text_dim());
+    g.text(
+        at,
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(10.5),
+        crate::theme::text_dim(),
+    );
 }
 
 /// The room from above: the speakers of the bed, the track's left and right where they are.
 fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLayout) {
-    let (r, resp) =
-        ui.allocate_exact_size(Vec2::splat(TOP_RADIUS * 2.0 + 40.0), Sense::click_and_drag());
+    let (r, resp) = ui.allocate_exact_size(
+        Vec2::splat(TOP_RADIUS * 2.0 + 40.0),
+        Sense::click_and_drag(),
+    );
     let c = r.center();
     let g = ui.painter();
     g.rect_filled(r, 8.0, DARK_ROOM.gamma_multiply(0.6));
     sphere(g, c, TOP_RADIUS);
     for ring in [2.0 / 3.0, 1.0 / 3.0] {
-        g.circle_stroke(c, TOP_RADIUS * ring, Stroke::new(1.0, RING.gamma_multiply(0.7)));
+        g.circle_stroke(
+            c,
+            TOP_RADIUS * ring,
+            Stroke::new(1.0, RING.gamma_multiply(0.7)),
+        );
     }
     g.circle_stroke(c, TOP_RADIUS, Stroke::new(1.5, RING));
     for a in (0..360).step_by(45) {
         let a = (a as f32).to_radians();
         g.line_segment(
-            [c + vec2(a.sin(), -a.cos()) * 14.0, c + vec2(a.sin(), -a.cos()) * TOP_RADIUS],
+            [
+                c + vec2(a.sin(), -a.cos()) * 14.0,
+                c + vec2(a.sin(), -a.cos()) * TOP_RADIUS,
+            ],
             Stroke::new(1.0, RING.gamma_multiply(0.45)),
         );
     }
+    // Where the track is now, so the speakers it plays on light up with it.
+    let now = p
+        .tracks
+        .get(track)
+        .and_then(|t| place_now(t, p.position_beats));
+    let lit = |az: f32, el: f32| -> f32 {
+        let Some(o) = now else { return 0.0 };
+        let around = ((az - o.azimuth + 540.0).rem_euclid(360.0) - 180.0).abs();
+        let up = (el - o.elevation).abs();
+        ((1.0 - around / 70.0) * (1.0 - up / 60.0)).clamp(0.0, 1.0)
+    };
     // The speakers: those at ear height just outside the ring, pointing in; the tall ones above.
+    // Each named, and lit by how near the track is to it.
     for channel in 0..SPATIAL_CHANNELS {
         if let Some((az, el)) = layout.place(channel) {
+            let glow = lit(az, el);
+            let ink = SPEAKER.lerp_to_gamma(VALUE, glow);
+            let name = CHANNEL_NAMES.get(channel).copied().unwrap_or("");
             if el > 0.0 {
                 let at = c + point_of(az, el, TOP_RADIUS);
-                g.circle_stroke(at, 4.0, Stroke::new(1.2, SPEAKER));
+                if glow > 0.05 {
+                    g.circle_filled(at, 7.0, VALUE.gamma_multiply(0.25 * glow));
+                }
+                g.circle_stroke(at, 4.0, Stroke::new(1.2, ink));
             } else {
-                speaker_mark(g, c + point_of(az, 0.0, TOP_RADIUS + 11.0), c, SPEAKER);
+                let at = c + point_of(az, 0.0, TOP_RADIUS + 11.0);
+                if glow > 0.05 {
+                    g.circle_filled(at, 9.0, VALUE.gamma_multiply(0.25 * glow));
+                }
+                speaker_mark(g, at, c, ink);
+                g.text(
+                    c + point_of(az, 0.0, TOP_RADIUS + 23.0),
+                    Align2::CENTER_CENTER,
+                    name,
+                    FontId::proportional(8.5),
+                    TEXT_DIM.lerp_to_gamma(TEXT, glow),
+                );
             }
         }
     }
+    // Where it points, in words, as the sliders are gone.
+    if let Some(o) = now {
+        g.text(
+            r.left_top() + vec2(8.0, 8.0),
+            Align2::LEFT_TOP,
+            format!("{:.0}°", o.azimuth),
+            FontId::proportional(11.0),
+            TEXT,
+        );
+        g.text(
+            r.left_top() + vec2(8.0, 22.0),
+            Align2::LEFT_TOP,
+            "direction",
+            FontId::proportional(8.5),
+            TEXT_DIM,
+        );
+    }
     head(g, c, 1.0);
-    g.text(c - vec2(0.0, TOP_RADIUS - 14.0), Align2::CENTER_CENTER, "FRONT", FontId::proportional(9.0), TEXT_DIM);
+    g.text(
+        c - vec2(0.0, TOP_RADIUS - 14.0),
+        Align2::CENTER_CENTER,
+        "FRONT",
+        FontId::proportional(9.0),
+        TEXT_DIM,
+    );
     let beat = p.position_beats;
     let Some(t) = p.tracks.get(track) else {
         return;
@@ -956,18 +1161,31 @@ fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLay
     // The top view is the room seen from above: direction around the listener and distance out.
     // The higher it is, the nearer the middle: straight up is over the head, where direction and
     // spread no longer move it, as the engine renders it.
-    let reach = TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12) * o.elevation.to_radians().cos().max(0.0);
+    let reach =
+        TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12) * o.elevation.to_radians().cos().max(0.0);
     let middle = c + point_of(o.azimuth, 0.0, reach);
     if o.size > 0.01 {
         g.circle_filled(middle, 8.0 + o.size * 40.0, color.gamma_multiply(0.12));
     }
     g.line_segment([c, middle], Stroke::new(1.2, color.gamma_multiply(0.7)));
+    // A soft glow where it sounds.
+    for k in 1..=4 {
+        g.circle_filled(middle, 8.0 + k as f32 * 5.0, color.gamma_multiply(0.05));
+    }
     // Its two sides, apart by the spread.
     for (word, side) in [("L", -1.0f32), ("R", 1.0f32)] {
         let at = c + point_of(o.azimuth + side * o.spread * 45.0, 0.0, reach);
-        g.circle_filled(at, 9.5, color.gamma_multiply(0.3));
+        g.circle_filled(at + vec2(0.0, 1.5), 9.5, Color32::from_black_alpha(80));
+        g.circle_filled(at, 9.5, color.gamma_multiply(0.45));
+        g.circle_filled(at - vec2(2.5, 2.5), 4.0, Color32::from_white_alpha(40));
         g.circle_stroke(at, 9.5, Stroke::new(1.5, color));
-        g.text(at, Align2::CENTER_CENTER, word, FontId::proportional(9.5), Color32::WHITE);
+        g.text(
+            at,
+            Align2::CENTER_CENTER,
+            word,
+            FontId::proportional(9.5),
+            Color32::WHITE,
+        );
     }
     if resp.dragged() {
         if let Some(at) = resp.interact_pointer_pos() {
@@ -1001,7 +1219,11 @@ fn head(g: &egui::Painter, c: Pos2, scale: f32) {
     g.circle_filled(c - vec2(10.0, 0.0) * scale, 3.0 * scale, skin);
     g.circle_filled(c + vec2(10.0, 0.0) * scale, 3.0 * scale, skin);
     g.circle_filled(c, 10.0 * scale, skin);
-    g.circle_filled(c - vec2(0.0, 2.0) * scale, 8.5 * scale, Color32::from_rgb(0x6c, 0x7a, 0x91));
+    g.circle_filled(
+        c - vec2(0.0, 2.0) * scale,
+        8.5 * scale,
+        Color32::from_rgb(0x6c, 0x7a, 0x91),
+    );
     // The nose shows which way is ahead.
     g.add(egui::Shape::convex_polygon(
         vec![
@@ -1019,7 +1241,11 @@ fn speaker_mark(g: &egui::Painter, at: Pos2, towards: Pos2, color: Color32) {
     let d = (towards - at).normalized();
     let side = vec2(-d.y, d.x);
     g.add(egui::Shape::convex_polygon(
-        vec![at + d * 5.0, at - d * 4.0 + side * 5.0, at - d * 4.0 - side * 5.0],
+        vec![
+            at + d * 5.0,
+            at - d * 4.0 + side * 5.0,
+            at - d * 4.0 - side * 5.0,
+        ],
         color.gamma_multiply(0.35),
         Stroke::new(1.0, color),
     ));
@@ -1062,35 +1288,90 @@ fn side_view(ui: &mut egui::Ui, p: &mut Project, track: usize) {
         let a = deg.to_radians();
         let y = base.y - a.sin() * radius;
         let half = a.cos() * radius;
-        g.line_segment([pos2(base.x - half, y), pos2(base.x + half, y)], Stroke::new(1.0, RING.gamma_multiply(0.5)));
+        g.line_segment(
+            [pos2(base.x - half, y), pos2(base.x + half, y)],
+            Stroke::new(1.0, RING.gamma_multiply(0.5)),
+        );
     }
-    g.line_segment([base - vec2(radius + 6.0, 0.0), base + vec2(radius + 6.0, 0.0)], Stroke::new(1.0, RING));
+    g.line_segment(
+        [
+            base - vec2(radius + 6.0, 0.0),
+            base + vec2(radius + 6.0, 0.0),
+        ],
+        Stroke::new(1.0, RING),
+    );
     // A listener from the side: head and shoulders.
     let skin = Color32::from_rgb(0x6c, 0x7a, 0x91);
     g.circle_filled(base - vec2(0.0, 18.0), 8.0, skin);
     g.add(egui::Shape::convex_polygon(
-        vec![base - vec2(13.0, 0.0), base + vec2(13.0, 0.0), base + vec2(8.0, -9.0), base - vec2(8.0, -9.0)],
+        vec![
+            base - vec2(13.0, 0.0),
+            base + vec2(13.0, 0.0),
+            base + vec2(8.0, -9.0),
+            base - vec2(8.0, -9.0),
+        ],
         Color32::from_rgb(0x56, 0x63, 0x78),
         Stroke::NONE,
     ));
-    g.text(base + vec2(-radius - 10.0, -10.0), Align2::CENTER_CENTER, "F", FontId::proportional(10.0), TEXT_DIM);
-    g.text(base + vec2(radius + 10.0, -10.0), Align2::CENTER_CENTER, "R", FontId::proportional(10.0), TEXT_DIM);
+    g.text(
+        base + vec2(-radius - 10.0, -10.0),
+        Align2::CENTER_CENTER,
+        "F",
+        FontId::proportional(10.0),
+        TEXT_DIM,
+    );
+    g.text(
+        base + vec2(radius + 10.0, -10.0),
+        Align2::CENTER_CENTER,
+        "R",
+        FontId::proportional(10.0),
+        TEXT_DIM,
+    );
     let beat = p.position_beats;
     let Some(o) = p.tracks.get(track).and_then(|t| place_now(t, beat)) else {
         return;
     };
-    let color = if p.tracks[track].bed_pan { SURROUND } else { OBJECT };
+    let color = if p.tracks[track].bed_pan {
+        SURROUND
+    } else {
+        OBJECT
+    };
     // Front is to the left: an object ahead sits left of the middle, one behind to the right.
     let front = o.azimuth.to_radians().cos();
     let e = o.elevation.to_radians();
     let at = base + vec2(-front * e.cos(), -e.sin()) * radius * o.radius.clamp(0.0, 1.0).max(0.12);
-    g.line_segment([base - vec2(0.0, 18.0), at], Stroke::new(1.0, color.gamma_multiply(0.6)));
-    g.circle_filled(at, 8.0, color.gamma_multiply(0.3));
+    g.line_segment(
+        [base - vec2(0.0, 18.0), at],
+        Stroke::new(1.0, color.gamma_multiply(0.6)),
+    );
+    for k in 1..=4 {
+        g.circle_filled(at, 7.0 + k as f32 * 4.5, color.gamma_multiply(0.05));
+    }
+    g.circle_filled(at, 8.0, color.gamma_multiply(0.45));
+    g.circle_filled(at - vec2(2.0, 2.0), 3.5, Color32::from_white_alpha(40));
     g.circle_stroke(at, 8.0, Stroke::new(1.5, color));
+    g.text(
+        r.left_top() + vec2(8.0, 8.0),
+        Align2::LEFT_TOP,
+        format!("{:.0}°", o.elevation),
+        FontId::proportional(11.0),
+        TEXT,
+    );
+    g.text(
+        r.left_top() + vec2(8.0, 22.0),
+        Align2::LEFT_TOP,
+        "elevation",
+        FontId::proportional(8.5),
+        TEXT_DIM,
+    );
     if resp.dragged() {
         if let Some(pt) = resp.interact_pointer_pos() {
-            let d = pt - base;
-            let height = (-d.y).atan2(d.x.abs()).to_degrees().clamp(0.0, 90.0);
+            // From the pointer's height alone: at the sides (90° either way) the dot sits in the
+            // middle of this view, and an angle from the listener read nearly 90° wherever the
+            // pointer was, so the elevation could not come down.
+            let reach = radius * o.radius.clamp(0.0, 1.0).max(0.12);
+            let up = ((base.y - pt.y) / reach).clamp(0.0, 1.0);
+            let height = up.asin().to_degrees().clamp(0.0, 90.0);
             move_axis(p, track, ObjectAxis::Height, height);
         }
     }
@@ -1172,16 +1453,14 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 return;
             };
             egui::Grid::new(egui::Id::unique("panner_values")).num_columns(2).show(ui, |ui| {
-                for (axis, label) in [(ObjectAxis::Around, "Direction"), (ObjectAxis::Height, "Elevation"), (ObjectAxis::Size, "Size")] {
-                    ui.label(label);
+                // Direction and elevation are set by dragging in the views above, as on other
+                // panners; only the size has a slider of its own.
+                {
+                    let axis = ObjectAxis::Size;
+                    ui.label("Size");
                     let (lo, hi) = axis.range();
                     let mut value = o.get(axis);
-                    // Degrees whole with a degree sign; the rest to two places.
-                    let degrees = matches!(axis, ObjectAxis::Around | ObjectAxis::Height);
-                    let slider = egui::Slider::new(&mut value, lo..=hi)
-                        .fixed_decimals(if degrees { 0 } else { 2 })
-                        .suffix(if degrees { "°" } else { "" });
-                    let resp = ui.add(slider);
+                    let resp = ui.add(egui::Slider::new(&mut value, lo..=hi).fixed_decimals(2));
                     if resp.changed() {
                         move_axis(p, track, axis, value);
                     }
@@ -1325,7 +1604,12 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     }
     if s.spatial.speakers_open {
         let layout = p.spatial_mode.output_layout().unwrap_or(p.spatial_bed);
-        crate::speaker_setup::show(ctx, &mut s.spatial.speakers_open, layout, &mut p.spatial_test);
+        crate::speaker_setup::show(
+            ctx,
+            &mut s.spatial.speakers_open,
+            layout,
+            &mut p.spatial_test,
+        );
     }
     if s.spatial.open || s.spatial.panner_open {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));

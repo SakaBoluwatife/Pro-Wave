@@ -43,6 +43,8 @@ pub fn on_launch(s: &mut UiState) {
 /// The layout a program's users expect to start with.
 fn apply(s: &mut UiState, name: &str, keys: KeyPreset) {
     s.keys.choose_preset(keys);
+    // Middle C as that program names it: C5 in FL Studio, C3 in Logic, Ableton and Pro Tools.
+    crate::settings::set_octave_naming(if name == "FL Studio" { 0 } else { -2 });
     match name {
         // Channel Rack beside the Playlist, the Browser on the left, the mixer away.
         "FL Studio" => {
@@ -118,7 +120,10 @@ pub fn in_their_words(text: &str) -> String {
     WORDS
         .iter()
         .find(|(ours, program, _)| text.starts_with(ours) && *program == from)
-        .map_or_else(|| text.to_string(), |(_, program, theirs)| format!("{text}\n{theirs} in {program}"))
+        .map_or_else(
+            || text.to_string(),
+            |(_, program, theirs)| format!("{text}\n{theirs} in {program}"),
+        )
 }
 
 /// What was chosen before, if anything.

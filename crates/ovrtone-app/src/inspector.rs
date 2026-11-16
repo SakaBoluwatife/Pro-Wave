@@ -12,7 +12,7 @@ use crate::mixer::{
 };
 use crate::model::{Project, TrackKind, MAX_REGION_GAIN, MIN_REGION_GAIN};
 use crate::track_icons::{draw_icon, track_icon};
-use crate::widgets::{stroke, btn_bg_col, text_col, text_dim_col};
+use crate::widgets::{btn_bg_col, stroke, text_col, text_dim_col};
 use crate::UiState;
 use egui::{
     pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui,
@@ -97,7 +97,11 @@ fn note_name(n: u8) -> String {
     const NAMES: [&str; 12] = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
-    format!("{}{}", NAMES[(n % 12) as usize], n as i32 / 12 - 2)
+    format!(
+        "{}{}",
+        NAMES[(n % 12) as usize],
+        n as i32 / 12 + crate::settings::octave_naming()
+    )
 }
 
 /// Disclosure triangle + "Title: name" section header. Returns true when toggled.
@@ -297,7 +301,8 @@ fn drag_value(
         }
     }
     // A click opens a box to type the value in; dragging up or down still moves it.
-    let resp = resp.on_hover_text("Drag up or down, or click to type a value; double-click resets it");
+    let resp =
+        resp.on_hover_text("Drag up or down, or click to type a value; double-click resets it");
     let mut typed = None;
     egui::Popup::menu(&resp).show(|ui| {
         let mut v = value;
@@ -966,8 +971,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &Meters) {
             }
             y += ROW_H;
             for (t, v) in [(tr("MIDI Out Channel:"), tr("All"))]
-            .into_iter()
-            .filter(|(t, _)| !(external && *t == tr("MIDI Out Channel:")))
+                .into_iter()
+                .filter(|(t, _)| !(external && *t == tr("MIDI Out Channel:")))
             {
                 label(&g, left, y, t, false);
                 popup(

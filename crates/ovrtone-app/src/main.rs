@@ -5,34 +5,41 @@
 #[global_allocator]
 static ALLOC_GUARD: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod aaf;
+mod adm;
 mod alternatives;
 mod arrangement_track;
 mod audio_encode;
-mod audio_rec;
-mod automation;
 mod audio_file_editor;
-mod beat_store;
-mod bus_plugins;
+mod audio_rec;
+mod audio_tags;
 mod audio_track_editor;
+mod automation;
 mod autosave;
+mod beat_store;
 mod bench;
 mod bounce;
+mod bus_plugins;
 mod channel_rack;
+mod chord_track;
 mod clip_launcher;
 mod coming_from;
-mod feedback;
 mod control_surface;
-mod chord_track;
+mod dock;
 mod engine_sync;
 mod event_list;
+mod feedback;
 mod file_browser;
 mod file_commands;
 mod flex_edit;
 mod fx_ui;
+mod gain_staging;
 mod graphics;
 mod groove;
 mod groove_template;
 mod groups;
+mod hardware;
+mod hrtf;
 mod i18n;
 mod icons;
 mod import;
@@ -61,6 +68,7 @@ mod pattern;
 mod perf;
 mod performance;
 mod piano_roll;
+mod plugin_favourites;
 mod plugin_guard;
 mod plugin_presets;
 mod plugin_rack;
@@ -79,32 +87,24 @@ mod reliability_tests;
 mod routing_matrix;
 mod sample_browser;
 mod sample_place;
-mod session_import;
-mod session_organizer;
+mod sample_tags;
 mod sampler_window;
 mod score;
 mod screensets;
 mod scripter;
+mod session_import;
+mod session_organizer;
 mod settings;
 mod side_panes;
 mod signature_track;
 mod smart_controls;
 mod smart_tempo;
 mod song_pattern;
+mod spatial_export;
+mod spatial_window;
+mod speaker_setup;
 mod start_screen;
 mod stem_splitter;
-mod aaf;
-mod adm;
-mod audio_tags;
-mod dock;
-mod sample_tags;
-mod plugin_favourites;
-mod gain_staging;
-mod hardware;
-mod hrtf;
-mod spatial_window;
-mod spatial_export;
-mod speaker_setup;
 mod stem_worker;
 mod step_editor;
 mod strip_silence;
@@ -348,7 +348,10 @@ impl UiState {
             show_quick_help: false,
             show_toolbar: false,
             toolbar: side_panes::load_toolbar(),
-            header_modes: vec![transport::HeaderMode::Typing, transport::HeaderMode::LowLatency],
+            header_modes: vec![
+                transport::HeaderMode::Typing,
+                transport::HeaderMode::LowLatency,
+            ],
             ara_midi: None,
             bus_plugin_editor: None,
             beat_store: None,
@@ -890,7 +893,9 @@ impl App {
     /// the moving levels), and stops it when that window closes or another comes to the front.
     fn connect_fx_listen(&mut self) {
         let want = self.ui.mixer.fx_window.filter(|(t, s)| {
-            self.project.strip(*t).is_some_and(|tr| *s < tr.inserts.len())
+            self.project
+                .strip(*t)
+                .is_some_and(|tr| *s < tr.inserts.len())
         });
         let have = self.ui.mixer.listen.as_ref().map(|l| l.key);
         // A tap that hears nothing was lost (its strip had no effects yet): ask again.
@@ -971,7 +976,11 @@ impl App {
     /// is not there), its port kept out of note input, and run once a frame.
     fn run_surface(&mut self, levels: &[f32]) {
         let wanted = self.ui.surface_port.clone();
-        if self.surface.as_ref().is_some_and(|s| s.hui != self.ui.surface_hui) {
+        if self
+            .surface
+            .as_ref()
+            .is_some_and(|s| s.hui != self.ui.surface_hui)
+        {
             self.surface = None;
             self.surface_tried = None;
         }
@@ -1196,7 +1205,10 @@ impl App {
         };
         // Plugins in their own processes go on loading behind the window: after a while the user
         // can carry on while they do.
-        let since = *self.ui.opening_since.get_or_insert_with(std::time::Instant::now);
+        let since = *self
+            .ui
+            .opening_since
+            .get_or_insert_with(std::time::Instant::now);
         let can_leave = since.elapsed() >= std::time::Duration::from_secs(10);
         let mut leave = false;
         *most = (*most).max(left);
@@ -1207,7 +1219,8 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
-                let (r, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+                let (r, resp) =
+                    ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
                 leave = can_leave && resp.clicked();
                 let g = ui.painter();
                 g.rect_filled(r, 0.0, egui::Color32::from_black_alpha(170));
@@ -1228,7 +1241,8 @@ impl App {
                     egui::FontId::proportional(12.5),
                     theme::text_dim(),
                 );
-                let bar = egui::Rect::from_center_size(c + egui::vec2(0.0, 3.0), egui::vec2(320.0, 4.0));
+                let bar =
+                    egui::Rect::from_center_size(c + egui::vec2(0.0, 3.0), egui::vec2(320.0, 4.0));
                 g.rect_filled(bar, 2.0, theme::gray(0x40));
                 let mut lit = bar;
                 lit.set_width(bar.width() * done as f32 / total.max(1) as f32);
@@ -1386,6 +1400,8 @@ impl eframe::App for App {
         if let Some(cmd) = file_commands::pressed(&ctx) {
             self.ui.file_cmd = Some(cmd);
         }
+        // Before the key commands: while it is open, its letters pick tools.
+        tracks_area::tool_menu(&ctx, &mut self.ui);
         menus::handle_keys(&ctx, &mut self.project, &mut self.ui);
         let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
             i.raw
@@ -1401,7 +1417,11 @@ impl eframe::App for App {
                 let at = ctx
                     .input(|i| i.pointer.hover_pos())
                     .unwrap_or_else(|| ctx.content_rect().center());
-                let bar = self.project.beats_to_bar(self.project.position_beats).floor() + 1.0;
+                let bar = self
+                    .project
+                    .beats_to_bar(self.project.position_beats)
+                    .floor()
+                    + 1.0;
                 self.ui.sample_drop = Some(sample_place::SampleDrop {
                     path: path.clone(),
                     at,
@@ -1526,7 +1546,12 @@ impl eframe::App for App {
                 }
             }
             let load = sync.take_dsp_load();
-            performance::sample(&mut self.ui.performance, sync, self.project.tracks.len(), load);
+            performance::sample(
+                &mut self.ui.performance,
+                sync,
+                self.project.tracks.len(),
+                load,
+            );
             // Render ahead only while nothing is live: no recording, no armed or monitoring track,
             // and no notes played in for a few seconds.
             let live = self.project.recording
@@ -1542,7 +1567,10 @@ impl eframe::App for App {
             };
             sync.engine.set_render_ahead(ahead);
             self.ui.cpu_load = load.max(self.ui.cpu_load - dt as f32 * 0.8);
-            self.ui.disk_load = sync.engine.disk_load().max(self.ui.disk_load - dt as f32 * 0.8);
+            self.ui.disk_load = sync
+                .engine
+                .disk_load()
+                .max(self.ui.disk_load - dt as f32 * 0.8);
             // Only when it happens, not on every frame from then on.
             let underruns = sync.underruns();
             if underruns > self.ui.underruns_told {
@@ -1593,9 +1621,14 @@ impl eframe::App for App {
                 range: 330.0..=720.0,
                 exact: None,
             };
-            let shown = dock::show(ui, &mut layout, dock::Pane::Library, size, egui::Frame::new(), |ui| {
-                left_panel::show(ui, p, s)
-            });
+            let shown = dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Library,
+                size,
+                egui::Frame::new(),
+                |ui| left_panel::show(ui, p, s),
+            );
             cards.extend(shown);
         }
         if s.show_inspector {
@@ -1604,9 +1637,14 @@ impl eframe::App for App {
                 range: 244.0..=244.0,
                 exact: Some(244.0),
             };
-            let shown = dock::show(ui, &mut layout, dock::Pane::Inspector, size, egui::Frame::new(), |ui| {
-                inspector::show(ui, p, s, &meters)
-            });
+            let shown = dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Inspector,
+                size,
+                egui::Frame::new(),
+                |ui| inspector::show(ui, p, s, &meters),
+            );
             cards.extend(shown);
         }
         if s.show_toolbar {
@@ -1620,9 +1658,14 @@ impl eframe::App for App {
                 range: 220.0..=560.0,
                 exact: None,
             };
-            dock::show(ui, &mut layout, dock::Pane::Files, size, egui::Frame::side_top_panel(ui.style()), |ui| {
-                file_browser::show(ui, p, s)
-            });
+            dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Files,
+                size,
+                egui::Frame::side_top_panel(ui.style()),
+                |ui| file_browser::show(ui, p, s),
+            );
         }
         if s.show_notes {
             let size = dock::Size {
@@ -1630,9 +1673,14 @@ impl eframe::App for App {
                 range: 180.0..=560.0,
                 exact: None,
             };
-            dock::show(ui, &mut layout, dock::Pane::Notes, size, egui::Frame::side_top_panel(ui.style()), |ui| {
-                side_panes::note_pad(ui, p)
-            });
+            dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Notes,
+                size,
+                egui::Frame::side_top_panel(ui.style()),
+                |ui| side_panes::note_pad(ui, p),
+            );
         }
         if s.show_lists {
             let size = dock::Size {
@@ -1640,9 +1688,14 @@ impl eframe::App for App {
                 range: event_list::WIDTH..=640.0,
                 exact: None,
             };
-            dock::show(ui, &mut layout, dock::Pane::Lists, size, egui::Frame::new(), |ui| {
-                event_list::show(ui, p, s)
-            });
+            dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Lists,
+                size,
+                egui::Frame::new(),
+                |ui| event_list::show(ui, p, s),
+            );
         }
         if s.show_mixer || s.bottom == Bottom::PianoRoll {
             // More than half of the space under the control bar (620 points at most), so the Tracks
@@ -1655,12 +1708,17 @@ impl eframe::App for App {
                 range: 160.0..=(room * 0.85).max(160.0),
                 exact: None,
             };
-            let shown = dock::show(ui, &mut layout, dock::Pane::Bottom, size, egui::Frame::new(), |ui| {
-                match s.bottom {
+            let shown = dock::show(
+                ui,
+                &mut layout,
+                dock::Pane::Bottom,
+                size,
+                egui::Frame::new(),
+                |ui| match s.bottom {
                     Bottom::Mixer => mixer::show(ui, p, s, &meters),
                     Bottom::PianoRoll => piano_roll::show(ui, p, s),
-                }
-            });
+                },
+            );
             cards.extend(shown);
         }
         dock::layout_window(&ctx, &mut layout);
@@ -2233,7 +2291,10 @@ fn main() -> eframe::Result {
         wgpu_options,
         ..Default::default()
     };
-    tracing::info!("launch: {:.0} ms, making the window", bench::since_start_ms());
+    tracing::info!(
+        "launch: {:.0} ms, making the window",
+        bench::since_start_ms()
+    );
     let result = eframe::run_native(
         "Ovrtone",
         opts,
@@ -2414,9 +2475,18 @@ fn main() -> eframe::Result {
                     use ovrtone_engine::{ObjectPlace, SpatialMode, SpeakerLayout};
                     let pr = &mut app.project;
                     pr.spatial_mode = SpatialMode::Binaural(SpeakerLayout::Surround714);
-                    pr.tracks[0].object = Some(ObjectPlace { azimuth: -40.0, elevation: 20.0, ..ObjectPlace::default() });
+                    pr.tracks[0].object = Some(ObjectPlace {
+                        azimuth: -40.0,
+                        elevation: 20.0,
+                        ..ObjectPlace::default()
+                    });
                     if let Some(t) = pr.tracks.get_mut(1) {
-                        t.object = Some(ObjectPlace { azimuth: 120.0, elevation: 50.0, size: 0.4, ..ObjectPlace::default() });
+                        t.object = Some(ObjectPlace {
+                            azimuth: 120.0,
+                            elevation: 50.0,
+                            size: 0.4,
+                            ..ObjectPlace::default()
+                        });
                     }
                     pr.selected_track = 0;
                     app.ui.spatial.open = true;
@@ -2537,11 +2607,13 @@ fn import_log_window(ctx: &egui::Context, s: &mut UiState) {
                 ui.label("Everything in the session was carried over.");
             } else {
                 ui.label("Opened. These were not carried over:");
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    for line in log {
-                        ui.label(format!("• {line}"));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for line in log {
+                            ui.label(format!("• {line}"));
+                        }
+                    });
             }
             ui.label(egui::RichText::new("Save it to keep it as an Ovrtone project.").weak());
         });

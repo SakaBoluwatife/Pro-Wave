@@ -1,3 +1,20 @@
+Ovrtone 1.0.3 (update)
+======================
+
+- Surround: elevation follows the side view at any direction, not only at full left or right.
+  Direction and elevation are set by dragging in the views, as on other panners; the panner and
+  renderer light the speakers near an object and show its direction and height.
+- The pointer becomes the tool: scissors, pencil, eraser and the rest show at the mouse.
+- Logic's Tool menu: T over the tracks opens it at the pointer, then a tool's letter picks it
+  (P Pencil, E Eraser, I Scissors, J Glue, M Mute, S Solo, Z Zoom, A Fade, R Marquee and more).
+- Middle C is named as your program names it: C5 when you came from FL Studio, C3 from Logic,
+  Ableton Live or Pro Tools (Settings > Display). The sampler, Inspector and Step Editor agree.
+- Light themes: the sampler and the start screen are readable again.
+- Piano Roll: a bigger pencil; notes sound as you draw, paint or move them, with a button to turn
+  that off; the notes playing light up, and their keys.
+- Channel Rack: a step sounds when you switch it on; right-click a channel's name to delete it
+  or open it in the Piano Roll; the piano button opens the main Piano Roll (the small one is gone).
+
 Ovrtone 1.0.2 (update)
 ======================
 

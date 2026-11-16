@@ -394,6 +394,12 @@ pub fn octave_naming() -> i32 {
     OCTAVE_NAMING.load(Ordering::Relaxed)
 }
 
+/// Sets how middle C (pitch 60) is named: -2 for C3 (Logic, Ableton), -1 for C4, 0 for C5 (FL Studio).
+pub fn set_octave_naming(v: i32) {
+    OCTAVE_NAMING.store(v.clamp(-2, 0), Ordering::Relaxed);
+    save_view();
+}
+
 pub fn peak_hold_ms() -> u32 {
     PEAK_HOLD_MS.load(Ordering::Relaxed)
 }
@@ -496,7 +502,10 @@ fn type_row(ui: &mut Ui) {
         egui::ComboBox::from_id_salt(egui::Id::unique("type_face"))
             .selected_text(shown)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(face.is_none(), "As the theme has it").clicked() {
+                if ui
+                    .selectable_label(face.is_none(), "As the theme has it")
+                    .clicked()
+                {
                     new_face = None;
                 }
                 for (k, f) in FACES.iter().enumerate() {
@@ -928,8 +937,7 @@ fn plugins_tab(ui: &mut Ui, s: &mut UiState) {
     let mut rescan = false;
     for folder in crate::plugin_guard::plugin_folders() {
         ui.horizontal(|ui| {
-            if crate::icons::button(ui, crate::icons::Icon::Close, "Stop looking here").clicked()
-            {
+            if crate::icons::button(ui, crate::icons::Icon::Close, "Stop looking here").clicked() {
                 crate::plugin_guard::remove_folder(&folder);
                 rescan = true;
             }
@@ -1067,12 +1075,20 @@ fn general_tab(ui: &mut Ui, s: &mut UiState) {
     let mut every = s.autosave_minutes;
     ui.horizontal(|ui| {
         ui.label("Crash-recovery copy");
-        for (name, m) in [("Every minute", 1), ("2 minutes", 2), ("5 minutes", 5), ("10 minutes", 10), ("Off", 0)] {
+        for (name, m) in [
+            ("Every minute", 1),
+            ("2 minutes", 2),
+            ("5 minutes", 5),
+            ("10 minutes", 10),
+            ("Off", 0),
+        ] {
             ui.selectable_value(&mut every, m, name);
         }
     })
     .response
-    .on_hover_text("While a project has unsaved changes, a copy is kept this often and offered after a crash");
+    .on_hover_text(
+        "While a project has unsaved changes, a copy is kept this often and offered after a crash",
+    );
     if every != s.autosave_minutes {
         s.autosave_minutes = every;
         set_autosave_minutes(every);
@@ -1080,7 +1096,10 @@ fn general_tab(ui: &mut Ui, s: &mut UiState) {
     let mut kept = s.backups_kept;
     ui.horizontal(|ui| {
         ui.label("Backups kept on save");
-        if ui.add(egui::DragValue::new(&mut kept).range(0..=100)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut kept).range(0..=100))
+            .changed()
+        {
             s.backups_kept = kept;
             set_backups_kept(kept);
         }

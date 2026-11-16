@@ -55,7 +55,7 @@ pub fn key_name(key: u8) -> String {
     format!(
         "{}{}",
         NAMES[usize::from(key % 12)],
-        i32::from(key / 12) - 1
+        i32::from(key / 12) + crate::settings::octave_naming()
     )
 }
 
@@ -77,7 +77,11 @@ fn look_at_wave(view: &mut SamplerView, path: &PathBuf, ctx: &egui::Context) {
                 return;
             };
             if let Ok(mut i) = info.lock() {
-                *i = Some((file.duration_secs(), file.sample_rate, file.channels.min(usize::from(u16::MAX)) as u16));
+                *i = Some((
+                    file.duration_secs(),
+                    file.sample_rate,
+                    file.channels.min(usize::from(u16::MAX)) as u16,
+                ));
             }
             let frames = (file.frames as usize / WAVE_POINTS).max(1);
             if let (Ok(levels), Ok(mut out)) = (file.levels(frames), out.lock()) {
@@ -102,7 +106,11 @@ fn knob(
     let g = ui.painter();
     // A lit ring says where it is at a glance: from the middle for one that goes both ways (its
     // default is the middle), from the start for the rest.
-    let from = if (default - 0.5).abs() < 1e-3 { 0.0 } else { -1.0 };
+    let from = if (default - 0.5).abs() < 1e-3 {
+        0.0
+    } else {
+        -1.0
+    };
     crate::widgets::value_arc(g, spot.center(), 16.5, from, value * 2.0 - 1.0);
     crate::widgets::draw_knob(g, spot.center(), 13.0, value);
     g.text(
@@ -143,11 +151,22 @@ fn wave_view(
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 112.0), Sense::hover());
     let g = ui.painter();
     g.rect_filled(r, 6.0, crate::theme::grey_rgb(0x12, 0x13, 0x15));
-    g.rect_stroke(r, 6.0, Stroke::new(1.0, Color32::from_white_alpha(12)), egui::StrokeKind::Inside);
+    g.rect_stroke(
+        r,
+        6.0,
+        Stroke::new(1.0, Color32::from_white_alpha(12)),
+        egui::StrokeKind::Inside,
+    );
     let mid = r.center().y;
     // Quiet guide lines: the centre, and half level above and below.
     for y in [mid, mid - r.height() / 4.0, mid + r.height() / 4.0] {
-        g.line_segment([pos2(r.left() + 4.0, y), pos2(r.right() - 4.0, y)], Stroke::new(1.0, Color32::from_white_alpha(if y == mid { 16 } else { 7 })));
+        g.line_segment(
+            [pos2(r.left() + 4.0, y), pos2(r.right() - 4.0, y)],
+            Stroke::new(
+                1.0,
+                Color32::from_white_alpha(if y == mid { 16 } else { 7 }),
+            ),
+        );
     }
     let top = levels.iter().fold(0.0f32, |m, v| m.max(*v)).max(1e-3);
     let count = levels.len().max(1) as f32;
@@ -158,7 +177,11 @@ fn wave_view(
         let x1 = r.left() + shown((k + 1) as f32 / count) * r.width();
         let h = ((level / top) * (r.height() / 2.0 - 6.0)).max(0.5);
         let playing = part >= start && part <= end;
-        let color = if playing { WAVE } else { WAVE.gamma_multiply(0.22) };
+        let color = if playing {
+            WAVE
+        } else {
+            WAVE.gamma_multiply(0.22)
+        };
         g.rect_filled(
             Rect::from_min_max(pos2(x0.min(x1), mid - h), pos2(x0.max(x1) + 0.6, mid + h)),
             0.0,
@@ -166,20 +189,41 @@ fn wave_view(
         );
     }
     // What does not play is shaded over.
-    let (a, b) = (r.left() + shown(start) * r.width(), r.left() + shown(end) * r.width());
+    let (a, b) = (
+        r.left() + shown(start) * r.width(),
+        r.left() + shown(end) * r.width(),
+    );
     let (a, b) = (a.min(b), a.max(b));
-    g.rect_filled(Rect::from_min_max(r.min, pos2(a, r.bottom())), 6.0, Color32::from_black_alpha(90));
-    g.rect_filled(Rect::from_min_max(pos2(b, r.top()), r.max), 6.0, Color32::from_black_alpha(90));
+    g.rect_filled(
+        Rect::from_min_max(r.min, pos2(a, r.bottom())),
+        6.0,
+        Color32::from_black_alpha(90),
+    );
+    g.rect_filled(
+        Rect::from_min_max(pos2(b, r.top()), r.max),
+        6.0,
+        Color32::from_black_alpha(90),
+    );
     let handle = |value: f32, key: &str| -> Option<f32> {
         let x = r.left() + shown(value) * r.width();
         let spot = Rect::from_center_size(pos2(x, r.center().y), vec2(12.0, r.height()));
         let resp = ui.interact(spot, egui::Id::unique(("sampler_end", key)), Sense::drag());
         let g = ui.painter();
         let lit = resp.hovered() || resp.dragged();
-        let ink = if lit { Color32::WHITE } else { crate::theme::accent() };
-        g.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(if lit { 2.0 } else { 1.5 }, ink));
+        let ink = if lit {
+            Color32::WHITE
+        } else {
+            crate::theme::accent()
+        };
+        g.line_segment(
+            [pos2(x, r.top()), pos2(x, r.bottom())],
+            Stroke::new(if lit { 2.0 } else { 1.5 }, ink),
+        );
         // A flag at the top says which end it is.
-        let flag = Rect::from_min_size(pos2(if key == "start" { x } else { x - 14.0 }, r.top()), vec2(14.0, 13.0));
+        let flag = Rect::from_min_size(
+            pos2(if key == "start" { x } else { x - 14.0 }, r.top()),
+            vec2(14.0, 13.0),
+        );
         g.rect_filled(flag, 2.0, ink);
         g.text(
             flag.center(),
@@ -216,7 +260,8 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
             if key == root {
                 crate::theme::accent()
             } else {
-                crate::theme::gray(0xd8)
+                // Keys look like keys in any theme.
+                Color32::from_gray(0xe8)
             },
         );
         // Each C named, and the root, so the keys can be read at a glance.
@@ -226,7 +271,11 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
                 Align2::CENTER_CENTER,
                 key_name(key),
                 FontId::proportional(8.5),
-                if key == root { crate::theme::on_accent() } else { crate::theme::gray(0x55) },
+                if key == root {
+                    crate::theme::on_accent()
+                } else {
+                    Color32::from_gray(0x60)
+                },
             );
         }
         spots.push((key, spot));
@@ -248,7 +297,7 @@ fn root_keys(ui: &mut egui::Ui, root: u8) -> Option<u8> {
             if key == root {
                 crate::theme::accent()
             } else {
-                crate::theme::gray(0x22)
+                Color32::from_gray(0x22)
             },
         );
         blacks.push((key, spot));
@@ -287,13 +336,22 @@ fn envelope_view(ui: &mut egui::Ui, attack: f32, decay: f32, sustain: f32, relea
             let t = k as f32 / steps as f32;
             let x = w[0].x + (w[1].x - w[0].x) * t;
             let y = w[0].y + (w[1].y - w[0].y) * t;
-            g.line_segment([pos2(x, y), pos2(x, r.bottom() - 6.0)], Stroke::new(2.0, fill));
+            g.line_segment(
+                [pos2(x, y), pos2(x, r.bottom() - 6.0)],
+                Stroke::new(2.0, fill),
+            );
         }
     }
     g.add(egui::Shape::line(points.clone(), Stroke::new(2.0, WAVE)));
     for (pt, name) in points[1..].iter().zip(["A", "D", "S", "R"]) {
         g.circle_filled(*pt, 3.5, WAVE);
-        g.text(*pt + vec2(0.0, -10.0), Align2::CENTER_CENTER, name, FontId::proportional(9.5), dim_col());
+        g.text(
+            *pt + vec2(0.0, -10.0),
+            Align2::CENTER_CENTER,
+            name,
+            FontId::proportional(9.5),
+            dim_col(),
+        );
     }
 }
 
@@ -335,7 +393,6 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
         .default_width(WIDTH)
         .frame(egui::Frame::window(&ctx.global_style()).fill(panel_col()))
         .show(ctx, |ui| {
-            ui.style_mut().visuals = egui::Visuals::dark();
             ui.set_width(WIDTH);
             ui.horizontal(|ui| {
                 for (tab, label) in [(Tab::Sample, "Sample"), (Tab::Envelope, "Envelope")] {
@@ -478,16 +535,23 @@ pub fn show(ctx: &egui::Context, p: &mut Project, s: &mut UiState, sync: &mut En
             }
             ui.add_space(4.0);
             // What the sample is, at a glance; the whole path on hover.
-            let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let file = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let about = match s.sampler_view.info.lock().ok().and_then(|i| *i) {
                 Some((secs, rate, ch)) => format!(
                     "{file}   {secs:.2} s   {:.1} kHz   {}",
                     f64::from(rate) / 1000.0,
-                    match ch { 1 => "Mono".to_string(), 2 => "Stereo".to_string(), n => format!("{n} channels") }
+                    match ch {
+                        1 => "Mono".to_string(),
+                        2 => "Stereo".to_string(),
+                        n => format!("{n} channels"),
+                    }
                 ),
                 None => file,
             };
-            ui.colored_label(dim_col(), about).on_hover_text(path.display().to_string());
+            ui.colored_label(dim_col(), about)
+                .on_hover_text(path.display().to_string());
         });
     // A sound let go on the window takes the place of this one.
     if let (Some(window), Some(drag)) = (
@@ -547,10 +611,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_are_named_with_c4_at_60() {
-        assert_eq!(key_name(60), "C4");
-        assert_eq!(key_name(61), "C#4");
-        assert_eq!(key_name(48), "C3");
-        assert_eq!(key_name(24), "C1");
+    fn keys_are_named_as_logic_does_with_c3_at_60() {
+        // The default naming (Settings > Display), as Logic and Ableton: 60 is C3.
+        assert_eq!(key_name(60), "C3");
+        assert_eq!(key_name(61), "C#3");
+        assert_eq!(key_name(48), "C2");
+        assert_eq!(key_name(24), "C0");
     }
 }
