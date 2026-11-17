@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BSL Classics - Ovrtone</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #16181d;
+    --fg: #d6d9e0;
+    --dim: #8a8f99;
+    --panel: #1d2026;
+    --line: #2a2f38;
+    --accent: #4ca6ff;
+  }
+  html, body { background: var(--bg); color: var(--fg); margin: 0; }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; padding: 40px clamp(16px, 5vw, 56px); max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: 0.2px; }
+  h2 { font-size: 20px; margin: 36px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 18px 0 4px; color: var(--accent); }
+  p { margin: 6px 0 10px; }
+  .sub { color: var(--dim); margin: 0 0 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card h3 { margin-top: 0; }
+  .meta { color: var(--dim); font-size: 12.5px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .use { margin: 6px 0 0; }
+  .use strong { color: var(--fg); font-weight: 600; }
+  code { background: var(--line); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  a { color: var(--accent); }
+  footer { margin: 48px 0 0; color: var(--dim); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+
+<h1>BSL Classics</h1>
+<p class="sub">35 VST3 analog-hardware plugins by Bankz Sound Lab. Shipped with Ovrtone; each is a circuit-informed model of a classic studio unit (names, looks and wording are ours). The modern plugin family, <strong>Undrtone</strong>, is a separate set and sits beside this one.</p>
+
+<h2>About these plugins</h2>
+<p>These are plain VST3 effects: drop one on a track in Ovrtone (or any other DAW) through the <strong>Audio FX</strong> slot. Every plugin keeps the hardware's own controls (names, ranges and stepped positions), plus host-level extras: <strong>Bypass</strong>, <strong>Oversampling</strong>, <strong>Theme</strong> and <strong>Undo</strong>. Reverbs and echoes also add a <strong>Duck</strong> knob, so the wet signal dips under the dry and swells back in the gaps.</p>
+<p>Default oversampling: 2x on dynamics, EQs, preamps, consoles and tape; 4x on the hardest saturators (SAT-D, SAT-HG); 1x on reverbs and modulation. Raise it when you want the cleanest result; leave it as shipped for the best CPU trade.</p>
+
+<h2>Dynamics</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL FET-1</h3>
+    <p class="meta">1176-style FET feedback limiter</p>
+    <p>A fast FET peak limiter. Pushes transients down, adds a confident FET edge on the way.</p>
+    <p class="use"><strong>Use for:</strong> vocals (ratio 4, attack 4-5, release 4), snare (ratio 20, fast attack), the parallel compression bus (all-buttons on).</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL OPTO-2</h3>
+    <p class="meta">LA-2A-style electro-optical leveler</p>
+    <p>Program-dependent optical compression. Smooth, slow, forgiving.</p>
+    <p class="use"><strong>Use for:</strong> lead vocals, bass guitar, a stereo bus that wants gentle levelling. Set <strong>Peak Reduction</strong> by ear until the needle shows 4-6 dB of gain reduction, then lift <strong>Gain</strong> to match.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL VARI-6</h3>
+    <p class="meta">Two-channel variable-mu limiter</p>
+    <p>A tube bus compressor with slow, musical release. Glues a mix.</p>
+    <p class="use"><strong>Use for:</strong> the master bus, drum bus, a pop vocal group. 1-2 dB of gain reduction on the loudest hits is plenty.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL BUS-G</h3>
+    <p class="meta">Console VCA bus compressor</p>
+    <p>The classic console-centre bus compressor. Tight, clean, the one everyone reaches for.</p>
+    <p class="use"><strong>Use for:</strong> the stereo bus, drum bus. Ratio 2, attack 10 ms, release Auto, 2-4 dB gain reduction.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL VCA-25</h3>
+    <p class="meta">VCA compressor with Thrust, New / Old</p>
+    <p>A fast, modern VCA with a high-pass sidechain (Thrust) that lets kicks breathe. New / Old switches response character.</p>
+    <p class="use"><strong>Use for:</strong> drums, individual elements that need to sit back. Thrust on for mixes with a loud kick.</p>
+  </div>
+
+</div>
+
+<h2>EQ and preamps</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL TUBE-EQ</h3>
+    <p class="meta">Passive program EQ + tube make-up</p>
+    <p>Pultec-style low boost, high boost / cut and the famous low-boost-and-cut-together trick for weight without mud.</p>
+    <p class="use"><strong>Use for:</strong> kick (boost and cut at 100 Hz), bass, vocals (10 kHz boost 2-3), master bus.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL EQ-73</h3>
+    <p class="meta">Class-A inductor EQ, console strip</p>
+    <p>A 1073-style strip: high-pass, low shelf, parametric mid, high shelf. The sound of British consoles.</p>
+    <p class="use"><strong>Use for:</strong> vocals, electric guitar, snare. Add weight at 110 Hz, air at 12 kHz.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL EQ-PQ</h3>
+    <p class="meta">Stepped proportional-Q EQ</p>
+    <p>Four stepped bands whose Q widens as gain shrinks. Musical cuts and boosts.</p>
+    <p class="use"><strong>Use for:</strong> tone-shaping guitars, mastering moves, anything that wants its decisions on paper.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL EQ-CH</h3>
+    <p class="meta">Console channel EQ, brown / black cards</p>
+    <p>A four-band console EQ with two cards: brown for broad shelves, black for surgical mids.</p>
+    <p class="use"><strong>Use for:</strong> full channel-strip EQ work, mixing busy arrangements.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL EQ-AIR</h3>
+    <p class="meta">Six-band parallel air EQ</p>
+    <p>Six fixed high shelves blended in parallel. Opens up dull sources without changing their body.</p>
+    <p class="use"><strong>Use for:</strong> dull vocals, cymbal decay, acoustic guitar top-end sheen.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL PRE-N</h3>
+    <p class="meta">Class-A transformer preamp</p>
+    <p>Preamp colour: iron, Class-A warmth, extra at louder input.</p>
+    <p class="use"><strong>Use for:</strong> DI bass, boxy drum rooms, anything that wants to sound recorded instead of plugged in.</p>
+  </div>
+
+</div>
+
+<h2>Consoles and summing</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL DESK-S</h3>
+    <p class="meta">Console channel strip</p>
+    <p>One channel of a British console: input, EQ-CH-style EQ, output. Signs the sound with every pass.</p>
+    <p class="use"><strong>Use for:</strong> a strip on every track for a glued "in the desk" sound.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL DESK-V</h3>
+    <p class="meta">Console channel / bus emulation</p>
+    <p>The classic LA console colour. Switches between channel-strip and bus modes.</p>
+    <p class="use"><strong>Use for:</strong> the master bus (bus mode), individual channels (channel mode).</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL DESK-500</h3>
+    <p class="meta">500-series discrete strip</p>
+    <p>A boutique discrete 500-series channel: pre, EQ-PQ-style EQ, output.</p>
+    <p class="use"><strong>Use for:</strong> hi-fi vocal chains, lead instruments, anything that wants a modern discrete sound.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SUM-N</h3>
+    <p class="meta">Non-linear summing, 32 channels</p>
+    <p>Models crosstalk, headroom and gentle saturation of a 32-input analog mixer. Lives on the stereo bus.</p>
+    <p class="use"><strong>Use for:</strong> the master bus from the start of a mix; set input per group for the "sum" sound.</p>
+  </div>
+
+</div>
+
+<h2>Tape</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL TAPE-800</h3>
+    <p class="meta">Multitrack tape machine</p>
+    <p>24-track-style tape: pre-emphasis, bias, head bump, wow and flutter.</p>
+    <p class="use"><strong>Use for:</strong> drums, a full mix wanting glue and depth. Input + 3 to 6 dB saturates pleasantly.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL TAPE-102</h3>
+    <p class="meta">Two-track mastering recorder</p>
+    <p>Half-inch mastering tape: wider, firmer low end, softer transient top.</p>
+    <p class="use"><strong>Use for:</strong> the stereo bus at mix bounce. Keep input modest; the sound comes from the tape, not the drive.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL TAPE-37</h3>
+    <p class="meta">Valve four-track recorder</p>
+    <p>Tape plus tube: dark, round, forgiving.</p>
+    <p class="use"><strong>Use for:</strong> lo-fi beats, warming thin samples, taking the edge off harsh digital.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL TAPE-350</h3>
+    <p class="meta">Tube recorder with slap</p>
+    <p>Classic tube tape with a built-in tape slap (short delay) echo send.</p>
+    <p class="use"><strong>Use for:</strong> vocals, snare, guitars that want a vintage slap without routing a send.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL TAPE-DUO</h3>
+    <p class="meta">16-track / 2-track machines</p>
+    <p>Two tape machines in one: 16-track multitrack and 2-track master. Switch per the stage of the mix.</p>
+    <p class="use"><strong>Use for:</strong> stems on the multitrack, master on the 2-track bus.</p>
+  </div>
+
+</div>
+
+<h2>Reverbs</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL PLATE-1</h3>
+    <p class="meta">Steel plate</p>
+    <p>The classic plate: bright, dense, a long tail that sits behind the voice.</p>
+    <p class="use"><strong>Use for:</strong> lead vocals, snare, strings. Short decay (1.2 s) with ducking on vocals.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL DIGI-250</h3>
+    <p class="meta">Early digital reverb, 6 programs</p>
+    <p>Classic 80s digital reverb: Room, Hall, Plate, Chamber, Large Hall, Reverse. The sound of the decade.</p>
+    <p class="use"><strong>Use for:</strong> character verb on drums, synths, anything wanting an "80s record" sound.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL HALL-224</h3>
+    <p class="meta">Digital hall / plate, 20k / 34k</p>
+    <p>Two sample rates (20 kHz and 34 kHz) model two eras of the same hall reverb.</p>
+    <p class="use"><strong>Use for:</strong> hi-fi hall on vocals, strings, pianos. 34k for modern, 20k for the vintage grain.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SPRING-2</h3>
+    <p class="meta">Two-tank studio spring</p>
+    <p>A real-sounding spring tank: twang, boing, the lot.</p>
+    <p class="use"><strong>Use for:</strong> dub, guitar, drums for grit. Ducking keeps it out of the vocal.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SPRING-TANK</h3>
+    <p class="meta">Tube-driven spring tank</p>
+    <p>Spring driven by a tube drive: thick, saturated spring sound.</p>
+    <p class="use"><strong>Use for:</strong> guitar amp emulation, lo-fi drum ambience.</p>
+  </div>
+
+</div>
+
+<h2>Echoes and modulation</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL ECHO-201</h3>
+    <p class="meta">Multi-head tape echo + spring</p>
+    <p>The Space Echo: three playback heads for rhythmic delays, with a built-in spring reverb.</p>
+    <p class="use"><strong>Use for:</strong> dub vocals, guitars, hooks. Heads 1+2 for dotted eighths, 3 for longer trails.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL ECHO-3</h3>
+    <p class="meta">Sliding-head tape echo</p>
+    <p>A sliding-head tape delay, controls that let you ride delay time as an instrument.</p>
+    <p class="use"><strong>Use for:</strong> tape slap, pitch-shifting self-oscillation, feedback leads.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL CHORUS-1</h3>
+    <p class="meta">BBD chorus / vibrato</p>
+    <p>Bucket-brigade chorus: lush, wide, with a true vibrato mode.</p>
+    <p class="use"><strong>Use for:</strong> clean guitars (chorus), synths (vibrato), vocals for width.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL DIM-D</h3>
+    <p class="meta">Dual BBD dimension, 4 buttons</p>
+    <p>Four fixed widths of stereo dimension chorus. Pick a button, it does the rest.</p>
+    <p class="use"><strong>Use for:</strong> instant width on keys, guitars, backing vocals.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL FLANGE-126</h3>
+    <p class="meta">BBD flanger / doubler</p>
+    <p>Studio flanger with a doubler mode: short, modulated delay for jet flanging or thickening.</p>
+    <p class="use"><strong>Use for:</strong> flanged guitars, doubled vocals, flanged drum busses on breakdowns.</p>
+  </div>
+
+</div>
+
+<h2>Saturators</h2>
+<div class="grid">
+
+  <div class="card">
+    <h3>BSL SAT-D</h3>
+    <p class="meta">Five-style saturator</p>
+    <p>Five flavours of drive in one: tube, tape, transformer, transistor, digital. Each with a different character.</p>
+    <p class="use"><strong>Use for:</strong> picking the right flavour per source. Tube for warmth, tape for glue, transistor for edge.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SAT-HG</h3>
+    <p class="meta">Pentode / triode + parallel saturator</p>
+    <p>Two valve modes plus a dry/wet parallel knob. Harder drive than SAT-D.</p>
+    <p class="use"><strong>Use for:</strong> bass, kick, guitar amp sim. Parallel at 50-70% keeps the body.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SAT-ONE</h3>
+    <p class="meta">One-knob saturator</p>
+    <p>One knob, one job. Zero to all.</p>
+    <p class="use"><strong>Use for:</strong> a quick colour pass on any track, mix-bus salt.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SAT-DESK</h3>
+    <p class="meta">Valve / transistor desk saturation</p>
+    <p>Models the saturation of a console channel driven hard: valve mode for warmth, transistor mode for bite.</p>
+    <p class="use"><strong>Use for:</strong> giving a clean recording the "through a desk" sound.</p>
+  </div>
+
+  <div class="card">
+    <h3>BSL SAT-TUBE</h3>
+    <p class="meta">Dual-input tube mixer</p>
+    <p>Two inputs sum through a tube stage. Mix matrix for width, drive for colour.</p>
+    <p class="use"><strong>Use for:</strong> blending two takes, left/right amps, dry+wet parallel in one plugin.</p>
+  </div>
+
+</div>
+
+<footer>
+<p>BSL Classics is a circuit-informed set of analog-hardware plugins by Bankz Sound Lab. Model names and visuals are ours. Hardware names appearing in this document name the kind of unit that inspired each model, not products from other manufacturers. Every plugin has Bypass, Oversampling, Theme and Undo as host-level extras; reverbs and echoes have a Duck knob.</p>
+<p>Ships with Ovrtone: the full installer puts each as a VST3 in <code>C:\Program Files\Common Files\VST3</code>, where any DAW on the system picks it up.</p>
+</footer>
+
+</body>
+</html>

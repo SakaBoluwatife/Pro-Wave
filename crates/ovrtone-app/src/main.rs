@@ -123,6 +123,7 @@ mod ui_scale;
 #[cfg(test)]
 mod ui_test;
 mod undo;
+mod tuner;
 mod updater;
 mod widgets;
 mod window_chrome;
@@ -263,6 +264,8 @@ pub struct UiState {
     pub undo_labels: Vec<String>,
     pub redo_labels: Vec<String>,
     pub mastering: mastering::MasteringView,
+    /// The control-bar tuner: pitch detection on the stereo output.
+    pub tuner: tuner::Tuner,
     /// A sample let go over the Tracks area, waiting for what it should become.
     pub sample_drop: Option<sample_place::SampleDrop>,
     /// The computer keyboard as a piano, and what it played this frame.
@@ -415,6 +418,7 @@ impl UiState {
             undo_labels: Vec::new(),
             redo_labels: Vec::new(),
             mastering: mastering::MasteringView::default(),
+            tuner: tuner::Tuner::default(),
             typing: typing::Typing::default(),
             typed: Vec::new(),
             file_cmd: None,
@@ -1342,6 +1346,13 @@ impl eframe::App for App {
         menus::expire_status(&ctx, &mut self.ui);
         beat_store::poll(&mut self.ui);
         beat_store::dialog(&ctx, &self.project, &mut self.ui);
+        // Tuner: keep its tap in sync with its open state, then run its detection.
+        let tuner_open = self.ui.tuner.open;
+        if let Some(sync) = self.sync.as_mut() {
+            tuner::set_tap(&mut sync.engine, &mut self.ui.tuner, tuner_open);
+        }
+        tuner::tick(&mut self.ui.tuner);
+        tuner::window(&ctx, &mut self.ui.tuner);
         if !self.ui.launching {
             coming_from::on_launch(&mut self.ui);
         }

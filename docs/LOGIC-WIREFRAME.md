@@ -14,17 +14,35 @@ Windows swaps used throughout: Cmd becomes Ctrl, AU becomes VST3/CLAP, CoreAudio
 
 ## 0. What is left, in the suggested order
 
-1. **Crash isolation:** plugins in a process of their own. A crash while loading is handled; one while playing or in a plugin window still ends the program.
-2. **CPU, second part:** a clean measurement on an idle machine (`perf.rs`, ignored tests), then block processing of strips if sessions with many built-in effects or clips need it.
-3. **Comping, further:** real overlapping crossfades at comp joins, take names and colours.
-4. **Piano roll, further:** per-note pitch bend for slides (they bend the whole instrument for now).
-5. **Audio setup, second part:** the ASIO driver's control panel, separate input and output devices.
-6. **Theme, second part:** the shared colours and sizes are in `theme.rs`; about 300 one-off colours remain in the screens. Dockable panels.
-7. **Tuner, controller lanes in a Step Editor.**
-8. **Plugin presets in the Browser**, project audio browser, Plugin Manager window.
-9. **Small menu entries** (section 16).
-10. **Installer run for real**, code signing, Mac and Linux plugin windows.
-11. **Later or to decide:** Live Loops, score printing and MusicXML, Mackie control, Alternatives, the system-wide audio driver idea.
+Checked 2026-11-17: many items the wireframe used to call open are already in. Section 0 is now the real backlog.
+
+1. **CPU, second part:** a clean measurement on an idle machine (`perf.rs`, ignored tests), then block processing of strips if sessions with many built-in effects or clips need it. Owner-driven.
+2. **Step Editor controller lanes** (true MIDI CC lanes that drive the instrument: mod wheel, expression, pitch). Velocity and chance lanes already exist per step.
+3. **Theme, second part:** about 300 one-off colours still sit in the screens; most are intentional per-screen choices. A sweep would benefit light-theme users only.
+4. **Plugin Manager window** (dedicated manager; the Plugins tab already handles scanning, folders and search).
+5. **Small menu entries** (section 16).
+6. **Installer code signing** (needs a certificate).
+7. **Mac and Linux plugin windows.**
+8. **Later or to decide:** Live Loops, score printing and MusicXML, Mackie control, Alternatives, the system-wide audio driver idea.
+
+Already in, kept for the record:
+- Plugin crash isolation: plugins run in their own process (`ovrtone-host/src/bridge.rs`), the watchdog sets `dead` on exit or hang, audio passes through, and the UI restarts the plugin from its saved settings (`plugin_rack::restart_crashed`).
+- Per-note pitch bend for slides: slide notes already send `NOTE_TUNE_CONTROL` for instruments that take it (`engine_sync::slide_bends`); `PITCH_BEND_CONTROL` is only the fallback.
+- Separate input and output audio devices: Settings > Audio has an Output device row and a separate Input device row (`settings::input_row`); the engine takes the two independently (`Capture::open`).
+- ASIO Driver Control Panel: Settings > Audio shows a "Driver Control Panel" button when ASIO is chosen; audio pauses while it is open.
+- Tuner: the control bar has a tuning-fork button beside the metronome; a Tuner window with the nearest note and cents-off reading (`tuner.rs`), reading a second output tap (`Command::SetTunerTap`).
+- Tuning reference: Settings > Display has A=432/440/442 preset buttons and a free-type value (400-480 Hz); the Tuner uses it.
+- Plugin presets in the Browser: a Presets tab in the left panel lists saved presets grouped by plugin; click loads into the matching plugin on the selected track (`left_panel::presets`).
+- Project Audio: a Project Audio tab in the left panel lists the audio files each track's regions use, with a "Show in Explorer" button per file.
+- Comping, overlapping crossfades at joins: every comp join crossfades over `JOIN_FADE = 0.04` beats, half each side (`takes.rs`); each take has editable name and colour in its menu (`tracks_area::take_name_and_color`).
+- Dockable panels: side and bottom panels can sit left, right, bottom, float over the main window or move to their own window on another monitor; layout is kept in settings (`dock.rs`).
+- Mix templates: starter vocal projects — Rap Vocal Mix, R&B Vocal Mix and Beat + 2-Track — in the Project Chooser, with their vocal tracks, beat, Vox Bus, Short Verb, Long Verb, Slap and Throw Delay returns, sends routed (`start_screen.rs`).
+
+Added 2026-11-16 (planned, nothing built yet):
+
+12. **Undrtone Key and Tune first:** the plugin work now is Key (auto key) and Tune (auto tune) in `C:\Users\user\dev\undrtone`, with the Ovrtone link (the host passes the project key; Key can set it). On the DAW side: the host side of that link, and a "Detect Key" for a region or the song that sets the project key.
+13. **Mix templates:** starter vocal-mix templates (rap, R&B, beat plus 2-track) with buses, returns, sends, colours and named empty slots; "apply to this project" that matches tracks by name; a missing plugin stays a greyed slot that keeps its settings. Ovrtone already saves project, track, chain and mixer templates (`file_commands.rs`).
+14. **Beat visualizer:** File > Export > For Beat Store also makes a video (16:9, 9:16, 1:1) and a GIF loop: cover art, spectrum, waveform, text (title, prod. by, BPM, key), saved looks. It reads the separate tracks, so the kick drives the pulse and the 808 the shake. Rendered offline in the background; H.264 through Windows Media Foundation (to be checked), GIF through a Rust crate.
 
 ---
 
@@ -217,7 +235,7 @@ For now the work is on mixing and beat making, so these wait. Kept in the menus,
 - **On hold, Apple's with no Windows alternative:** Song to Mobile Device, Open in Sound Library Manager
 - **On hold by the owner:** Movie, Show Movie, Video (no movie support for now)
 - **On hold, nothing behind them:** Session Player, Performers, Project Settings (Tuning: plugins have no general way to follow it)
-- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Advanced Tools (nothing in Ovrtone is hidden behind it), Show Flex Editor
+- **Waiting:** Alternatives and Project Alternatives, Page Setup, Print, Score as MusicXML, Show Chord Track, Show Arrangement Track, Record / Record Repeat, New Take, Delete Take, Show Flex Editor
 - **Mixer:** Create New Output Channel Strip (the engine mixes to one stereo output; a second needs engine work)
 - **Inspector:** Q-Reference, MIDI In Port, MIDI In Channel, MIDI Out Channel
 - **Mix:** Stem Splitter (two versions were made at once; the owner chooses which to keep)

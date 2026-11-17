@@ -13,9 +13,9 @@
 ; which parts to install, where, the file types Ovrtone opens, and a plugin folder of their own.
 
 #define AppName "Ovrtone"
-#define AppVersion "1.0.2"
+#define AppVersion "1.1.0"
 ; Windows' file version: 1.0 is 1.0.0; updates to it are 1.0.1, 1.0.2 and on (patch.iss).
-#define FileVersion "1.0.2.0"
+#define FileVersion "1.1.0.0"
 #define AppExe "ovrtone.exe"
 #ifndef ExeDir
   #define ExeDir "..\..\target\release"
@@ -37,7 +37,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
 ; Replaces an installed Pro Wave: the AppId above is the same on purpose.
 OutputDir=output
-OutputBaseFilename=Ovrtone-1.0.2-setup
+OutputBaseFilename=Ovrtone-1.1.0-setup
 SetupIconFile=..\..\crates\ovrtone-app\assets\ovrtone.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -84,6 +84,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 Name: "program"; Description: "Ovrtone (required)"; Types: full compact custom; Flags: fixed
 Name: "stems"; Description: "Stem Splitter: splits a song into vocals, drums, bass and the rest (AI model, large)"; Types: full
 Name: "docs"; Description: "User manual, read-me and release notes"; Types: full compact
+Name: "analog"; Description: "BSL Classics (35 VST3 analog-hardware plugins by Bankz Sound Lab)"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "A desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -109,6 +110,44 @@ Source: "licenses\*-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversio
 Source: "runtime\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Tasks: vcredist
 ; The Stem Splitter's model, ONNX Runtime and its licences: see stems-README.md for this folder.
 Source: "stems\*"; DestDir: "{app}\stems"; Flags: ignoreversion recursesubdirs; Components: stems
+; BSL Classics: 35 circuit-informed analog-hardware plugins built in C++/JUCE (repo ..\..\..\analog).
+; They install in the system VST3 folder and the reference page lists what each one emulates.
+Source: "Ovrtone-BSL-Classics.html"; DestDir: "{app}"; Flags: ignoreversion; Components: analog
+Source: "..\..\..\analog\build\plugins\busg\UT_BUSG_artefacts\Release\VST3\BSL BUS-G.vst3\*"; DestDir: "{commonpf64}\VST3\BSL BUS-G.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\chorus1\UT_CHORUS1_artefacts\Release\VST3\BSL CHORUS-1.vst3\*"; DestDir: "{commonpf64}\VST3\BSL CHORUS-1.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\desk500\UT_DESK500_artefacts\Release\VST3\BSL DESK-500.vst3\*"; DestDir: "{commonpf64}\VST3\BSL DESK-500.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\desks\UT_DESKS_artefacts\Release\VST3\BSL DESK-S.vst3\*"; DestDir: "{commonpf64}\VST3\BSL DESK-S.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\deskv\UT_DESKV_artefacts\Release\VST3\BSL DESK-V.vst3\*"; DestDir: "{commonpf64}\VST3\BSL DESK-V.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\digi250\UT_DIGI250_artefacts\Release\VST3\BSL DIGI-250.vst3\*"; DestDir: "{commonpf64}\VST3\BSL DIGI-250.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\dimd\UT_DIMD_artefacts\Release\VST3\BSL DIM-D.vst3\*"; DestDir: "{commonpf64}\VST3\BSL DIM-D.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\echo201\UT_ECHO201_artefacts\Release\VST3\BSL ECHO-201.vst3\*"; DestDir: "{commonpf64}\VST3\BSL ECHO-201.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\echo3\UT_ECHO3_artefacts\Release\VST3\BSL ECHO-3.vst3\*"; DestDir: "{commonpf64}\VST3\BSL ECHO-3.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\eq73\UT_EQ73_artefacts\Release\VST3\BSL EQ-73.vst3\*"; DestDir: "{commonpf64}\VST3\BSL EQ-73.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\eqair\UT_EQAIR_artefacts\Release\VST3\BSL EQ-AIR.vst3\*"; DestDir: "{commonpf64}\VST3\BSL EQ-AIR.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\eqch\UT_EQCH_artefacts\Release\VST3\BSL EQ-CH.vst3\*"; DestDir: "{commonpf64}\VST3\BSL EQ-CH.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\eqpq\UT_EQPQ_artefacts\Release\VST3\BSL EQ-PQ.vst3\*"; DestDir: "{commonpf64}\VST3\BSL EQ-PQ.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\fet1\UT_FET1_artefacts\Release\VST3\BSL FET-1.vst3\*"; DestDir: "{commonpf64}\VST3\BSL FET-1.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\flange126\UT_FLANGE126_artefacts\Release\VST3\BSL FLANGE-126.vst3\*"; DestDir: "{commonpf64}\VST3\BSL FLANGE-126.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\hall224\UT_HALL224_artefacts\Release\VST3\BSL HALL-224.vst3\*"; DestDir: "{commonpf64}\VST3\BSL HALL-224.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\opto2\UT_OPTO2_artefacts\Release\VST3\BSL OPTO-2.vst3\*"; DestDir: "{commonpf64}\VST3\BSL OPTO-2.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\plate1\UT_PLATE1_artefacts\Release\VST3\BSL PLATE-1.vst3\*"; DestDir: "{commonpf64}\VST3\BSL PLATE-1.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\pren\UT_PREN_artefacts\Release\VST3\BSL PRE-N.vst3\*"; DestDir: "{commonpf64}\VST3\BSL PRE-N.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\satd\UT_SATD_artefacts\Release\VST3\BSL SAT-D.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SAT-D.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\satdesk\UT_SATDESK_artefacts\Release\VST3\BSL SAT-DESK.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SAT-DESK.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\sathg\UT_SATHG_artefacts\Release\VST3\BSL SAT-HG.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SAT-HG.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\satone\UT_SATONE_artefacts\Release\VST3\BSL SAT-ONE.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SAT-ONE.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\sattube\UT_SATTUBE_artefacts\Release\VST3\BSL SAT-TUBE.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SAT-TUBE.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\spring2\UT_SPRING2_artefacts\Release\VST3\BSL SPRING-2.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SPRING-2.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\springtank\UT_SPRINGTANK_artefacts\Release\VST3\BSL SPRING-TANK.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SPRING-TANK.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\sumn\UT_SUMN_artefacts\Release\VST3\BSL SUM-N.vst3\*"; DestDir: "{commonpf64}\VST3\BSL SUM-N.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tape102\UT_TAPE102_artefacts\Release\VST3\BSL TAPE-102.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TAPE-102.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tape350\UT_TAPE350_artefacts\Release\VST3\BSL TAPE-350.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TAPE-350.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tape37\UT_TAPE37_artefacts\Release\VST3\BSL TAPE-37.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TAPE-37.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tape800\UT_TAPE800_artefacts\Release\VST3\BSL TAPE-800.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TAPE-800.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tapeduo\UT_TAPEDUO_artefacts\Release\VST3\BSL TAPE-DUO.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TAPE-DUO.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\tubeeq\UT_TUBEEQ_artefacts\Release\VST3\BSL TUBE-EQ.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TUBE-EQ.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\vari6\UT_VARI6_artefacts\Release\VST3\BSL VARI-6.vst3\*"; DestDir: "{commonpf64}\VST3\BSL VARI-6.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+Source: "..\..\..\analog\build\plugins\vca25\UT_VCA25_artefacts\Release\VST3\BSL VCA-25.vst3\*"; DestDir: "{commonpf64}\VST3\BSL VCA-25.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
 
 [InstallDelete]
 ; The program's file from before the rename, when installing over it.
@@ -118,6 +157,7 @@ Type: files; Name: "{app}\prowave.exe"
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: startmenu
 Name: "{autoprograms}\{#AppName} Manual"; Filename: "{app}\Ovrtone-Manual.html"; Tasks: startmenu; Components: docs
 Name: "{autoprograms}\{#AppName} Key Commands"; Filename: "{app}\Ovrtone-Key-Commands.html"; Tasks: startmenu; Components: docs
+Name: "{autoprograms}\{#AppName} BSL Classics"; Filename: "{app}\Ovrtone-BSL-Classics.html"; Tasks: startmenu; Components: analog
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [INI]

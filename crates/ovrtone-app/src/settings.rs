@@ -368,6 +368,8 @@ fn isolation_row(ui: &mut Ui) {
 static WIDE_PLAYHEAD: AtomicBool = AtomicBool::new(false);
 /// What is added to the octave of a note to name it: -2 calls middle C (pitch 60) C3.
 static OCTAVE_NAMING: AtomicI32 = AtomicI32::new(-2);
+/// Tuning reference in hundredths of a Hz: 44000 means A = 440.00 Hz.
+static TUNING_REF: AtomicU32 = AtomicU32::new(44000);
 /// How long a strip's peak readout holds, 0 until it is clicked.
 static PEAK_HOLD_MS: AtomicU32 = AtomicU32::new(0);
 static OPEN_ON_INSERT: AtomicBool = AtomicBool::new(true);
@@ -397,6 +399,16 @@ pub fn octave_naming() -> i32 {
 /// Sets how middle C (pitch 60) is named: -2 for C3 (Logic, Ableton), -1 for C4, 0 for C5 (FL Studio).
 pub fn set_octave_naming(v: i32) {
     OCTAVE_NAMING.store(v.clamp(-2, 0), Ordering::Relaxed);
+    save_view();
+}
+
+/// Tuning reference in Hz for A4: 440.0 standard, 442.0 classical, 432.0 alternative.
+pub fn tuning_ref_hz() -> f32 {
+    TUNING_REF.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+pub fn set_tuning_ref_hz(hz: f32) {
+    TUNING_REF.store((hz.clamp(400.0, 480.0) * 100.0) as u32, Ordering::Relaxed);
     save_view();
 }
 
@@ -444,6 +456,9 @@ pub fn load_view() {
     if let Some(v) = next() {
         MASTER_LEFT.store(v != 0, Ordering::Relaxed);
     }
+    if let Some(v) = next() {
+        TUNING_REF.store((v as u32).clamp(40_000, 48_000), Ordering::Relaxed);
+    }
 }
 
 fn save_view() {
@@ -451,7 +466,7 @@ fn save_view() {
         return;
     };
     let text = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         i32::from(wide_playhead()),
         octave_naming(),
         peak_hold_ms(),
@@ -459,6 +474,7 @@ fn save_view() {
         i32::from(show_recent_plugins()),
         i32::from(show_track_icons()),
         i32::from(master_on_left()),
+        TUNING_REF.load(Ordering::Relaxed),
     );
     let saved = file
         .parent()
@@ -570,6 +586,39 @@ fn display_tab(ui: &mut Ui) {
         }
     });
     OCTAVE_NAMING.store(naming, Ordering::Relaxed);
+    ui.add_space(6.0);
+    // Tuning reference for the Tuner window and the project's note names.
+    let mut tuning = tuning_ref_hz();
+    ui.horizontal(|ui| {
+        ui.label("Tuning reference")
+            .on_hover_text("The pitch of A4 (MIDI 69). 440 Hz is the modern standard; 442 Hz is common in classical; 432 Hz is an alternative.");
+        for value in [432.0f32, 440.0, 442.0] {
+            let on = (tuning - value).abs() < 0.01;
+            if ui
+                .selectable_label(on, format!("{value:.0} Hz"))
+                .clicked()
+            {
+                tuning = value;
+                changed = true;
+            }
+        }
+        let mut hz = tuning;
+        if ui
+            .add(
+                egui::DragValue::new(&mut hz)
+                    .range(400.0..=480.0)
+                    .suffix(" Hz")
+                    .speed(0.1)
+                    .max_decimals(2),
+            )
+            .on_hover_text("Any value between 400 and 480 Hz")
+            .changed()
+        {
+            tuning = hz;
+            changed = true;
+        }
+    });
+    TUNING_REF.store((tuning.clamp(400.0, 480.0) * 100.0) as u32, Ordering::Relaxed);
     ui.add_space(6.0);
     let mut hold = peak_hold_ms();
     ui.horizontal(|ui| {

@@ -1,3 +1,81 @@
+Ovrtone 1.1.0 (full installer)
+==============================
+
+First full installer since 1.0, rolling up every patch between.
+
+- BSL Classics, 35 analog-hardware VST3 plugins by Bankz Sound Lab, as an optional install component.
+- Tuner on the control bar, with a configurable tuning reference (A=432, 440, 442 or any value
+  between 400 and 480 Hz) in Settings > Display.
+- Presets tab and Project Audio tab in the left panel.
+- Mix templates: Rap Vocal Mix, R&B Vocal Mix, Beat + 2-Track in the Project Chooser.
+- Panner (surround) and Spatial Renderer rework: elevation decoupled from direction, Direction and
+  Elevation readouts under the views, Size and Spread under More; the renderer draws speakers in
+  place of dots, lit as objects near them.
+- MIDI recording with the cycle on: pressing Record now jumps the playhead into the cycle before
+  the count-in.
+- Piano Roll: bigger pencil, preview toggle, notes and keys light up while playing.
+- Channel Rack: steps sound when switched on, Delete Channel, the piano button opens the main
+  Piano Roll (the small roll is gone).
+- Pointer becomes the tool: scissors, pencil, eraser and the rest show at the mouse.
+- Logic's T tool menu over the tracks (P Pencil, E Eraser, I Scissors, J Glue, M Mute, S Solo,
+  Z Zoom, A Fade, R Marquee and more).
+- Middle C naming follows the program you came from (C5 for FL Studio, C3 otherwise).
+- Light-theme fixes in the sampler, start screen and other places.
+- Sampler window overhaul.
+- EQ slot on channel strips (Logic-style, under Setting).
+- Plugins and Ovrtone's effects share one strip order; EQ slot; move up and down past both.
+- Alt-drag copies regions and notes.
+- Frozen tracks show their frozen audio on the Playlist.
+- Channel strip empty rows label themselves (Audio FX, Sends, Group).
+
+Ovrtone 1.0.8 (update)
+======================
+
+- Tuner on the control bar: click the tuning-fork button beside the metronome. The window reads
+  the nearest note and how many cents off, in real time, from the main output.
+- Presets tab in the left panel: every saved plugin preset in the user folder, grouped by plugin.
+  Click a preset to load it into the matching plugin on the selected track.
+- Wireframe cleanup: separate input and output audio devices and the ASIO Driver Control Panel
+  button were already in; no longer listed as open.
+
+Ovrtone 1.0.7 (update)
+======================
+
+- Beat visualiser: four styles to pick in the For Beat Store window.
+  - Sheet Disc: the whole waveform as a spiral groove. Cream editorial print look.
+  - Barcode: radial bars around the centre, scarlet hot ones chasing the loop. Dark.
+  - Pulse: the warm ring from 1.0.6. Dark.
+  - Sections: a cream wheel laying the beat out as eight labelled arcs.
+- The style sits in the Export for Beat Store window; the GIF saves beside the WAV, MP3 and stems.
+
+Ovrtone 1.0.6 (update)
+======================
+
+- Beat visualiser (new): File > Export > For Beat Store also makes a short square GIF loop next to
+  the WAV and MP3: title, BPM, key and prod. by, around a pulsing ring that rides the mix level.
+  Drop it onto a store page or share it on socials. 500x500, 10 s, 15 fps.
+- MP4 video exports (16:9, 9:16) are planned; this release ships the GIF only.
+- The wireframe is cleaned up: plugin crash isolation and per-note pitch bend for slides were
+  already in and are no longer listed as open.
+
+Ovrtone 1.0.5 (update)
+======================
+
+- MIDI recording with the cycle on: pressing Record now jumps the playhead into the cycle before
+  the count-in, so cycle recording captures what is played.
+- Panner: Size and Spread are under More; Direction is read under the top view and Elevation
+  under the side view, so the readouts no longer sit over the speaker labels.
+- Panner: dragging the top view moves the object at any elevation; direction and elevation are
+  independent.
+- Spatial Renderer: the room shows speaker cabinets in place of dots, lit as objects near them.
+
+Ovrtone 1.0.4 (update)
+======================
+
+- Panner: the direction view has room around it, so its readout no longer runs into the speaker
+  names; Size and Spread are under More.
+- Spatial Renderer: the speakers in the room are drawn as speakers, lit as an object nears them.
+
 Ovrtone 1.0.3 (update)
 ======================
 

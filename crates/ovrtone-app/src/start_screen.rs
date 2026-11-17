@@ -21,15 +21,24 @@ pub enum Template {
     Electronic,
     Podcast,
     Surround,
+    /// Rap vocal mix on a 2-track beat: lead, doubles, ad-libs, Vox Bus, short & long verb and slap.
+    RapVocalMix,
+    /// R&B vocal mix: lead, doubles, harmonies, ad-libs, beat, Vox Bus and the usual returns.
+    RnBVocalMix,
+    /// A quick beat-plus-2-track mix: one vocal, one beat, a short verb and a slap.
+    BeatPlusTwoTrack,
 }
 
 impl Template {
-    pub const ALL: [Template; 5] = [
+    pub const ALL: [Template; 8] = [
         Template::Empty,
         Template::Songwriter,
         Template::Electronic,
         Template::Podcast,
         Template::Surround,
+        Template::RapVocalMix,
+        Template::RnBVocalMix,
+        Template::BeatPlusTwoTrack,
     ];
 
     pub fn name(self) -> &'static str {
@@ -39,6 +48,9 @@ impl Template {
             Template::Electronic => "Electronic",
             Template::Podcast => "Podcast",
             Template::Surround => "Mix in Surround",
+            Template::RapVocalMix => "Rap Vocal Mix",
+            Template::RnBVocalMix => "R&B Vocal Mix",
+            Template::BeatPlusTwoTrack => "Beat + 2-Track",
         }
     }
 
@@ -51,6 +63,15 @@ impl Template {
             Template::Surround => {
                 "A spatial mix: a 7.1.2 bed heard on headphones, set in the Spatial Renderer."
             }
+            Template::RapVocalMix => {
+                "Lead, Double L/R, Ad-libs and Beat, routed to a Vox Bus with Short Verb, Long Verb and Slap returns."
+            }
+            Template::RnBVocalMix => {
+                "Lead, Doubles, Harmonies, Ad-libs and Beat, with Vox Bus and Short Verb, Long Verb, Slap and Throw Delay returns."
+            }
+            Template::BeatPlusTwoTrack => {
+                "One vocal, one beat, a Short Verb and a Slap. The quick setup for a two-track rough."
+            }
         }
     }
 
@@ -61,6 +82,7 @@ impl Template {
             Template::Electronic => IconKind::Synth,
             Template::Podcast => IconKind::Mic,
             Template::Surround => IconKind::Spatial,
+            Template::RapVocalMix | Template::RnBVocalMix | Template::BeatPlusTwoTrack => IconKind::Mic,
         }
     }
 
@@ -102,10 +124,111 @@ impl Template {
                     track("Music Bed", TrackKind::Audio),
                 ];
             }
+            Template::RapVocalMix => {
+                vocal_mix_project(&mut p, &rap_mix_plan());
+            }
+            Template::RnBVocalMix => {
+                vocal_mix_project(&mut p, &rnb_mix_plan());
+            }
+            Template::BeatPlusTwoTrack => {
+                vocal_mix_project(&mut p, &two_track_plan());
+            }
         }
         p.name = "Untitled".into();
         p.selected_track = 0;
         p
+    }
+}
+
+/// The audio and aux tracks of a starter mix template, plus the send levels.
+struct MixPlan {
+    /// Audio tracks: name and the send levels to each aux (0..=1), one entry per aux in `auxes`.
+    vocals: Vec<(&'static str, Vec<f32>)>,
+    /// The beat / 2-track row. Routed through the Beat Bus, not the vocal returns.
+    beat: (&'static str, Vec<f32>),
+    /// Aux tracks in order: name and whether it is the vocal sum bus. Buses are numbered 1..=N.
+    auxes: Vec<&'static str>,
+}
+
+fn rap_mix_plan() -> MixPlan {
+    // Aux order: 1 Vox Bus, 2 Short Verb, 3 Long Verb, 4 Slap, 5 Beat Bus.
+    MixPlan {
+        vocals: vec![
+            // (name, [to Vox Bus, Short Verb, Long Verb, Slap, Beat Bus])
+            ("Lead Vocal",   vec![1.0, 0.25, 0.10, 0.20, 0.0]),
+            ("Double L",     vec![1.0, 0.15, 0.08, 0.10, 0.0]),
+            ("Double R",     vec![1.0, 0.15, 0.08, 0.10, 0.0]),
+            ("Ad-libs",      vec![1.0, 0.30, 0.20, 0.25, 0.0]),
+        ],
+        beat: ("Beat (2-track)", vec![0.0, 0.0, 0.0, 0.0, 1.0]),
+        auxes: vec!["Vox Bus", "Short Verb", "Long Verb", "Slap", "Beat Bus"],
+    }
+}
+
+fn rnb_mix_plan() -> MixPlan {
+    // Aux order: 1 Vox Bus, 2 Short Verb, 3 Long Verb, 4 Slap, 5 Throw Delay, 6 Beat Bus.
+    MixPlan {
+        vocals: vec![
+            ("Lead Vocal",   vec![1.0, 0.25, 0.10, 0.15, 0.10, 0.0]),
+            ("Harmony 1",    vec![1.0, 0.20, 0.10, 0.08, 0.05, 0.0]),
+            ("Harmony 2",    vec![1.0, 0.20, 0.10, 0.08, 0.05, 0.0]),
+            ("Backing L",    vec![1.0, 0.15, 0.08, 0.05, 0.0,  0.0]),
+            ("Backing R",    vec![1.0, 0.15, 0.08, 0.05, 0.0,  0.0]),
+            ("Ad-libs",      vec![1.0, 0.30, 0.25, 0.20, 0.15, 0.0]),
+        ],
+        beat: ("Beat (2-track)", vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+        auxes: vec!["Vox Bus", "Short Verb", "Long Verb", "Slap", "Throw Delay", "Beat Bus"],
+    }
+}
+
+fn two_track_plan() -> MixPlan {
+    // Aux order: 1 Short Verb, 2 Slap, 3 Beat Bus. No Vox Bus: one vocal track only.
+    MixPlan {
+        vocals: vec![("Vocal", vec![0.25, 0.20, 0.0])],
+        beat: ("Beat (2-track)", vec![0.0, 0.0, 1.0]),
+        auxes: vec!["Short Verb", "Slap", "Beat Bus"],
+    }
+}
+
+/// Fills `p` from a [`MixPlan`]: makes the audio tracks, the aux tracks, and routes the sends.
+fn vocal_mix_project(p: &mut Project, plan: &MixPlan) {
+    use crate::model::SendSlot;
+    use ovrtone_engine::MAX_SENDS;
+    p.tracks.clear();
+    // Vocal tracks first.
+    for (name, _) in &plan.vocals {
+        p.tracks.push(Track::new(*name, TrackKind::Audio));
+    }
+    // The beat / 2-track row, muted-sounding sends unless the plan says so.
+    p.tracks.push(Track::new(plan.beat.0, TrackKind::Audio));
+    // Aux tracks, numbered 1..=N.
+    for (i, name) in plan.auxes.iter().enumerate() {
+        let mut aux = Track::new(*name, TrackKind::Aux);
+        aux.aux_bus = (i as u16) + 1;
+        p.tracks.push(aux);
+    }
+    // Sends: the vocal rows first, then the beat.
+    for (i, (_, levels)) in plan.vocals.iter().enumerate() {
+        set_sends(&mut p.tracks[i].sends, levels);
+    }
+    let beat_i = plan.vocals.len();
+    set_sends(&mut p.tracks[beat_i].sends, &plan.beat.1);
+    // A capped number of sends per strip; a longer plan is trimmed.
+    for t in &mut p.tracks {
+        t.sends.truncate(MAX_SENDS);
+    }
+}
+
+fn set_sends(sends: &mut Vec<crate::model::SendSlot>, levels: &[f32]) {
+    sends.clear();
+    for (i, level) in levels.iter().enumerate() {
+        if *level > 0.0 {
+            sends.push(crate::model::SendSlot {
+                bus: Some((i as u16) + 1),
+                level: level.clamp(0.0, 1.0),
+                pre: false,
+            });
+        }
     }
 }
 

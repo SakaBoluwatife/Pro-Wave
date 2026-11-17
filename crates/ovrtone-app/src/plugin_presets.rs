@@ -75,7 +75,7 @@ pub fn ask_where_strip(name: &str) -> Option<PathBuf> {
 }
 
 /// A name that is safe as a folder name, from a plugin's id.
-fn folder_name(id: &str) -> String {
+pub fn folder_name(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
@@ -116,6 +116,34 @@ pub fn list(id: &str) -> Vec<(String, PathBuf)> {
         return Vec::new();
     }
     folder_of(id).map_or_else(Vec::new, |dir| list_in(&dir))
+}
+
+/// Every saved preset in the user's presets folder, as (`plugin_folder_name`, `preset_name`,
+/// `file`). The plugin folder name is a safe form of the plugin id (what [`folder_of`] uses).
+pub fn list_all() -> Vec<(String, String, PathBuf)> {
+    let Some(root) = crate::recent_files::config_dir().map(|d| d.join("presets")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String, PathBuf)> = Vec::new();
+    let Ok(dirs) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for dir_entry in dirs.flatten() {
+        let folder = dir_entry.path();
+        if !folder.is_dir() {
+            continue;
+        }
+        let folder_name = folder
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        for (preset, path) in list_in(&folder) {
+            out.push((folder_name.clone(), preset, path));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    out
 }
 
 /// Asks where to save a preset of plugin `id`. `None` if the user changed their mind.

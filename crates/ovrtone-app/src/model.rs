@@ -2274,6 +2274,16 @@ impl Project {
                 self.stop_at = Some(self.position_beats + self.bars_as_beats(self.post_roll));
             }
         } else {
+            // From a stop with the cycle on, start the recording inside it so cycle recording and
+            // the count-in lead to the right place (without this, the count-in played before the
+            // cycle and the recorder could not tell this pass belonged to it).
+            if !self.playing
+                && self.cycle
+                && self.cycle_end > self.cycle_start
+                && !(self.cycle_start..self.cycle_end).contains(&self.position_beats)
+            {
+                self.position_beats = self.cycle_start;
+            }
             // Pre-roll: from a stop, the song starts earlier and the recording comes in where the
             // playhead was (a punch-in there, put back when the song stops).
             if !self.playing && self.pre_roll > 0.0 && self.roll_restore.is_none() {

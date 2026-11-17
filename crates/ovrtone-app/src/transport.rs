@@ -99,6 +99,7 @@ fn button_name(key: &str) -> Option<&'static str> {
         "typing" => "Typing Keyboard: play notes on the computer keyboard (Ctrl+K). Numpad + and - change the octave",
         "countin" => "Count-in",
         "metronome" => "Metronome (K)",
+        "tuner" => "Tuner: pitch detection on the main output",
         "view0" => "Library (Y)",
         "view1" => "Inspector (I)",
         "view2" => "Quick Help",
@@ -211,6 +212,20 @@ fn icon_low_latency(g: &Painter, r: Rect, c: Color32) {
 
 fn icon_metronome(g: &Painter, r: Rect, c: Color32) {
     crate::icons::paint(g, r.center(), 17.0, crate::icons::Icon::Metronome, c);
+}
+
+/// A simple tuning-fork glyph, drawn in the control-bar style.
+fn icon_tuner(g: &Painter, r: Rect, c: Color32) {
+    let cx = r.center().x;
+    let cy = r.center().y;
+    let stroke = Stroke::new(1.6, c);
+    // Two prongs with a short bridge between them.
+    g.line_segment([pos2(cx - 4.0, cy - 8.0), pos2(cx - 4.0, cy + 2.0)], stroke);
+    g.line_segment([pos2(cx + 4.0, cy - 8.0), pos2(cx + 4.0, cy + 2.0)], stroke);
+    g.line_segment([pos2(cx - 4.0, cy + 2.0), pos2(cx + 4.0, cy + 2.0)], stroke);
+    // Stem and base.
+    g.line_segment([pos2(cx, cy + 2.0), pos2(cx, cy + 9.0)], stroke);
+    g.circle_filled(pos2(cx, cy + 9.0), 2.0, c);
 }
 
 fn icon_list_editors(g: &Painter, r: Rect, c: Color32) {
@@ -1301,10 +1316,61 @@ pub fn control_bar(
     ) {
         p.metronome = !p.metronome;
     }
+    // Tuner: a small button to the right of the metronome, matching its shape.
+    let tune_bg = s.tuner.open.then_some(PURPLE);
+    if tbutton(
+        ui,
+        &g,
+        rx(128.0),
+        "tuner",
+        icon_tuner,
+        tune_bg,
+        if s.tuner.open { Color32::WHITE } else { icon_col() },
+    ) {
+        s.tuner.open = !s.tuner.open;
+    }
+    // Compact readout beside the button while the tuner is on, so the value is seen without the
+    // window.
+    let compact_w = if s.tuner.open { 64.0 } else { 0.0 };
+    if s.tuner.open {
+        let r = Rect::from_min_size(pos2(rx(144.0).x + 2.0, cy - 11.0), vec2(compact_w, 22.0));
+        g.rect_filled(r, 4.0, crate::theme::gray(0x18));
+        g.rect_stroke(r, 4.0, Stroke::new(1.0, crate::theme::gray(0x30)), egui::StrokeKind::Inside);
+        let (name, cents) = match s.tuner.pitch_hz {
+            Some(hz) => {
+                let (n, _c) = crate::tuner::note_of(hz);
+                (n, s.tuner.smoothed_cents)
+            }
+            None => ("—".to_string(), 0.0),
+        };
+        g.text(
+            pos2(r.left() + 6.0, r.center().y),
+            Align2::LEFT_CENTER,
+            &name,
+            FontId::proportional(13.0),
+            if s.tuner.pitch_hz.is_some() { Color32::WHITE } else { crate::widgets::text_dim_col() },
+        );
+        if s.tuner.pitch_hz.is_some() {
+            let colour = if cents.abs() < 5.0 {
+                Color32::from_rgb(0x76, 0xd5, 0x8a)
+            } else if cents.abs() < 15.0 {
+                Color32::from_rgb(0xff, 0xb7, 0x5a)
+            } else {
+                Color32::from_rgb(0xd7, 0x3b, 0x2a)
+            };
+            g.text(
+                pos2(r.right() - 6.0, r.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{cents:+.0}"),
+                FontId::proportional(11.0),
+                colour,
+            );
+        }
+    }
 
     // Right: master volume, then List Editors / Note Pads / Loop Browser / Browsers.
     // The volume sits after the metronome and before the icons, narrower if it must be.
-    let (vol_left, vol_w) = volume_span(rx(114.0).x, bar.right());
+    let (vol_left, vol_w) = volume_span(rx(144.0).x + compact_w + 8.0, bar.right());
     if vol_w > 0.0 {
         let vol = Rect::from_min_size(pos2(vol_left, cy - 11.0), vec2(vol_w, 22.0));
         master_volume(ui, &g, p, vol, master_peaks);

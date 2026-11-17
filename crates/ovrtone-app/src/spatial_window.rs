@@ -345,13 +345,9 @@ fn room_view(ui: &mut egui::Ui, p: &Project, layout: SpeakerLayout, size: Vec2, 
             if glow > 0.0 {
                 g.circle_filled(at, 10.0, VALUE.gamma_multiply(0.25 * glow));
             }
-            g.rect_filled(
-                Rect::from_center_size(at, Vec2::splat(7.0)),
-                1.5,
-                SPEAKER.lerp_to_gamma(VALUE, glow),
-            );
+            speaker_box(&g, at, SPEAKER.lerp_to_gamma(VALUE, glow));
             g.text(
-                at + vec2(0.0, 6.0),
+                at + vec2(0.0, 9.0),
                 Align2::CENTER_TOP,
                 *name,
                 FontId::proportional(9.0),
@@ -1060,7 +1056,7 @@ fn label_at(g: &egui::Painter, at: Pos2, text: &str) {
 /// The room from above: the speakers of the bed, the track's left and right where they are.
 fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLayout) {
     let (r, resp) = ui.allocate_exact_size(
-        Vec2::splat(TOP_RADIUS * 2.0 + 40.0),
+        Vec2::splat(TOP_RADIUS * 2.0 + 64.0),
         Sense::click_and_drag(),
     );
     let c = r.center();
@@ -1125,23 +1121,6 @@ fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLay
             }
         }
     }
-    // Where it points, in words, as the sliders are gone.
-    if let Some(o) = now {
-        g.text(
-            r.left_top() + vec2(8.0, 8.0),
-            Align2::LEFT_TOP,
-            format!("{:.0}°", o.azimuth),
-            FontId::proportional(11.0),
-            TEXT,
-        );
-        g.text(
-            r.left_top() + vec2(8.0, 22.0),
-            Align2::LEFT_TOP,
-            "direction",
-            FontId::proportional(8.5),
-            TEXT_DIM,
-        );
-    }
     head(g, c, 1.0);
     g.text(
         c - vec2(0.0, TOP_RADIUS - 14.0),
@@ -1158,11 +1137,9 @@ fn top_view(ui: &mut egui::Ui, p: &mut Project, track: usize, layout: SpeakerLay
         return;
     };
     let color = if t.bed_pan { SURROUND } else { OBJECT };
-    // The top view is the room seen from above: direction around the listener and distance out.
-    // The higher it is, the nearer the middle: straight up is over the head, where direction and
-    // spread no longer move it, as the engine renders it.
-    let reach =
-        TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12) * o.elevation.to_radians().cos().max(0.0);
+    // The top view is the room seen from above: direction and distance alone. Elevation is set
+    // in the side view below, so the glyph here keeps moving with direction at any height.
+    let reach = TOP_RADIUS * o.radius.clamp(0.0, 1.0).max(0.12);
     let middle = c + point_of(o.azimuth, 0.0, reach);
     if o.size > 0.01 {
         g.circle_filled(middle, 8.0 + o.size * 40.0, color.gamma_multiply(0.12));
@@ -1237,6 +1214,25 @@ fn head(g: &egui::Painter, c: Pos2, scale: f32) {
 }
 
 /// A speaker at `at`, a small wedge facing `towards`.
+/// A speaker seen from the front: a cabinet with a woofer and a tweeter, in `color`.
+fn speaker_box(g: &egui::Painter, at: Pos2, color: Color32) {
+    let body = Rect::from_center_size(at, vec2(11.0, 15.0));
+    g.rect_filled(
+        body.translate(vec2(1.0, 1.5)),
+        2.0,
+        Color32::from_black_alpha(70),
+    );
+    g.rect_filled(body, 2.0, crate::theme::gray(0x1c));
+    g.rect_stroke(body, 2.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+    g.circle_filled(pos2(at.x, body.top() + 4.0), 1.6, color);
+    g.circle_stroke(
+        pos2(at.x, body.bottom() - 4.5),
+        3.2,
+        Stroke::new(1.0, color),
+    );
+    g.circle_filled(pos2(at.x, body.bottom() - 4.5), 1.2, color);
+}
+
 fn speaker_mark(g: &egui::Painter, at: Pos2, towards: Pos2, color: Color32) {
     let d = (towards - at).normalized();
     let side = vec2(-d.y, d.x);
@@ -1254,7 +1250,7 @@ fn speaker_mark(g: &egui::Painter, at: Pos2, towards: Pos2, color: Color32) {
 /// The room from the side: the listener at the floor's middle, the height of the track on an arc over
 /// them. Dragging sets the height alone.
 fn side_view(ui: &mut egui::Ui, p: &mut Project, track: usize) {
-    let width = TOP_RADIUS * 2.0 + 40.0;
+    let width = TOP_RADIUS * 2.0 + 64.0;
     let (r, resp) = ui.allocate_exact_size(vec2(width, TOP_RADIUS + 30.0), Sense::click_and_drag());
     let g = ui.painter();
     g.rect_filled(r, 8.0, DARK_ROOM.gamma_multiply(0.6));
@@ -1350,20 +1346,6 @@ fn side_view(ui: &mut egui::Ui, p: &mut Project, track: usize) {
     g.circle_filled(at, 8.0, color.gamma_multiply(0.45));
     g.circle_filled(at - vec2(2.0, 2.0), 3.5, Color32::from_white_alpha(40));
     g.circle_stroke(at, 8.0, Stroke::new(1.5, color));
-    g.text(
-        r.left_top() + vec2(8.0, 8.0),
-        Align2::LEFT_TOP,
-        format!("{:.0}°", o.elevation),
-        FontId::proportional(11.0),
-        TEXT,
-    );
-    g.text(
-        r.left_top() + vec2(8.0, 22.0),
-        Align2::LEFT_TOP,
-        "elevation",
-        FontId::proportional(8.5),
-        TEXT_DIM,
-    );
     if resp.dragged() {
         if let Some(pt) = resp.interact_pointer_pos() {
             // From the pointer's height alone: at the sides (90° either way) the dot sits in the
@@ -1447,11 +1429,28 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 ui.label(format!("Placed in the {} bus's layout", l.name()));
             }
             top_view(ui, p, track, layout);
+            if let Some(o) = p.tracks.get(track).and_then(|t| place_now(t, p.position_beats)) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(format!("Direction {:.0}°", o.azimuth)).small().color(TEXT_DIM));
+                });
+            }
             side_view(ui, p, track);
+            if let Some(o) = p.tracks.get(track).and_then(|t| place_now(t, p.position_beats)) {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(format!("Elevation {:.0}°", o.elevation)).small().color(TEXT_DIM));
+                });
+            }
             let beat = p.position_beats;
             let Some(o) = p.tracks.get(track).and_then(|t| place_now(t, beat)) else {
                 return;
             };
+            // Size and spread stay out of sight under More, as the views set the rest.
+            egui::CollapsingHeader::new("More")
+                .id_salt(egui::Id::unique("panner_more"))
+                .default_open(false)
+                .show(ui, |ui| {
             egui::Grid::new(egui::Id::unique("panner_values")).num_columns(2).show(ui, |ui| {
                 // Direction and elevation are set by dragging in the views above, as on other
                 // panners; only the size has a slider of its own.
@@ -1485,10 +1484,6 @@ fn panner(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
                 }
                 ui.end_row();
             });
-            egui::CollapsingHeader::new("More")
-                .id_salt(egui::Id::unique("panner_more"))
-                .default_open(false)
-                .show(ui, |ui| {
                 if !p.tracks[track].bed_pan {
                     // As Logic: each object can sound nearer or further on headphones than its channels.
                     ui.horizontal(|ui| {

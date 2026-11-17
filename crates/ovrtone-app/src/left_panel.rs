@@ -20,16 +20,25 @@ pub enum LeftTab {
     #[default]
     Browser,
     Plugins,
+    Presets,
+    ProjectAudio,
 }
 
 #[cfg(test)]
 impl LeftTab {
-    const ALL: [LeftTab; 2] = [LeftTab::Browser, LeftTab::Plugins];
+    const ALL: [LeftTab; 4] = [
+        LeftTab::Browser,
+        LeftTab::Plugins,
+        LeftTab::Presets,
+        LeftTab::ProjectAudio,
+    ];
 
     fn name(self) -> &'static str {
         match self {
             LeftTab::Browser => "Browser",
             LeftTab::Plugins => "Plugins",
+            LeftTab::Presets => "Presets",
+            LeftTab::ProjectAudio => "Project Audio",
         }
     }
 }
@@ -225,6 +234,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
         ),
         ("Effects", LeftTab::Plugins, Some(PluginKind::Effects)),
         ("All Plug-ins", LeftTab::Plugins, Some(PluginKind::All)),
+        ("Presets", LeftTab::Presets, None),
+        ("Project Audio", LeftTab::ProjectAudio, None),
     ];
     for (i, (name, tab, kind)) in entries.into_iter().enumerate() {
         let r = Rect::from_min_size(
@@ -267,6 +278,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
     ui.scope_builder(UiBuilder::new().max_rect(rest), |ui| match s.left_tab {
         LeftTab::Browser => crate::sample_browser::show(ui, s),
         LeftTab::Plugins => plugins(ui, p, s),
+        LeftTab::Presets => presets(ui, p, s),
+        LeftTab::ProjectAudio => project_audio(ui, p, s),
     });
 }
 
@@ -432,6 +445,211 @@ fn plugins(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
                     egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(drag.0.name.as_str()));
                 });
         }
+    }
+}
+
+/// The Presets tab: every saved plugin preset in the user's folder, grouped by plugin. Click a
+/// preset to load it into any instance of its plugin on the selected track (instrument or any FX
+/// slot). Says so in the status line if no matching plugin is loaded.
+fn presets(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
+    let panel = ui.available_rect_before_wrap();
+    ui.allocate_rect(panel, Sense::hover());
+    ui.painter_at(panel).rect_filled(panel, 0.0, panel_bg_col());
+    let inner = panel.shrink2(vec2(8.0, 6.0));
+    let list = crate::plugin_presets::list_all();
+    // Current group being drawn.
+    let mut asked: Option<std::path::PathBuf> = None;
+    ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{} presets", list.len())).color(text_col()),
+            );
+            if let Some(dir) = crate::recent_files::config_dir() {
+                let folder = dir.join("presets");
+                if ui
+                    .small_button("Open folder")
+                    .on_hover_text("Shows the presets folder in Explorer")
+                    .clicked()
+                {
+                    let _ = std::fs::create_dir_all(&folder);
+                    let _ = std::process::Command::new("explorer").arg(&folder).spawn();
+                }
+            }
+        });
+        ui.add_space(4.0);
+        if list.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "No presets saved yet. Save one from a plugin's bar \
+                         (the Preset menu > Save As…) and it shows up here.",
+                    )
+                    .small()
+                    .color(text_dim_col()),
+                )
+                .wrap(),
+            );
+            return;
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut last_group: Option<&str> = None;
+            for (group, name, path) in &list {
+                let group_name = group.replace('_', " ");
+                if last_group != Some(group.as_str()) {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(group_name.clone())
+                            .color(text_dim_col())
+                            .small(),
+                    );
+                    last_group = Some(group.as_str());
+                }
+                let resp = ui.selectable_label(false, name.as_str());
+                if resp.double_clicked() || resp.clicked() {
+                    asked = Some(path.clone());
+                }
+                resp.on_hover_text(path.display().to_string());
+            }
+        });
+    });
+    if let Some(file) = asked {
+        apply_preset(p, s, &file);
+    }
+}
+
+/// Loads `file` into the first plugin on the selected track whose preset folder matches the file's
+/// parent folder. Status says what happened.
+fn apply_preset(p: &mut Project, s: &mut UiState, file: &std::path::Path) {
+    let group = file
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    let Some(group) = group else {
+        s.status = Some("Could not read the preset's folder".to_string());
+        return;
+    };
+    let name = file.file_stem().and_then(|n| n.to_str()).unwrap_or("Preset");
+    let t = p.selected_track;
+    // The instrument first (if any), then the FX slots in order.
+    let uid = p.tracks.get(t).and_then(|track| {
+        track
+            .instrument_plugin
+            .as_ref()
+            .filter(|ins| crate::plugin_presets::folder_name(&ins.id) == group)
+            .map(|ins| ins.uid)
+            .or_else(|| {
+                track
+                    .plugins
+                    .iter()
+                    .find(|ins| crate::plugin_presets::folder_name(&ins.id) == group)
+                    .map(|ins| ins.uid)
+            })
+    });
+    let Some(uid) = uid else {
+        s.status = Some(format!(
+            "Load the matching plugin on the selected track first ({group}): the preset {name} \
+             is for that plugin."
+        ));
+        return;
+    };
+    s.browser.preset_cmd = Some(crate::plugin_presets::PresetCmd::Load {
+        uid,
+        file: file.to_path_buf(),
+    });
+    s.status = Some(format!("Loading preset {name}…"));
+}
+
+/// The Project Audio tab: audio files used by the regions in this project, grouped by track. Click
+/// a file to select its region, double-click to open it in the audio editor, and the small "Show in
+/// Explorer" button reveals it on disk.
+fn project_audio(ui: &mut Ui, p: &mut Project, s: &mut UiState) {
+    let panel = ui.available_rect_before_wrap();
+    ui.allocate_rect(panel, Sense::hover());
+    ui.painter_at(panel).rect_filled(panel, 0.0, panel_bg_col());
+    let inner = panel.shrink2(vec2(8.0, 6.0));
+    // (track_index, track_name, Vec<(region_index, region_name, file)>).
+    let mut groups: Vec<(usize, String, Vec<(usize, String, std::path::PathBuf)>)> = Vec::new();
+    for (ti, track) in p.tracks.iter().enumerate() {
+        let mut rows: Vec<(usize, String, std::path::PathBuf)> = Vec::new();
+        for (ri, region) in track.regions.iter().enumerate() {
+            if let Some(a) = region.audio.as_ref() {
+                rows.push((ri, region.name.clone(), a.file.path.clone()));
+            }
+        }
+        if !rows.is_empty() {
+            groups.push((ti, track.name.clone(), rows));
+        }
+    }
+    let total: usize = groups.iter().map(|(_, _, r)| r.len()).sum();
+    let mut pick: Option<(usize, usize)> = None;
+    let mut reveal: Option<std::path::PathBuf> = None;
+    ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{total} audio files")).color(text_col()));
+            let dir = crate::project_io::recordings_dir();
+            if ui
+                .small_button("Recordings folder")
+                .on_hover_text("This session's recordings folder in Explorer")
+                .clicked()
+            {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+            }
+        });
+        ui.add_space(4.0);
+        if groups.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "No audio regions in this project yet. Record on an audio track or drop a \
+                         file onto the Tracks area.",
+                    )
+                    .small()
+                    .color(text_dim_col()),
+                )
+                .wrap(),
+            );
+            return;
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (ti, track_name, rows) in &groups {
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(track_name)
+                        .color(text_dim_col())
+                        .small(),
+                );
+                for (ri, region_name, file) in rows {
+                    ui.horizontal(|ui| {
+                        let is_sel = s.tracks.selected == Some((*ti, *ri));
+                        let resp = ui.selectable_label(is_sel, region_name.as_str());
+                        if resp.clicked() {
+                            pick = Some((*ti, *ri));
+                        }
+                        resp.on_hover_text(file.display().to_string());
+                        if ui
+                            .small_button("↗")
+                            .on_hover_text("Show in Explorer")
+                            .clicked()
+                        {
+                            reveal = Some(file.clone());
+                        }
+                    });
+                }
+            }
+        });
+    });
+    if let Some(sel) = pick {
+        s.tracks.select_only(sel);
+        p.selected_track = sel.0;
+    }
+    if let Some(path) = reveal {
+        // Highlights the file when Explorer opens.
+        let _ = std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn();
     }
 }
 
@@ -673,7 +891,7 @@ mod tests {
     #[test]
     fn the_tabs_have_their_names() {
         let names: Vec<_> = LeftTab::ALL.iter().map(|t| t.name()).collect();
-        assert_eq!(names, ["Browser", "Plugins"]);
+        assert_eq!(names, ["Browser", "Plugins", "Presets", "Project Audio"]);
         assert_eq!(LeftTab::default(), LeftTab::Browser);
     }
 }

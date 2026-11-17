@@ -22,7 +22,7 @@ pub struct Store {
     pub open: bool,
 }
 
-/// The export window: the stores, and a new one being typed in.
+/// The export window: the stores and a new one being typed in.
 #[derive(Default)]
 pub struct Dialog {
     stores: Vec<Store>,
@@ -224,7 +224,12 @@ pub fn start(p: &Project, s: &mut UiState) {
         info.push_str(&format!("Mixed by: {}\r\n", p.engineer.trim()));
     }
     s.bounce.enqueue(renders);
-    s.beat_store = Some(Pending { folder, stems, base, info });
+    s.beat_store = Some(Pending {
+        folder,
+        stems,
+        base,
+        info,
+    });
     s.status = Some("Exporting for your beat store: WAV, MP3 and stems".to_string());
 }
 

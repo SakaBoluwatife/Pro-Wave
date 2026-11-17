@@ -542,6 +542,9 @@ pub enum Command {
     /// Gives the Mastering window a copy of the output, or stops. The old queue comes back as
     /// garbage.
     SetMasterTap(Option<Box<rtrb::Producer<f32>>>),
+    /// Second tap on the stereo output: the control bar's Tuner window reads pitches from it.
+    /// Independent of the master tap so Mastering and the Tuner can both listen.
+    SetTunerTap(Option<Box<rtrb::Producer<f32>>>),
     /// Listens to one effect of a strip's chain for its window (`None`: stops). The old tap comes
     /// back through the garbage queue. A chain put in later keeps the tap.
     SetFxTap {
@@ -770,6 +773,7 @@ impl Command {
                 | Self::SetSpatial(_)
                 | Self::SetBusPlugins { .. }
                 | Self::SetMasterTap(_)
+                | Self::SetTunerTap(_)
                 | Self::SetFxTap { .. }
                 | Self::SetPluginRound(_)
         )
@@ -793,6 +797,8 @@ pub enum Garbage {
     BusPlugins(Box<Vec<crate::spatial::BusPlugin>>),
     PluginRound(Box<crate::plugin::PluginRound>),
     MasterTap(Box<rtrb::Producer<f32>>),
+    /// The old Tuner tap, replaced or stopped.
+    TunerTap(Box<rtrb::Producer<f32>>),
     Song(Box<Song>),
     Notes(Vec<NoteEvent>),
     Controls(Vec<ControlEvent>),
@@ -1133,6 +1139,8 @@ pub struct EngineCore {
     plugin_round: Option<Box<crate::plugin::PluginRound>>,
     /// Hands a copy of the output to the Mastering window.
     master_tap: Option<Box<rtrb::Producer<f32>>>,
+    /// Hands a copy of the output to the Tuner widget.
+    tuner_tap: Option<Box<rtrb::Producer<f32>>>,
     /// A render: the output is not cut at full scale.
     keep_headroom: bool,
     /// Plugins with nothing to process stop running.
@@ -1365,6 +1373,7 @@ impl EngineCore {
             all_clips_active: false,
             clip_frames: 0,
             master_tap: None,
+            tuner_tap: None,
             keep_headroom: false,
             plugins_may_rest: true,
             bend_low: 0,
@@ -2660,6 +2669,11 @@ impl EngineCore {
                         let _ = self.trash.push(Garbage::MasterTap(old));
                     }
                 }
+                Command::SetTunerTap(tap) => {
+                    if let Some(old) = std::mem::replace(&mut self.tuner_tap, tap) {
+                        let _ = self.trash.push(Garbage::TunerTap(old));
+                    }
+                }
                 Command::SetMasterGain { linear } => {
                     if linear.is_finite() {
                         let samples = self.smoothing_samples();
@@ -3400,6 +3414,12 @@ impl EngineCore {
             let r = finite_or_zero((r * master) as f32);
             if let Some(tap) = self.master_tap.as_mut() {
                 // If nobody is reading, it is lost: the audio does not wait.
+                if tap.slots() >= 2 {
+                    let _ = tap.push(l);
+                    let _ = tap.push(r);
+                }
+            }
+            if let Some(tap) = self.tuner_tap.as_mut() {
                 if tap.slots() >= 2 {
                     let _ = tap.push(l);
                     let _ = tap.push(r);

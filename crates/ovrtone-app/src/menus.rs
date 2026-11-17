@@ -259,7 +259,6 @@ const VIEW: &[&str] = &[
     "Show Region Automation",
     "Show Track Automation",
     "-",
-    "Show Advanced Tools",
     "Show Smart Controls",
     "-",
     "Show Piano Roll",

@@ -44,6 +44,8 @@ pub fn capture(s: &UiState, slot: u8, name: String) -> ScreensetDoc {
         left_tab: match s.left_tab {
             LeftTab::Browser => 1,
             LeftTab::Plugins => 2,
+            LeftTab::Presets => 3,
+            LeftTab::ProjectAudio => 4,
         },
         show_inspector: s.show_inspector,
         show_lists: s.show_lists,
@@ -74,6 +76,8 @@ pub fn recall(s: &mut UiState, set: &ScreensetDoc) {
     s.show_library = set.show_library;
     s.left_tab = match set.left_tab {
         2 => LeftTab::Plugins,
+        3 => LeftTab::Presets,
+        4 => LeftTab::ProjectAudio,
         // 0 was the Library, which is gone.
         _ => LeftTab::Browser,
     };
