@@ -7,7 +7,9 @@ First full installer since 1.0, rolling up every patch between.
 - Tuner on the control bar, with a configurable tuning reference (A=432, 440, 442 or any value
   between 400 and 480 Hz) in Settings > Display.
 - Presets tab and Project Audio tab in the left panel.
-- Mix templates: Rap Vocal Mix, R&B Vocal Mix, Beat + 2-Track in the Project Chooser.
+- Fit All Audio to Tempo (Edit menu): stems made at another tempo all follow the project tempo at
+  once, at one typed BPM or each at its own found tempo. Offered when several stems are dropped in.
+- The home page starts a blank project; templates are your own (File > Save as Template).
 - Panner (surround) and Spatial Renderer rework: elevation decoupled from direction, Direction and
   Elevation readouts under the views, Size and Spread under More; the renderer draws speakers in
   place of dots, lit as objects near them.

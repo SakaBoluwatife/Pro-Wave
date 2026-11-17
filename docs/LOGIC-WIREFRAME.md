@@ -36,12 +36,12 @@ Already in, kept for the record:
 - Project Audio: a Project Audio tab in the left panel lists the audio files each track's regions use, with a "Show in Explorer" button per file.
 - Comping, overlapping crossfades at joins: every comp join crossfades over `JOIN_FADE = 0.04` beats, half each side (`takes.rs`); each take has editable name and colour in its menu (`tracks_area::take_name_and_color`).
 - Dockable panels: side and bottom panels can sit left, right, bottom, float over the main window or move to their own window on another monitor; layout is kept in settings (`dock.rs`).
-- Mix templates: starter vocal projects — Rap Vocal Mix, R&B Vocal Mix and Beat + 2-Track — in the Project Chooser, with their vocal tracks, beat, Vox Bus, Short Verb, Long Verb, Slap and Throw Delay returns, sends routed (`start_screen.rs`).
+- Fit All Audio to Tempo: Edit > Fit All Audio to Tempo… makes every audio region (or the selected tracks') follow the project tempo at a typed BPM or each at its found tempo; offered when several audio files are dropped at once (`flex_edit::fit_all`).
 
 Added 2026-11-16 (planned, nothing built yet):
 
 12. **Undrtone Key and Tune first:** the plugin work now is Key (auto key) and Tune (auto tune) in `C:\Users\user\dev\undrtone`, with the Ovrtone link (the host passes the project key; Key can set it). On the DAW side: the host side of that link, and a "Detect Key" for a region or the song that sets the project key.
-13. **Mix templates:** starter vocal-mix templates (rap, R&B, beat plus 2-track) with buses, returns, sends, colours and named empty slots; "apply to this project" that matches tracks by name; a missing plugin stays a greyed slot that keeps its settings. Ovrtone already saves project, track, chain and mixer templates (`file_commands.rs`).
+13. **Mix templates:** left to users (File > Save as Template). The home page starts a blank project only.
 14. **Beat visualizer:** File > Export > For Beat Store also makes a video (16:9, 9:16, 1:1) and a GIF loop: cover art, spectrum, waveform, text (title, prod. by, BPM, key), saved looks. It reads the separate tracks, so the kick drives the pulse and the 808 the shake. Rendered offline in the background; H.264 through Windows Media Foundation (to be checked), GIF through a Rust crate.
 
 ---

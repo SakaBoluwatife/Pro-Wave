@@ -17,7 +17,7 @@ Bring your own VST3 and CLAP plugins and your own samples. Ovrtone is the host â
 - **BSL Classics, 35 analog-hardware plugins, in the box.** Compressors, EQs, preamps, consoles, tape machines, reverbs, echoes, modulation and saturators. VST3, Windows. An optional install component.
 - **Tuner on the control bar.** A real-time pitch readout with a cents needle, plus a compact reading beside the button. Tuning reference is adjustable (A=432, 440, 442 or any value from 400 to 480 Hz).
 - **Spatial.** Surround panner and renderer reworked: direction and elevation are independent, the room shows speakers in place of dots and lights them as objects come near, Size and Spread hide under More.
-- **Mix templates.** Rap Vocal Mix, R&B Vocal Mix, and Beat + 2-Track in the Project Chooser, each with the usual vocal routing, a Vox Bus and the common returns (Short Verb, Long Verb, Slap, Throw Delay where it fits).
+- **Fit All Audio to Tempo.** Drag in stems made at another tempo and make them all follow the project tempo at once: type the BPM they were made at (and optionally set the project to it), or let Ovrtone find each one's tempo. Offered as soon as several stems are dropped in; also in the Edit menu.
 - **Browser extras.** A Presets tab lists every saved plugin preset, grouped by plugin; a Project Audio tab lists the audio files each track's regions use.
 - **Piano Roll.** Preview on each drawn or moved note (toggle off any time), playing notes and keys light up, the pencil cursor is bigger and the tool shows at the mouse.
 - **Channel Rack.** Steps sound when switched on, Delete Channel on right-click, the piano button opens the main Piano Roll (the small rack roll is gone).

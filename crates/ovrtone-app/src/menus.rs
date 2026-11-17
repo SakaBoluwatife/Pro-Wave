@@ -153,6 +153,7 @@ const EDIT: &[&str] = &[
     "Nudge Right",
     "Snap to Zero Crossings",
     "Strip Silence…",
+    "Fit All Audio to Tempo…",
 ];
 const TRACK: &[&str] = &[
     "New",
@@ -575,6 +576,7 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Smart Tempo" | "Smart Tempo" | "Stem Splitter…" | "Strip Silence…" => {
             selected_audio(p, s).is_some()
         }
+        "Fit All Audio to Tempo…" => p.tracks.iter().any(|t| t.regions.iter().any(|r| r.audio.is_some())),
         "Show Markers" | "Show Global Tracks" => true,
         "Record Enable" => p
             .tracks
@@ -844,6 +846,7 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
                 crate::stem_splitter::open(p, s, t, r);
             }
         }
+        "Fit All Audio to Tempo…" => s.flex.ask_fit_all(),
         "Strip Silence…" => {
             if let Some((t, r)) = selected_audio(p, s) {
                 crate::strip_silence::open(p, s, t, r);

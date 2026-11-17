@@ -1444,8 +1444,15 @@ impl eframe::App for App {
                 self.import(path, &ctx);
             }
         } else {
+            // Stems dragged in together: offer to make them all follow the project tempo.
+            let before = self.project.tracks.len();
+            let audio = dropped.iter().filter(|p| import::is_audio_path(p)).count();
             for path in dropped {
                 self.import(&path, &ctx);
+            }
+            let after = self.project.tracks.len();
+            if audio >= 2 && after > before {
+                self.ui.flex.ask_fit_tracks((before..after).collect());
             }
         }
         if let Some(out) = self.midi_out.as_mut() {

@@ -407,11 +407,6 @@ pub fn tuning_ref_hz() -> f32 {
     TUNING_REF.load(Ordering::Relaxed) as f32 / 100.0
 }
 
-pub fn set_tuning_ref_hz(hz: f32) {
-    TUNING_REF.store((hz.clamp(400.0, 480.0) * 100.0) as u32, Ordering::Relaxed);
-    save_view();
-}
-
 pub fn peak_hold_ms() -> u32 {
     PEAK_HOLD_MS.load(Ordering::Relaxed)
 }

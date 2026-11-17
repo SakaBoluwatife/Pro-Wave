@@ -512,6 +512,22 @@ pub struct FlexState {
     pub tempo_asked: bool,
     /// For telling that the tempo changed: see [`fit_regions_to_tempo`].
     tempo_key: Option<f64>,
+    /// Edit > Fit All Audio to Tempo…, while its window is open.
+    pub fit_all: Option<FitAllDialog>,
+}
+
+/// The Fit All Audio to Tempo window: stems dragged in at another tempo all follow the project's
+/// at once, from one BPM typed for all of them or each one's own tempo found.
+#[derive(Default)]
+pub struct FitAllDialog {
+    /// The tempo the stems were made at, as typed. Empty: each region's tempo is found.
+    bpm: String,
+    /// Set the project tempo to that BPM first, so the stems play at their own speed.
+    set_project: bool,
+    /// Only the highlighted tracks (or the selected one), not every track.
+    picked_only: bool,
+    /// The tracks just made from files dropped together: the window is about those alone.
+    dropped: Option<Vec<usize>>,
 }
 
 impl FlexState {
@@ -576,6 +592,168 @@ impl FlexState {
     pub fn fit_later(&mut self, t: usize, r: usize) {
         self.fits.push((t, r));
     }
+
+    /// Opens Edit > Fit All Audio to Tempo….
+    pub fn ask_fit_all(&mut self) {
+        self.fit_all = Some(FitAllDialog::default());
+    }
+
+    /// Opens the same window about the tracks just made from stems dropped together.
+    pub fn ask_fit_tracks(&mut self, tracks: Vec<usize>) {
+        self.fit_all = Some(FitAllDialog {
+            dropped: Some(tracks),
+            ..FitAllDialog::default()
+        });
+    }
+}
+
+/// The audio regions of `tracks`: (track, region).
+fn audio_regions(p: &Project, tracks: &[usize]) -> Vec<(usize, usize)> {
+    tracks
+        .iter()
+        .filter_map(|&t| p.tracks.get(t).map(|track| (t, track)))
+        .flat_map(|(t, track)| {
+            track
+                .regions
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.audio.is_some())
+                .map(move |(r, _)| (t, r))
+        })
+        .collect()
+}
+
+/// A typed tempo, when it is one a song can have.
+fn typed_bpm(text: &str) -> Option<f64> {
+    text.trim()
+        .trim_end_matches("BPM")
+        .trim_end_matches("bpm")
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|b| (20.0..=999.0).contains(b))
+}
+
+/// Makes the audio regions of `tracks` follow the project tempo: at `bpm` when it is given (and
+/// the project set to it first when `set_project`), else each at the tempo found for it. Returns
+/// how many were fitted at once and how many are being listened to.
+pub fn fit_all(
+    ctx: &egui::Context,
+    p: &mut Project,
+    s: &mut UiState,
+    tracks: &[usize],
+    bpm: Option<f64>,
+    set_project: bool,
+) -> (usize, usize) {
+    if let (Some(bpm), true) = (bpm, set_project) {
+        p.tempo = bpm as f32;
+        p.song_rev += 1;
+    }
+    let (mut fitted, mut listening) = (0, 0);
+    for (t, r) in audio_regions(p, tracks) {
+        match bpm {
+            Some(bpm) => {
+                follow_source_tempo(p, t, r, bpm);
+                fitted += 1;
+            }
+            None => {
+                let Some(a) = audio_of(p, t, r) else { continue };
+                if a.follow_bpm.is_some() || recording_of(a).duration_secs() < MIN_LOOP_SECONDS {
+                    continue;
+                }
+                let before = s.flex.detecting.len();
+                s.flex.detect_tempo(p, t, r, ctx);
+                if s.flex.detecting.len() > before {
+                    listening += 1;
+                } else if audio_of(p, t, r).is_some_and(|a| a.follow_bpm.is_some()) {
+                    fitted += 1;
+                }
+            }
+        }
+    }
+    (fitted, listening)
+}
+
+/// The Fit All Audio to Tempo window, while it is open. Once a frame.
+fn fit_all_window(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
+    let Some(d) = s.flex.fit_all.as_mut() else { return };
+    let (mut go, mut close) = (false, false);
+    egui::Window::new("Fit All Audio to Tempo")
+        .id(egui::Id::unique("fit_all_tempo"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            match &d.dropped {
+                Some(t) => ui.label(format!(
+                    "{} stems were dropped in. Make them follow the project tempo, so they line \
+                     up with the grid and with each other?",
+                    t.len()
+                )),
+                None => ui.label(
+                    "Every audio region follows the project tempo, so stems made at another \
+                     tempo line up with the grid and with each other.",
+                ),
+            };
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("The audio was made at");
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.bpm)
+                        .hint_text("find it")
+                        .desired_width(70.0),
+                );
+                ui.label("BPM");
+            });
+            ui.weak("Leave it empty and each region's tempo is found from its name or by listening.");
+            let bpm = typed_bpm(&d.bpm);
+            ui.add_enabled_ui(bpm.is_some(), |ui| {
+                ui.checkbox(
+                    &mut d.set_project,
+                    format!(
+                        "Set the project tempo to {} BPM first (the stems keep their speed)",
+                        bpm.map_or_else(|| "it".to_string(), |b| format!("{b:.1}"))
+                    ),
+                );
+            });
+            if d.dropped.is_none() {
+                ui.checkbox(&mut d.picked_only, "Only the selected tracks");
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                go = ui.button("Fit").clicked();
+                close = ui
+                    .button(if d.dropped.is_some() { "Leave as they are" } else { "Cancel" })
+                    .clicked();
+            });
+        });
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        s.flex.fit_all = None;
+        return;
+    }
+    if !go {
+        return;
+    }
+    let Some(d) = s.flex.fit_all.take() else { return };
+    let bpm = typed_bpm(&d.bpm);
+    let tracks: Vec<usize> = if let Some(dropped) = d.dropped {
+        dropped
+    } else if d.picked_only {
+        if s.tracks.picked_tracks.is_empty() {
+            vec![p.selected_track]
+        } else {
+            s.tracks.picked_tracks.clone()
+        }
+    } else {
+        (0..p.tracks.len()).collect()
+    };
+    let (fitted, listening) = fit_all(ctx, p, s, &tracks, bpm, d.set_project && bpm.is_some());
+    s.status = Some(match (fitted, listening) {
+        (0, 0) => "No audio regions to fit (or they already follow the tempo)".to_string(),
+        (n, 0) => format!("{n} audio regions follow the project tempo"),
+        (0, l) => format!("Listening for the tempo of {l} audio regions…"),
+        (n, l) => format!("{n} audio regions follow the project tempo; listening to {l} more…"),
+    });
 }
 
 fn audio_of(p: &Project, t: usize, r: usize) -> Option<&AudioRegion> {
@@ -956,6 +1134,7 @@ pub fn poll(ctx: &egui::Context, p: &mut Project, s: &mut UiState) {
     for (t, r) in std::mem::take(&mut s.flex.fits) {
         fit_to_tempo(ctx, p, s, t, r);
     }
+    fit_all_window(ctx, p, s);
     fit_regions_to_tempo(p, s);
     poll_tasks(p, s);
     poll_detections(p, s);
