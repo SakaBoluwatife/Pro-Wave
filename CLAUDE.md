@@ -8,6 +8,8 @@ Ovrtone, published by Bankz Sound Lab: Saka's fork of Pro Wave (https://github.c
 
 Goal: daily-driver DAW. **No stock instruments, effects or sound library.** Users bring VST3/CLAP plugins and their own samples. See `docs/LOGIC-WIREFRAME.md` for the full feature map and milestone order.
 
+Exception (owner, 2026-11-18): the Windows installer offers Bankz Sound Lab's own plugins as optional components: BSL Classics (repo `..\analog`) Undrtone Bass (repo `..\undrtone-bass`) and Undrtone Tune (repo `..\undrtone-tune`), both CLAP, installed to the shared CLAP folder. They live in their own repos and are never part of the Ovrtone build or source.
+
 ## Rules from the owner
 
 - **Do not push to git** until the owner says so. Commit locally only when asked.

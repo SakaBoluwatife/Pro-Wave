@@ -85,6 +85,9 @@ Name: "program"; Description: "Ovrtone (required)"; Types: full compact custom; 
 Name: "stems"; Description: "Stem Splitter: splits a song into vocals, drums, bass and the rest (AI model, large)"; Types: full
 Name: "docs"; Description: "User manual, read-me and release notes"; Types: full compact
 Name: "analog"; Description: "BSL Classics (35 VST3 analog-hardware plugins by Bankz Sound Lab)"; Types: full
+Name: "bass"; Description: "Undrtone Bass (CLAP synth-bass instrument by Bankz Sound Lab)"; Types: full
+Name: "tune"; Description: "Undrtone Tune (CLAP pitch correction and shift by Bankz Sound Lab)"; Types: full
+Name: "key"; Description: "Undrtone Key (CLAP key finder that sets Undrtone Tune's key, by Bankz Sound Lab)"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "A desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -148,6 +151,12 @@ Source: "..\..\..\analog\build\plugins\tapeduo\UT_TAPEDUO_artefacts\Release\VST3
 Source: "..\..\..\analog\build\plugins\tubeeq\UT_TUBEEQ_artefacts\Release\VST3\BSL TUBE-EQ.vst3\*"; DestDir: "{commonpf64}\VST3\BSL TUBE-EQ.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
 Source: "..\..\..\analog\build\plugins\vari6\UT_VARI6_artefacts\Release\VST3\BSL VARI-6.vst3\*"; DestDir: "{commonpf64}\VST3\BSL VARI-6.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
 Source: "..\..\..\analog\build\plugins\vca25\UT_VCA25_artefacts\Release\VST3\BSL VCA-25.vst3\*"; DestDir: "{commonpf64}\VST3\BSL VCA-25.vst3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: analog
+; Undrtone Bass: a CLAP synth-bass instrument (own repo ..\..\..\undrtone-bass; build it first with its package.ps1).
+; Installed in the shared CLAP folder, which Ovrtone scans.
+Source: "..\..\..\undrtone-bass\dist\Undrtone Bass.clap"; DestDir: "{commoncf64}\CLAP"; Flags: ignoreversion; Components: bass
+; Undrtone Tune: CLAP pitch correction, pitch and formant shift, auto key (repo ..\..\..\undrtone-tune; build with its package.ps1).
+Source: "..\..\..\undrtone-tune\dist\Undrtone Tune.clap"; DestDir: "{commoncf64}\CLAP"; Flags: ignoreversion; Components: tune
+Source: "..\..\..\undrtone-tune\dist\Undrtone Key.clap"; DestDir: "{commoncf64}\CLAP"; Flags: ignoreversion; Components: key
 
 [InstallDelete]
 ; The program's file from before the rename, when installing over it.
