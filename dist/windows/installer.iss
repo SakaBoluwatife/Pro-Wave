@@ -13,9 +13,9 @@
 ; which parts to install, where, the file types Ovrtone opens, and a plugin folder of their own.
 
 #define AppName "Ovrtone"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 ; Windows' file version: 1.0 is 1.0.0; updates to it are 1.0.1, 1.0.2 and on (patch.iss).
-#define FileVersion "1.1.0.0"
+#define FileVersion "1.1.1.0"
 #define AppExe "ovrtone.exe"
 #ifndef ExeDir
   #define ExeDir "..\..\target\release"
@@ -37,7 +37,7 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName} {#AppVersion}
 ; Replaces an installed Pro Wave: the AppId above is the same on purpose.
 OutputDir=output
-OutputBaseFilename=Ovrtone-1.1.0-setup
+OutputBaseFilename=Ovrtone-1.1.1-setup
 SetupIconFile=..\..\crates\ovrtone-app\assets\ovrtone.ico
 Compression=lzma2/ultra64
 SolidCompression=yes

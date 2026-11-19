@@ -409,14 +409,29 @@ impl PluginProcessor for BridgeProcessor {
             out_r.copy_from_slice(input[1]);
             return;
         }
-        // Still on an earlier block: nothing may touch the memory yet.
-        if self.shm.done().load(Ordering::Acquire) != self.sent {
-            out_l.fill(0.0);
-            out_r.fill(0.0);
+        // One block behind, so the helper works while the engine does everything else: the
+        // block sent last time is (nearly always) done by now, its output goes out, and this one
+        // goes in. Delay compensation counts the extra block (`latency_samples`). Before, the
+        // audio thread spun for each helper in turn on every block.
+        if !self.answered() {
+            // The helper is late or gone; its memory is not ours yet.
+            if self.dead.load(Ordering::Relaxed) {
+                out_l.copy_from_slice(input[0]);
+                out_r.copy_from_slice(input[1]);
+            } else {
+                out_l.fill(0.0);
+                out_r.fill(0.0);
+            }
             return;
         }
         let (shm, block) = (&self.shm, self.shm.block);
         let frames = block.min(input[0].len()).min(out_l.len());
+        // SAFETY: `done` equals `sent`, so the helper waits and the output buffers hold the last
+        // block's sound (zeros before the first), a block long each.
+        unsafe {
+            std::ptr::copy_nonoverlapping(shm.buffer(OUT_L), out_l.as_mut_ptr(), frames);
+            std::ptr::copy_nonoverlapping(shm.buffer(OUT_R), out_r.as_mut_ptr(), frames);
+        }
         let header = shm.header();
         // SAFETY: `done` equals `sent`, so the helper is waiting and these parts are ours until
         // `go` moves. The buffers hold a block each, and the lists are as long as the counts say.
@@ -443,23 +458,11 @@ impl PluginProcessor for BridgeProcessor {
         self.sent += 1;
         shm.go().store(self.sent, Ordering::Release);
         shm.signal();
-        if self.answered() {
-            // SAFETY: the helper has answered this block and waits for the next.
-            unsafe {
-                std::ptr::copy_nonoverlapping(shm.buffer(OUT_L), out_l.as_mut_ptr(), frames);
-                std::ptr::copy_nonoverlapping(shm.buffer(OUT_R), out_r.as_mut_ptr(), frames);
-            }
-        } else if self.dead.load(Ordering::Relaxed) {
-            out_l.copy_from_slice(input[0]);
-            out_r.copy_from_slice(input[1]);
-        } else {
-            out_l.fill(0.0);
-            out_r.fill(0.0);
-        }
     }
 
     fn latency_samples(&self) -> usize {
-        self.latency
+        // The plugin's own, and the block it runs behind (see `process`).
+        self.latency + self.shm.block
     }
 
     fn set_param(&mut self, id: u32, value: f64) {
@@ -1086,7 +1089,9 @@ impl LoadedPlugin for BridgeLoaded {
     }
 
     fn latency_samples(&self) -> usize {
-        self.with_notes(|n| n.latency)
+        // The plugin's own, and the block its audio half runs behind (`BridgeProcessor::process`),
+        // so delay compensation and bounces line it up.
+        self.with_notes(|n| n.latency) + ovrtone_engine::plugin_block()
     }
 
     fn released(&self) -> bool {
@@ -1115,6 +1120,9 @@ impl LoadedPlugin for BridgeLoaded {
             return Err(HostError("the plugin's process has stopped".to_string()));
         }
         let (x, y) = position.unwrap_or((0, 0));
+        // The helper is not the program in front, so Windows would keep its window from taking
+        // the focus: clicks and keys on it beeped until it was picked from the taskbar.
+        allow_to_front(self.helper.pid);
         self.helper.tell(
             &Out::new(OPEN_EDITOR)
                 .u32(self.instance)

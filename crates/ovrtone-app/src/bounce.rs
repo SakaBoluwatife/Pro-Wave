@@ -918,6 +918,15 @@ pub fn place(
                     region.params.mute = true;
                 }
             }
+            // Right under the track it came from, selected, as Logic puts a bounce, rather than at
+            // the bottom of a long list where it was easy to miss.
+            if let Some(&(source, _)) = sources.first() {
+                let last = p.tracks.len() - 1;
+                if source + 1 < last {
+                    p.move_tracks(&[last], source + 1);
+                }
+                p.selected_track = (source + 1).min(p.tracks.len() - 1);
+            }
             p.song_rev += 1;
             Ok(())
         }
@@ -1495,9 +1504,8 @@ fn with_extension_kept(path: PathBuf, extension: &str) -> PathBuf {
 
 /// Where a bounce placed in the project is kept. Not the sound cache, which is cleaned out.
 fn bounce_dir() -> PathBuf {
-    crate::recent_files::config_dir()
-        .map(|d| d.join("bounces"))
-        .unwrap_or_else(|| std::env::temp_dir().join("ovrtone-bounces"))
+    // Its own folder under Bounces, so Clean Up of freeze files never touches exported mixes.
+    crate::project_folder::subdir("Bounces").join("Freeze Files")
 }
 
 /// Asks where, then what `dialog` said to make.
@@ -1524,6 +1532,7 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
                 _ => (p.name.as_str(), None),
             };
             let picked = rfd::FileDialog::new()
+                .set_directory(crate::project_folder::subdir("Bounces"))
                 .add_filter(b.format.name(), &[b.format.extension()])
                 .set_file_name(format!("{}.{}", file_safe(name), b.format.extension()))
                 .save_file();
@@ -1542,7 +1551,10 @@ fn ask_and_enqueue(p: &Project, s: &mut crate::UiState, purpose: Purpose) {
             }]
         }
         Purpose::Stems => {
-            let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+            let Some(folder) = rfd::FileDialog::new()
+                .set_directory(crate::project_folder::subdir("Stems"))
+                .pick_folder()
+            else {
                 return;
             };
             let mut all = stems(p, &folder, b.format, b.depth, range);
@@ -1591,7 +1603,9 @@ pub fn bounce_selection(p: &Project, s: &mut crate::UiState, replace: bool) {
         s.status = Some("Bounce regions of one track at a time".to_string());
         return;
     }
-    let bar = p.beats_to_bar(range.0).floor();
+    // Where the bounce starts, to the sample: it is rendered from the region's start, so it goes
+    // back there, not to the start of that bar (which put it early by however far into the bar
+    // the region began).
     let start_bar = p.beats_to_bar(range.0) + 1.0;
     let name = p.tracks[track].name.clone();
     let stamp = std::time::SystemTime::now()
@@ -1613,7 +1627,7 @@ pub fn bounce_selection(p: &Project, s: &mut crate::UiState, replace: bool) {
     } else {
         After::NewTrack {
             name: format!("{name} Bounce"),
-            bar: bar + 1.0,
+            bar: start_bar,
             sources: regions.clone(),
         }
     };

@@ -648,24 +648,36 @@ fn plugin_block_file() -> Option<std::path::PathBuf> {
     crate::recent_files::config_dir().map(|d| d.join("plugin-block"))
 }
 
-/// The block plugins work in, as chosen here: 0 is the usual one.
+/// The block plugins work in when none was chosen. 64 cost too much CPU with a few heavy plugins
+/// (a call and a hand-off between threads every 1.5 ms per plugin). Choose 64 for the lowest
+/// delay when monitoring through plugins.
+const DEFAULT_PLUGIN_BLOCK: usize = 256;
+
+/// The block plugins work in, as chosen here.
 pub fn plugin_block() -> usize {
     plugin_block_file()
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|text| text.trim().parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(DEFAULT_PLUGIN_BLOCK)
 }
 
 fn block_row(ui: &mut Ui) {
     let saved = ovrtone_engine::PLUGIN_BLOCK.max(plugin_block());
     let mut chosen = saved;
     ui.horizontal(|ui| {
-        ui.label("Plugin block size");
+        // Three sizes, as Logic's Process Buffer Range: Small, Medium (the usual) and Large.
+        const SIZES: [(usize, &str); 3] =
+            [(64, "Small (64)"), (256, "Medium (256)"), (1024, "Large (1024)")];
+        ui.label("Process buffer range");
+        let shown = SIZES
+            .iter()
+            .find(|(n, _)| *n == chosen)
+            .map_or_else(|| chosen.to_string(), |(_, name)| (*name).to_string());
         egui::ComboBox::from_id_salt(egui::Id::unique("settings_plugin_block"))
-            .selected_text(chosen.to_string())
+            .selected_text(shown)
             .show_ui(ui, |ui| {
-                for n in [64, 128, 256, 512, 1024] {
-                    ui.selectable_value(&mut chosen, n, n.to_string());
+                for (n, name) in SIZES {
+                    ui.selectable_value(&mut chosen, n, name);
                 }
             });
     })

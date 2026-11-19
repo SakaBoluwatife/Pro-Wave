@@ -163,6 +163,23 @@ pub(crate) fn worker_setup() {
     }
 }
 
+/// Setup for the disk streaming threads: registered with the multimedia scheduler as "Audio", a
+/// step below the rendering threads' "Pro Audio" but above the window. Without it a busy window
+/// (a fast redraw while the mouse moves over the tracks) took their time and the streamed audio
+/// broke up.
+pub(crate) fn disk_thread_setup() {
+    crate::plugin::flush_denormals();
+    #[cfg(windows)]
+    // SAFETY: registers the calling thread with the multimedia scheduler, for as long as it lives.
+    unsafe {
+        let mut task_index = 0u32;
+        let _ = windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW(
+            windows::core::w!("Audio"),
+            &mut task_index,
+        );
+    }
+}
+
 /// What an output device can do, as its driver reports it ([`Engine::device_caps`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceCaps {
@@ -186,7 +203,15 @@ pub(crate) struct Renderer {
     scratch: Vec<f32>,
     channels: usize,
     sample_rate: u32,
+    /// The last frame sent, for fading out of an overload instead of cutting to silence.
+    last: (f32, f32),
+    /// Frames of fade-in still owed after an overload.
+    fade_in: u32,
 }
+
+/// Frames an overload fades over, out and back in: short enough to keep the gap short, long enough
+/// not to click.
+const OVERLOAD_FADE: u32 = 96;
 
 impl Drop for Renderer {
     fn drop(&mut self) {
@@ -248,6 +273,8 @@ impl Renderer {
             shared,
             // Pre-allocated once, before the stream starts; the callback never allocates.
             scratch: vec![0f32; MAX_BLOCK_FRAMES * 2],
+            last: (0.0, 0.0),
+            fade_in: 0,
             channels: channels.max(1),
             sample_rate,
         }
@@ -294,10 +321,38 @@ impl Renderer {
                         held = Some(core);
                     }
                     None => {
-                        buf[got..].fill(0.0);
+                        // Late: fade out from the last frame rather than cutting to silence, and
+                        // fade the sound back in when it returns.
+                        let (mut l, mut r) = if got >= 2 {
+                            (buf[got - 2], buf[got - 1])
+                        } else {
+                            self.last
+                        };
+                        let step = 1.0 - 1.0 / OVERLOAD_FADE as f32;
+                        for frame in buf[got..].chunks_exact_mut(2) {
+                            l *= step;
+                            r *= step;
+                            frame[0] = l;
+                            frame[1] = r;
+                        }
+                        self.fade_in = OVERLOAD_FADE;
                         late = true;
                     }
                 }
+            }
+            if self.fade_in > 0 && !late {
+                for frame in buf.chunks_exact_mut(2) {
+                    if self.fade_in == 0 {
+                        break;
+                    }
+                    let gain = 1.0 - self.fade_in as f32 / OVERLOAD_FADE as f32;
+                    frame[0] *= gain;
+                    frame[1] *= gain;
+                    self.fade_in -= 1;
+                }
+            }
+            if buf.len() >= 2 {
+                self.last = (buf[buf.len() - 2], buf[buf.len() - 1]);
             }
             for (i, frame) in chunk.chunks_exact_mut(channels).enumerate() {
                 let (l, r) = (buf[i * 2], buf[i * 2 + 1]);

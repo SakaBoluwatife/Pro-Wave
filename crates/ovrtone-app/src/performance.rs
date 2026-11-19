@@ -54,6 +54,27 @@ pub struct PerformanceView {
     message: Option<String>,
 }
 
+/// The longest window frame lately, in microseconds: how long building and drawing one frame took
+/// on the UI thread. Falls back slowly so a slow frame stays readable.
+static FRAME_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Times one window frame. Made at the start of the frame; dropping it at the end records the time.
+pub struct FrameTimer(Instant);
+
+impl FrameTimer {
+    pub fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Drop for FrameTimer {
+    fn drop(&mut self) {
+        let us = self.0.elapsed().as_micros() as u64;
+        let held = FRAME_US.load(Relaxed);
+        FRAME_US.store(us.max(held - held / 32), Relaxed);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Event {
     Miss,
@@ -361,6 +382,13 @@ fn load_section(ui: &mut Ui, v: &PerformanceView) {
                 us(v.session_max),
                 us(v.budget)
             ),
+        );
+        // The window's own time, for telling a slow redraw from a slow mix. The audio threads
+        // all outrank the window, so a slow frame here no longer breaks the sound up.
+        row(
+            ui,
+            "Window frame",
+            format!("{:.1} ms at most lately", FRAME_US.load(Relaxed) as f64 / 1000.0),
         );
         row(
             ui,

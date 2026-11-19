@@ -850,6 +850,8 @@ pub enum LaneDrag {
         grabbed: usize,
         from: Vec<AutoPoint>,
         at: (f64, f32),
+        /// Ctrl: a fine move, a tenth of the speed in value and free of the grid in time.
+        fine: bool,
     },
     /// The handle that bends the stretch after a point.
     Curve(usize),
@@ -1097,7 +1099,21 @@ pub fn track_lane(
             points[*i].value != points[*i + 1].value && handle_pos(*i).distance(pos) <= GRAB
         })
     };
-    let (ctrl, free) = ui.input(|i| (i.modifiers.command, i.modifiers.alt));
+    let (ctrl, free, shift) =
+        ui.input(|i| (i.modifiers.command, i.modifiers.alt, i.modifiers.shift));
+    // The stretch after a point the pointer is on the line of, if it is.
+    let near_line = |pos: egui::Pos2| {
+        let beat = (view.beat_of)(pos.x);
+        (0..points.len().saturating_sub(1)).find(|&i| {
+            let (a, b) = (points[i], points[i + 1]);
+            if !(beat >= a.beat && beat <= b.beat) || b.beat <= a.beat {
+                return false;
+            }
+            let t = ((beat - a.beat) / (b.beat - a.beat)) as f32;
+            let v = a.value + (b.value - a.value) * curve_shape(t, a.curve);
+            (rect.bottom() - frac_of(target, v) * rect.height() - pos.y).abs() <= GRAB
+        })
+    };
     let beat_at = |x: f32| {
         let beat = (view.beat_of)(x).max(0.0);
         if free {
@@ -1116,20 +1132,22 @@ pub fn track_lane(
             let start = ((view.beat_of)(pos.x), frac_at(rect, pos.y));
             if let Some(i) = near_point(pos) {
                 if !picked.contains(&i) {
-                    let mut now = if ctrl { picked.clone() } else { Vec::new() };
-                    now.push(i);
                     *pick = Some(LanePick {
                         track: ti,
                         target,
-                        points: now,
+                        points: vec![i],
                     });
                 }
                 LaneDrag::Points {
                     grabbed: i,
                     from: points.clone(),
                     at: start,
+                    fine: ctrl,
                 }
             } else if let Some(i) = near_handle(pos) {
+                LaneDrag::Curve(i)
+            } else if let (true, Some(i)) = (ctrl && shift, near_line(pos)) {
+                // Ctrl+Shift on the line itself bends it, with no handle to find.
                 LaneDrag::Curve(i)
             } else {
                 LaneDrag::Box(start.0, start.1)
@@ -1138,15 +1156,26 @@ pub fn track_lane(
     }
     if let (true, Some(pos)) = (resp.dragged(), resp.interact_pointer_pos()) {
         match drag.as_ref() {
-            Some(LaneDrag::Points { grabbed, from, at }) => {
+            Some(LaneDrag::Points {
+                grabbed,
+                from,
+                at,
+                fine,
+            }) => {
                 let moving = pick.as_ref().map_or_else(Vec::new, |x| x.points.clone());
                 let by_beats = from.get(*grabbed).map_or(0.0, |lead| {
                     let wanted = lead.beat + (view.beat_of)(pos.x) - at.0;
-                    let landed = if free { wanted } else { (view.snap)(wanted) };
+                    let landed = if free || *fine { wanted } else { (view.snap)(wanted) };
                     landed - lead.beat
                 });
-                let lane =
-                    moved_group(from, &moving, target, by_beats, frac_at(rect, pos.y) - at.1);
+                let speed = if *fine { 0.1 } else { 1.0 };
+                let lane = moved_group(
+                    from,
+                    &moving,
+                    target,
+                    by_beats,
+                    (frac_at(rect, pos.y) - at.1) * speed,
+                );
                 plays_when_edited(&mut p.tracks[ti], beat_now);
                 *p.tracks[ti].auto.lane_mut(target) = lane;
             }
@@ -1187,10 +1216,17 @@ pub fn track_lane(
     if resp.clicked() {
         if let Some(pos) = resp.interact_pointer_pos() {
             match near_point(pos) {
+                // A double click types the point's value (right-click deletes it).
                 Some(i) if resp.double_clicked() => {
-                    p.tracks[ti].auto.lane_mut(target).remove(i);
-                    p.tracks[ti].auto.prune();
-                    *pick = None;
+                    let text = value_text(&p.tracks[ti], target, points[i].value);
+                    let edit = ValueEdit {
+                        ti,
+                        target,
+                        index: i,
+                        text,
+                        fresh: true,
+                    };
+                    ui.data_mut(|d| d.insert_temp(egui::Id::unique("lane_value_edit"), edit));
                 }
                 Some(i) => {
                     let mut now = if ctrl { picked.clone() } else { Vec::new() };
@@ -1276,19 +1312,159 @@ pub fn track_lane(
         }
         None => {}
     }
-    if let Some(pos) = resp.hover_pos() {
-        let (b, v) = match near_point(pos) {
+    // The exact value beside the pointer, while hovering or dragging a point.
+    let carried = match drag.as_ref() {
+        Some(LaneDrag::Points { grabbed, .. }) if resp.dragged() => p.tracks[ti]
+            .auto
+            .lane(target)
+            .get(*grabbed)
+            .map(|q| (q.beat, q.value)),
+        _ => None,
+    };
+    let at = ui.input(|i| i.pointer.latest_pos());
+    let shown = carried.or_else(|| {
+        let pos = resp.hover_pos()?;
+        Some(match near_point(pos) {
             Some(i) => (points[i].beat, points[i].value),
             None => (
                 (view.beat_of)(pos.x),
                 value_of(target, frac_at(rect, pos.y)),
             ),
-        };
+        })
+    });
+    if let (Some((b, v)), Some(at)) = (shown, at) {
         let bar = p.beats_to_bar(b) + 1.0;
-        let text = format!("{} · {:.2}", value_text(&p.tracks[ti], target, v), bar);
-        resp.on_hover_text(text);
+        let text = format!("{} · {:.3}", value_text(&p.tracks[ti], target, v), bar);
+        let tip = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::unique("lane_readout"),
+        ));
+        let font = FontId::proportional(11.0);
+        let size = tip
+            .layout_no_wrap(text.clone(), font.clone(), Color32::WHITE)
+            .size();
+        let boxed = Rect::from_min_size(at + vec2(14.0, -26.0), size).expand2(vec2(5.0, 2.0));
+        tip.rect_filled(boxed, 3.0, Color32::from_black_alpha(220));
+        tip.text(boxed.center(), Align2::CENTER_CENTER, text, font, Color32::WHITE);
     }
+    value_editor(ui, p, ti, target, &points, &view, rect);
     pressed
+}
+
+/// A point whose value is being typed (a double click on it).
+#[derive(Clone)]
+struct ValueEdit {
+    ti: usize,
+    target: AutoTarget,
+    index: usize,
+    text: String,
+    /// The box has not had the keyboard yet.
+    fresh: bool,
+}
+
+/// The box that takes a typed value for a point: Enter sets it, Escape lets it be.
+fn value_editor(
+    ui: &Ui,
+    p: &mut Project,
+    ti: usize,
+    target: AutoTarget,
+    points: &[AutoPoint],
+    view: &LaneView,
+    rect: Rect,
+) {
+    let key = egui::Id::unique("lane_value_edit");
+    let Some(mut edit) = ui.data(|d| d.get_temp::<ValueEdit>(key)) else {
+        return;
+    };
+    if edit.ti != ti || edit.target != target {
+        return;
+    }
+    let Some(point) = points.get(edit.index) else {
+        ui.data_mut(|d| d.remove::<ValueEdit>(key));
+        return;
+    };
+    let at = pos2(
+        (view.x_of)(point.beat),
+        rect.bottom() - frac_of(target, point.value) * rect.height(),
+    );
+    let mut done = None;
+    egui::Area::new(egui::Id::unique(("lane_value_box", ti)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at + vec2(10.0, -12.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let field = ui.add(egui::TextEdit::singleline(&mut edit.text).desired_width(84.0));
+                if edit.fresh {
+                    field.request_focus();
+                    edit.fresh = false;
+                }
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if escape || (field.lost_focus() && !enter) {
+                    done = Some(None);
+                } else if enter {
+                    done = Some(Some(edit.text.clone()));
+                }
+            });
+        });
+    match done {
+        Some(typed) => {
+            if let Some(v) = typed.and_then(|t| parse_value(&p.tracks[ti], target, &t)) {
+                let beat_now = p.position_beats;
+                plays_when_edited(&mut p.tracks[ti], beat_now);
+                if let Some(q) = p.tracks[ti].auto.lane_mut(target).get_mut(edit.index) {
+                    q.value = v;
+                }
+            }
+            ui.data_mut(|d| d.remove::<ValueEdit>(key));
+        }
+        None => {
+            ui.data_mut(|d| d.insert_temp(key, edit));
+        }
+    }
+}
+
+/// The value typed for a lane, in the units [`value_text`] shows ("-3.2", "L 20", "40 %"). `None`
+/// when it is not a number.
+fn parse_value(t: &Track, target: AutoTarget, text: &str) -> Option<f32> {
+    let s = text.trim();
+    let number = || -> Option<f32> {
+        let digits: String = s
+            .chars()
+            .skip_while(|c| !(c.is_ascii_digit() || matches!(*c, '-' | '+' | '.')))
+            .take_while(|c| c.is_ascii_digit() || matches!(*c, '-' | '+' | '.'))
+            .collect();
+        digits.parse().ok()
+    };
+    let first = s.chars().next().map(|c| c.to_ascii_uppercase());
+    let v = match target {
+        AutoTarget::Volume => number()?,
+        AutoTarget::Pan => match first {
+            Some('C') => 0.0,
+            Some('L') => -number()?.abs() / 64.0,
+            Some('R') => number()?.abs() / 64.0,
+            _ => number()? / 64.0,
+        },
+        AutoTarget::Object(
+            ovrtone_engine::ObjectAxis::Around | ovrtone_engine::ObjectAxis::Height,
+        ) => number()?,
+        AutoTarget::Object(_) | AutoTarget::Plugin { .. } => number()? / 100.0,
+        AutoTarget::Fx { slot, param } => {
+            let info = t
+                .inserts
+                .get(slot as usize)
+                .and_then(|i| i.kind.params().get(param as usize))?;
+            let x = number()?;
+            let x = if info.unit.is_empty() && info.max <= 1.0 {
+                x / 100.0
+            } else {
+                x
+            };
+            info.to_norm(x)
+        }
+    };
+    let (lo, hi) = Automation::range(target);
+    v.is_finite().then(|| v.clamp(lo, hi))
 }
 
 /// The colour of a lane's curve.

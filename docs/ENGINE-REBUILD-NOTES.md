@@ -58,3 +58,17 @@ was left for the rebuild. Keep these working, or tell the app side what replaces
    - Vector kernels: the mix and Utility have one. The other stock effects now run a span at a
      time (`Chain::process_block`) but still per frame inside; each needs its own `run_block`.
    - Simple strips (no chain) still mix on the audio thread.
+
+## To Logic's standard: playback that never breaks (owner, 2026-11-19)
+
+Reported: CPU in the red with five plugins, crackles with samples, sound stopping until the audio settings were applied again, and breakups while the mouse moves over the tracks. Fixed in 1.1.1: the garbage-credit leak (`Garbage::Nothing`), plugin block 256 by default (Process buffer range), disk threads registered with MMCSS as "Audio". Done in 1.1.1 as well: items 1 (render-ahead kept with armed tracks; a true per-track split is still to do), 2 (built-in voices in spans; the core was already span-based otherwise), 3 (helpers one block behind), 4, 5 (steady tempo only), 6 (thread priorities and a frame-time readout; waveform textures still to do) and 7 (fade; naming the culprit still to do).
+
+Still to do, in order:
+
+1. Live and playback tracks, as Logic: only the track being recorded or monitored, or played from a keyboard, runs at the device buffer. Every other track keeps rendering ahead. Today render-ahead (`ahead.rs`) turns off for the whole song as soon as anything is live, so one armed track puts every plugin back on a 10 ms deadline.
+2. Block processing in the core: `EngineCore` renders a sample at a time and collects plugin blocks (`plugin.rs`). Mixing, the sampler voices and the stock effects in blocks are several times cheaper.
+3. Isolated plugins without a spin per block: the program spins on the audio thread while each helper works (`bridge.rs` `answered`). Run a helper's block a block ahead, or several plugins of one helper in one round trip.
+4. Short files in memory: a file under a few MB loads whole, so one-shots and short loops never wait on the disk; streaming only for long files.
+5. Live stretching rendered in the background: a clip that follows the tempo is stretched once into a cache while the song is still, and only stretched live while the tempo changes.
+6. A UI that cannot take the audio's time: measure the frame time of the tracks area while the mouse moves, cache what does not change between frames (waveforms as textures, region layout), and keep the window's redraw to the display's rate.
+7. Overload: when a block is late, keep the stream running (repeat nothing, fade out and in) and show which track or plugin took the time, as Logic's overload message does.

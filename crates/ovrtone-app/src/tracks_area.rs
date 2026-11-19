@@ -27,6 +27,9 @@ const RULER_H: f32 = 30.0;
 const CYCLE_H: f32 = 17.0;
 /// The horizontal scrollbar under the lanes.
 const HSCROLL_H: f32 = 12.0;
+
+/// The height of the Stereo Out row at the foot of the Tracks area.
+const MASTER_ROW_H: f32 = 72.0;
 const HEADER_W: f32 = 340.0;
 const NUM_W: f32 = 24.0;
 /// How far the horizontal zoom goes, in points per bar: at the top, about two samples a point.
@@ -346,6 +349,8 @@ pub struct TracksView {
     group_drag: Vec<(usize, usize, f64)>,
     /// A box being dragged over the lanes: where it began, in beats and points down the tracks.
     marquee: Option<(f64, f32)>,
+    /// What was selected when a box began with Ctrl or Shift held: the box adds to it.
+    marquee_base: Vec<(usize, usize)>,
     /// The track under the last right-click on the lanes.
     lane_menu_row: Option<usize>,
     /// A drag on an edge of a region in progress.
@@ -460,6 +465,8 @@ pub struct TracksView {
     pub pending_menu: Option<&'static str>,
     /// The groove template the selected regions' notes should be quantized to.
     pub groove_quantize: Option<usize>,
+    /// A drag over the headers' M or S buttons.
+    hdr_sweep: HeaderSweep,
 }
 
 impl TracksView {
@@ -527,6 +534,7 @@ impl TracksView {
 impl Default for TracksView {
     fn default() -> Self {
         Self {
+            hdr_sweep: HeaderSweep::default(),
             consolidate: false,
             snap_hits: false,
             clip_gain: false,
@@ -538,6 +546,7 @@ impl Default for TracksView {
             also: Vec::new(),
             group_drag: Vec::new(),
             marquee: None,
+            marquee_base: Vec::new(),
             trim: None,
             stretch_to: None,
             spot: None,
@@ -846,15 +855,94 @@ fn header_button(
     on_col: Color32,
     selected_row: bool,
 ) -> bool {
+    header_button_resp(ui, g, rect, key, label, on, on_col, selected_row, Sense::click()).clicked()
+}
+
+/// What a drag over the headers' M or S buttons is doing, as in Logic: press M or S on one track
+/// and drag over the others, and each gets the state the first one got.
+#[derive(Default)]
+struct HeaderSweep {
+    /// (is solo, the state being set), from the press until the pointer is let go.
+    kind: Option<(bool, bool)>,
+    /// Alt-click: every track gets this (is solo, state), applied after the headers are drawn.
+    all: Option<(bool, bool)>,
+}
+
+/// A header's M or S button. Returns the state this track should now have, if the press, or a drag
+/// that began on another M or S button, set one.
+#[allow(clippy::too_many_arguments)]
+fn mute_solo_button(
+    ui: &Ui,
+    g: &Painter,
+    rect: Rect,
+    row: Rect,
+    key: (usize, &str),
+    label: &str,
+    on: bool,
+    on_col: Color32,
+    selected_row: bool,
+    sweep: &mut HeaderSweep,
+) -> Option<bool> {
+    let solo = label == "S";
+    let resp = header_button_resp(
+        ui,
+        g,
+        rect,
+        key,
+        label,
+        on,
+        on_col,
+        selected_row,
+        Sense::click_and_drag(),
+    );
+    let (pressed, down, pos, delta, alt) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.pointer.latest_pos(),
+            i.pointer.delta(),
+            i.modifiers.alt,
+        )
+    });
+    if pressed && resp.is_pointer_button_down_on() {
+        let state = !on;
+        sweep.kind = Some((solo, state));
+        if alt {
+            sweep.all = Some((solo, state));
+        }
+        return Some(state);
+    }
+    if let (Some((kind_solo, state)), true, Some(pos)) = (sweep.kind, down, pos) {
+        // The pointer's way since the last frame, so a fast drag skips no header.
+        let (lo, hi) = (pos.y.min(pos.y - delta.y), pos.y.max(pos.y - delta.y));
+        if kind_solo == solo && on != state && row.top() < hi + 1.0 && row.bottom() > lo - 1.0 {
+            return Some(state);
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn header_button_resp(
+    ui: &Ui,
+    g: &Painter,
+    rect: Rect,
+    key: (usize, &str),
+    label: &str,
+    on: bool,
+    on_col: Color32,
+    selected_row: bool,
+    sense: Sense,
+) -> egui::Response {
     let hint = match label {
-        "M" => "Mute (M)",
-        "S" => "Solo (S)",
+        "M" => "Mute (M); drag over other tracks to set them the same. Alt-click: all tracks",
+        "S" => "Solo (S); drag over other tracks to set them the same. Alt-click: all tracks",
         "R" => "Record Enable",
         "I" => "Input Monitoring",
         "A" => "Show the automation on the track",
         _ => "",
     };
-    let mut resp = ui.interact(rect, id(("hdrbtn", key)), Sense::click());
+    let mut resp = ui.interact(rect, id(("hdrbtn", key)), sense);
     if !hint.is_empty() {
         resp = resp.on_hover_text(hint);
     }
@@ -882,7 +970,7 @@ fn header_button(
         FontId::proportional(10.5),
         txt,
     );
-    resp.clicked()
+    resp
 }
 
 // ------------------------------------------------------------------ toolbar icons
@@ -2833,7 +2921,7 @@ fn draw_take_folder(
         let from = (at(seg.0).max(0.0) as usize).min(peaks.len());
         let to = (at(seg.1).max(0.0) as usize).clamp(from, peaks.len());
         let x = (full.left() + seg.0 * beat_px, (seg.1 - seg.0) * beat_px);
-        draw_peaks(g, rect, x, &peaks[from..to], wave_fit, false, col);
+        draw_peaks(g, rect, x, &peaks[from..to], wave_fit, 1.0, false, col);
     };
     let (lo, hi) = pitch_range(&region.notes);
     let inner = Rect::from_min_max(
@@ -3047,6 +3135,13 @@ fn draw_region(
     } else {
         region_fill(base)
     };
+    // An audio region's body is a little lighter, so its darker waveform stands out (as in Logic).
+    let audio_wave = region.audio.is_some() && !recording && !silenced;
+    let body = if audio_wave {
+        body.lerp_to_gamma(Color32::WHITE, 0.12)
+    } else {
+        body
+    };
     g.rect_filled(rr, 3.0, body);
     let head_h = 14.0f32.min(rr.height() * 0.4);
     let head = Rect::from_min_size(rr.min, vec2(rr.width(), head_h));
@@ -3165,6 +3260,7 @@ fn draw_region(
             (from, width),
             wave.peaks,
             wave.fit * wave_zoom,
+            1.0,
             false,
             ink,
         );
@@ -3176,7 +3272,23 @@ fn draw_region(
         let gain = 10f32.powf(region.params.gain_db / 20.0) * wave_fit;
         let full_x = (full.left(), full.width());
         let part = played_part(region, peaks);
-        draw_peaks(g, inner, full_x, part, gain, region.params.reverse, ink);
+        // The waveform is a darker shade of the region's colour, not the pale tint of the rest.
+        let wave_ink = if audio_wave {
+            let dark = |v: u8| (v as f32 * 0.5) as u8;
+            Color32::from_rgb(dark(body.r()), dark(body.g()), dark(body.b()))
+        } else {
+            ink
+        };
+        draw_peaks(
+            g,
+            inner,
+            full_x,
+            part,
+            gain,
+            10f32.powf(region.params.gain_db / 20.0),
+            region.params.reverse,
+            wave_ink,
+        );
     } else if region.audio.is_some() || track.kind == TrackKind::Audio {
         g.line_segment(
             [
@@ -3568,6 +3680,8 @@ pub(crate) fn draw_peaks(
     (x0, full_w): (f32, f32),
     peaks: &[(f32, f32)],
     gain: f32,
+    // The real level of the peaks (the region's gain, with no waveform zoom): what turns red.
+    level: f32,
     reverse: bool,
     col: Color32,
 ) {
@@ -3583,43 +3697,87 @@ pub(crate) fn draw_peaks(
     let snap_down = |y: f32| (y * ppp).ceil() / ppp;
     // Quiet passages stand out without zooming in: the height follows a curve, not the level.
     let height = |level: f32| level.abs().min(1.0).powf(WAVE_CURVE) * half;
-    let mut mesh = egui::Mesh::default();
+    // (x, top, bottom, over full scale) for each screen pixel.
+    let mut cols: Vec<(f32, f32, f32, bool)> = Vec::with_capacity(body.width().max(1.0) as usize + 2);
     let mut x = (body.left() * ppp).floor() / ppp;
     while x < body.right() {
         if x + px <= x0 {
             x += px;
             continue;
         }
-        let a = (((x - x0) / full_w) * peaks.len() as f32).max(0.0) as usize;
-        if a >= peaks.len() {
+        let n = peaks.len();
+        let a = (((x - x0) / full_w) * n as f32).max(0.0) as usize;
+        if a >= n {
             break;
         }
-        let b =
-            ((((x + px - x0) / full_w) * peaks.len() as f32) as usize).clamp(a + 1, peaks.len());
-        let (a, b) = if reverse {
-            (peaks.len() - b, peaks.len() - a)
-        } else {
-            (a, b)
-        };
-        let (mut lo, mut hi) = peaks[a..b]
-            .iter()
-            .fold((0f32, 0f32), |(l, h), p| (l.min(p.0), h.max(p.1)));
-        // Zoomed in past the peaks: between two of them in a straight line, not in steps.
-        if b == a + 1 && !reverse && a + 1 < peaks.len() {
-            let at = ((x + px * 0.5 - x0) / full_w) * peaks.len() as f32 - a as f32 - 0.5;
-            if at > 0.0 {
-                let n = peaks[a + 1];
-                lo += (n.0 - lo) * at.min(1.0);
-                hi += (n.1 - hi) * at.min(1.0);
+        let (lo, hi);
+        if (n as f32) * px <= full_w {
+            // Zoomed in past the peaks: each peak sits at the centre of its bin and the envelope
+            // runs in straight lines between them, so there are no steps.
+            let mut f = ((x + px * 0.5 - x0) / full_w) * n as f32;
+            if reverse {
+                f = n as f32 - f;
             }
+            let f = (f - 0.5).clamp(0.0, (n - 1) as f32);
+            let i = (f as usize).min(n - 1);
+            let j = (i + 1).min(n - 1);
+            let t = f - i as f32;
+            lo = peaks[i].0 + (peaks[j].0 - peaks[i].0) * t;
+            hi = peaks[i].1 + (peaks[j].1 - peaks[i].1) * t;
+        } else {
+            let b = ((((x + px - x0) / full_w) * n as f32) as usize).clamp(a + 1, n);
+            let (a, b) = if reverse { (n - b, n - a) } else { (a, b) };
+            let (l, h) = peaks[a..b]
+                .iter()
+                .fold((0f32, 0f32), |(l, h), p| (l.min(p.0), h.max(p.1)));
+            lo = l;
+            hi = h;
         }
         let top = snap_up(mid - height(hi * gain));
         // Silence is still a thin line, with no gaps in it.
         let bottom = snap_down(mid + height(lo * gain)).max(top + px);
-        mesh.add_colored_rect(Rect::from_min_max(pos2(x, top), pos2(x + px, bottom)), col);
+        // Over full scale by the real level, not by how large the waveform is drawn.
+        let clipped = hi * level > 1.001 || -lo * level > 1.001;
+        cols.push((x + px * 0.5, top, bottom, clipped));
         x += px;
     }
+    if cols.is_empty() {
+        return;
+    }
+    // One smooth shape: a strip between the top and the bottom envelope, red where it goes over
+    // full scale, with a thin brighter line along both edges and a faint line through the middle.
+    let hot = Color32::from_rgb(0xe8, 0x3a, 0x34);
+    let mut mesh = egui::Mesh::default();
+    mesh.vertices.reserve(cols.len() * 2);
+    mesh.indices.reserve(cols.len() * 6);
+    for (k, &(cx, top, bottom, clipped)) in cols.iter().enumerate() {
+        let c = if clipped { hot } else { col };
+        mesh.colored_vertex(pos2(cx, top), c);
+        mesh.colored_vertex(pos2(cx, bottom), c);
+        if k > 0 {
+            let n = (k * 2) as u32;
+            mesh.add_triangle(n - 2, n - 1, n);
+            mesh.add_triangle(n - 1, n + 1, n);
+        }
+    }
+    let edge = Stroke::new(
+        1.0,
+        Color32::from_rgb(
+            col.r().saturating_add(((255 - col.r() as u16) * 2 / 5) as u8),
+            col.g().saturating_add(((255 - col.g() as u16) * 2 / 5) as u8),
+            col.b().saturating_add(((255 - col.b() as u16) * 2 / 5) as u8),
+        ),
+    );
+    let tops: Vec<Pos2> = cols.iter().map(|c| pos2(c.0, c.1)).collect();
+    let bottoms: Vec<Pos2> = cols.iter().map(|c| pos2(c.0, c.2)).collect();
+    let (first, last) = (cols[0].0, cols[cols.len() - 1].0);
+    g.line_segment(
+        [pos2(first, mid), pos2(last, mid)],
+        Stroke::new(1.0, Color32::from_white_alpha(18)),
+    );
     g.add(egui::Shape::mesh(mesh));
+    g.add(egui::Shape::line(tops, edge));
+    g.add(egui::Shape::line(bottoms, edge));
 }
 
 /// Triangle pointing down (open) or right (folded), drawn as a shape so it needs no font glyph.
@@ -3751,6 +3909,7 @@ fn header(
     silenced: bool,
     opts: HeaderOpts,
     picked: &mut Option<CtxAction>,
+    sweep: &mut HeaderSweep,
 ) -> (egui::Response, Vec<egui::Response>) {
     let selected = p.selected_track == i;
     g.rect_filled(
@@ -3904,29 +4063,33 @@ fn header(
     if inline_buttons {
         let size = vec2(18.0, (h - 2.0).min(15.0));
         let by = hdr.center().y - size.y / 2.0;
-        if header_button(
+        if let Some(on) = mute_solo_button(
             ui,
             g,
             Rect::from_min_size(pos2(name_x - 42.0, by), size),
+            hdr,
             (i, "m"),
             "M",
             t.mute,
             MUTE_ON,
             selected,
+            sweep,
         ) {
-            t.mute = !t.mute;
+            t.mute = on;
         }
-        if header_button(
+        if let Some(on) = mute_solo_button(
             ui,
             g,
             Rect::from_min_size(pos2(name_x - 21.0, by), size),
+            hdr,
             (i, "s"),
             "S",
             t.solo,
             SOLO_ON,
             selected,
+            sweep,
         ) {
-            t.solo = !t.solo;
+            t.solo = on;
         }
     }
     if !compact && opts.buttons {
@@ -3959,30 +4122,34 @@ fn header(
         ));
         g.line_segment([c + vec2(0.0, -5.0), c + vec2(0.0, -1.0)], pen);
         bx += 21.0;
-        if header_button(
+        if let Some(on) = mute_solo_button(
             ui,
             g,
             Rect::from_min_size(pos2(bx, by), size),
+            hdr,
             (i, "m"),
             "M",
             t.mute,
             MUTE_ON,
             selected,
+            sweep,
         ) {
-            t.mute = !t.mute;
+            t.mute = on;
         }
         bx += 21.0;
-        if header_button(
+        if let Some(on) = mute_solo_button(
             ui,
             g,
             Rect::from_min_size(pos2(bx, by), size),
+            hdr,
             (i, "s"),
             "S",
             t.solo,
             SOLO_ON,
             selected,
+            sweep,
         ) {
-            t.solo = !t.solo;
+            t.solo = on;
         }
         bx += 21.0;
         // Aux and Folder tracks hold no regions, so there is nothing to record into.
@@ -4362,7 +4529,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     let globals_y = ruler_y + ruler_h + arrangement_h + chord_h;
     let tracks_y = globals_y + marker_h + signature_h + tempo_h;
     // A scrollbar along the bottom, as in Logic, to move through the song.
-    let lanes_bottom = area.bottom() - HSCROLL_H;
+    // Stereo Out, when shown, is a row of its own above the scrollbar.
+    let master_h = if p.master_strip.on_timeline { MASTER_ROW_H } else { 0.0 };
+    let lanes_bottom = area.bottom() - HSCROLL_H - master_h;
     let headers = Rect::from_min_max(
         pos2(area.left(), tracks_y),
         pos2(area.left() + header_w, lanes_bottom),
@@ -4371,7 +4540,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         pos2(area.left() + header_w, tracks_y),
         pos2(area.right(), lanes_bottom),
     );
-    let hscroll = Rect::from_min_max(pos2(lanes.left(), lanes_bottom), area.max);
+    let hscroll = Rect::from_min_max(pos2(lanes.left(), area.bottom() - HSCROLL_H), area.max);
     let ruler = Rect::from_min_max(
         pos2(lanes.left(), ruler_y),
         pos2(area.right(), ruler_y + ruler_h),
@@ -4567,6 +4736,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let origin = ui.input(|i| i.pointer.press_origin());
         if let Some(pt) = origin.or(lane_resp.interact_pointer_pos()) {
             v.marquee = Some((beat_of(pt.x), pt.y - lanes.top() + scroll_y));
+            v.marquee_base = if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+                v.all_selected()
+            } else {
+                Vec::new()
+            };
             v.track_focus = false;
         }
     }
@@ -4587,6 +4761,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         }
         v.track_focus = false;
         v.selected = None;
+        v.also.clear();
     }
     // Double-click on an empty stretch of a Drummer track: a Drummer region there, as in Logic.
     if lane_resp.double_clicked() {
@@ -4866,7 +5041,8 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             };
             if resp.clicked() || resp.drag_started() || context_click(&resp) {
                 v.auto_pick = None;
-                let ctrl = ui.input(|i| i.modifiers.command);
+                // Ctrl or Shift adds to the selection (Ctrl+click also takes out).
+                let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.shift);
                 let here = (ti, ri);
                 if context_click(&resp) || resp.drag_started() {
                     // On the group, or dragging: the group stays.
@@ -4972,6 +5148,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                                 Some((t, r, p.region_start_beats(region)))
                             })
                             .collect();
+                        // The one grabbed always goes, even if the selection lost it.
+                        if !v.group_drag.iter().any(|g| (g.0, g.1) == (ti, ri)) {
+                            v.group_drag.push((ti, ri, start_beat));
+                        }
                         let smart_box = v.smart
                             && active == TrackTool::Pointer
                             && !corner(pt)
@@ -4982,6 +5162,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             v.smart_drag = true;
                             v.group_drag.clear();
                             v.marquee = Some((beat_of(pt.x), pt.y - lanes.top() + scroll_y));
+                            v.marquee_base = if ui.input(|i| i.modifiers.command || i.modifiers.shift) {
+                                v.all_selected()
+                            } else {
+                                Vec::new()
+                            };
                         }
                         // Ctrl+Alt: slip the audio inside the region, which stays where it is.
                         let slip_keys = ui.input(|i| i.modifiers.command && i.modifiers.alt);
@@ -5005,10 +5190,11 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                         } else {
                             None
                         };
-                        // Alt-drag copies (Logic's Option-drag, FL Studio's Alt): a copy stays where
-                        // the region was, and the drag carries the region on.
-                        let (alt, command) = ui.input(|i| (i.modifiers.alt, i.modifiers.command));
-                        if alt && !command && v.trim.is_none() && v.slip.is_none() && !v.smart_drag
+                        // Shift+Alt-drag copies: a copy stays where the region was, and the drag
+                        // carries the region on. (Alt alone moves without snapping.)
+                        let (alt, shift, command) = ui
+                            .input(|i| (i.modifiers.alt, i.modifiers.shift, i.modifiers.command));
+                        if alt && shift && !command && v.trim.is_none() && v.slip.is_none() && !v.smart_drag
                         {
                             let moving: Vec<(usize, usize)> = if v.group_drag.is_empty() {
                                 vec![(ti, ri)]
@@ -5068,7 +5254,10 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                             None => {
                                 dragged_over = Some((ti, pt.y));
                                 // All of them by what this one moved, none before the start.
-                                let nb = snap_pos((beat_of(pt.x) - v.grab_beats).max(0.0));
+                                // Alt: a fine move, placed anywhere with no snapping.
+                                let fine = ui.input(|i| i.modifiers.alt && !i.modifiers.command);
+                                let free = (beat_of(pt.x) - v.grab_beats).max(0.0);
+                                let nb = if fine { free } else { snap_pos(free) };
                                 let was = v
                                     .group_drag
                                     .iter()
@@ -5418,6 +5607,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     }
     // The curves of the tracks that show theirs, on top of the regions: registered after them, so
     // the row's body edits the curve and the name bars still move the regions.
+    // Lanes follow the grid, except in the free (Ticks) mode.
+    let free_lanes = v.snap == Snap::Ticks;
+    let lane_snap = |b: f64| if free_lanes { b } else { snap_pos(b) };
     let tool_on_lane = matches!(v.tool, TrackTool::Pointer | TrackTool::Automation)
         && !(ui.input(|i| i.modifiers.command) && v.tool2 != TrackTool::Pointer);
     for (ti, &(top, row_h)) in rows.iter().enumerate() {
@@ -5436,7 +5628,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             ),
             x_of: &x_of,
             beat_of: &beat_of,
-            snap: &snap_pos,
+            snap: &lane_snap,
             active: tool_on_lane,
         };
         let pressed =
@@ -5445,6 +5637,107 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
             v.select_many(Vec::new());
             v.track_focus = false;
         }
+    }
+    // Stereo Out as a row at the foot of the Tracks area (Logic's Show Output Track), with its
+    // fader lane. The lane is edited like a track's: the master strip stands in for a track for
+    // the length of the call.
+    if master_h > 0.0 {
+        let row_top = lanes_bottom;
+        let row = Rect::from_min_max(pos2(area.left(), row_top), pos2(area.right(), row_top + master_h));
+        let gm = ui.painter_at(row);
+        gm.rect_filled(row, 0.0, crate::theme::gray(0x1f));
+        gm.line_segment(
+            [row.left_top(), row.right_top()],
+            Stroke::new(1.0, crate::theme::accent().gamma_multiply(0.6)),
+        );
+        let own_db = 20.0 * p.master_vol.max(1e-4).log10();
+        let head = Rect::from_min_max(row.left_top(), pos2(headers.right(), row.bottom()));
+        gm.text(
+            head.left_top() + vec2(10.0, 8.0),
+            Align2::LEFT_TOP,
+            "Stereo Out",
+            FontId::proportional(12.0),
+            text_col(),
+        );
+        // The two lanes, each with the value it has now (the lane's, while it plays); a click
+        // picks the one that is drawn and edited.
+        let beat_now = p.position_beats;
+        let shown_db = p
+            .master_strip
+            .auto
+            .played(crate::model::AutoTarget::Volume, beat_now)
+            .unwrap_or(own_db);
+        let shown_pan = p
+            .master_strip
+            .auto
+            .played(crate::model::AutoTarget::Pan, beat_now)
+            .unwrap_or(p.master_strip.pan);
+        let pan_text = {
+            let n = ((shown_pan * 64.0).round() as i32).min(63);
+            match n {
+                0 => "C".to_string(),
+                n if n < 0 => format!("L {}", -n),
+                n => format!("R {n}"),
+            }
+        };
+        for (k, (name, text, target)) in [
+            ("Volume", format!("{shown_db:+.1} dB"), crate::model::AutoTarget::Volume),
+            ("Pan", pan_text, crate::model::AutoTarget::Pan),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let line = Rect::from_min_size(
+                head.left_top() + vec2(6.0, 24.0 + k as f32 * 18.0),
+                vec2(head.width() - 12.0, 17.0),
+            );
+            let resp = ui.interact(line, id(("master_lane", k)), Sense::click());
+            let on = p.master_strip.auto.shown == target;
+            if on || resp.hovered() {
+                gm.rect_filled(line, 3.0, crate::theme::accent().gamma_multiply(if on { 0.3 } else { 0.12 }));
+            }
+            gm.text(
+                line.left_center() + vec2(4.0, 0.0),
+                Align2::LEFT_CENTER,
+                format!("{name}  {text}"),
+                FontId::proportional(10.5),
+                if on { text_col() } else { crate::theme::gray(0xa0) },
+            );
+            if resp.clicked() {
+                p.master_strip.auto.shown = target;
+            }
+        }
+        let view = crate::automation::LaneView {
+            rect: Rect::from_min_max(
+                pos2(lanes.left(), row_top + 3.0),
+                pos2(lanes.right(), row.bottom() - 3.0),
+            ),
+            x_of: &x_of,
+            beat_of: &beat_of,
+            snap: &lane_snap,
+            active: tool_on_lane,
+        };
+        let selected_track = p.selected_track;
+        let mut strip = std::mem::replace(
+            &mut p.master_strip,
+            Track::new("Stereo Out", TrackKind::Output),
+        );
+        strip.volume_db = own_db;
+        if !matches!(
+            strip.auto.shown,
+            crate::model::AutoTarget::Volume | crate::model::AutoTarget::Pan
+        ) {
+            strip.auto.shown = crate::model::AutoTarget::Volume;
+        }
+        strip.show_auto = true;
+        p.tracks.push(strip);
+        let at = p.tracks.len() - 1;
+        crate::automation::track_lane(ui, &gm, p, at, &view, &mut v.auto_pick, &mut v.auto_drag);
+        if let Some(strip) = p.tracks.pop() {
+            p.master_strip = strip;
+        }
+        p.master_strip.show_auto = true;
+        p.selected_track = selected_track;
     }
     if moved {
         p.song_rev += 1;
@@ -5523,6 +5816,9 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
                     }
                 }
             }
+        }
+        for kept in v.marquee_base.iter().filter(|k| !inside.contains(k)).copied().collect::<Vec<_>>() {
+            inside.push(kept);
         }
         v.select_many(inside);
         let screen = |beat: f64, y: f32| pos2(x_of(beat), y + lanes.top() - scroll_y);
@@ -5719,6 +6015,7 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
     if std::mem::take(&mut s.mixer.track_clicked) {
         v.track_focus = true;
         v.selected = None;
+        v.also.clear();
     }
     // ---- keyboard: Delete, Cmd/Ctrl+R
     if !ui.ctx().egui_wants_keyboard_input() && !s.piano_focus {
@@ -5763,10 +6060,22 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         let silenced = silenced_by_solo(p, i);
         let before = p.selected_track;
         let has_number = opts.number;
-        let (resp, controls) = header(ui, &gh, p, i, hdr, peaks, silenced, opts, &mut picked);
+        let (resp, controls) = header(
+            ui,
+            &gh,
+            p,
+            i,
+            hdr,
+            peaks,
+            silenced,
+            opts,
+            &mut picked,
+            &mut s.tracks.hdr_sweep,
+        );
         if resp.clicked() {
             s.tracks.track_focus = true;
             s.tracks.selected = None;
+            s.tracks.also.clear();
             let mods = ui.input(|m| m.modifiers);
             // A plain click on the coloured number is for its colour.
             let at = ui.input(|m| m.pointer.interact_pos());
@@ -5817,6 +6126,20 @@ pub fn show(ui: &mut Ui, p: &mut Project, s: &mut UiState, meters: &crate::mixer
         for control in &controls {
             context_menu(control, |ui| track_items(ui, &info, &mut picked));
         }
+    }
+    // Alt-click on M or S: every track the same as that one.
+    if let Some((solo, on)) = s.tracks.hdr_sweep.all.take() {
+        for t in &mut p.tracks {
+            if solo {
+                t.solo = on;
+            } else {
+                t.mute = on;
+            }
+        }
+        p.song_rev += 1;
+    }
+    if !ui.input(|i| i.pointer.primary_down()) {
+        s.tracks.hdr_sweep.kind = None;
     }
     if let Some(action) = picked {
         apply_ctx(action, p, s, lanes.width());

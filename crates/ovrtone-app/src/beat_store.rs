@@ -1,6 +1,6 @@
 //! File > Export > For Beat Store: what a beat store sells, in one go. An untagged WAV and an MP3 of the
 //! whole beat and a ZIP of its stems, named after the beat with its tempo and key, in a folder of its
-//! own under Music\Ovrtone Beat Store. When they are made, the folder opens and so does the store's
+//! own in the project's Beat Store folder. When they are made, the folder opens and so does the store's
 //! site (Trakroom), to drag them in. Nothing is sent anywhere by Ovrtone itself.
 
 use crate::bounce::{self, After, BitDepth, FileFormat, Render};
@@ -189,11 +189,7 @@ pub fn start(p: &Project, s: &mut UiState) {
     let key = crate::score::key_label(p.key);
     let bpm = p.tempo.round() as i32;
     let base = bounce::file_safe(&format!("{} ({bpm} BPM, {key})", p.name));
-    let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
-        s.status = Some("No user folder to export to".to_string());
-        return;
-    };
-    let folder = home.join("Music").join("Ovrtone Beat Store").join(&base);
+    let folder = crate::project_folder::subdir("Beat Store").join(&base);
     let stems = folder.join("stems (being made)");
     if let Err(e) = std::fs::create_dir_all(&stems) {
         s.status = Some(format!("Cannot make the folder: {e}"));

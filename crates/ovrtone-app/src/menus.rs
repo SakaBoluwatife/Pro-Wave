@@ -259,6 +259,8 @@ const VIEW: &[&str] = &[
     "-",
     "Show Region Automation",
     "Show Track Automation",
+    "Show Aux Tracks",
+    "Show Stereo Out Track",
     "-",
     "Show Smart Controls",
     "-",
@@ -628,6 +630,8 @@ pub(crate) fn enabled(label: &str, p: &Project, s: &crate::UiState) -> bool {
                 .is_some_and(|x| x.folder.is_some())
         }),
         "Record Project Settings" => true,
+        "Show Aux Tracks" => p.tracks.iter().any(|t| t.kind == crate::model::TrackKind::Aux),
+        "Show Stereo Out Track" => true,
         "Show Automation"
         | "Show Track Automation"
         | "Create Automation"
@@ -747,6 +751,11 @@ pub(crate) fn checked(label: &str, p: &Project, s: &crate::UiState) -> bool {
         "Show Plugin Presets" => s.browser.open == Some(crate::file_browser::Tab::Presets),
         "Check for Updates Automatically" => s.update_auto,
         "Show Tempo Track" => s.tracks.show_tempo,
+        "Show Aux Tracks" => {
+            let mut aux = p.tracks.iter().filter(|t| t.kind == crate::model::TrackKind::Aux).peekable();
+            aux.peek().is_some() && aux.all(|t| t.on_timeline)
+        }
+        "Show Stereo Out Track" => p.master_strip.on_timeline,
         "Show Marker Track" => s.tracks.show_markers,
         "Show Signature Track" => s.tracks.show_signatures,
         "Show Chord Track" => s.tracks.show_chords,
@@ -889,9 +898,24 @@ pub(crate) fn apply(label: &str, p: &mut Project, s: &mut crate::UiState) {
             s.mixer.auto_editor.track = Some(p.selected_track);
             s.mixer.auto_editor.region = None;
         }
+        // Every Aux on the Tracks area (as Logic's Create Track for each), or back to the mixer only.
+        "Show Aux Tracks" => {
+            let aux = |t: &crate::model::Track| t.kind == crate::model::TrackKind::Aux;
+            let show = !p.tracks.iter().filter(|t| aux(t)).all(|t| t.on_timeline);
+            for t in p.tracks.iter_mut().filter(|t| aux(t)) {
+                t.on_timeline = show;
+            }
+        }
+        // Logic's Show Output Track: Stereo Out as a row at the foot of the Tracks area, with
+        // its fader automation.
+        "Show Stereo Out Track" => {
+            p.master_strip.on_timeline = !p.master_strip.on_timeline;
+        }
+        // As Logic's A: every track shows its automation lanes, or none does.
         "Show Track Automation" => {
-            if let Some(t) = p.tracks.get_mut(p.selected_track) {
-                t.show_auto = !t.show_auto;
+            let show = !p.tracks.iter().all(|t| t.show_auto);
+            for t in &mut p.tracks {
+                t.show_auto = show;
             }
         }
         "Show Region Automation" => {

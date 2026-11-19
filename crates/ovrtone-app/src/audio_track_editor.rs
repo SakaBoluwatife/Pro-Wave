@@ -255,9 +255,9 @@ fn wave(ui: &mut Ui, p: &mut Project, s: &mut UiState, body: Rect, ti: usize, ri
     g.rect_filled(lit, 3.0, color.gamma_multiply(0.35));
     if let Some(peaks) = audio.peaks_for(full_x.1) {
         let fit = audio.waveform_fit();
-        crate::tracks_area::draw_peaks(&g, lane, full_x, peaks, fit, false, color.gamma_multiply(0.45));
+        crate::tracks_area::draw_peaks(&g, lane, full_x, peaks, fit, 1.0, false, color.gamma_multiply(0.45));
         let lit_peaks = g.with_clip_rect(lit.intersect(lane));
-        crate::tracks_area::draw_peaks(&lit_peaks, lane, full_x, peaks, fit, false, Color32::from_gray(235));
+        crate::tracks_area::draw_peaks(&lit_peaks, lane, full_x, peaks, fit, 1.0, false, Color32::from_gray(235));
     }
     g.rect_stroke(lit, 3.0, Stroke::new(1.0, color), StrokeKind::Inside);
 

@@ -1907,10 +1907,18 @@ impl Chain {
     /// Whether a plugin of the strip comes before one of these effects, so the two run in turn
     /// rather than all the effects first. `used(slot)` says whether a plugin is in that slot.
     pub fn mixes_with(&self, used: impl Fn(usize) -> bool) -> bool {
-        let Some(&last) = self.rows.last() else {
-            return false;
-        };
-        (0..usize::from(last)).any(|slot| used(slot) && !self.rows.contains(&(slot as u8)))
+        let last = self.fx.len().saturating_sub(1);
+        (0..self.plugins_before(last)).any(used)
+    }
+
+    /// How many of the strip's plugins, in their order, run before effect `i`. The effects fill
+    /// the rows the plugins leave free, in their own order, so effect `i` in row `r` has `r - i`
+    /// plugins above it. Plugins are counted by their place in the strip's list, which is how
+    /// the app numbers their slots. Without rows, every effect comes first.
+    pub fn plugins_before(&self, i: usize) -> usize {
+        self.rows
+            .get(i)
+            .map_or(0, |r| usize::from(*r).saturating_sub(i))
     }
 
     /// The effect in row `row`, if one is.

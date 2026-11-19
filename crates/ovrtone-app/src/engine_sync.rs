@@ -31,12 +31,15 @@ pub struct EngineSync {
     metronome: bool,
     cycle: (bool, f64, f64),
     master: Option<f32>,
+    master_pan: Option<f32>,
     position: Option<f64>,
     mixes: Vec<Mix>,
     /// What the spatial mix was last told to go to, and each track's way into it.
     spatial_mode: ovrtone_engine::SpatialMode,
     /// Stereo Out's own effects as last sent.
     master_fx: Vec<Insert>,
+    /// The rows of Stereo Out's own effects, as last sent (see `model::fx_rows`).
+    master_rows: Vec<u8>,
     spatial_law: ovrtone_engine::SpatialLaw,
     /// The speaker setup's change count when the renderer was made, and the test channel sent.
     spatial_speakers: u64,
@@ -204,7 +207,50 @@ fn automation_lanes(p: &Project) -> Vec<AutoLane> {
             }
         }
     }
+    for target in [AutoTarget::Volume, AutoTarget::Pan] {
+        if let Some(lane) = master_lane(p, target) {
+            lanes.push(lane);
+        }
+    }
     lanes
+}
+
+/// Stereo Out's fader lane, played like a track's.
+fn master_lane(p: &Project, target: AutoTarget) -> Option<AutoLane> {
+    let m = &p.master_strip;
+    (!m.auto.lane(target).is_empty()).then(|| {
+        AutoLane {
+            track: ovrtone_engine::MASTER_AUTO_TRACK,
+            target,
+            follow: m.auto.follows(target),
+            offset_db: 0.0,
+            points: m.auto.lane(target).to_vec(),
+        }
+        .sanitized()
+    })
+}
+
+/// Whether `lane` (or its absence) is Stereo Out's lane of `target` as the project has it.
+fn master_lane_unchanged(p: &Project, target: AutoTarget, lane: Option<&AutoLane>) -> bool {
+    let m = &p.master_strip.auto;
+    let points = m.lane(target);
+    let (lo, hi) = match target {
+        AutoTarget::Pan => (-1.0, 1.0),
+        _ => (-96.0, 6.0),
+    };
+    match lane {
+        None => points.is_empty(),
+        Some(lane) => {
+            !points.is_empty()
+                && lane.track == ovrtone_engine::MASTER_AUTO_TRACK
+                && lane.target == target
+                && lane.follow == m.follows(target)
+                && lane.points.len() == points.len().min(ovrtone_engine::MAX_AUTO_POINTS)
+                && lane.points.iter().zip(points).all(|(a, b)| {
+                    a.beat == b.beat && a.value == b.value.clamp(lo, hi) && a.curve == b.curve
+                })
+        }
+    }
 }
 
 /// Whether `sent` is what [`automation_lanes`] would make, without making it (it runs every
@@ -236,6 +282,14 @@ fn automation_unchanged(p: &Project, sent: &[AutoLane]) -> bool {
             {
                 return false;
             }
+        }
+    }
+    // Stereo Out's lanes come last: the fader's, then the balance's, each only if it has points.
+    for target in [AutoTarget::Volume, AutoTarget::Pan] {
+        let has = !p.master_strip.auto.lane(target).is_empty();
+        let lane = if has { it.next() } else { None };
+        if has && lane.is_none() || !master_lane_unchanged(p, target, lane) {
+            return false;
         }
     }
     it.next().is_none()
@@ -689,13 +743,33 @@ fn region_clips<'a>(
     t: &Track,
     r: &'a Region,
     origin: f64,
-) -> Vec<(f64, ovrtone_engine::ClipEdit, &'a ovrtone_engine::AudioFile)> {
+) -> Vec<(f64, ovrtone_engine::ClipEdit, std::borrow::Cow<'a, ovrtone_engine::AudioFile>)> {
+    use std::borrow::Cow;
     let edit = clip_edit(p, t, r);
     match (&r.folder, &r.audio) {
         (Some(folder), Some(a)) if folder.is_audio() => {
             crate::takes::audio_comp_clips(folder, &p.tempo_map(), origin, edit, &a.file)
+                .into_iter()
+                .map(|(at, edit, file)| (at, edit, Cow::Borrowed(file)))
+                .collect()
         }
-        (_, Some(a)) => vec![(origin, edit, &a.file)],
+        (_, Some(a)) => {
+            // Following a steady tempo, with its stretch rendered in the background: that file
+            // plays straight, nothing stretched live (`stretch_cache.rs`). Only the times within
+            // the file change, by the stretch.
+            let mut edit = edit;
+            if edit.follow_bpm > 0.0 && edit.keep_pitch && crate::stretch_cache::steady(p) {
+                let tempo = f64::from(p.tempo);
+                if let Some(file) = crate::stretch_cache::stretched(&a.file.path, edit.follow_bpm, tempo) {
+                    let scale = edit.follow_bpm / tempo;
+                    edit.source_start_secs *= scale;
+                    edit.length_secs *= scale;
+                    edit.follow_bpm = 0.0;
+                    return vec![(origin, edit, Cow::Owned(file))];
+                }
+            }
+            vec![(origin, edit, Cow::Borrowed(&a.file))]
+        }
         (_, None) => Vec::new(),
     }
 }
@@ -730,7 +804,7 @@ fn build_song(engine: &Engine, p: &Project) -> Song {
                 .into_iter()
                 .map(move |(at, edit, file)| {
                     let line = r.gain_line.iter().map(|(b, db)| (origin + f64::from(*b), *db)).collect();
-                    engine.stream_clip_in(file, track, at, edit, streamed).with_gain_line(line)
+                    engine.stream_clip_in(&file, track, at, edit, streamed).with_gain_line(line)
                 })
         })
         .collect();
@@ -769,10 +843,12 @@ impl EngineSync {
             metronome: false,
             cycle: (false, 0.0, 0.0),
             master: None,
+            master_pan: None,
             position: None,
             mixes: Vec::new(),
             spatial_mode: ovrtone_engine::SpatialMode::Off,
             master_fx: Vec::new(),
+            master_rows: Vec::new(),
             spatial_law: ovrtone_engine::SpatialLaw::Smooth,
             spatial_speakers: 0,
             spatial_test: None,
@@ -940,6 +1016,13 @@ impl EngineSync {
             })
         {
             self.master = Some(p.master_vol);
+        }
+        if self.master_pan != Some(p.master_strip.pan)
+            && self.send(Command::SetMasterPan {
+                pan: p.master_strip.pan,
+            })
+        {
+            self.master_pan = Some(p.master_strip.pan);
         }
         // External MIDI tracks: their notes go out as MIDI instead of sounding here.
         for (i, t) in p.tracks.iter().enumerate().take(MAX_TRACKS) {
@@ -1220,16 +1303,23 @@ impl EngineSync {
         {
             let master = ovrtone_engine::MASTER_STRIP;
             let want = &p.master_strip.inserts;
+            // Its effects and plugins in one order, as a track's (`model::fx_rows`).
+            let want_rows = crate::model::fx_rows(want.len(), &p.master_plugins)
+                .into_iter()
+                .map(|r| r.min(usize::from(u8::MAX)) as u8)
+                .collect::<Vec<u8>>();
             let same_kinds = self.master_fx.len() == want.len()
                 && self.master_fx.iter().zip(want).all(|(a, b)| a.kind == b.kind);
-            if !same_kinds {
+            if !same_kinds || self.master_rows != want_rows {
+                let chain = Box::new((*chain_of(want, sr)).with_rows(want_rows.clone()));
                 if !self.send(Command::SetInserts {
                     track: master,
-                    chain: chain_of(want, sr),
+                    chain,
                 }) {
                     return;
                 }
                 self.master_fx = want.clone();
+                self.master_rows = want_rows;
             } else {
                 for (slot, (have, w)) in self.master_fx.iter_mut().zip(want).enumerate() {
                     if have == w {

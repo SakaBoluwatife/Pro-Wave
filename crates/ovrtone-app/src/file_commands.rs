@@ -239,6 +239,73 @@ enum Answer {
 }
 
 impl App {
+    /// Closing Ovrtone always asks first, whatever closed it (the window's close button, Alt+F4,
+    /// Ctrl+Q): with unsaved changes Save, Don't Save or Cancel, else Quit or Cancel. Once a frame.
+    pub(crate) fn quit_guard(&mut self, ctx: &egui::Context) {
+        if self.quitting {
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quit_asked = true;
+        }
+        if !self.quit_asked {
+            return;
+        }
+        #[derive(Clone, Copy)]
+        enum Choice {
+            Save,
+            Quit,
+            Cancel,
+        }
+        let unsaved = content(&self.project) != self.saved;
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("quit_ovrtone")).show(ctx, |ui| {
+            ui.set_width(320.0);
+            ui.heading("Quit Ovrtone?");
+            ui.add_space(4.0);
+            if unsaved {
+                ui.label(format!("\"{}\" has changes that are not saved.", self.project.name));
+            } else {
+                ui.label("Everything is saved.");
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if unsaved {
+                    if ui.button("Save and Quit").clicked() {
+                        choice = Some(Choice::Save);
+                    }
+                    if ui.button("Don't Save").clicked() {
+                        choice = Some(Choice::Quit);
+                    }
+                } else if ui.button("Quit").clicked() {
+                    choice = Some(Choice::Quit);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(Choice::Cancel);
+                }
+            });
+        });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            choice = Some(Choice::Cancel);
+        }
+        match choice {
+            Some(Choice::Save) => {
+                if self.save() {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                self.quit_asked = false;
+            }
+            Some(Choice::Quit) => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(Choice::Cancel) => self.quit_asked = false,
+            None => {}
+        }
+    }
+
     /// Runs a File menu command. New / Open / Open Recent first ask what to do with unsaved
     /// changes, and Revert asks before throwing them away.
     pub fn run_file_cmd(&mut self, cmd: FileCmd, ctx: &egui::Context) {
@@ -697,11 +764,25 @@ impl App {
     }
 
     fn save_as(&mut self) -> bool {
-        let name = format!("{}.{}", self.project.name, ovrtone_project::EXTENSION);
-        match dialog()
-            .set_title(tr("Save As"))
-            .set_file_name(name)
-            .save_file()
+        // A saved project starts in its own folder; a new one in Documents\Ovrtone\<name>.
+        let (dir, name) = match &self.path {
+            Some(path) => (
+                path.parent().map(Path::to_path_buf),
+                format!("{}.{}", self.project.name, ovrtone_project::EXTENSION),
+            ),
+            None => {
+                let proposed = crate::project_folder::proposed_file(&self.project.name);
+                let name = proposed
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                (proposed.parent().map(Path::to_path_buf), name)
+            }
+        };
+        let mut save = dialog().set_title(tr("Save As")).set_file_name(name);
+        if let Some(dir) = dir.filter(|d| d.is_dir()) {
+            save = save.set_directory(dir);
+        }
+        match save.save_file()
         {
             Some(path) => self.save_to(&path),
             None => false,
@@ -828,6 +909,8 @@ mod tests {
             sync: None,
             path: None,
             native_menu: None,
+            quit_asked: false,
+            quitting: false,
             bench: None,
             shots: None,
             frames_since_record: 0,

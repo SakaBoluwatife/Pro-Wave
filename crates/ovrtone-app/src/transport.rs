@@ -927,8 +927,15 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
         egui::Id::unique(("control_bar", "master")),
         Sense::click_and_drag(),
     );
+    // While Stereo Out's volume lane plays, the slider shows it and is held, as the mixer's
+    // Stereo Out fader is.
+    let target = crate::model::AutoTarget::Volume;
+    let lane_db = p.master_strip.auto.played(target, p.position_beats);
+    let shown = lane_db.map_or(p.master_vol, |db| 10f32.powf(db / 20.0));
     if let Some(pt) = resp.interact_pointer_pos() {
-        p.master_vol = ((pt.x - travel.0) / (travel.1 - travel.0)).clamp(0.0, 1.0);
+        if crate::automation::editable(&p.master_strip, target) {
+            p.master_vol = ((pt.x - travel.0) / (travel.1 - travel.0)).clamp(0.0, 1.0);
+        }
     }
 
     // Pill with a soft inner edge.
@@ -991,7 +998,7 @@ fn master_volume(ui: &Ui, g: &Painter, p: &mut Project, rect: Rect, peaks: Optio
 
     // Translucent glassy knob.
     let c = pos2(
-        travel.0 + (travel.1 - travel.0) * p.master_vol,
+        travel.0 + (travel.1 - travel.0) * shown.clamp(0.0, 1.0),
         rect.center().y,
     );
     g.circle_filled(c + vec2(0.0, 1.0), RAD + 1.0, Color32::from_black_alpha(70));

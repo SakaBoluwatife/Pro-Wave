@@ -379,7 +379,7 @@ fn read_report(line: &str, control: &JobControl) {
     }
 }
 
-/// A folder of its own for one split, among the session's recordings so that saving keeps them.
+/// A folder of its own for one split, in the project's Stems folder.
 fn new_output_dir(name: &str) -> PathBuf {
     let safe: String = name
         .chars()
@@ -388,7 +388,7 @@ fn new_output_dir(name: &str) -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
-    crate::project_io::recordings_dir().join(format!("stems-{safe}-{stamp}"))
+    crate::project_folder::subdir("Stems").join(format!("{safe}-{stamp}"))
 }
 
 /// Puts the stems in `dir` on new tracks, playing what the source region plays, and mutes it if they

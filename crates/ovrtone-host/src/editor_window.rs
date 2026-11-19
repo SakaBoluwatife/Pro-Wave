@@ -704,8 +704,19 @@ impl EditorWindow {
 
     pub(crate) fn show(&self) {
         self.keep_inside();
-        // SAFETY: `self.hwnd` lives as long as `self`.
-        let _ = unsafe { ShowWindow(self.hwnd, SW_SHOW) };
+        // In front and with the keyboard on the plugin's own view, so the first click and key go
+        // to the plugin rather than beeping at a window that has no focus.
+        // SAFETY: `self.hwnd` lives as long as `self`; the content window is its child, made with it.
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(self.hwnd);
+            let content = self.inbox.content.get();
+            if content != 0 {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(HWND(
+                    content as *mut c_void,
+                )));
+            }
+        }
     }
 
     /// Moves it to where it can be seen: a place saved with another screen plugged in may be off

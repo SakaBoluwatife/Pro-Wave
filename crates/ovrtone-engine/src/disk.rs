@@ -615,6 +615,10 @@ impl Decoded {
     }
 }
 
+/// Files whose sound takes at most this much memory (about 24 s of stereo at 44.1 kHz) are read
+/// whole when their clip starts, so one-shots and short loops never wait on the drive.
+const WHOLE_FILE_BYTES: u64 = 8 << 20;
+
 enum Msg {
     Register {
         file: AudioFile,
@@ -661,6 +665,8 @@ struct Stream {
     keep_pitch: bool,
     /// Semitones it is transposed by, live (the region's Transpose).
     transpose: f32,
+    /// The whole file is in `buf` (a short one, read once): no seeking or reading while it plays.
+    whole: bool,
     /// The live time stretch of a clip that follows the tempo and keeps its pitch, or is transposed.
     stretch: Option<Stretcher>,
     /// Where the clip starts in the song, and the tempo its audio was made at (following).
@@ -826,8 +832,27 @@ impl Stream {
         }
     }
 
+    /// Reads a short file whole into `buf` (see [`WHOLE_FILE_BYTES`]). On the disk thread, once.
+    fn read_whole_if_short(&mut self) {
+        if self.src.frames.saturating_mul(8) > WHOLE_FILE_BYTES {
+            return;
+        }
+        if !matches!(self.src.seek(0), Ok(0)) {
+            return;
+        }
+        self.buf.clear();
+        self.buf_base = 0;
+        self.eof = false;
+        self.ensure(self.src.frames);
+        self.whole = self.eof || (self.buf.len() / 2) as u64 >= self.src.frames;
+    }
+
     fn seek_out(&mut self, frame: u64) {
         self.out_frame = frame.min(self.play_len());
+        if self.whole {
+            self.start_stretch();
+            return;
+        }
         let s = ((self.out_offset as f64 + self.src_at(self.out_frame)) * self.ratio) as u64;
         self.buf.clear();
         self.eof = false;
@@ -864,6 +889,9 @@ impl Stream {
     }
 
     fn ensure_reverse_window(&mut self, lo: u64, hi: u64) -> Result<(), AudioError> {
+        if self.whole {
+            return Ok(());
+        }
         // The final interpolation frame may be just beyond EOF; frame() repeats the
         // last source frame there, so it need not trigger another decoder seek.
         let needed_hi = hi.min(self.src.frames.saturating_sub(1));
@@ -946,6 +974,9 @@ impl Stream {
 
     /// Drops source frames before `frame` (less one, for interpolation): never read again.
     fn drop_before(&mut self, frame: u64) {
+        if self.whole {
+            return;
+        }
         let keep_from = frame.saturating_sub(1);
         if keep_from > self.buf_base {
             let drop_frames = ((keep_from - self.buf_base) as usize).min(self.buf.len() / 2);
@@ -1146,7 +1177,8 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
                 return true;
             }
             match Source::open(&file.path) {
-                Ok(src) => streams.push(Stream {
+                Ok(src) => {
+                    let mut stream = Stream {
                     ratio: src.sample_rate as f64 / out_rate.max(1) as f64,
                     src,
                     idle_since: None,
@@ -1165,12 +1197,16 @@ fn handle(msg: Msg, streams: &mut Vec<Stream>) -> bool {
                     follows: edit.follow_bpm > 0.0,
                     keep_pitch: edit.keep_pitch,
                     transpose: edit.transpose,
+                    whole: false,
                     stretch: None,
                     start_beat,
                     follow_bpm: edit.follow_bpm,
                     tempo,
                     map: None,
-                }),
+                    };
+                    stream.read_whole_if_short();
+                    streams.push(stream);
+                }
                 Err(e) => tracing::error!("cannot open {}: {e}", file.path.display()),
             }
         }
@@ -1196,6 +1232,7 @@ fn service_messages(rx: &mpsc::Receiver<Msg>, streams: &mut Vec<Stream>) -> bool
 }
 
 fn run(rx: mpsc::Receiver<Msg>, load: &std::sync::atomic::AtomicU32) {
+    crate::output::disk_thread_setup();
     let mut streams: Vec<Stream> = Vec::new();
     // The share of time spent reading, over a quarter of a second.
     let mut window = Instant::now();
@@ -1609,6 +1646,7 @@ mod tests {
                 follows: false,
                 keep_pitch: true,
                 transpose: 0.0,
+                whole: false,
                 stretch: None,
                 start_beat: 0.0,
                 follow_bpm: 0.0,
@@ -2038,6 +2076,7 @@ mod tests {
             follows: false,
             keep_pitch: true,
             transpose: 0.0,
+            whole: false,
             stretch: None,
             start_beat: 0.0,
             follow_bpm: 0.0,

@@ -859,6 +859,7 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
         rec_replace: p.rec_replace,
         snap_zero: p.snap_zero,
         master_plugins: p.master_plugins.iter().map(plugin_to_doc).collect(),
+        master_shared_order: true,
         master_fx: p
             .master_strip
             .inserts
@@ -870,6 +871,10 @@ pub fn to_doc(p: &Project) -> (ProjectDoc, Vec<MediaFile>) {
                 sidechain: None,
             })
             .collect(),
+        master_pan: p.master_strip.pan,
+        master_auto_pan: points_to_doc(&p.master_strip.auto.pan),
+        master_auto_volume: points_to_doc(&p.master_strip.auto.volume),
+        master_on_timeline: p.master_strip.on_timeline,
         midi_map: midi_map_to_doc(p),
         grooves: p.grooves.clone(),
         screensets: p.screensets.clone(),
@@ -1693,6 +1698,16 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         fx: doc.master_fx.clone(),
         ..ovrtone_project::TrackDoc::default()
     });
+    p.master_strip.auto.volume =
+        points_from_doc(crate::model::AutoTarget::Volume, &doc.master_auto_volume);
+    p.master_strip.auto.pan =
+        points_from_doc(crate::model::AutoTarget::Pan, &doc.master_auto_pan);
+    p.master_strip.pan = if doc.master_pan.is_finite() {
+        doc.master_pan.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    p.master_strip.on_timeline = doc.master_on_timeline;
     p.master_plugins = doc
         .master_plugins
         .iter()
@@ -1700,6 +1715,11 @@ pub fn from_doc(doc: &ProjectDoc, media_dir: &Path, ctx: &egui::Context) -> (Pro
         .take(ovrtone_engine::MAX_INSERTS)
         .map(plugin_from_doc)
         .collect();
+    // Saved before the output shared one order: its plugins came after its own effects, and stay so.
+    if !doc.master_shared_order {
+        let count = p.master_strip.inserts.len();
+        crate::model::rows_after_effects(count, &mut p.master_plugins);
+    }
     p.midi_map = midi_map_from_doc(&p, &doc.midi_map);
     // Plugin lanes are saved by where the plugin is, as an instance's number lasts one run.
     for (track, d) in p.tracks.iter_mut().zip(&doc.tracks) {
@@ -1884,9 +1904,10 @@ pub fn media_root() -> PathBuf {
     std::env::temp_dir().join("ovrtone-media")
 }
 
-/// Where this session's audio recordings go until the project is saved.
+/// Where audio recordings go: the project's Audio Files folder (see `project_folder`). Saving a
+/// project puts the audio its regions use into the `.ovrtone` file, so they stay with it.
 pub fn recordings_dir() -> PathBuf {
-    session_media_dir().join("recordings")
+    crate::project_folder::subdir("Audio Files")
 }
 
 /// A track's input from a project file, which can hold any number.

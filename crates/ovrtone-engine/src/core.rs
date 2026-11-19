@@ -554,6 +554,11 @@ pub enum Command {
     SetMasterGain {
         linear: f32,
     },
+    /// Stereo Out's balance, -1 (left) to 1 (right), equal power. Applied after the output's
+    /// effects and before its fader. Non-finite values are ignored.
+    SetMasterPan {
+        pan: f32,
+    },
     /// Logic's cycle locators, in quarter-note beats. The end is exclusive; wrapping
     /// preserves fractional-sample elapsed time. Invalid or non-finite bounds disable cycle.
     SetCycle {
@@ -809,6 +814,10 @@ pub enum Garbage {
     Input(Box<InputFeed>),
     Plugin(Box<PluginSlot>),
     Preview(Box<Preview>),
+    /// Returned for a command that replaced nothing (a plugin into an empty slot, the first tap or
+    /// input), so the queue gets back the place it reserved for it. Without it each such command
+    /// kept one place, and once all were kept the engine refused every new song and plugin.
+    Nothing,
 }
 
 /// What the engine shows the UI after each audio block: the playhead, the transport and the
@@ -1069,6 +1078,8 @@ pub struct EngineCore {
     sr: f32,
     rx: Consumer<Command>,
     trash: Producer<Garbage>,
+    /// Whether the command being handled returned its old state (see [`Garbage::Nothing`]).
+    retired: bool,
     shared: Arc<Shared>,
     /// What the UI was last shown; the meters fall back from it.
     shown: EngineState,
@@ -1086,6 +1097,15 @@ pub struct EngineCore {
     metronome: bool,
     cycle: Option<(f64, f64)>,
     master: GainRamp,
+    /// The master fader as the user set it, and whether a lane is moving it instead.
+    master_own: f32,
+    master_auto: bool,
+    /// Stereo Out's balance: gains of the two sides, the pan as the user set it, and whether a
+    /// lane is moving it instead.
+    master_pan_l: GainRamp,
+    master_pan_r: GainRamp,
+    master_pan_own: f32,
+    master_pan_auto: bool,
     voices: [Voice; MAX_VOICES],
     click_remaining: u32,
     click_phase: f32,
@@ -1320,6 +1340,7 @@ impl EngineCore {
             sr: sample_rate.max(1) as f32,
             rx,
             trash,
+            retired: false,
             shared,
             shown: EngineState::default(),
             state,
@@ -1335,6 +1356,12 @@ impl EngineCore {
             metronome: false,
             cycle: None,
             master: GainRamp::new(0.8),
+            master_own: 0.8,
+            master_auto: false,
+            master_pan_l: GainRamp::new(1.0),
+            master_pan_r: GainRamp::new(1.0),
+            master_pan_own: 0.0,
+            master_pan_auto: false,
             voices: [Voice::default(); MAX_VOICES],
             click_remaining: 0,
             click_phase: 0.0,
@@ -1815,6 +1842,17 @@ impl EngineCore {
         }
     }
 
+    /// Aims Stereo Out's balance at `pan` (-1..1): equal power, a side never louder than it was.
+    fn set_master_pan(&mut self, pan: f32, samples: u32) {
+        let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+        let (l, r) = (
+            (angle.cos() * std::f32::consts::SQRT_2).min(1.0),
+            (angle.sin() * std::f32::consts::SQRT_2).min(1.0),
+        );
+        self.master_pan_l.set(l, samples);
+        self.master_pan_r.set(r, samples);
+    }
+
     fn smoothing_samples(&self) -> u32 {
         let sounding = self.playing
             || self.voices.iter().any(|v| v.active)
@@ -1995,9 +2033,22 @@ impl EngineCore {
     fn update_automation(&mut self) {
         let beat = self.beat;
         let samples = AUTO_BLOCK;
+        let mut master_db = None;
+        let mut master_pan = None;
         for k in 0..self.automation.len() {
             let lane = &self.automation[k];
             if !lane.follow {
+                continue;
+            }
+            // Stereo Out's own fader and pan.
+            if lane.track == crate::routing::MASTER_AUTO_TRACK {
+                match lane.target {
+                    AutoTarget::Volume => {
+                        master_db = lane.value_at(beat).map(|v| v + lane.offset_db)
+                    }
+                    AutoTarget::Pan => master_pan = lane.value_at(beat),
+                    _ => {}
+                }
                 continue;
             }
             let t = lane.track as usize;
@@ -2041,6 +2092,15 @@ impl EngineCore {
                     }
                 }
             }
+        }
+        if let Some(pan) = master_pan.filter(|v| v.is_finite()) {
+            self.master_pan_auto = true;
+            self.set_master_pan(pan.clamp(-1.0, 1.0), samples);
+        }
+        if let Some(db) = master_db.filter(|v| v.is_finite()) {
+            self.master_auto = true;
+            let linear = 10f32.powf(db.clamp(-96.0, 6.0) / 20.0).clamp(0.0, 2.0);
+            self.master.set(linear, samples);
         }
         for k in 0..self.auto_tracks.len() {
             let t = self.auto_tracks[k] as usize;
@@ -2152,22 +2212,38 @@ impl EngineCore {
             }
         }
         if mixed {
-            for row in 0..MAX_INSERTS {
-                if let Some(k) = chain.as_ref().and_then(|c| c.at_row(row)) {
-                    if let Some(chain) = chain.as_mut() {
-                        chain.process_one(k, &mut in_l[..n], &mut in_r[..n], side);
-                    }
-                } else if let Some(plugin) = plugins.get_mut(row).and_then(Option::as_mut) {
-                    for j in 0..n {
-                        if let Some(source) = plugin.side_source() {
-                            let source = source as usize;
-                            plugin.feed_side(this.side_l[source][j], this.side_r[source][j]);
+            // In the strip's one order: before each effect, the plugins above it (by their place
+            // in the list, which is the slot the app gives them), then the plugins after the last.
+            macro_rules! run_plugin {
+                ($slot:expr) => {
+                    if let Some(plugin) = plugins.get_mut($slot).and_then(Option::as_mut) {
+                        for j in 0..n {
+                            if let Some(source) = plugin.side_source() {
+                                let source = source as usize;
+                                plugin.feed_side(this.side_l[source][j], this.side_r[source][j]);
+                            }
+                            let (a, b) = plugin.process(in_l[j] as f32, in_r[j] as f32, transport);
+                            in_l[j] = f64::from(a);
+                            in_r[j] = f64::from(b);
                         }
-                        let (a, b) = plugin.process(in_l[j] as f32, in_r[j] as f32, transport);
-                        in_l[j] = f64::from(a);
-                        in_r[j] = f64::from(b);
                     }
+                };
+            }
+            let mut next = 0usize;
+            let count = chain.as_ref().map_or(0, |c| c.fx.len());
+            for k in 0..count {
+                let before = chain.as_ref().map_or(0, |c| c.plugins_before(k)).min(MAX_INSERTS);
+                while next < before {
+                    run_plugin!(next);
+                    next += 1;
                 }
+                if let Some(chain) = chain.as_mut() {
+                    chain.process_one(k, &mut in_l[..n], &mut in_r[..n], side);
+                }
+            }
+            while next < MAX_INSERTS {
+                run_plugin!(next);
+                next += 1;
             }
         }
         // ...then the plugins, the fader and the meters frame by frame.
@@ -2570,6 +2646,8 @@ impl EngineCore {
                 break;
             }
             let Ok(cmd) = self.rx.pop() else { break };
+            let retiring = cmd.retires_state();
+            self.retired = false;
             match cmd {
                 Command::CountIn {
                     clicks,
@@ -2595,7 +2673,7 @@ impl EngineCore {
                         f.set_output_rate(self.sr);
                     }
                     if let Some(old) = std::mem::replace(&mut self.input, feed) {
-                        let _ = self.trash.push(Garbage::Input(old));
+                        self.retire(Garbage::Input(old));
                     }
                 }
                 Command::SetMonitors { tracks, count } => {
@@ -2625,7 +2703,7 @@ impl EngineCore {
                 Command::SetPosition { beat } => self.seek(beat),
                 Command::SetTempoMap(map) => {
                     let old = std::mem::replace(&mut self.tempo_map, map);
-                    let _ = self.trash.push(Garbage::TempoMap(old));
+                    self.retire(Garbage::TempoMap(old));
                     self.reposition_clips();
                     // A tempo edit after the playhead leaves the time where it was.
                     if (self.tempo_map.seconds_at(self.beat) - self.mtc_secs).abs() > 0.001 {
@@ -2646,7 +2724,7 @@ impl EngineCore {
                 Command::SetPluginRound(mut round) => {
                     if let Some(old) = self.plugin_round.take() {
                         round.phase = old.phase;
-                        let _ = self.trash.push(Garbage::PluginRound(old));
+                        self.retire(Garbage::PluginRound(old));
                     }
                     self.plugin_round = Some(round);
                     self.sort_strips();
@@ -2661,23 +2739,35 @@ impl EngineCore {
                         None => tap,
                     };
                     if let Some(old) = old {
-                        let _ = self.trash.push(Garbage::MasterTap(old.out));
+                        self.retire(Garbage::MasterTap(old.out));
                     }
                 }
                 Command::SetMasterTap(tap) => {
                     if let Some(old) = std::mem::replace(&mut self.master_tap, tap) {
-                        let _ = self.trash.push(Garbage::MasterTap(old));
+                        self.retire(Garbage::MasterTap(old));
                     }
                 }
                 Command::SetTunerTap(tap) => {
                     if let Some(old) = std::mem::replace(&mut self.tuner_tap, tap) {
-                        let _ = self.trash.push(Garbage::TunerTap(old));
+                        self.retire(Garbage::TunerTap(old));
                     }
                 }
                 Command::SetMasterGain { linear } => {
                     if linear.is_finite() {
                         let samples = self.smoothing_samples();
-                        self.master.set(linear.clamp(0.0, 2.0), samples);
+                        self.master_own = linear.clamp(0.0, 2.0);
+                        if !self.master_auto {
+                            self.master.set(self.master_own, samples);
+                        }
+                    }
+                }
+                Command::SetMasterPan { pan } => {
+                    if pan.is_finite() {
+                        self.master_pan_own = pan.clamp(-1.0, 1.0);
+                        if !self.master_pan_auto {
+                            let samples = self.smoothing_samples();
+                            self.set_master_pan(self.master_pan_own, samples);
+                        }
                     }
                 }
                 Command::SetCycle {
@@ -2739,7 +2829,7 @@ impl EngineCore {
                     let mut chain = chain;
                     if let Some(mut old) = self.master_chain.take() {
                         chain.tap = old.tap.take();
-                        let _ = self.trash.push(Garbage::Chain(old));
+                        self.retire(Garbage::Chain(old));
                     }
                     self.master_chain = (!chain.fx.is_empty()).then_some(chain);
                 }
@@ -2751,13 +2841,13 @@ impl EngineCore {
                         if let Some(mut old) = old {
                             // The window listening goes on listening to the new chain.
                             chain.tap = old.tap.take();
-                            let _ = self.trash.push(Garbage::Chain(old));
+                            self.retire(Garbage::Chain(old));
                         }
                         self.chains[t] = Some(chain);
                         self.shown.gain_reduction[t] = 0.0;
                         self.sort_strips();
                     } else {
-                        let _ = self.trash.push(Garbage::Chain(chain));
+                        self.retire(Garbage::Chain(chain));
                     }
                 }
                 Command::SetPlugin {
@@ -2775,7 +2865,7 @@ impl EngineCore {
                         None => plugin,
                     };
                     if let Some(old) = old {
-                        let _ = self.trash.push(Garbage::Plugin(old));
+                        self.retire(Garbage::Plugin(old));
                     }
                     self.sort_strips();
                 }
@@ -2867,11 +2957,11 @@ impl EngineCore {
                     let t = track as usize;
                     if t < MAX_TRACKS {
                         if let Some(old) = self.pdc[t].replace(pdc) {
-                            let _ = self.trash.push(Garbage::Pdc(old));
+                            self.retire(Garbage::Pdc(old));
                         }
                         self.sort_strips();
                     } else {
-                        let _ = self.trash.push(Garbage::Pdc(pdc));
+                        self.retire(Garbage::Pdc(pdc));
                     }
                 }
                 Command::SetFx {
@@ -2899,7 +2989,7 @@ impl EngineCore {
                 }
                 Command::SetAutomation(lanes) => {
                     let old = std::mem::replace(&mut self.automation, lanes);
-                    let _ = self.trash.push(Garbage::Automation(old));
+                    self.retire(Garbage::Automation(old));
                     self.auto_vol.fill(None);
                     self.auto_pan.fill(None);
                     self.auto_on.fill(false);
@@ -2917,6 +3007,27 @@ impl EngineCore {
                         }
                     }
                     self.auto_any = self.automation.iter().any(|l| l.follow);
+                    // No lane moves Stereo Out's fader any more: it goes back to where it was set.
+                    let master_lane = self.automation.iter().any(|l| {
+                        l.follow
+                            && l.track == crate::routing::MASTER_AUTO_TRACK
+                            && l.target == AutoTarget::Volume
+                    });
+                    if self.master_auto && !master_lane {
+                        self.master_auto = false;
+                        let samples = self.smoothing_samples();
+                        self.master.set(self.master_own, samples);
+                    }
+                    let pan_lane = self.automation.iter().any(|l| {
+                        l.follow
+                            && l.track == crate::routing::MASTER_AUTO_TRACK
+                            && l.target == AutoTarget::Pan
+                    });
+                    if self.master_pan_auto && !pan_lane {
+                        self.master_pan_auto = false;
+                        let samples = self.smoothing_samples();
+                        self.set_master_pan(self.master_pan_own, samples);
+                    }
                     for lane in self
                         .automation
                         .iter()
@@ -2953,7 +3064,7 @@ impl EngineCore {
                     let (room, setup) = (old.room(), old.setup());
                     self.spatial.set_room(room);
                     self.spatial.set_setup(setup);
-                    let _ = self.trash.push(Garbage::Spatial(old));
+                    self.retire(Garbage::Spatial(old));
                     // Another layout: the same places on other speakers.
                     for feed in self.objects.iter_mut().flatten() {
                         feed.target = self.spatial.object_gains(feed.place);
@@ -2966,7 +3077,7 @@ impl EngineCore {
                 }
                 Command::SetBusPlugins { bus, plugins } => {
                     let old = self.spatial.swap_bus_plugins(usize::from(bus), plugins);
-                    let _ = self.trash.push(Garbage::BusPlugins(old));
+                    self.retire(Garbage::BusPlugins(old));
                 }
                 Command::SetBusPluginParam { bus, slot, id, value } => {
                     self.spatial.set_bus_plugin_param(usize::from(bus), usize::from(slot), id, value);
@@ -2998,32 +3109,41 @@ impl EngineCore {
                 }
                 Command::SetPreview(new) => {
                     if let Some(old) = std::mem::replace(&mut self.preview, new) {
-                        let _ = self.trash.push(Garbage::Preview(old));
+                        self.retire(Garbage::Preview(old));
                     }
                     self.preview_pos = 0;
                 }
                 Command::SetSong(new) => {
                     let old = std::mem::replace(&mut self.song, new);
-                    let _ = self.trash.push(Garbage::Song(old));
+                    self.retire(Garbage::Song(old));
                     self.rebuild_mix(false, None);
                     let b = self.beat;
                     self.seek(b);
                 }
                 Command::SetControls(controls) => {
                     let old = std::mem::replace(&mut self.song.controls, controls);
-                    let _ = self.trash.push(Garbage::Controls(old));
+                    self.retire(Garbage::Controls(old));
                     self.next_control = self.song.controls.partition_point(|c| c.beat < self.beat);
                 }
                 Command::SetNotes(notes) => {
                     let old = std::mem::replace(&mut self.song.notes, notes);
-                    let _ = self.trash.push(Garbage::Notes(old));
+                    self.retire(Garbage::Notes(old));
                     self.next_note = self
                         .song
                         .notes
                         .partition_point(|n| n.start_beat < self.beat);
                 }
             }
+            if retiring && !self.retired {
+                let _ = self.trash.push(Garbage::Nothing);
+            }
         }
+    }
+
+    /// Hands old state back to the UI thread to be dropped there.
+    fn retire(&mut self, old: Garbage) {
+        self.retired = true;
+        let _ = self.trash.push(old);
     }
 
     fn trigger(&mut self, n: NoteEvent) -> usize {
@@ -3184,10 +3304,6 @@ impl EngineCore {
                 limit = 1;
             }
         }
-        // The built-in voices work a sample at a time.
-        if self.voices.iter().any(|v| v.active) {
-            limit = 1;
-        }
         let n = self.plan_span(limit, frame_secs);
         if self.auto_any {
             self.auto_left -= n as u32;
@@ -3243,13 +3359,16 @@ impl EngineCore {
                 self.hear_input(j);
             }
         }
+        // The built-in voices, a span at a time: each frame's playhead is in `beats`, so a note
+        // still ends on its frame. (One frame at a time made the whole engine run that way.)
         for v in self.voices.iter_mut().filter(|v| v.active) {
+          for j in 0..n {
             if v.live {
                 v.live_left = v.live_left.saturating_sub(1);
                 if v.live_left == 0 {
                     v.releasing = true;
                 }
-            } else if self.beat >= v.end_beat || !self.playing {
+            } else if self.beats[j] >= v.end_beat || !self.playing {
                 v.releasing = true;
             }
             let sr = self.sr;
@@ -3278,7 +3397,7 @@ impl EngineCore {
                     v.env -= v.rel_step;
                     if v.env <= 0.0 {
                         v.active = false;
-                        continue;
+                        break;
                     }
                 }
             }
@@ -3333,13 +3452,14 @@ impl EngineCore {
             let t = v.track as usize;
             if self.track_audible[t] || self.side_source[t] {
                 let x = finite_or_zero(x * v.amp * v.env);
-                self.in_l[t][0] += x as f64;
-                self.in_r[t][0] += x as f64;
+                self.in_l[t][j] += x as f64;
+                self.in_r[t][j] += x as f64;
                 if !self.touched[t] {
                     self.touched[t] = true;
                     self.dirty.push(t as u16);
                 }
             }
+          }
         }
         self.mix_strips(n);
         self.spatial.mix_buses(n, &self.transport);
@@ -3390,13 +3510,60 @@ impl EngineCore {
                     self.preview_pos += 1;
                 }
             }
-            if let Some(chain) = self.master_chain.as_mut() {
+            // Stereo Out in its one order, as a track: a plugin put above one of Ovrtone's own
+            // effects runs before it, as any insert would.
+            let master_mixed = self.master_chain.as_ref().is_some_and(|c| {
+                c.mixes_with(|s| self.master_plugins.get(s).is_some_and(Option::is_some))
+            });
+            if master_mixed {
+                let transport = self.transport;
+                let (side_l, side_r) = (&self.side_l, &self.side_r);
+                let plugins = &mut self.master_plugins;
+                if let Some(chain) = self.master_chain.as_mut() {
+                    chain.set_tempo(transport.tempo as f32);
+                    macro_rules! run_plugin {
+                        ($slot:expr) => {
+                            if let Some(plugin) = plugins.get_mut($slot).and_then(Option::as_mut) {
+                                if let Some(source) = plugin.side_source() {
+                                    let source = source as usize;
+                                    plugin.feed_side(side_l[source][j], side_r[source][j]);
+                                }
+                                let (a, b) = plugin.process(l as f32, r as f32, &transport);
+                                l = f64::from(a);
+                                r = f64::from(b);
+                            }
+                        };
+                    }
+                    let mut next = 0usize;
+                    for k in 0..chain.fx.len() {
+                        let before = chain.plugins_before(k).min(MAX_INSERTS);
+                        while next < before {
+                            run_plugin!(next);
+                            next += 1;
+                        }
+                        let (mut a, mut b) = ([l], [r]);
+                        chain.process_one(k, &mut a, &mut b, |s, _| {
+                            if s < MAX_TRACKS {
+                                (side_l[s][j], side_r[s][j])
+                            } else {
+                                (0.0, 0.0)
+                            }
+                        });
+                        l = a[0];
+                        r = b[0];
+                    }
+                    while next < MAX_INSERTS {
+                        run_plugin!(next);
+                        next += 1;
+                    }
+                }
+            } else if let Some(chain) = self.master_chain.as_mut() {
                 chain.set_tempo(self.transport.tempo as f32);
                 let (a, b) = chain.process(l as f32, r as f32);
                 l = f64::from(a);
                 r = f64::from(b);
             }
-            if self.master_any {
+            if self.master_any && !master_mixed {
                 let transport = self.transport;
                 for plugin in self.master_plugins.iter_mut().flatten() {
                     if let Some(source) = plugin.side_source() {
@@ -3409,6 +3576,9 @@ impl EngineCore {
                 }
             }
             let master = self.master.next() as f64;
+            // Stereo Out's balance comes after its effects and before its fader and meters.
+            let l = l * f64::from(self.master_pan_l.next());
+            let r = r * f64::from(self.master_pan_r.next());
             // `clamp` lets NaN through, so a non-finite sum becomes silence first.
             let l = finite_or_zero((l * master) as f32);
             let r = finite_or_zero((r * master) as f32);

@@ -62,6 +62,7 @@ pub use crate::core::{
 pub use crate::disk::{
     ring_blocks_for, AudioError, AudioFile, DiskThread, RING_BLOCKS, RING_BLOCKS_MAX,
 };
+pub use crate::hq_stretch::whole as stretch_whole;
 pub use crate::flex::{
     detect_notes, hz_to_midi, pitch_track, shift_pitch, warp, write_wav, DetectedNote, FlexMode,
     PitchShift, WarpPoint, MAX_POINTS as MAX_FLEX_POINTS,
@@ -82,7 +83,7 @@ pub use crate::plugin::{
 };
 pub use crate::routing::{
     curve_shape, lane_value, send_gain, AutoLane, AutoPoint, AutoTarget, Route, SendSpec,
-    MAX_AUTO_POINTS, MAX_BUSES, MAX_SENDS,
+    MASTER_AUTO_TRACK, MAX_AUTO_POINTS, MAX_BUSES, MAX_SENDS,
 };
 pub use crate::simd::{simd_level, SimdLevel};
 pub use crate::synth::{Kit, SynthPatch, Wave};

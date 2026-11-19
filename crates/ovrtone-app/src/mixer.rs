@@ -890,7 +890,7 @@ pub fn fx_rows_for(p: &Project, keys: &[StripKey]) -> usize {
                 crate::model::next_row(t.inserts.len(), &t.plugins)
             }),
             StripKey::StereoOut => {
-                crate::model::next_plugin_row(p.master_strip.inserts.len(), &p.master_plugins)
+                crate::model::next_row(p.master_strip.inserts.len(), &p.master_plugins)
             }
         })
         .max()
@@ -1539,7 +1539,7 @@ fn insert_slot(
                 if off {
                     text_dim_col()
                 } else {
-                    crate::theme::on_accent()
+                    Color32::WHITE
                 },
             );
         }
@@ -1577,7 +1577,7 @@ fn insert_slot(
             let layer = egui::LayerId::new(egui::Order::Tooltip, uid.with("carried"));
             let tag = Rect::from_center_size(at + vec2(0.0, -14.0), r.size());
             let lg = ui.ctx().layer_painter(layer);
-            named_slot(&lg, tag, fx.name(), 2, crate::theme::accent(), crate::theme::on_accent());
+            named_slot(&lg, tag, fx.name(), 2, crate::theme::accent(), Color32::WHITE);
         }
     }
     let resp = if have.is_none() {
@@ -1679,7 +1679,11 @@ fn insert_slot(
             }
             if installed.iter().any(|info| !info.is_instrument) {
                 ui.separator();
-                plugin_menu(ui, &installed, false, &mut pick);
+                let mut among = None;
+                plugin_menu(ui, &installed, false, &mut pick, Some(&mut among));
+                if let Some(kind) = among {
+                    act = Some(InsertAct::Add(kind));
+                }
             }
         }
     };
@@ -1963,6 +1967,49 @@ impl Home {
     }
 }
 
+/// One of Stereo Out's own effects being dragged to another slot: its place in the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MasterFxDrag(usize);
+
+/// Drops a dragged effect of Stereo Out on its slot in row `row`: it takes the place that slot's row
+/// stands for (past the last effect: the end), and the others close up around it.
+fn master_fx_drop(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, row: usize) {
+    let Some(drag) = egui::DragAndDrop::payload::<MasterFxDrag>(ui.ctx()) else {
+        return;
+    };
+    let from = drag.0;
+    let over = ui
+        .input(|inp| inp.pointer.hover_pos())
+        .is_some_and(|at| r.contains(at));
+    if !over {
+        return;
+    }
+    g.rect_stroke(r, 2.0, Stroke::new(1.5, blue()), egui::StrokeKind::Outside);
+    if !ui.input(|inp| inp.pointer.any_released()) {
+        return;
+    }
+    egui::DragAndDrop::clear_payload(ui.ctx());
+    let count = p.master_strip.inserts.len();
+    if from >= count {
+        return;
+    }
+    let rows = crate::model::fx_rows(count, &p.master_plugins);
+    let to = rows
+        .iter()
+        .position(|x| *x == row)
+        .unwrap_or_else(|| rows.iter().filter(|x| **x < row).count())
+        .min(count - 1);
+    if to == from {
+        return;
+    }
+    let fx = p.master_strip.inserts.remove(from);
+    p.master_strip.inserts.insert(to, fx);
+    // An open effect window follows the effect it shows.
+    if v.fx_window == Some((crate::model::MASTER_STRIP, from)) {
+        v.fx_window = Some((crate::model::MASTER_STRIP, to));
+    }
+}
+
 /// One Audio FX slot of the output, which Stereo Out and Master share.
 #[allow(clippy::too_many_arguments)]
 fn master_slot(
@@ -1974,41 +2021,112 @@ fn master_slot(
     k: usize,
     uid: egui::Id,
 ) {
-    // Ovrtone's own effects first, then the plugins, as on a track.
+    // Ovrtone's own effects and the plugins in one order, as on a track: plugins keep their rows
+    // and the effects fill the rows they leave free (see `model::fx_rows`).
     let own = p.master_strip.inserts.len();
-    if let Some(fx) = p.master_strip.inserts.get(k).copied() {
+    let k_row = k;
+    let fx_at = crate::model::fx_rows(own, &p.master_plugins)
+        .iter()
+        .position(|row| *row == k);
+    if let Some(k) = fx_at {
+        let Some(fx) = p.master_strip.inserts.get(k).copied() else {
+            return;
+        };
+        // As a plugin's slot: the same fill, white text, and the bypass and remove buttons.
         let (fill, ink) = if fx.bypass {
             (plugin_off_col(), text_dim_col())
         } else {
-            (crate::theme::accent(), crate::theme::on_accent())
+            (crate::theme::accent(), Color32::WHITE)
         };
-        named_slot(g, r, fx.name(), 0, fill, ink);
+        master_fx_drop(ui, g, r, p, v, k_row);
+        named_slot(g, r, fx.name(), 2, fill, ink);
         let resp = ui
-            .interact(r, uid, Sense::click())
-            .on_hover_text_at_pointer("Click to open; right-click to bypass or remove");
-        if resp.clicked() {
-            v.fx_window = Some((crate::model::MASTER_STRIP, k));
+            .interact(r, uid, Sense::click_and_drag())
+            .on_hover_text_at_pointer(
+                "Click to open. Drag to move it. Right-click for more.",
+            );
+        let mut flip_bypass = slot_bypass_button(ui, g, r, uid, fx.bypass, ink);
+        let mut remove = delete_pressed(ui, &resp);
+        remove |= slot_remove_button(ui, g, r, uid, ink);
+        let mut step: Option<isize> = None;
+        if resp.drag_started() {
+            egui::DragAndDrop::set_payload(ui.ctx(), MasterFxDrag(k));
         }
+        if resp.dragged() {
+            // The effect's name follows the pointer while it is carried.
+            if let Some(at) = ui.ctx().pointer_interact_pos() {
+                let layer = egui::LayerId::new(egui::Order::Tooltip, uid.with("carried"));
+                let tag = Rect::from_center_size(at + vec2(0.0, -14.0), r.size());
+                let lg = ui.ctx().layer_painter(layer);
+                named_slot(&lg, tag, fx.name(), 2, crate::theme::accent(), Color32::WHITE);
+            }
+        }
+        let mut open = resp.clicked();
         resp.context_menu(|ui| {
-            if ui.button(if fx.bypass { "Turn On" } else { "Bypass" }).clicked() {
-                p.master_strip.inserts[k].bypass = !fx.bypass;
+            ui.set_min_width(150.0);
+            if ui.button(tr("Open")).clicked() {
+                open = true;
                 ui.close();
             }
-            if ui.button("Remove").clicked() {
-                p.master_strip.inserts.remove(k);
+            if ui.selectable_label(fx.bypass, tr("Bypass")).clicked() {
+                flip_bypass = true;
+                ui.close();
+            }
+            ui.add_enabled_ui(k > 0, |ui| {
+                if ui.button(tr("Move Up")).clicked() {
+                    step = Some(-1);
+                    ui.close();
+                }
+            });
+            ui.add_enabled_ui(k + 1 < own, |ui| {
+                if ui.button(tr("Move Down")).clicked() {
+                    step = Some(1);
+                    ui.close();
+                }
+            });
+            ui.separator();
+            if ui.button(tr("Remove")).clicked() {
+                remove = true;
                 ui.close();
             }
         });
+        let window = Some((crate::model::MASTER_STRIP, k));
+        if open {
+            // A click opens the window, brings it forward, or (in front already) closes it.
+            if v.fx_window == window && v.fx_open.contains(&(crate::model::MASTER_STRIP, k)) {
+                v.fx_open.retain(|w| *w != (crate::model::MASTER_STRIP, k));
+                v.fx_window = v.fx_open.last().copied();
+                v.fx_front = v.fx_window;
+            } else {
+                v.fx_window = window;
+            }
+        }
+        if flip_bypass {
+            p.master_strip.inserts[k].bypass = !fx.bypass;
+        }
+        if let Some(d) = step {
+            let to = (k as isize + d) as usize;
+            if to < own {
+                p.master_strip.inserts.swap(k, to);
+                if v.fx_window == window {
+                    v.fx_window = Some((crate::model::MASTER_STRIP, to));
+                }
+            }
+        }
+        if remove {
+            p.master_strip.inserts.remove(k);
+        }
         return;
     }
-    let rows = crate::model::plugin_rows(own, &p.master_plugins);
+    let rows = crate::model::plugin_rows(0, &p.master_plugins);
     if let Some(j) = rows.iter().position(|row| *row == k) {
         plugin_slot(ui, g, r, p, v, Home::Master, j, uid, false);
         slot_drop(ui, g, r, p, Home::Master, k);
         return;
     }
     slot_drop(ui, g, r, p, Home::Master, k);
-    let next = rows.last().map_or(own, |row| row + 1);
+    master_fx_drop(ui, g, r, p, v, k);
+    let next = crate::model::next_row(own, &p.master_plugins);
     let full = p.master_plugins.len() + own >= ovrtone_engine::MAX_INSERTS;
     slot(
         g,
@@ -2033,15 +2151,23 @@ fn master_slot(
             stock = Some(kind);
         }
         if installed.iter().any(|info| !info.is_instrument) {
-            plugin_menu(ui, &installed, false, &mut pick);
+            let mut among = None;
+            plugin_menu(ui, &installed, false, &mut pick, Some(&mut among));
+            if among.is_some() {
+                stock = among;
+            }
         } else {
             ui.label("No effect plugins found");
         }
     });
     if let Some(kind) = stock {
-        // Before the plugins, as on a track; the plugins keep their order after them.
-        p.master_strip.inserts.push(Insert::new(kind));
-        v.fx_window = Some((crate::model::MASTER_STRIP, p.master_strip.inserts.len() - 1));
+        // In the row it was put in, as on a track: among the effects, after those in rows above.
+        let at = crate::model::fx_rows(own, &p.master_plugins)
+            .iter()
+            .filter(|row| **row < k)
+            .count();
+        p.master_strip.inserts.insert(at, Insert::new(kind));
+        v.fx_window = Some((crate::model::MASTER_STRIP, at));
     }
     if let Some(info) = pick {
         if let Err(e) = crate::plugin_rack::add_master_effect(p, &info, k) {
@@ -2070,6 +2196,8 @@ fn plugin_menu(
     installed: &[PluginInfo],
     instruments: bool,
     pick: &mut Option<PluginInfo>,
+    // Where an effect of Ovrtone's own, listed under the maker "Ovrtone", is put when picked.
+    mut stock: Option<&mut Option<ovrtone_engine::FxKind>>,
 ) {
     let search_id = egui::Id::unique(("plugin_menu_search", instruments));
     let recent_id = egui::Id::unique(("plugin_menu_recent", instruments));
@@ -2097,6 +2225,24 @@ fn plugin_menu(
                     if ui.button(info.name.as_str()).clicked() {
                         *pick = Some(info.clone());
                         ui.close();
+                    }
+                }
+                // Ovrtone's own effects are found by name too.
+                if let Some(out) = stock.as_deref_mut() {
+                    let kinds = ovrtone_engine::FxKind::MENU
+                        .iter()
+                        .chain(ovrtone_engine::FxKind::CLASSIC.iter());
+                    let mut seen = Vec::new();
+                    for kind in kinds {
+                        let hit = kind.name().to_lowercase().contains(&wanted)
+                            || "ovrtone".contains(&wanted);
+                        if hit && !seen.contains(kind) {
+                            seen.push(*kind);
+                            if ui.button(format!("{}  ·  Ovrtone", kind.name())).clicked() {
+                                *out = Some(*kind);
+                                ui.close();
+                            }
+                        }
                     }
                 }
             });
@@ -2167,6 +2313,11 @@ fn plugin_menu(
         };
         makers.entry(maker).or_default().push(info);
     }
+    // Ovrtone's own effects are a maker among the others.
+    let with_stock = stock.is_some();
+    if with_stock {
+        makers.entry("Ovrtone".to_string()).or_default();
+    }
     egui::ScrollArea::vertical()
         .max_height(ui.ctx().content_rect().height() * 0.7)
         .show(ui, |ui| {
@@ -2175,6 +2326,31 @@ fn plugin_menu(
                     egui::ScrollArea::vertical()
                         .max_height(ui.ctx().content_rect().height() * 0.7)
                         .show(ui, |ui| {
+                            if let (true, "Ovrtone", Some(out)) =
+                                (with_stock, maker.as_str(), stock.as_deref_mut())
+                            {
+                                for kind in ovrtone_engine::FxKind::MENU {
+                                    let text = format!("{}  ·  {}", kind.name(), kind.kind_word());
+                                    if ui.button(text).clicked() {
+                                        *out = Some(kind);
+                                        ui.close();
+                                    }
+                                }
+                                ui.separator();
+                                ui.menu_button("Classic", |ui| {
+                                    for kind in ovrtone_engine::FxKind::CLASSIC {
+                                        let text =
+                                            format!("{}  ·  {}", kind.name(), kind.kind_word());
+                                        if ui.button(text).clicked() {
+                                            *out = Some(kind);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                if !plugins.is_empty() {
+                                    ui.separator();
+                                }
+                            }
                             for info in plugins {
                                 if ui.button(info.name.as_str()).clicked() {
                                     *pick = Some((*info).clone());
@@ -2231,7 +2407,7 @@ fn instrument_menu(
     slot_menu(resp, also_left).show(|ui: &mut Ui| {
         ui.set_min_width(170.0);
         if installed.iter().any(|info| info.is_instrument) {
-            plugin_menu(ui, &installed, true, &mut pick);
+            plugin_menu(ui, &installed, true, &mut pick, None);
         } else {
             ui.label("No instrument plugins found");
         }
@@ -2506,7 +2682,7 @@ fn instrument_plugin_slot(
         ui.separator();
         if installed.iter().any(|info| info.is_instrument) {
             ui.menu_button("Replace With", |ui| {
-                plugin_menu(ui, &installed, true, &mut pick);
+                plugin_menu(ui, &installed, true, &mut pick, None);
             });
         }
         if ui.button(tr("Remove")).clicked() {
@@ -2771,8 +2947,9 @@ pub fn channel_strip(
         if let StripKey::Track(i) = key {
             setting_menu(ui, row(r.setting, 16.0), p, v, i, id(ns, (key, "setting")));
         }
-        if let StripKey::Track(i) = key {
-            eq_slot(ui, g, row(r.eq, 16.0), p, v, i, id(ns, (key, "eq")));
+        match key {
+            StripKey::Track(i) => eq_slot(ui, g, row(r.eq, 16.0), p, v, Home::Track(i), id(ns, (key, "eq"))),
+            StripKey::StereoOut => eq_slot(ui, g, row(r.eq, 16.0), p, v, Home::Master, id(ns, (key, "eq"))),
         }
         let gr_bar = row(r.gain_red + 1.0, 6.0);
         g.rect_filled(gr_bar, 1.0, slot_empty_col());
@@ -3089,8 +3266,15 @@ pub fn channel_strip(
                 }
             }
         }
-        _ => {
-            pan_knob(ui, g, pan_c, id(ns, (key, "pan")), 0.0, false);
+        // Stereo Out's balance, which follows its lane while that plays.
+        StripKey::StereoOut => {
+            let t = &p.master_strip;
+            let shown = crate::automation::shown_value(t, AutoTarget::Pan, beat);
+            let editable = crate::automation::editable(t, AutoTarget::Pan);
+            let m = pan_knob(ui, g, pan_c, id(ns, (key, "pan")), shown, editable);
+            if let Some(value) = m.value {
+                p.master_strip.pan = value;
+            }
         }
     }
 
@@ -3115,7 +3299,13 @@ pub fn channel_strip(
             Some(bus) => send_db(&p.tracks[i].sends, bus),
             None => crate::automation::shown_value(&p.tracks[i], AutoTarget::Volume, beat),
         },
-        StripKey::StereoOut => lin_to_db(p.master_vol).max(-60.0),
+        // The lane's value while Stereo Out plays it, else the fader's own.
+        StripKey::StereoOut => p
+            .master_strip
+            .auto
+            .played(AutoTarget::Volume, beat)
+            .unwrap_or_else(|| lin_to_db(p.master_vol))
+            .max(-60.0),
     };
     let peaks = match key {
         StripKey::Track(i) => meters.tracks.get(i).copied().unwrap_or((0.0, 0.0)),
@@ -3184,7 +3374,7 @@ pub fn channel_strip(
         StripKey::Track(i) => {
             send_bus.is_some() || crate::automation::editable(&p.tracks[i], AutoTarget::Volume)
         }
-        StripKey::StereoOut => true,
+        StripKey::StereoOut => crate::automation::editable(&p.master_strip, AutoTarget::Volume),
     };
     let moved = fader_and_meter(
         ui,
@@ -3625,12 +3815,36 @@ fn is_eq(name: &str) -> bool {
 /// The EQ slot, under Setting, as on Logic's strip: the strip's first equaliser plugin (click to
 /// open it), or, while it has none, a choice of the EQ plugins on this computer, put first in the
 /// chain where Logic's Channel EQ sits.
-fn eq_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i: usize, id: egui::Id) {
-    let found = p.tracks[i]
-        .plugins
+fn eq_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, home: Home, id: egui::Id) {
+    // The strip's own equaliser (Ovrtone's Channel or Multi-Band EQ) draws its curve in the slot.
+    let (strip, window_of) = match home {
+        Home::Track(i) => (i, i),
+        Home::Master => (crate::model::MASTER_STRIP, crate::model::MASTER_STRIP),
+    };
+    let own = p
+        .strip(strip)
+        .and_then(|t| {
+            t.inserts
+                .iter()
+                .enumerate()
+                .find(|(_, x)| matches!(x.kind, ovrtone_engine::FxKind::ChannelEq | ovrtone_engine::FxKind::MultiEq))
+                .map(|(k, x)| (k, *x))
+        });
+    let found = home
+        .plugins(p)
         .iter()
         .find(|x| is_eq(&x.name))
         .map(|x| (x.uid, x.name.clone(), x.bypass || x.failed.is_some()));
+    if let Some((k, fx)) = own {
+        draw_eq_curve(g, r, &fx);
+        let resp = ui
+            .interact(r, id, Sense::click())
+            .on_hover_text_at_pointer("Click to open the EQ");
+        if resp.clicked() {
+            v.fx_window = Some((window_of, k));
+        }
+        return;
+    }
     match &found {
         Some((_, name, off)) => named_slot(
             g,
@@ -3655,11 +3869,16 @@ fn eq_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i:
     }
     let installed = v.installed.clone();
     let mut pick = None;
+    let mut ovrtone = false;
     slot_menu(&resp, true).show(|ui: &mut Ui| {
         ui.set_min_width(170.0);
+        if ui.button("Ovrtone EQ").clicked() {
+            ovrtone = true;
+            ui.close();
+        }
         let eqs: Vec<_> = installed.iter().filter(|x| !x.is_instrument && is_eq(&x.name)).collect();
-        if eqs.is_empty() {
-            ui.label("No EQ plugins found yet");
+        if !eqs.is_empty() {
+            ui.separator();
         }
         for info in eqs {
             if ui.button(format!("{} ({})", info.name, info.vendor)).clicked() {
@@ -3668,16 +3887,78 @@ fn eq_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, v: &mut MixerView, i:
             }
         }
     });
+    if ovrtone {
+        // First in the chain: the plugins move down a row if one sits in the first.
+        let count = p.strip(strip).map_or(0, |t| t.inserts.len()) + home.plugins(p).len();
+        if count >= ovrtone_engine::MAX_INSERTS {
+            v.message = Some("This strip has no free effect slot.".to_string());
+        } else {
+            let plugins = home.plugins(p);
+            if plugins.iter().any(|x| x.row == 0) {
+                for x in plugins.iter_mut() {
+                    x.row = x.row.saturating_add(1);
+                }
+            }
+            if let Some(t) = p.strip_mut(strip) {
+                t.inserts.insert(0, Insert::new(ovrtone_engine::FxKind::ChannelEq));
+            }
+            v.fx_window = Some((window_of, 0));
+        }
+    }
     if let Some(info) = pick {
-        match crate::plugin_rack::add_effect_in_row(p, i, &info, 0) {
+        let added = match home {
+            Home::Track(i) => crate::plugin_rack::add_effect_in_row(p, i, &info, 0),
+            Home::Master => crate::plugin_rack::add_master_effect(p, &info, 0),
+        };
+        match added {
             Ok(()) => {
-                if let Some(x) = p.tracks[i].plugins.iter().find(|x| x.id == info.id) {
+                if let Some(x) = home.plugins(p).iter().find(|x| x.id == info.id) {
                     v.open_plugin = Some((x.uid, x.name.clone()));
                 }
             }
             Err(e) => v.message = Some(e),
         }
     }
+}
+
+/// An equaliser's curve in a slot: frequency on a log scale from 20 Hz to 20 kHz, 0 dB along the
+/// middle, the area between the curve and that line filled lightly.
+fn draw_eq_curve(g: &Painter, r: Rect, fx: &Insert) {
+    let on = !fx.bypass;
+    let ink = if on { crate::theme::accent() } else { plugin_off_col() };
+    g.rect_filled(r, 3.0, slot_empty_col());
+    let inner = r.shrink2(vec2(2.0, 2.0));
+    let columns = (inner.width() as usize).clamp(8, 160);
+    let freqs: Vec<f32> = (0..columns)
+        .map(|k| 20.0 * 1000f32.powf(k as f32 / (columns - 1) as f32))
+        .collect();
+    let curve = ovrtone_engine::response_db(fx.kind, fx.params, &freqs, 48_000.0);
+    // 15 dB up and down from the middle.
+    let mid = inner.center().y;
+    let y_of = |db: f32| mid - (db.clamp(-15.0, 15.0) / 15.0) * inner.height() * 0.5;
+    let x_of = |k: usize| inner.left() + inner.width() * k as f32 / (columns - 1) as f32;
+    let mut mesh = egui::Mesh::default();
+    let fill = ink.gamma_multiply(0.35);
+    for (k, db) in curve.iter().enumerate() {
+        mesh.colored_vertex(pos2(x_of(k), y_of(*db)), fill);
+        mesh.colored_vertex(pos2(x_of(k), mid), fill);
+        if k > 0 {
+            let n = (k * 2) as u32;
+            mesh.add_triangle(n - 2, n - 1, n);
+            mesh.add_triangle(n - 1, n + 1, n);
+        }
+    }
+    g.line_segment(
+        [pos2(inner.left(), mid), pos2(inner.right(), mid)],
+        Stroke::new(1.0, Color32::from_white_alpha(40)),
+    );
+    g.add(egui::Shape::mesh(mesh));
+    let line: Vec<egui::Pos2> = curve
+        .iter()
+        .enumerate()
+        .map(|(k, db)| pos2(x_of(k), y_of(*db)))
+        .collect();
+    g.add(egui::Shape::line(line, Stroke::new(1.3, ink)));
 }
 
 fn group_slot(ui: &Ui, g: &Painter, r: Rect, p: &mut Project, i: usize, id: egui::Id) {

@@ -723,9 +723,24 @@ pub struct ProjectDoc {
     pub snap_zero: bool,
     /// The plugins on the output.
     pub master_plugins: Vec<PluginDoc>,
+    /// The plugins on the output share one order with its own effects, by their rows (files from
+    /// before this had every plugin after the effects).
+    pub master_shared_order: bool,
     /// Stereo Out's own effects, before its plugins.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub master_fx: Vec<InsertDoc>,
+    /// Stereo Out's balance, -1 (left) to 1 (right).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub master_pan: f32,
+    /// Stereo Out's balance lane, as [beat, value, curve] points.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub master_auto_pan: Vec<[f64; 3]>,
+    /// Stereo Out's fader lane (in dB), as [beat, value, curve] points.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub master_auto_volume: Vec<[f64; 3]>,
+    /// Stereo Out shows as a track in the Tracks area.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub master_on_timeline: bool,
     /// Hardware controls assigned with MIDI learn.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub midi_map: Vec<MidiMapDoc>,
@@ -940,7 +955,12 @@ impl Default for ProjectDoc {
             rec_replace: false,
             snap_zero: false,
             master_plugins: Vec::new(),
+            master_shared_order: false,
             master_fx: Vec::new(),
+            master_pan: 0.0,
+            master_auto_pan: Vec::new(),
+            master_auto_volume: Vec::new(),
+            master_on_timeline: false,
             midi_map: Vec::new(),
             format_version: FORMAT_VERSION,
             name: "Untitled".into(),

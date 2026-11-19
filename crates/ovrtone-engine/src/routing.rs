@@ -205,6 +205,9 @@ pub fn lane_value(pts: &[AutoPoint], beat: f64) -> Option<f32> {
 /// Most points one lane keeps.
 pub const MAX_AUTO_POINTS: usize = 20_000;
 
+/// The `track` of a lane that moves Stereo Out's own fader (a Volume lane, in dB).
+pub const MASTER_AUTO_TRACK: u16 = u16::MAX;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -694,8 +694,8 @@ pub fn can_split_at_playhead(p: &Project, v: &TracksView) -> bool {
     regions_to_split(p, v).next().is_some()
 }
 
-/// The selected region if the playhead is inside it, else whatever is under the playhead on the
-/// selected track.
+/// The selected regions the playhead is inside, on every track. With nothing selected, every
+/// region under the playhead on all tracks (Logic's behaviour).
 fn regions_to_split<'a>(
     p: &'a Project,
     v: &TracksView,
@@ -708,20 +708,17 @@ fn regions_to_split<'a>(
                 && beat < p.region_end_beats(region) - EDGE_BEATS
         })
     };
-    let picked: Vec<(usize, usize)> = v
-        .all_selected()
-        .into_iter()
-        .filter(|(t, r)| inside(*t, *r))
-        .collect();
-    let track = p.selected_track;
-    let count = p.tracks.get(track).map_or(0, |x| x.regions.len());
-    let under: Vec<(usize, usize)> = if picked.is_empty() {
-        (0..count)
-            .filter(|r| inside(track, *r))
-            .map(|r| (track, r))
+    let selected = v.all_selected();
+    let under: Vec<(usize, usize)> = if selected.is_empty() {
+        (0..p.tracks.len())
+            .flat_map(|t| (0..p.tracks[t].regions.len()).map(move |r| (t, r)))
+            .filter(|(t, r)| inside(*t, *r))
             .collect()
     } else {
-        picked
+        selected
+            .into_iter()
+            .filter(|(t, r)| inside(*t, *r))
+            .collect()
     };
     under.into_iter()
 }
@@ -734,9 +731,16 @@ pub fn split_at_playhead(p: &mut Project, v: &mut TracksView) -> Result<(), Stri
     }
     let beat = p.position_beats;
     let mut rights = Vec::with_capacity(targets.len());
+    let mut first_err = None;
     for (t, r) in targets {
         let cut = zero_crossing_beat(p, t, r, beat);
-        rights.push((t, split(p, t, r, cut)?));
+        match split(p, t, r, cut) {
+            Ok(right) => rights.push((t, right)),
+            Err(e) => first_err = first_err.or(Some(e)),
+        }
+    }
+    if rights.is_empty() {
+        return Err(first_err.unwrap_or_default());
     }
     v.select_many(rights);
     Ok(())

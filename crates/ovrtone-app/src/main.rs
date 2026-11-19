@@ -74,6 +74,7 @@ mod plugin_presets;
 mod plugin_rack;
 mod plugin_scan;
 mod plugin_trust;
+mod project_folder;
 mod project_history;
 mod project_io;
 mod project_thumbs;
@@ -107,6 +108,7 @@ mod start_screen;
 mod stem_splitter;
 mod stem_worker;
 mod step_editor;
+mod stretch_cache;
 mod strip_silence;
 mod sync_menu;
 mod takes;
@@ -481,6 +483,10 @@ struct App {
     /// macOS: the menus in the system menu bar (elsewhere they are drawn in the window).
     native_menu: Option<native_menu::NativeMenu>,
     /// `--bench <file>`: measuring startup, memory and DSP load, then closing.
+    /// Closing was asked for and the Quit question is showing (`file_commands::quit_guard`).
+    quit_asked: bool,
+    /// Quitting was confirmed (or needs no question): the window may close.
+    quitting: bool,
     bench: Option<bench::Probe>,
     /// `--layout-shots <folder>`: pictures of the layout at several window sizes, then closing.
     shots: Option<bench::LayoutShots>,
@@ -1314,6 +1320,9 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let _frame_time = performance::FrameTimer::start();
+        // Where this project keeps what it makes (see `project_folder`).
+        project_folder::set(self.path.as_deref(), &self.project.name);
         self.follow_launch_scan(ui.ctx());
         self.take_thumbnail(ui.ctx());
         let ctx = ui.ctx().clone();
@@ -1339,6 +1348,7 @@ impl eframe::App for App {
         tracks_area::poll_normalize(&ctx, &mut self.project, &mut self.ui);
         smart_tempo::poll(&ctx, &mut self.project, &mut self.ui);
         flex_edit::poll(&ctx, &mut self.project, &mut self.ui);
+        stretch_cache::poll(&mut self.project);
         audio_file_editor::poll(&ctx, &mut self.project, &mut self.ui);
         audio_file_editor::show(&ctx, &mut self.project, &mut self.ui);
         groove::poll(&ctx, &mut self.project, &mut self.ui);
@@ -1376,15 +1386,18 @@ impl eframe::App for App {
         if let Some(probe) = self.bench.as_mut() {
             if probe.frame(&ctx) {
                 self.bench = None;
+                self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         if let Some(shots) = self.shots.as_mut() {
             if shots.frame(&ctx) {
                 self.shots = None;
+                self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+        self.quit_guard(&ctx);
         self.autosave_tick();
         self.show_recovery(&ctx);
         self.show_history(&ctx);
@@ -1570,10 +1583,16 @@ impl eframe::App for App {
                 self.project.tracks.len(),
                 load,
             );
-            // Render ahead only while nothing is live: no recording, no armed or monitoring track,
-            // and no notes played in for a few seconds.
+            // Render ahead only while nothing is heard live, as Logic keeps every track but the
+            // live one on its large buffer: no recording, no track monitoring its input (an armed
+            // track is only heard during playback when it monitors), and no notes played in for
+            // a few seconds.
             let live = self.project.recording
-                || self.project.tracks.iter().any(|t| t.rec || t.monitor)
+                || self.project.tracks.iter().any(|t| {
+                    t.monitor
+                        || (t.rec && t.kind != model::TrackKind::Audio)
+                        || (t.rec && self.project.auto_monitor && !self.project.playing)
+                })
                 || self
                     .ui
                     .live_note_at
@@ -1871,6 +1890,7 @@ impl eframe::App for App {
         }
         let unsaved = || file_commands::content(&self.project) != self.saved;
         if self.updater.show(&ctx, &unsaved) == updater::Action::Quit {
+            self.quitting = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
@@ -2375,6 +2395,8 @@ fn main() -> eframe::Result {
                 sync,
                 path: None,
                 native_menu: None,
+                quit_asked: false,
+                quitting: false,
                 bench: bench_out.clone().map(bench::Probe::new),
                 shots: shots_dir.clone().map(bench::LayoutShots::new),
                 frames_since_record: 0,

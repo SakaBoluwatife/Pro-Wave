@@ -1,3 +1,52 @@
+Ovrtone 1.1.1
+=============
+
+- Sound no longer stops after a while: the engine kept a place for each plugin added to an empty
+  slot, each sample preview and each meter opened, and once all 32 were kept it refused new songs,
+  samples and plugins until the audio settings were applied again.
+- Plugins work in blocks of 256 samples by default (Settings: Process buffer range, Small, Medium or
+  Large, as in Logic), which costs far less CPU with several plugins. Small is the lowest delay
+  for monitoring through plugins.
+- Plugin windows of plugins running in their own process come to the front with the keyboard on
+  the plugin, instead of beeping until picked from the taskbar.
+- Playback holds up under load, as in Logic:
+  - Render-ahead stays on with armed tracks: only recording, an input being monitored or notes
+    played in put the song back on the device buffer.
+  - The disk streaming threads run with the audio threads' priority, above the window, so moving
+    the mouse over the tracks no longer breaks the sound up.
+  - Short files (up to about 24 seconds) are read into memory once, never waiting on the drive.
+  - Regions that follow a steady project tempo are stretched once in the background and then play
+    straight; live stretching only while the tempo changes or the render is still being made.
+  - Plugins running in their own process work one block behind, so the audio thread no longer
+    waits for each one in turn.
+  - The built-in voices no longer make the engine work one sample at a time.
+  - An overload fades out and back in instead of clicking.
+  - Performance window: the window's own frame time.
+- Ovrtone's own effects on Stereo Out sit among its plugins in one order, as on a track and as any
+  plugin would: put a plugin above one of them and it runs first. Projects from before keep their
+  order. On tracks, a plugin placed between two of Ovrtone's effects now also runs between them.
+- Bounce in Place lands where the region starts, not at the start of its bar, on a new track right
+  under the one it came from. Plugins running in their own process are delay-compensated for the
+  block they run behind, so bounces and freezes start on time with them.
+- Playlist: drag any selected region to move them all, across tracks; Split at Playhead cuts every
+  selected region it crosses (or everything under it). Alt-drag moves freely without snapping;
+  Shift+Alt-drag copies. Ctrl or Shift with the selection box adds to the selection.
+- Mute and Solo: press M or S and drag over other headers; Alt-click sets every track.
+- A shows or hides automation on every track. View > Show Aux Tracks and View > Show Stereo Out
+  Track (with Stereo Out volume automation).
+- Automation: the value next to the pointer, double-click a point to type a value (right-click to
+  delete), Ctrl-drag for fine moves, Ctrl+Shift-drag a line to bend it.
+- Waveforms: filled and smooth at every zoom, red only where the audio really goes over full scale.
+- Stereo Out: drag its Ovrtone effects to other slots.
+- Stereo Out: a pan knob and a Pan lane on the Stereo Out track; its fader, knob and readouts follow
+  the automation while it plays, and so does the master slider on the control bar.
+- Ovrtone's effects look and work like plugins in the slots, and are listed under the maker Ovrtone.
+- EQ slot: with an Ovrtone EQ on the strip it shows the EQ curve, as Logic's strip does; empty, it
+  offers Ovrtone EQ first. Stereo Out has one too.
+- Closing Ovrtone always asks first (Save and Quit, Don't Save, Cancel).
+- Each project has its own folder, DocumentsOvrtone<project>, with Audio Files, Bounces (and Freeze
+  Files), Stems and Beat Store inside; a project saved elsewhere uses its own folder.
+
 Ovrtone 1.1.0 (full installer)
 ==============================
 
